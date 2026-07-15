@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77.0,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jolink-runtime-debugger"
+version = "0.1.0"
+description = "A local runtime debugger for coding agents"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+authors = [{ name = "joLink contributors" }]
+dependencies = [
+  "psutil==7.2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
