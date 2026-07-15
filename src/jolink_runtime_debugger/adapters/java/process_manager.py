@@ -148,7 +148,8 @@ class ProcessManager:
 
             cmd = [
                 "java",
-                f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address={jdwp_port}",
+                f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,"
+                f"address=127.0.0.1:{jdwp_port}",
             ]
             if vm_args:
                 cmd.extend(vm_args)
@@ -266,7 +267,12 @@ class ProcessManager:
         main_class: str = "attached",
         host: str | None = None,
     ) -> ProcessInfo:
-        """Track an existing local JVM after verifying its process and JDWP port."""
+        """Track an existing local JVM after verifying its process exists.
+
+        The debugger layer performs the one and only JDWP handshake. Performing
+        a probe handshake here would briefly consume the JVM's single debugger
+        connection and race the real attach that immediately follows.
+        """
         target_host = host or self._host
         logger.info(
             "java_runtime.process.attach.request pid=%s jdwp=%s:%s main_class=%s",
@@ -276,11 +282,6 @@ class ProcessManager:
             raise RuntimeError("attach requires a positive pid")
         if not psutil.pid_exists(pid):
             raise RuntimeError(f"Java process {pid} is not running")
-        if not self._check_jdwp_port(target_host, jdwp_port, timeout=2.0):
-            raise RuntimeError(
-                f"Process {pid} is running, but {target_host}:{jdwp_port} "
-                "did not complete a JDWP handshake"
-            )
         self._process = ProcessInfo(
             None,
             jdwp_port,

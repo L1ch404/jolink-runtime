@@ -39,6 +39,8 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
             raise RuntimeError("socket closed")
         result += chunk
     return result
+
+
 def test_external_process_liveness_uses_psutil(monkeypatch) -> None:
     checked = []
     monkeypatch.setattr(
@@ -56,13 +58,57 @@ def test_external_process_liveness_uses_psutil(monkeypatch) -> None:
 def test_attach_uses_non_destructive_pid_probe(monkeypatch) -> None:
     manager = ProcessManager()
     monkeypatch.setattr(process_module.psutil, "pid_exists", lambda pid: pid == 3488)
-    monkeypatch.setattr(manager, "_check_jdwp_port", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        manager,
+        "_check_jdwp_port",
+        lambda *args, **kwargs: pytest.fail("attach must not consume a JDWP handshake"),
+    )
 
     info = manager.attach(3488, 5005, "SpringApplication")
 
     assert info.pid == 3488
     assert info.owned is False
     assert info.launch_mode == "attached"
+
+
+def test_runtime_attach_connects_once_and_rolls_back_on_failure(monkeypatch) -> None:
+    runtime = JavaRuntime()
+    monkeypatch.setattr(process_module.psutil, "pid_exists", lambda pid: pid == 3488)
+    connect_calls = []
+
+    def fail_connect():
+        connect_calls.append(True)
+        raise ConnectionRefusedError("JDWP is unavailable")
+
+    monkeypatch.setattr(runtime, "_connect", fail_connect)
+
+    result = runtime.attach(RuntimeAction(
+        action="attach",
+        pid=3488,
+        jdwp_port=5005,
+        main_class="SpringApplication",
+    ))
+
+    assert connect_calls == [True]
+    assert result.ok is False
+    assert result.error == "JDWP is unavailable"
+    assert runtime._proc.current is None
+    assert runtime._jdwp is None
+
+
+def test_runtime_attach_rejects_ipv6_loopback_before_process_tracking() -> None:
+    runtime = JavaRuntime()
+
+    result = runtime.attach(RuntimeAction(
+        action="attach",
+        pid=3488,
+        host="::1",
+        jdwp_port=5005,
+    ))
+
+    assert result.ok is False
+    assert result.error == "Remote attach is not supported yet; use a local JDWP endpoint"
+    assert runtime._proc.current is None
 
 
 def test_jar_launch_builds_java_jar_command_and_windows_flags(
@@ -101,7 +147,7 @@ def test_jar_launch_builds_java_jar_command_and_windows_flags(
 
     assert captured["command"] == [
         "java",
-        "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005",
+        "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:5005",
         "-Xmx512m",
         "-jar",
         r"C:\apps\demo.jar",
@@ -2489,7 +2535,8 @@ public class AttachFixture {
     process = subprocess.Popen(
         [
             "java",
-            f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address={port}",
+            f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,"
+            f"address=127.0.0.1:{port}",
             "-cp",
             str(tmp_path),
             "AttachFixture",

@@ -239,7 +239,7 @@ class JavaRuntime(Runtime):
         try:
             self._reset_debug_state()
             self._host = action.host or "127.0.0.1"
-            if self._host not in {"localhost", "127.0.0.1", "::1"}:
+            if self._host not in {"localhost", "127.0.0.1"}:
                 return RuntimeResult(
                     ok=False,
                     error="Remote attach is not supported yet; use a local JDWP endpoint",
