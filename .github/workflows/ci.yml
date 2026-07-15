@@ -24,10 +24,16 @@ jobs:
           - os: ubuntu-latest
             python: "3.13"
             java: "17"
+          - os: ubuntu-latest
+            python: "3.11"
+            java: "21"
           - os: windows-latest
             python: "3.11"
             java: "8"
           - os: windows-latest
+            python: "3.11"
+            java: "17"
+          - os: macos-latest
             python: "3.11"
             java: "17"
 
@@ -44,5 +50,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev --locked
+      - name: Verify frozen Runtime lineage
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11' && matrix.java == '17'
+        run: uv run pytest -q tests/contract/test_runtime_lineage_golden.py
       - run: uv run pytest
       - run: uv build --wheel
