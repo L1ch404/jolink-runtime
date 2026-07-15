@@ -2194,7 +2194,7 @@ public class DebugFixture {
     source_path = tmp_path / "DebugFixture.java"
     source_path.write_text(source, encoding="utf-8")
     subprocess.run(
-        ["javac", "-g", str(source_path)],
+        ["javac", "-encoding", "UTF-8", "-g", str(source_path)],
         cwd=tmp_path,
         check=True,
         capture_output=True,
@@ -2322,7 +2322,7 @@ public class ExceptionFixture {
     source_path = tmp_path / "ExceptionFixture.java"
     source_path.write_text(source, encoding="utf-8")
     subprocess.run(
-        ["javac", "-g", str(source_path)],
+        ["javac", "-encoding", "UTF-8", "-g", str(source_path)],
         cwd=tmp_path,
         check=True,
         capture_output=True,
@@ -2405,7 +2405,7 @@ public class JarFixture {
         encoding="utf-8",
     )
     subprocess.run(
-        ["javac", "-g", str(source_path)],
+        ["javac", "-encoding", "UTF-8", "-g", str(source_path)],
         cwd=tmp_path,
         check=True,
         capture_output=True,
@@ -2433,6 +2433,7 @@ public class JarFixture {
             jar_path=str(jar_path),
             app_args=[str(stop_file)],
             jdwp_port=port,
+            vm_args=["-Dfile.encoding=UTF-8"],
         ))
 
         assert started.error == ""
@@ -2475,7 +2476,7 @@ public class AttachFixture {
         encoding="utf-8",
     )
     subprocess.run(
-        ["javac", "-g", str(source_path)],
+        ["javac", "-encoding", "UTF-8", "-g", str(source_path)],
         cwd=tmp_path,
         check=True,
         capture_output=True,
