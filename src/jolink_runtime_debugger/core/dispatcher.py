@@ -1,0 +1,211 @@
+"""Transport-independent dispatch for the migrated Java Runtime tools."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from typing import Any
+
+from ..adapters.java.jdwp_adapter import JavaRuntime
+from ..adapters.java.process_discovery import discover_java_processes
+from .models import RuntimeAction, RuntimeResult
+from .session_manager import SessionManager
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log_error_summary(error: str) -> str:
+    """Keep logs diagnostic without copying application output into logs."""
+    if not error:
+        return "-"
+    return error.splitlines()[0][:240]
+
+
+def _bool_arg(arguments: dict[str, Any], name: str, default: bool = False) -> bool:
+    value = arguments.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
+    """Parse arguments with the same defaults and coercions as the old handler."""
+    return RuntimeAction(
+        action=arguments.get("action", "status"),
+        classpath=arguments.get("classpath", "."),
+        main_class=arguments.get("main_class", ""),
+        jar_path=arguments.get("jar_path", ""),
+        app_args=arguments.get("app_args"),
+        jdwp_port=arguments.get("jdwp_port", 5005),
+        vm_args=arguments.get("vm_args"),
+        pid=arguments.get("pid", 0),
+        host=arguments.get("host", "127.0.0.1"),
+        tail=arguments.get("tail", 50),
+        bp_action=arguments.get("bp_action", "set"),
+        exception_action=arguments.get("exception_action", "set"),
+        breakpoint_id=arguments.get("breakpoint_id", ""),
+        request_id=arguments.get("request_id", 0),
+        class_pattern=arguments.get("class_pattern", ""),
+        include_proxy=_bool_arg(arguments, "include_proxy", False),
+        include_generated=_bool_arg(arguments, "include_generated", False),
+        exception_class=arguments.get("exception_class", ""),
+        caught=_bool_arg(arguments, "caught", True),
+        uncaught=_bool_arg(arguments, "uncaught", True),
+        allow_broad_caught=_bool_arg(arguments, "allow_broad_caught", False),
+        line=arguments.get("line", 0),
+        thread_name=arguments.get("thread_name", ""),
+        frame_index=arguments.get("frame_index", 0),
+        max_frames=arguments.get("max_frames", 20),
+        include_this=_bool_arg(arguments, "include_this", False),
+        max_value_depth=int(arguments.get("max_value_depth", 1)),
+        semantic_collections=_bool_arg(arguments, "semantic_collections", True),
+        item_limit=int(arguments.get("item_limit", 16)),
+        map_entry_limit=int(arguments.get("map_entry_limit", 16)),
+        timeout=float(arguments.get("timeout", 30)),
+        suspension_id=arguments.get("suspension_id", ""),
+    )
+
+
+def _runtime_result_payload(result: RuntimeResult) -> dict[str, Any]:
+    """Return the exact JSON object represented by ``RuntimeResult.to_json``."""
+    return json.loads(result.to_json())
+
+
+class Dispatcher:
+    """Route standalone tool calls without depending on MCP or Hermes."""
+
+    def __init__(self, sessions: SessionManager | None = None) -> None:
+        self.sessions = sessions if sessions is not None else SessionManager(JavaRuntime)
+
+    def dispatch(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        session_key: str = "default",
+    ) -> dict[str, Any]:
+        """Dispatch a migrated tool call and return its parsed JSON object."""
+        args = arguments or {}
+        if tool_name == "java_runtime":
+            return self.dispatch_java_runtime(args, session_key=session_key)
+        if tool_name == "java_processes":
+            return discover_java_processes(
+                filter_text=args.get("filter"),
+                full=bool(args.get("full", False)),
+            )
+        return {"ok": False, "error": f"Unknown tool: {tool_name}"}
+
+    def dispatch_java_runtime(
+        self,
+        arguments: dict[str, Any],
+        *,
+        session_key: str = "default",
+    ) -> dict[str, Any]:
+        """Run one Java Runtime action with the established handler semantics."""
+        started_at = time.monotonic()
+        action = parse_runtime_action(arguments)
+        context_key = str(session_key or "default")
+        runtime = self.sessions.get_runtime(context_key)
+        logger.info(
+            "java_runtime.action.start action=%s context=%s pid=%s main_class=%s "
+            "jar_path=%s jdwp=%s:%s breakpoint=%s:%s breakpoint_id=%s "
+            "exception=%s request_id=%s suspension=%s",
+            action.action,
+            context_key,
+            action.pid or "-",
+            action.main_class or "-",
+            action.jar_path or "-",
+            action.host,
+            action.jdwp_port,
+            action.class_pattern or "-",
+            action.line or "-",
+            action.breakpoint_id or "-",
+            action.exception_class or "-",
+            action.request_id or "-",
+            action.suspension_id or "-",
+        )
+
+        handlers = {
+            "run": runtime.run,
+            "stop": runtime.stop,
+            "restart": runtime.restart,
+            "attach": runtime.attach,
+            "detach": runtime.detach,
+            "status": runtime.status,
+            "logs": runtime.logs,
+            "breakpoint": runtime.breakpoint,
+            "exception": runtime.exception,
+            "wait_event": runtime.wait_event,
+            "wait_breakpoint": runtime.wait_breakpoint,
+            "threads": runtime.threads,
+            "stack": runtime.stack,
+            "variables": runtime.variables,
+            "resume": runtime.resume,
+            "cleanup_debug_state": runtime.cleanup_debug_state,
+        }
+        handler = handlers.get(action.action)
+        if handler is None:
+            error = f"Unknown action: {action.action}"
+            logger.warning(
+                "java_runtime.action.invalid action=%s context=%s",
+                action.action,
+                context_key,
+            )
+            logger.warning(
+                "java_runtime.action.finish action=%s context=%s ok=False "
+                "duration_ms=%.1f error=%s",
+                action.action,
+                context_key,
+                (time.monotonic() - started_at) * 1000,
+                _log_error_summary(error),
+            )
+            return {"ok": False, "error": error}
+
+        try:
+            result = handler(action)
+            data = result.data or {}
+            log_finish = logger.warning if result.error else logger.info
+            log_finish(
+                "java_runtime.action.finish action=%s context=%s ok=%s duration_ms=%.1f "
+                "status=%s process=%s debug=%s pid=%s suspension=%s "
+                "threads=%s frames=%s variables=%s complete=%s error=%s",
+                action.action,
+                context_key,
+                not bool(result.error) and result.ok,
+                (time.monotonic() - started_at) * 1000,
+                data.get("status", "-"),
+                data.get("process_state", "-"),
+                data.get("debug_state", "-"),
+                data.get("pid", "-"),
+                data.get("suspension_id", data.get("invalidated_suspension_id", "-")),
+                data.get("thread_count", "-"),
+                data.get("frame_count", "-"),
+                data.get("variable_count", "-"),
+                data.get("complete", "-"),
+                _log_error_summary(result.error),
+            )
+            return _runtime_result_payload(result)
+        except Exception as error:
+            logger.exception(
+                "java_runtime.action.crash action=%s context=%s duration_ms=%.1f",
+                action.action,
+                context_key,
+                (time.monotonic() - started_at) * 1000,
+            )
+            message = f"{type(error).__name__}: {error}"
+            logger.error(
+                "java_runtime.action.finish action=%s context=%s ok=False "
+                "duration_ms=%.1f error=%s",
+                action.action,
+                context_key,
+                (time.monotonic() - started_at) * 1000,
+                _log_error_summary(message),
+            )
+            return {"ok": False, "error": message}
+
+
+__all__ = ["Dispatcher", "parse_runtime_action"]
