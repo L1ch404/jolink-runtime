@@ -1,0 +1,63 @@
+{
+  "description": "List all running Java/JVM processes on the current machine. Returns process ID (PID) and the main class or JAR name for each. Use this to check if a specific Java application has started, or to find the PID of a running Java service for debugging. Prefers 'jps' (JDK tool) when JDK is installed; falls back to 'ps'.",
+  "name": "java_processes",
+  "output": {
+    "properties": {
+      "count": {
+        "description": "The total number of Java processes returned.",
+        "type": "integer"
+      },
+      "message": {
+        "description": "Human-readable summary of the query result. Example: 'Found 2 Java process(es)'.",
+        "type": "string"
+      },
+      "processes": {
+        "description": "List of running Java processes.",
+        "items": {
+          "properties": {
+            "main_class": {
+              "description": "Main class name or executable JAR name of the Java process.",
+              "type": "string"
+            },
+            "pid": {
+              "description": "Operating system process ID.",
+              "type": "integer"
+            },
+            "runtime": {
+              "description": "Java runtime implementation or distribution, such as 'OpenJDK', 'Oracle JDK', 'Temurin', or other detected JVM.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pid",
+            "main_class",
+            "runtime"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "message",
+      "count",
+      "processes"
+    ],
+    "type": "object"
+  },
+  "parameters": {
+    "properties": {
+      "filter": {
+        "description": "Optional. Case-insensitive substring to filter results. Example: 'Spring' to find Spring Boot apps, 'hermes' to find the specific JAR/service.",
+        "type": "string"
+      },
+      "full": {
+        "default": false,
+        "description": "When true, returns JVM arguments (e.g. -Xmx, -D props) for each process. Default: false (fast, just PID + class name).",
+        "type": "boolean"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

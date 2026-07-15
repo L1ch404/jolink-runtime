@@ -1,0 +1,70 @@
+{
+  "cases": [
+    {
+      "arguments": {
+        "action": "status"
+      },
+      "name": "status_without_target",
+      "result": {
+        "debug_state": "detached",
+        "message": "No application is managed by this runtime",
+        "ok": true,
+        "process_state": "absent",
+        "running": false
+      }
+    },
+    {
+      "arguments": {
+        "action": "breakpoint",
+        "bp_action": "set"
+      },
+      "name": "breakpoint_without_target",
+      "result": {
+        "error": "No application running",
+        "ok": false
+      }
+    },
+    {
+      "arguments": {
+        "action": "exception",
+        "exception_action": "set",
+        "exception_class": "java.lang.Exception"
+      },
+      "name": "exception_without_target",
+      "result": {
+        "error": "No application running",
+        "ok": false
+      }
+    },
+    {
+      "arguments": {
+        "action": "variables"
+      },
+      "name": "variables_without_suspension",
+      "result": {
+        "error": "No active debug suspension. Call wait_event or wait_breakpoint after triggering the debug event.",
+        "ok": false
+      }
+    },
+    {
+      "arguments": {
+        "action": "resume"
+      },
+      "name": "resume_without_suspension",
+      "result": {
+        "error": "No active debug suspension. Call wait_event or wait_breakpoint after triggering the debug event.",
+        "ok": false
+      }
+    },
+    {
+      "arguments": {
+        "action": "does_not_exist"
+      },
+      "name": "unknown_action",
+      "result": {
+        "error": "Unknown action: does_not_exist",
+        "ok": false
+      }
+    }
+  ]
+}

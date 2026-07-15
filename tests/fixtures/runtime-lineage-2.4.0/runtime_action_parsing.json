@@ -1,0 +1,123 @@
+{
+  "cases": [
+    {
+      "arguments": {
+        "action": "status"
+      },
+      "name": "defaults",
+      "parsed": {
+        "action": "status",
+        "allow_broad_caught": false,
+        "app_args": null,
+        "bp_action": "set",
+        "breakpoint_id": "",
+        "caught": true,
+        "class_pattern": "",
+        "classpath": ".",
+        "exception_action": "set",
+        "exception_class": "",
+        "frame_index": 0,
+        "host": "127.0.0.1",
+        "include_generated": false,
+        "include_proxy": false,
+        "include_this": false,
+        "item_limit": 16,
+        "jar_path": "",
+        "jdwp_port": 5005,
+        "line": 0,
+        "main_class": "",
+        "map_entry_limit": 16,
+        "max_frames": 20,
+        "max_value_depth": 1,
+        "pid": 0,
+        "request_id": 0,
+        "semantic_collections": true,
+        "suspension_id": "",
+        "tail": 50,
+        "thread_name": "",
+        "timeout": 30.0,
+        "uncaught": true,
+        "vm_args": null
+      }
+    },
+    {
+      "arguments": {
+        "action": "wait_event",
+        "allow_broad_caught": "true",
+        "app_args": [
+          "--profile=test"
+        ],
+        "bp_action": "list",
+        "breakpoint_id": "bp_007",
+        "caught": "false",
+        "class_pattern": "example.Service",
+        "classpath": "classes",
+        "exception_action": "remove",
+        "exception_class": "java.lang.NullPointerException",
+        "frame_index": 2,
+        "host": "localhost",
+        "include_generated": "on",
+        "include_proxy": "yes",
+        "include_this": "y",
+        "item_limit": "5",
+        "jar_path": "example.jar",
+        "jdwp_port": 6123,
+        "line": 42,
+        "main_class": "example.Main",
+        "map_entry_limit": "6",
+        "max_frames": 7,
+        "max_value_depth": "3",
+        "pid": 123,
+        "request_id": 17,
+        "semantic_collections": "false",
+        "suspension_id": "suspension-1",
+        "tail": 9,
+        "thread_name": "worker",
+        "timeout": "1.5",
+        "uncaught": "1",
+        "vm_args": [
+          "-Xmx64m"
+        ]
+      },
+      "name": "fully_specified",
+      "parsed": {
+        "action": "wait_event",
+        "allow_broad_caught": true,
+        "app_args": [
+          "--profile=test"
+        ],
+        "bp_action": "list",
+        "breakpoint_id": "bp_007",
+        "caught": false,
+        "class_pattern": "example.Service",
+        "classpath": "classes",
+        "exception_action": "remove",
+        "exception_class": "java.lang.NullPointerException",
+        "frame_index": 2,
+        "host": "localhost",
+        "include_generated": true,
+        "include_proxy": true,
+        "include_this": true,
+        "item_limit": 5,
+        "jar_path": "example.jar",
+        "jdwp_port": 6123,
+        "line": 42,
+        "main_class": "example.Main",
+        "map_entry_limit": 6,
+        "max_frames": 7,
+        "max_value_depth": 3,
+        "pid": 123,
+        "request_id": 17,
+        "semantic_collections": false,
+        "suspension_id": "suspension-1",
+        "tail": 9,
+        "thread_name": "worker",
+        "timeout": 1.5,
+        "uncaught": true,
+        "vm_args": [
+          "-Xmx64m"
+        ]
+      }
+    }
+  ]
+}

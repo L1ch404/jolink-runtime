@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "handler_results.json": "c431710231eb77dd1b0903062a825d19f1674c312bfddc8d855d6c5a033f107c",
+    "java_processes_results.json": "eaa15d7c3e9b5c0e6f911e289ba359070ca3d9e9e329665f7e91f4a4073143d6",
+    "java_processes_schema.json": "1613a977ad64923de2fa7956a69ebcb686b46f623864c35ad01dc327cfcd84e1",
+    "java_runtime_schema.json": "5bfb3ccfac8318537bf0cc0aad381b05aa86db7ae650533e9e1ce793f4d6dac5",
+    "runtime_action_parsing.json": "704a79f959a4e8dc15082b350503269c22e2a4e25adb849847031b7f8dc3ba9d"
+  },
+  "format_version": 1,
+  "hermes_commit": "cc726310c7d9d7981ef3f0bf9e2d27513d0c9515",
+  "runtime_lineage": "2.4.0",
+  "schemas": {
+    "JAVA_PROCESSES_SCHEMA": {
+      "artifact": "java_processes_schema.json",
+      "canonical_sha256": "0c3739a5a920eab41d5d9d7fe48a1be452de2342a40a2ab474119c4e55b8fbac"
+    },
+    "JAVA_RUNTIME_SCHEMA": {
+      "artifact": "java_runtime_schema.json",
+      "canonical_sha256": "264b4899a8bcec75bca2f0ce38e21999ed8356c4e5ed9af325f1dc125f44af54"
+    }
+  },
+  "source_files": {
+    "plugins/java-monitor/__init__.py": "297f0d318d8a021ac4328b59bd38b2ea8de8b65612506137ddad947d891fa86d",
+    "plugins/jdwp-debug/__init__.py": "2e3d0ddc6a3341d8d8c49f3918bd339e6b1864821791c59edf3e75af5035bc03"
+  }
+}

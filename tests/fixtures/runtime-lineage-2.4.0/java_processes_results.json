@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "arguments": {
+        "filter": "Demo",
+        "full": true
+      },
+      "name": "class_filter",
+      "observed_full": [
+        true
+      ],
+      "result": {
+        "count": 1,
+        "message": "Found 1 Java process(es) matching 'Demo'",
+        "processes": [
+          {
+            "jvm_args": "-Xmx256m",
+            "main_class": "com.example.DemoApplication",
+            "pid": 123,
+            "runtime": "OpenJDK 8"
+          }
+        ]
+      }
+    },
+    {
+      "arguments": {
+        "filter": "456",
+        "full": "false"
+      },
+      "name": "pid_filter",
+      "observed_full": [
+        true
+      ],
+      "result": {
+        "count": 1,
+        "message": "Found 1 Java process(es) matching '456'",
+        "processes": [
+          {
+            "jvm_args": "-Dfile.encoding=UTF-8",
+            "main_class": "worker.jar",
+            "pid": 456,
+            "runtime": "OpenJDK 8"
+          }
+        ]
+      }
+    },
+    {
+      "arguments": {
+        "filter": "missing",
+        "full": false
+      },
+      "name": "no_match",
+      "observed_full": [
+        false
+      ],
+      "result": {
+        "count": 0,
+        "message": "No Java processes found matching 'missing'. Is a JVM running?",
+        "processes": []
+      }
+    }
+  ],
+  "source_processes": [
+    {
+      "jvm_args": "-Xmx256m",
+      "main_class": "com.example.DemoApplication",
+      "pid": 123,
+      "runtime": "OpenJDK 8"
+    },
+    {
+      "jvm_args": "-Dfile.encoding=UTF-8",
+      "main_class": "worker.jar",
+      "pid": 456,
+      "runtime": "OpenJDK 8"
+    }
+  ]
+}
