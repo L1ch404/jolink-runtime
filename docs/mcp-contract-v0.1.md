@@ -1,6 +1,6 @@
 # joLink Runtime Debugger MCP Contract v0.1
 
-Status: implemented minimum stdio boundary.
+Status: implemented stdio boundary with Stage 2.1 lifecycle hardening.
 
 This is the client-facing MCP contract. The migrated implementation it wraps
 is frozen separately in
@@ -46,7 +46,7 @@ is not advertised or accepted as a public MCP action.
 
 The compact description must tell the model:
 
-1. This observes and controls a local JVM.
+1. This is stateful and observes and controls a local JVM.
 2. It is useful when source code, logs, or tests cannot reliably determine the
    executed path or runtime state.
 3. It supports lifecycle, breakpoint/exception events, stack, variables, and
@@ -71,6 +71,12 @@ on a Resource or Prompt being loaded.
 Missing or stale suspension state, invalid arguments, and JDWP connection
 failures are execution errors; they are not unavailable observations.
 
+Missing Java `VariableTable` debug metadata also remains an execution error
+in MCP v0.1 for compatibility with the migrated Runtime lineage. Semantically,
+this is a candidate for a future `ok=true` and
+`observation_state=unavailable` result, but Stage 2.1 does not change that
+Runtime behavior.
+
 Every normal Tool result contains both:
 
 - one JSON `TextContent`;
@@ -79,6 +85,10 @@ Every normal Tool result contains both:
 `java_processes` does not include an `ok` field. It is successful unless the
 boundary returns an explicit `ok=false` payload.
 
+Calling a tool name that the server does not advertise follows the official
+Python MCP SDK behavior: the SDK returns a Tool Error. It is not converted
+into a Runtime `ok=false` payload because the Dispatcher was never invoked.
+
 ## Suspension and cancellation
 
 - Only one active suspension is allowed per Runtime session.
@@ -86,20 +96,39 @@ boundary returns an explicit `ok=false` payload.
   suspension remains active.
 - `resume` invalidates the suspension and all references obtained from it.
 - The MCP implementation serializes calls that operate on the default Runtime.
-- Stage two deliberately does not change `wait_event` or add a waiter
-  generation state machine.
-- Cancellation-hardening remains a later Runtime task and is not claimed by
-  the minimum MCP boundary.
+- Every MCP `wait_event` receives an internal waiter id and monotonically
+  increasing wait generation. These identifiers are not public Tool fields.
+- Cancelling an MCP request actively cancels its waiter. The worker checks the
+  token between short event-wait slices without discarding partial JDWP
+  packets.
+- An event consumed after its waiter is cancelled is never published as a new
+  suspension. It is resumed according to its suspend policy.
+- The old worker must finish and cancellation settlement must complete before
+  another Runtime call can enter the session.
+- Normal cancellation preserves breakpoint and exception requests.
+- If the reader does not exit within the cancellation grace period, the
+  boundary closes the JDWP connection. Connection-scoped requests are then
+  invalidated, and `status` tells the caller to set them again.
+- If a worker still cannot exit after forced disconnect, the boundary is
+  poisoned and rejects further calls. Reconnect to a new server process.
 
 ## Process ownership
 
 - `run` creates a Runtime-owned JVM.
 - `attach` observes an externally managed local JVM.
-- This minimum boundary does not add implicit target-JVM cleanup on server
-  shutdown.
-- Target cleanup remains explicit through `resume`, `cleanup_debug_state`,
-  `detach`, or `stop`, using the existing Runtime ownership semantics.
+- Normal server shutdown cancels and settles an active waiter before closing
+  the Runtime session.
+- A Runtime-owned JVM is stopped when the MCP server exits.
+- An externally attached JVM is resumed/detached and is never terminated by
+  MCP shutdown.
+- Shutdown uses bounded grace periods. If normal debugger cleanup blocks, an
+  ownership-aware force release closes JDWP, stops only owned targets, and
+  only forgets attached targets.
+- Explicit `resume`, `cleanup_debug_state`, `detach`, and `stop` remain
+  available during normal operation.
 - Remote JDWP attachment is not part of v0.1.
+- Both tool input Schemas reject unknown properties.
+- The `host` parameter accepts only `127.0.0.1` and `localhost`.
 
 ## Transport
 
@@ -121,13 +150,11 @@ boundary returns an explicit `ok=false` payload.
 The larger Hermes-era schemas remain frozen as Runtime-lineage compatibility
 artifacts; they are never advertised by the MCP server.
 
-## v0.1 minimum-boundary exclusions
+## v0.1 exclusions
 
-- No `wait_event` behavior change
-- No cancellation generation state machine
 - No new Runtime actions
-- No JDWP protocol refactor
 - No additional language adapters
 - No HTTP transport
 - No setup installer
-- No implicit target-JVM shutdown cleanup
+- No remote JDWP attach
+- No public waiter/cancellation fields in the Tool Schema

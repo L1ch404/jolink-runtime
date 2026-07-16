@@ -12,15 +12,16 @@ boundary.
 
 ## Current development stage
 
-Stage two provides the minimum MCP path:
+Stage 2.1 provides the MCP path plus cancellation and shutdown safety:
 
 - two tools: `java_runtime` and `java_processes`;
 - 15 public Java Runtime actions;
 - JSON `TextContent` plus matching `structuredContent`;
 - Runtime `ok=false` mapped to MCP `isError=true`;
 - stdio transport with stdout reserved for protocol messages.
-
-The MCP boundary does not change the migrated JDWP Runtime behavior.
+- cancellable `wait_event` with generation ownership and automatic resume;
+- ownership-aware shutdown: stop launched JVMs, detach attached JVMs;
+- persistent JDWP packet framing across short polling timeouts.
 
 ## Requirements
 
@@ -68,6 +69,14 @@ uv run pytest -q tests/e2e/test_stdio_mcp.py
 
 It performs `initialize`, `tools/list`, `java_runtime(status)`, then closes the
 stdio client contexts and waits for the server process to exit.
+
+The heavier real MCP/JVM suite is opt-in locally and runs once in the
+canonical Linux/Python 3.11/JDK 17 CI job:
+
+```bash
+JOLINK_RUN_MCP_JAVA_E2E=1 \
+  uv run pytest -q -m mcp_java_e2e tests/e2e/test_stdio_mcp_java.py
+```
 
 ## Contracts
 

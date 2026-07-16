@@ -53,5 +53,11 @@ jobs:
       - name: Verify frozen Runtime lineage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11' && matrix.java == '17'
         run: uv run pytest -q tests/contract/test_runtime_lineage_golden.py
-      - run: uv run pytest
+      - name: Run portable test suite
+        run: uv run pytest -m "not mcp_java_e2e"
+      - name: Run real MCP/JVM safety E2E
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11' && matrix.java == '17'
+        env:
+          JOLINK_RUN_MCP_JAVA_E2E: "1"
+        run: uv run pytest -m mcp_java_e2e tests/e2e/test_stdio_mcp_java.py
       - run: uv build --wheel

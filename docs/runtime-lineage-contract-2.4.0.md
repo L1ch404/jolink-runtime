@@ -14,6 +14,10 @@ MCP interface advertised to clients.
 The lineage version is not incremented while the transport and distribution
 boundary changes without changing Runtime behavior.
 
+This contract records provenance, not an immutable claim that migrated code
+can never receive a reviewed defect fix. Any intentional deviation is listed
+below so lineage compatibility and current correctness remain distinguishable.
+
 ## Frozen implementation boundary
 
 The lineage contract covers:
@@ -75,3 +79,60 @@ The MCP boundary may:
 It must not silently change the migrated JDWP lifecycle, event handling,
 process ownership, observation semantics, or Runtime result payloads. Those
 changes require a separately reviewed Runtime change.
+
+## Reviewed deviations from the frozen source
+
+### RuntimeResult reserved fields
+
+The standalone Runtime fixes an invariant violation in the migrated
+`RuntimeResult.to_json()` implementation:
+
+- `RuntimeResult.ok` exclusively determines the serialized `ok` field unless
+  the formal `RuntimeResult.error` field forces failure;
+- `RuntimeResult.error` exclusively determines the serialized `error` field;
+- arbitrary `data` cannot override either reserved field;
+- a successful result drops any `error` key supplied through `data`.
+
+This is a correctness and safety repair, not a new Runtime action or a change
+to JDWP behavior. The frozen schema fingerprints and golden lineage fixtures
+remain unchanged.
+
+### Cancellable wait ownership
+
+The standalone MCP boundary adds internal `WaitControl` ownership to
+`wait_event` without adding a public Runtime action or Tool parameter:
+
+- every wait has a waiter id and generation;
+- cancelled waiters cannot publish a suspension;
+- a breakpoint/exception event arriving during cancellation is automatically
+  resumed using its JDWP suspend policy;
+- a later waiter cannot run until the earlier worker has exited and settled;
+- a Composite with multiple `EVENT_THREAD` threads records and resumes every
+  suspended thread.
+
+Normal, non-cancelled Runtime results remain unchanged.
+
+### JDWP receive framing and connection generation
+
+The migrated socket reader discarded partial JDWP headers/bodies when a
+short timeout interrupted `recv()`. The standalone implementation keeps a
+connection-scoped receive buffer and enforces a single-reader invariant.
+Closing or replacing a connection clears its buffer and generation; packets
+from an old generation cannot enter reply/event queues.
+
+This is a protocol correctness repair required to make cancellable short
+polling safe.
+
+### Internal ownership-aware shutdown
+
+The standalone session lifecycle has internal `close` and `force_close`
+operations used by MCP shutdown:
+
+- launched JVMs are stopped;
+- attached JVMs are resumed/detached and never terminated;
+- forced JDWP disconnect invalidates connection-scoped event requests instead
+  of reporting stale breakpoint/exception ids as active;
+- normal public `stop` and `detach` behavior is unchanged.
+
+These hooks are transport lifecycle behavior and are not advertised Runtime
+actions.
