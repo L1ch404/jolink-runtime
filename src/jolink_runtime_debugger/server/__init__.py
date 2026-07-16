@@ -1,4 +1,5 @@
-"""Future MCP server boundary.
+"""MCP server boundary."""
 
-Stage one intentionally contains no MCP implementation.
-"""
+from .mcp_server import RuntimeMCPBoundary, create_mcp_server
+
+__all__ = ["RuntimeMCPBoundary", "create_mcp_server"]
