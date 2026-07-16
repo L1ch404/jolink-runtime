@@ -11,6 +11,7 @@ from ..adapters.java.jdwp_adapter import JavaRuntime
 from ..adapters.java.process_discovery import discover_java_processes
 from .models import RuntimeAction, RuntimeResult
 from .session_manager import SessionManager
+from .wait_state import WaitControl
 
 
 logger = logging.getLogger(__name__)
@@ -87,11 +88,16 @@ class Dispatcher:
         arguments: dict[str, Any] | None = None,
         *,
         session_key: str = "default",
+        wait_control: WaitControl | None = None,
     ) -> dict[str, Any]:
         """Dispatch a migrated tool call and return its parsed JSON object."""
         args = arguments or {}
         if tool_name == "java_runtime":
-            return self.dispatch_java_runtime(args, session_key=session_key)
+            return self.dispatch_java_runtime(
+                args,
+                session_key=session_key,
+                wait_control=wait_control,
+            )
         if tool_name == "java_processes":
             return discover_java_processes(
                 filter_text=args.get("filter"),
@@ -104,6 +110,7 @@ class Dispatcher:
         arguments: dict[str, Any],
         *,
         session_key: str = "default",
+        wait_control: WaitControl | None = None,
     ) -> dict[str, Any]:
         """Run one Java Runtime action with the established handler semantics."""
         started_at = time.monotonic()
@@ -166,7 +173,10 @@ class Dispatcher:
             return {"ok": False, "error": error}
 
         try:
-            result = handler(action)
+            if action.action == "wait_event" and wait_control is not None:
+                result = runtime.wait_event(action, wait_control=wait_control)
+            else:
+                result = handler(action)
             data = result.data or {}
             log_finish = logger.warning if result.error else logger.info
             log_finish(
@@ -206,6 +216,39 @@ class Dispatcher:
                 _log_error_summary(message),
             )
             return {"ok": False, "error": message}
+
+    def settle_cancelled_wait(
+        self,
+        wait_control: WaitControl,
+        *,
+        session_key: str = "default",
+    ) -> bool:
+        """Settle an existing cancelled wait without allocating a Runtime."""
+        return self.sessions.settle_cancelled_wait(wait_control, session_key)
+
+    def interrupt_wait(self, session_key: str = "default") -> bool:
+        """Wake an existing Runtime wait without allocating a Runtime."""
+        return self.sessions.interrupt_wait(session_key)
+
+    def close_session(self, session_key: str = "default") -> bool:
+        """Close an existing Runtime session without allocating one."""
+        return self.sessions.close_session(session_key)
+
+    def force_close_session(self, session_key: str = "default") -> bool:
+        """Force-release an existing Runtime session without JDWP cleanup."""
+        return self.sessions.force_close_session(session_key)
+
+    def wait_for_close_session(
+        self,
+        session_key: str = "default",
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait for an in-progress normal Runtime close."""
+        return self.sessions.wait_for_close_session(session_key, timeout)
+
+    def close_all_sessions(self) -> None:
+        """Close every existing Runtime session."""
+        self.sessions.close_all()
 
 
 __all__ = ["Dispatcher", "parse_runtime_action"]

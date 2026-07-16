@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import struct
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ...core.models import RuntimeAction, RuntimeResult, Variable
+from ...core.wait_state import WaitControl
 from ..base import Runtime
 from .jdwp_client import JDWPClient, JDWPError, Cmd, EventKind, SuspendPolicy, Tag
 from .process_manager import ProcessManager
@@ -50,6 +52,9 @@ class SuspensionSnapshot:
     event_type: str = "breakpoint"
     suspend_policy: int = SuspendPolicy.EVENT_THREAD
     event: dict[str, Any] | None = None
+    waiter_id: str = ""
+    wait_generation: int = 0
+    suspended_thread_ids: tuple[int, ...] = ()
     resumed: bool = False
     valid: bool = True
 
@@ -119,8 +124,385 @@ class JavaRuntime(Runtime):
         self._breakpoint_counter = 0
         self._max_array_elements = 64
         self._max_value_depth = 5
+        self._closed = False
+        self._force_closed = False
+        self._debug_connection_dirty = False
+        self._debug_connection_warning = ""
+        self._target_release_lock = threading.Lock()
+        self._target_released = False
 
     # ── Lifecycle ──────────────────────────────────────
+
+    def interrupt_wait(self) -> None:
+        """Force-close JDWP to wake a reader and invalidate remote requests."""
+        jdwp = self._jdwp
+        if jdwp is None:
+            return
+        logger.info("java_runtime.shutdown.wait_interrupt.request")
+        try:
+            jdwp.close()
+        except Exception as exc:
+            logger.warning(
+                "java_runtime.shutdown.wait_interrupt.failed "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                _error_summary(exc),
+            )
+        finally:
+            if self._jdwp is jdwp:
+                self._jdwp = None
+            self._invalidate_connection_scoped_requests(
+                "The JDWP connection was force-closed while cancelling "
+                "wait_event; breakpoint and exception requests were "
+                "invalidated and must be set again.",
+                force_warning=True,
+            )
+
+    def settle_cancelled_wait(self, wait_control: WaitControl) -> bool:
+        """Resume only state owned by a cancelled waiter, preserving requests.
+
+        The MCP boundary calls this only after the wait worker has exited and
+        before another Runtime action may acquire the session.  Persistent
+        breakpoint/exception requests stay registered; only a suspension or
+        queued event consumed by the cancelled waiter is settled here.
+        """
+        if not wait_control.cancelled:
+            return True
+
+        jdwp = self._jdwp
+        snapshot = self._active_suspension
+        settled_safely = True
+        if (
+            jdwp is None
+            and snapshot is not None
+            and self._snapshot_owned_by_waiter(snapshot, wait_control)
+        ):
+            # A forced connection close is itself the final JDWP fallback:
+            # the VM resumes debugger suspensions and every frame/object id
+            # from that connection becomes invalid.
+            snapshot.resumed = True
+            snapshot.valid = False
+            self._active_suspension = None
+            wait_control.mark_phase("connection_closed_auto_resumed")
+            return True
+        try:
+            if (
+                jdwp is not None
+                and snapshot is not None
+                and self._snapshot_owned_by_waiter(snapshot, wait_control)
+            ):
+                self._resume_cancelled_snapshot(
+                    jdwp,
+                    snapshot,
+                    wait_control,
+                    wait_label="debug_event",
+                )
+
+            if jdwp is not None:
+                for composite in jdwp.drain_events():
+                    self._settle_cancelled_composite(
+                        jdwp,
+                        composite,
+                        wait_control,
+                        wait_label="debug_event",
+                    )
+        except (JDWPError, OSError) as exc:
+            wait_control.mark_dirty()
+            logger.warning(
+                "java_runtime.wait.cancel.settle_failed waiter_id=%s "
+                "generation=%s error_type=%s error=%s",
+                wait_control.waiter_id,
+                wait_control.wait_generation,
+                type(exc).__name__,
+                _error_summary(exc),
+            )
+            # No newer action can run while cancellation is settling, so this
+            # last-resort resume cannot race a later suspension generation.
+            settled_safely = self._emergency_resume_for_close()
+            if not settled_safely:
+                wait_control.mark_dirty()
+
+        snapshot = self._active_suspension
+        if (
+            snapshot is not None
+            and self._snapshot_owned_by_waiter(snapshot, wait_control)
+            and (snapshot.resumed or not snapshot.valid)
+        ):
+            self._active_suspension = None
+        return settled_safely
+
+    def _emergency_resume_for_close(self) -> bool:
+        """Best-effort fallback when normal debug cleanup could not finish."""
+        jdwp = self._jdwp
+        if jdwp is None:
+            return False
+
+        resumed = False
+        snapshot = self._active_suspension
+        if snapshot is not None and snapshot.valid and not snapshot.resumed:
+            try:
+                err, scope = self._resume_snapshot(jdwp, snapshot)
+                if err:
+                    logger.warning(
+                        "java_runtime.shutdown.snapshot_resume_failed "
+                        "scope=%s error_code=%s",
+                        scope,
+                        err,
+                    )
+                else:
+                    snapshot.resumed = True
+                    snapshot.valid = False
+                    resumed = True
+            except Exception as exc:
+                logger.warning(
+                    "java_runtime.shutdown.snapshot_resume_crashed "
+                    "error_type=%s error=%s",
+                    type(exc).__name__,
+                    _error_summary(exc),
+                )
+
+        try:
+            err, _ = jdwp.command(Cmd.VM, 9)
+            if err:
+                logger.warning(
+                    "java_runtime.shutdown.vm_resume_failed error_code=%s",
+                    err,
+                )
+            else:
+                resumed = True
+        except Exception as exc:
+            logger.warning(
+                "java_runtime.shutdown.vm_resume_crashed "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                _error_summary(exc),
+            )
+        if resumed and snapshot is not None:
+            snapshot.resumed = True
+            snapshot.valid = False
+            if self._active_suspension is snapshot:
+                self._active_suspension = None
+        return resumed
+
+    def _release_target_for_shutdown(
+        self,
+        current: Any,
+        ownership: str,
+        *,
+        forced: bool,
+    ) -> None:
+        if current is None:
+            return
+        with self._target_release_lock:
+            if self._target_released:
+                return
+            try:
+                if current.owned:
+                    result = self._proc.stop()
+                else:
+                    result = self._proc.detach()
+                self._target_released = True
+                logger.info(
+                    "java_runtime.shutdown.target_released "
+                    "pid=%s ownership=%s status=%s forced=%s",
+                    current.pid,
+                    ownership,
+                    result.get("status", "-"),
+                    forced,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "java_runtime.shutdown.target_release_failed "
+                    "pid=%s ownership=%s forced=%s error_type=%s error=%s",
+                    current.pid,
+                    ownership,
+                    forced,
+                    type(exc).__name__,
+                    _error_summary(exc),
+                )
+
+    def _closing_result(self, operation: str) -> RuntimeResult:
+        return RuntimeResult(
+            ok=False,
+            error="Runtime session is shutting down",
+            data={
+                "error_code": "SERVER_SHUTTING_DOWN",
+                "operation": operation,
+                "retryable": True,
+                "suggested_next_step": (
+                    "Reconnect to a new Runtime MCP server and retry."
+                ),
+            },
+        )
+
+    def _release_late_published_target(
+        self,
+        current: Any,
+        *,
+        operation: str,
+    ) -> RuntimeResult | None:
+        if not (self._closed or self._force_closed):
+            return None
+        ownership = "launched" if current.owned else "attached"
+        logger.warning(
+            "java_runtime.shutdown.late_target_publication "
+            "operation=%s pid=%s ownership=%s",
+            operation,
+            current.pid,
+            ownership,
+        )
+        self._disconnect()
+        self._release_target_for_shutdown(
+            current,
+            ownership,
+            forced=True,
+        )
+        return self._closing_result(operation)
+
+    def force_close(self) -> None:
+        """Bounded ownership-aware release that performs no JDWP commands."""
+        if self._force_closed:
+            return
+        self._force_closed = True
+        try:
+            current = self._proc.current
+        except Exception:
+            current = None
+        ownership = (
+            "launched" if current is not None and current.owned
+            else "attached" if current is not None
+            else "absent"
+        )
+        logger.warning(
+            "java_runtime.shutdown.force_start pid=%s ownership=%s",
+            current.pid if current is not None else "-",
+            ownership,
+        )
+        self.interrupt_wait()
+        self._breakpoints.clear()
+        self._exceptions.clear()
+        self._invalidate_suspension()
+        self._release_target_for_shutdown(
+            current,
+            ownership,
+            forced=True,
+        )
+        logger.warning(
+            "java_runtime.shutdown.force_finish pid=%s ownership=%s",
+            current.pid if current is not None else "-",
+            ownership,
+        )
+
+    def close(self) -> None:
+        """Best-effort, ownership-aware shutdown for an internal session."""
+        if self._closed:
+            logger.debug("java_runtime.shutdown.skipped reason=already_closed")
+            return
+        self._closed = True
+
+        try:
+            current = self._proc.current
+        except Exception as exc:
+            current = None
+            logger.warning(
+                "java_runtime.shutdown.target_lookup_failed "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                _error_summary(exc),
+            )
+        ownership = (
+            "launched" if current is not None and current.owned
+            else "attached" if current is not None
+            else "absent"
+        )
+        logger.info(
+            "java_runtime.shutdown.start pid=%s ownership=%s suspended=%s",
+            current.pid if current is not None else "-",
+            ownership,
+            self._active_suspension is not None,
+        )
+
+        try:
+            target_running = self._proc.is_running
+        except Exception as exc:
+            target_running = False
+            logger.warning(
+                "java_runtime.shutdown.liveness_check_failed "
+                "pid=%s error_type=%s error=%s",
+                current.pid if current is not None else "-",
+                type(exc).__name__,
+                _error_summary(exc),
+            )
+
+        emergency_resume_needed = False
+        if target_running:
+            try:
+                cleanup = self.cleanup_debug_state(
+                    RuntimeAction(action="cleanup_debug_state")
+                )
+                if not cleanup.ok or cleanup.error:
+                    emergency_resume_needed = True
+                    logger.warning(
+                        "java_runtime.shutdown.debug_cleanup_failed "
+                        "pid=%s error=%s",
+                        current.pid if current is not None else "-",
+                        cleanup.error or "cleanup returned ok=false",
+                    )
+                elif cleanup.data.get("warnings") or cleanup.data.get("clear_failures"):
+                    warnings = cleanup.data.get("warnings", [])
+                    emergency_resume_needed = any(
+                        "resume failed" in str(warning).lower()
+                        for warning in warnings
+                    )
+                    logger.warning(
+                        "java_runtime.shutdown.debug_cleanup_partial "
+                        "pid=%s warnings=%s clear_failures=%s",
+                        current.pid if current is not None else "-",
+                        len(cleanup.data.get("warnings", [])),
+                        len(cleanup.data.get("clear_failures", [])),
+                    )
+            except Exception as exc:
+                emergency_resume_needed = True
+                logger.warning(
+                    "java_runtime.shutdown.debug_cleanup_crashed "
+                    "pid=%s error_type=%s error=%s",
+                    current.pid if current is not None else "-",
+                    type(exc).__name__,
+                    _error_summary(exc),
+                )
+
+        if emergency_resume_needed:
+            self._emergency_resume_for_close()
+
+        try:
+            self._disconnect()
+        except Exception as exc:
+            logger.warning(
+                "java_runtime.shutdown.disconnect_failed "
+                "pid=%s error_type=%s error=%s",
+                current.pid if current is not None else "-",
+                type(exc).__name__,
+                _error_summary(exc),
+            )
+
+        # Local request/suspension ids are invalid after the debugger closes,
+        # even when remote request cleanup failed.
+        self._breakpoints.clear()
+        self._exceptions.clear()
+        self._invalidate_suspension()
+        self._host = "127.0.0.1"
+
+        self._release_target_for_shutdown(
+            current,
+            ownership,
+            forced=False,
+        )
+
+        logger.info(
+            "java_runtime.shutdown.finish pid=%s ownership=%s",
+            current.pid if current is not None else "-",
+            ownership,
+        )
 
     def run(self, action: RuntimeAction) -> RuntimeResult:
         launch_mode = "jar" if action.jar_path else "class"
@@ -161,6 +543,12 @@ class JavaRuntime(Runtime):
                 vm_args=action.vm_args,
                 log_file=log_file,
             )
+            closing = self._release_late_published_target(
+                info,
+                operation="run",
+            )
+            if closing is not None:
+                return closing
             data = {
                 "status": "started",
                 "pid": info.pid,
@@ -179,6 +567,12 @@ class JavaRuntime(Runtime):
                 info.pid, info.launch_mode, info.jar_path or info.main_class,
                 info.jdwp_port, log_file,
             )
+            closing = self._release_late_published_target(
+                info,
+                operation="run",
+            )
+            if closing is not None:
+                return closing
             return result
         except Exception as e:
             logger.error(
@@ -250,7 +644,19 @@ class JavaRuntime(Runtime):
                 main_class=action.main_class or "attached",
                 host=self._host,
             )
+            closing = self._release_late_published_target(
+                info,
+                operation="attach",
+            )
+            if closing is not None:
+                return closing
             self._connect()
+            closing = self._release_late_published_target(
+                info,
+                operation="attach",
+            )
+            if closing is not None:
+                return closing
             logger.info(
                 "java_runtime.jvm.attach.ready pid=%s endpoint=%s:%s",
                 info.pid, self._host, info.jdwp_port,
@@ -349,6 +755,13 @@ class JavaRuntime(Runtime):
                 if self._active_suspension is not None else None
             ),
         }
+        if self._debug_connection_dirty:
+            info["debug_requests_invalidated"] = True
+            info["warnings"] = [self._debug_connection_warning]
+            info["suggested_next_step"] = (
+                "Set the required breakpoint or exception event again before "
+                "calling wait_event."
+            )
         if proc.launch_mode == "jar":
             info["jar_path"] = proc.jar_path
         else:
@@ -411,6 +824,21 @@ class JavaRuntime(Runtime):
             # Keep connection alive (now managed by _connect / _disconnect)
         except Exception:
             info["jvm"] = "unreachable"
+            info["debug_state"] = "detached"
+            info["suspension_id"] = None
+
+        # _connect() may have discovered and replaced a stale JDWP transport.
+        # Refresh connection-scoped counts and warnings after that probe so
+        # status never reports request ids that the JVM has already discarded.
+        info["breakpoint_count"] = len(self._breakpoints)
+        info["exception_count"] = len(self._exceptions)
+        if self._debug_connection_dirty:
+            info["debug_requests_invalidated"] = True
+            info["warnings"] = [self._debug_connection_warning]
+            info["suggested_next_step"] = (
+                "Set the required breakpoint or exception event again before "
+                "calling wait_event."
+            )
 
         return RuntimeResult(ok=True, data=info)
 
@@ -525,6 +953,8 @@ class JavaRuntime(Runtime):
                     "code_index": location.code_index,
                     "suspend_policy": SuspendPolicy.EVENT_THREAD,
                 }
+                self._debug_connection_dirty = False
+                self._debug_connection_warning = ""
 
                 logger.info(
                     "java_runtime.breakpoint.set breakpoint_id=%s request_id=%s class=%s method=%s line=%s code_index=%s",
@@ -710,6 +1140,8 @@ class JavaRuntime(Runtime):
                     "caught": action.caught,
                     "uncaught": action.uncaught,
                 }
+                self._debug_connection_dirty = False
+                self._debug_connection_warning = ""
                 logger.info(
                     "java_runtime.exception.set request_id=%s exception_class=%s caught=%s uncaught=%s",
                     request_id, normalized_class, action.caught, action.uncaught,
@@ -801,7 +1233,12 @@ class JavaRuntime(Runtime):
             wait_label="breakpoint",
         )
 
-    def wait_event(self, action: RuntimeAction) -> RuntimeResult:
+    def wait_event(
+        self,
+        action: RuntimeAction,
+        *,
+        wait_control: WaitControl | None = None,
+    ) -> RuntimeResult:
         if not self._proc.is_running:
             return RuntimeResult(ok=False, error="No application running")
         accepted_kinds = set()
@@ -815,6 +1252,7 @@ class JavaRuntime(Runtime):
             action,
             accepted_kinds=accepted_kinds,
             wait_label="debug_event",
+            wait_control=wait_control,
         )
 
     def _wait_debug_event(
@@ -823,6 +1261,7 @@ class JavaRuntime(Runtime):
         *,
         accepted_kinds: set[int],
         wait_label: str,
+        wait_control: WaitControl | None = None,
     ) -> RuntimeResult:
         if (
             self._active_suspension is not None
@@ -854,25 +1293,53 @@ class JavaRuntime(Runtime):
                 wait_label, action.timeout, len(self._breakpoints), len(self._exceptions),
             )
             jdwp = self._connect()
+            if self._wait_cancelled(wait_control):
+                return self._cancelled_wait_result(wait_label, wait_control)
             promoted = self._drain_pending_debug_events(
-                jdwp, wait_label, accepted_kinds
+                jdwp,
+                wait_label,
+                accepted_kinds,
+                wait_control=wait_control,
             )
             if promoted is not None:
                 return promoted
             deadline = time.monotonic() + max(action.timeout, 0.1)
             while True:
+                if self._wait_cancelled(wait_control):
+                    return self._cancelled_wait_result(wait_label, wait_control)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return self._debug_event_timeout(wait_label, action.timeout)
-                composite = jdwp.wait_for_event(remaining)
+                wait_slice = remaining
+                if wait_control is not None:
+                    wait_slice = min(remaining, max(wait_control.poll_interval, 0.01))
+                composite = jdwp.wait_for_event(wait_slice)
                 if composite is None:
-                    return self._debug_event_timeout(wait_label, action.timeout)
+                    if wait_control is None:
+                        return self._debug_event_timeout(wait_label, action.timeout)
+                    continue
                 handled = self._handle_debug_composite(
-                    jdwp, composite, accepted_kinds, wait_label
+                    jdwp,
+                    composite,
+                    accepted_kinds,
+                    wait_label,
+                    wait_control=wait_control,
                 )
                 if handled is not None:
                     return handled
         except (JDWPError, OSError) as e:
+            if self._wait_cancelled(wait_control):
+                if wait_control is not None:
+                    wait_control.mark_dirty()
+                logger.info(
+                    "java_runtime.%s.wait.cancelled_after_reader_wakeup "
+                    "waiter_id=%s generation=%s error_type=%s",
+                    wait_label,
+                    wait_control.waiter_id if wait_control is not None else "-",
+                    wait_control.wait_generation if wait_control is not None else "-",
+                    type(e).__name__,
+                )
+                return self._cancelled_wait_result(wait_label, wait_control)
             logger.warning("java_runtime.%s.wait.failed error=%s", wait_label, e)
             return RuntimeResult(ok=False, error=str(e))
 
@@ -1199,6 +1666,9 @@ class JavaRuntime(Runtime):
             self._breakpoints.clear()
             self._exceptions.clear()
             self._invalidate_suspension()
+            if not warnings and not clear_failures:
+                self._debug_connection_dirty = False
+                self._debug_connection_warning = ""
 
             logger.info(
                 "java_runtime.cleanup_debug_state.finish drained_events=%s "
@@ -1243,6 +1713,8 @@ class JavaRuntime(Runtime):
         jdwp: JDWPClient,
         event: dict[str, Any],
         suspend_policy: int = SuspendPolicy.EVENT_THREAD,
+        wait_control: WaitControl | None = None,
+        suspended_thread_ids: tuple[int, ...] = (),
     ) -> RuntimeResult:
         request_id = int(event.get("request_id", 0))
         self._suspension_generation += 1
@@ -1259,8 +1731,15 @@ class JavaRuntime(Runtime):
             event_type="breakpoint",
             suspend_policy=suspend_policy,
             event=event,
+            waiter_id=wait_control.waiter_id if wait_control is not None else "",
+            wait_generation=(
+                wait_control.wait_generation if wait_control is not None else 0
+            ),
+            suspended_thread_ids=suspended_thread_ids,
         )
         self._active_suspension = snapshot
+        if wait_control is not None:
+            wait_control.mark_phase("suspension_created")
         location_description = self._describe_location(jdwp, snapshot.location)
         thread_name = self._thread_name(jdwp, snapshot.thread_id)
         logger.info(
@@ -1287,6 +1766,8 @@ class JavaRuntime(Runtime):
         jdwp: JDWPClient,
         event: dict[str, Any],
         suspend_policy: int = SuspendPolicy.EVENT_THREAD,
+        wait_control: WaitControl | None = None,
+        suspended_thread_ids: tuple[int, ...] = (),
     ) -> RuntimeResult:
         request_id = int(event.get("request_id", 0))
         exception_request = self._exceptions[request_id]
@@ -1304,8 +1785,15 @@ class JavaRuntime(Runtime):
             event_type="exception",
             suspend_policy=suspend_policy,
             event=event,
+            waiter_id=wait_control.waiter_id if wait_control is not None else "",
+            wait_generation=(
+                wait_control.wait_generation if wait_control is not None else 0
+            ),
+            suspended_thread_ids=suspended_thread_ids,
         )
         self._active_suspension = snapshot
+        if wait_control is not None:
+            wait_control.mark_phase("suspension_created")
 
         location_description = self._describe_location(jdwp, snapshot.location)
         catch_location = event.get("catch_location") or {}
@@ -1378,6 +1866,8 @@ class JavaRuntime(Runtime):
         jdwp: JDWPClient,
         wait_label: str,
         accepted_kinds: set[int] | None = None,
+        *,
+        wait_control: WaitControl | None = None,
     ) -> RuntimeResult | None:
         accepted = accepted_kinds if accepted_kinds is not None else self._accepted_event_kinds()
         for composite in jdwp.drain_events():
@@ -1386,6 +1876,7 @@ class JavaRuntime(Runtime):
                 composite,
                 accepted,
                 wait_label,
+                wait_control=wait_control,
             )
             if handled is not None:
                 return handled
@@ -1405,8 +1896,26 @@ class JavaRuntime(Runtime):
         composite: dict[str, Any],
         accepted_kinds: set[int],
         wait_label: str,
+        *,
+        wait_control: WaitControl | None = None,
     ) -> RuntimeResult | None:
+        if self._wait_cancelled(wait_control):
+            self._settle_cancelled_composite(
+                jdwp,
+                composite,
+                wait_control,
+                wait_label=wait_label,
+            )
+            return self._cancelled_wait_result(wait_label, wait_control)
+
         suspend_policy = int(composite.get("suspend_policy", SuspendPolicy.NONE) or 0)
+        suspended_thread_ids = ()
+        if suspend_policy == SuspendPolicy.EVENT_THREAD:
+            suspended_thread_ids = tuple(sorted({
+                int(event.get("thread_id", 0) or 0)
+                for event in composite.get("events", [])
+                if int(event.get("thread_id", 0) or 0) > 0
+            }))
         handled = False
         for event in composite.get("events", []):
             if event.get("kind") in {
@@ -1427,13 +1936,207 @@ class JavaRuntime(Runtime):
                 continue
             if event_kind == EventKind.BREAKPOINT and request_id in self._breakpoints:
                 handled = True
-                return self._capture_breakpoint_event(jdwp, event, suspend_policy)
+                result = self._capture_breakpoint_event(
+                    jdwp,
+                    event,
+                    suspend_policy,
+                    wait_control,
+                    suspended_thread_ids,
+                )
+                if self._wait_cancelled(wait_control):
+                    snapshot = self._active_suspension
+                    if snapshot is not None:
+                        self._resume_cancelled_snapshot(
+                            jdwp,
+                            snapshot,
+                            wait_control,
+                            wait_label=wait_label,
+                        )
+                    return self._cancelled_wait_result(wait_label, wait_control)
+                return result
             if event_kind == EventKind.EXCEPTION and request_id in self._exceptions:
                 handled = True
-                return self._capture_exception_event(jdwp, event, suspend_policy)
+                result = self._capture_exception_event(
+                    jdwp,
+                    event,
+                    suspend_policy,
+                    wait_control,
+                    suspended_thread_ids,
+                )
+                if self._wait_cancelled(wait_control):
+                    snapshot = self._active_suspension
+                    if snapshot is not None:
+                        self._resume_cancelled_snapshot(
+                            jdwp,
+                            snapshot,
+                            wait_control,
+                            wait_label=wait_label,
+                        )
+                    return self._cancelled_wait_result(wait_label, wait_control)
+                return result
         if not handled:
             self._resume_ignored_suspending_event(jdwp, wait_label, composite)
         return None
+
+    @staticmethod
+    def _wait_cancelled(wait_control: WaitControl | None) -> bool:
+        return wait_control is not None and wait_control.cancelled
+
+    def _cancelled_wait_result(
+        self,
+        wait_label: str,
+        wait_control: WaitControl | None,
+    ) -> RuntimeResult:
+        if wait_control is not None:
+            wait_control.mark_phase("settling")
+        logger.info(
+            "java_runtime.%s.wait.cancelled waiter_id=%s generation=%s reason=%s",
+            wait_label,
+            wait_control.waiter_id if wait_control is not None else "-",
+            wait_control.wait_generation if wait_control is not None else "-",
+            wait_control.cancel_reason if wait_control is not None else "-",
+        )
+        return RuntimeResult(ok=True, data={
+            "status": "wait_cancelled",
+            "wait": wait_label,
+        })
+
+    @staticmethod
+    def _snapshot_owned_by_waiter(
+        snapshot: SuspensionSnapshot,
+        wait_control: WaitControl,
+    ) -> bool:
+        return (
+            snapshot.waiter_id == wait_control.waiter_id
+            and snapshot.wait_generation == wait_control.wait_generation
+        )
+
+    def _resume_cancelled_snapshot(
+        self,
+        jdwp: JDWPClient,
+        snapshot: SuspensionSnapshot,
+        wait_control: WaitControl | None,
+        *,
+        wait_label: str,
+    ) -> None:
+        if wait_control is None:
+            return
+        if not self._snapshot_owned_by_waiter(snapshot, wait_control):
+            wait_control.mark_dirty()
+            logger.error(
+                "java_runtime.%s.wait.cancel.snapshot_owner_mismatch "
+                "snapshot=%s snapshot_waiter=%s snapshot_generation=%s "
+                "waiter_id=%s generation=%s",
+                wait_label,
+                snapshot.suspension_id,
+                snapshot.waiter_id or "-",
+                snapshot.wait_generation,
+                wait_control.waiter_id,
+                wait_control.wait_generation,
+            )
+            return
+        if not snapshot.valid or snapshot.resumed:
+            return
+
+        err, scope = self._resume_snapshot(jdwp, snapshot)
+        if err:
+            wait_control.mark_dirty()
+            raise JDWPError(
+                err,
+                f"Resume cancelled {wait_label} suspension failed ({scope})",
+            )
+        snapshot.resumed = True
+        snapshot.valid = False
+        if self._active_suspension is snapshot:
+            self._active_suspension = None
+        wait_control.mark_phase("event_auto_resumed")
+        logger.info(
+            "java_runtime.%s.wait.cancel.suspension_resumed "
+            "suspension=%s waiter_id=%s generation=%s resume_scope=%s",
+            wait_label,
+            snapshot.suspension_id,
+            wait_control.waiter_id,
+            wait_control.wait_generation,
+            scope,
+        )
+
+    def _settle_cancelled_composite(
+        self,
+        jdwp: JDWPClient,
+        composite: dict[str, Any],
+        wait_control: WaitControl | None,
+        *,
+        wait_label: str,
+    ) -> None:
+        events = composite.get("events", [])
+        if any(
+            event.get("kind") in {
+                EventKind.VM_DEATH,
+                EventKind.VM_DISCONNECTED,
+            }
+            for event in events
+        ):
+            self._invalidate_suspension()
+            return
+        try:
+            self._resume_ignored_suspending_event(jdwp, wait_label, composite)
+        except (JDWPError, OSError) as thread_resume_error:
+            if wait_control is not None:
+                wait_control.mark_dirty()
+            logger.warning(
+                "java_runtime.%s.wait.cancel.event_thread_resume_failed "
+                "waiter_id=%s generation=%s error=%s",
+                wait_label,
+                wait_control.waiter_id if wait_control is not None else "-",
+                wait_control.wait_generation if wait_control is not None else "-",
+                _error_summary(thread_resume_error),
+            )
+            try:
+                err, _ = jdwp.command(Cmd.VM, 9)
+            except (JDWPError, OSError) as vm_resume_error:
+                err = -1
+                logger.warning(
+                    "java_runtime.%s.wait.cancel.vm_resume_crashed error=%s",
+                    wait_label,
+                    _error_summary(vm_resume_error),
+                )
+            if err:
+                logger.error(
+                    "java_runtime.%s.wait.cancel.vm_resume_failed "
+                    "error_code=%s action=disconnect",
+                    wait_label,
+                    err,
+                )
+                try:
+                    jdwp.close()
+                except Exception as disconnect_error:
+                    raise JDWPError(
+                        err,
+                        "Cancelled event resume and forced disconnect failed: "
+                        f"{disconnect_error}",
+                    ) from thread_resume_error
+                if self._jdwp is jdwp:
+                    self._jdwp = None
+                self._invalidate_connection_scoped_requests(
+                    "The JDWP connection was force-closed after a cancelled "
+                    "event could not be resumed; breakpoint and exception "
+                    "requests must be set again.",
+                    force_warning=True,
+                )
+                if wait_control is not None:
+                    wait_control.mark_phase("connection_closed_auto_resumed")
+                return
+        if wait_control is not None:
+            wait_control.mark_phase("event_auto_resumed")
+        logger.info(
+            "java_runtime.%s.wait.cancel.event_resumed waiter_id=%s "
+            "generation=%s event_kinds=%s request_ids=%s",
+            wait_label,
+            wait_control.waiter_id if wait_control is not None else "-",
+            wait_control.wait_generation if wait_control is not None else "-",
+            [event.get("kind") for event in events],
+            [event.get("request_id") for event in events],
+        )
 
     def _resume_ignored_suspending_event(
         self,
@@ -1493,10 +2196,14 @@ class JavaRuntime(Runtime):
         if snapshot.suspend_policy == SuspendPolicy.NONE:
             return 0, "none"
         if snapshot.suspend_policy == SuspendPolicy.EVENT_THREAD:
-            err, _ = jdwp.command(
-                Cmd.THREAD, 3, jdwp.ids.pack_obj(snapshot.thread_id)
-            )
-            return err, "event_thread"
+            thread_ids = snapshot.suspended_thread_ids or (snapshot.thread_id,)
+            for thread_id in thread_ids:
+                err, _ = jdwp.command(
+                    Cmd.THREAD, 3, jdwp.ids.pack_obj(thread_id)
+                )
+                if err:
+                    return err, "event_thread"
+            return 0, "event_thread"
         err, _ = jdwp.command(Cmd.VM, 9)
         return err, "vm"
 
@@ -1515,6 +2222,8 @@ class JavaRuntime(Runtime):
         self._exceptions.clear()
         self._breakpoint_counter = 0
         self._invalidate_suspension()
+        self._debug_connection_dirty = False
+        self._debug_connection_warning = ""
 
     def _invalidate_suspension(self) -> None:
         if self._active_suspension is not None:
@@ -3602,6 +4311,16 @@ class JavaRuntime(Runtime):
                 except Exception:
                     pass
                 self._jdwp = None
+                invalidated = self._invalidate_connection_scoped_requests(
+                    "The previous JDWP connection became unreachable; "
+                    "breakpoint and exception requests were invalidated and "
+                    "must be set again."
+                )
+                if invalidated:
+                    raise RuntimeError(
+                        "JDWP connection changed while debug state was active; "
+                        "set the required breakpoint or exception event again."
+                    ) from exc
         jdwp = JDWPClient()
         proc = self._proc.current
         if proc is None or not proc.is_alive():
@@ -3623,3 +4342,23 @@ class JavaRuntime(Runtime):
             except Exception:
                 pass
             self._jdwp = None
+
+    def _invalidate_connection_scoped_requests(
+        self,
+        warning: str,
+        *,
+        force_warning: bool = False,
+    ) -> bool:
+        """Forget debugger ids that cannot survive a JDWP disconnect."""
+        had_remote_state = bool(
+            self._breakpoints
+            or self._exceptions
+            or self._active_suspension is not None
+        )
+        self._breakpoints.clear()
+        self._exceptions.clear()
+        self._invalidate_suspension()
+        if had_remote_state or force_warning:
+            self._debug_connection_dirty = True
+            self._debug_connection_warning = warning
+        return had_remote_state or force_warning

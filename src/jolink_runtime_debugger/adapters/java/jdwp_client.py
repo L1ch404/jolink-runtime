@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import socket
 import struct
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -155,6 +156,15 @@ class JDWPClient:
         self.ids: Optional[IDSizes] = None
         self._pending_replies: dict[int, tuple[int, bytes]] = {}
         self._pending_events: deque[dict] = deque()
+        # Packet bytes remain here until a complete JDWP packet is available.
+        # In particular, socket.timeout must not discard a partial header/body.
+        self._recv_buffer = bytearray()
+        self._connection_state_lock = threading.Lock()
+        self._connection_generation = 0
+        # A JDWP connection has exactly one reader.  The lock is re-entrant
+        # because command()/wait_for_event() own the read operation while
+        # _read_packet() and _recv() enforce the same invariant internally.
+        self._reader_lock = threading.RLock()
 
     # -- connection --
 
@@ -164,24 +174,31 @@ class JDWPClient:
             "java_runtime.jdwp.connect.start host=%s port=%s timeout=%s",
             host, port, timeout,
         )
-        try:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.settimeout(timeout)
-            self._sock.connect((host, port))
-            self._sock.sendall(b"JDWP-Handshake")
-            reply = self._recv(14)
-            if reply != b"JDWP-Handshake":
-                raise JDWPError(-1, "Handshake failed")
-            self._query_id_sizes()
-        except Exception as exc:
-            logger.warning(
-                "java_runtime.jdwp.connect.failed host=%s port=%s elapsed_ms=%.1f "
-                "error_type=%s error=%s",
-                host, port, (time.monotonic() - started_at) * 1000,
-                type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "-",
-            )
+        with self._reader_lock:
+            # A new transport must never inherit framing bytes from an old one.
             self.close()
-            raise
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                sock.connect((host, port))
+                with self._connection_state_lock:
+                    self._sock = sock
+                    self._recv_buffer.clear()
+                    self._connection_generation += 1
+                sock.sendall(b"JDWP-Handshake")
+                reply = self._recv(14)
+                if reply != b"JDWP-Handshake":
+                    raise JDWPError(-1, "Handshake failed")
+                self._query_id_sizes()
+            except Exception as exc:
+                logger.warning(
+                    "java_runtime.jdwp.connect.failed host=%s port=%s elapsed_ms=%.1f "
+                    "error_type=%s error=%s",
+                    host, port, (time.monotonic() - started_at) * 1000,
+                    type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "-",
+                )
+                self.close()
+                raise
         ids = self.ids
         logger.info(
             "java_runtime.jdwp.connect.ready host=%s port=%s elapsed_ms=%.1f "
@@ -195,26 +212,82 @@ class JDWPClient:
         )
 
     def close(self) -> None:
-        was_connected = self._sock is not None
-        if self._sock:
+        # Do not take _reader_lock here: closing the socket is also the
+        # emergency mechanism for waking a reader blocked in recv().
+        with self._connection_state_lock:
+            sock = self._sock
+            was_connected = sock is not None
+            self._sock = None
+            self._recv_buffer.clear()
+            self._connection_generation += 1
+            self._pending_replies.clear()
+            self._pending_events.clear()
+        if sock:
             try:
-                self._sock.close()
+                sock.shutdown(socket.SHUT_RDWR)
+            except (AttributeError, OSError):
+                pass
+            try:
+                sock.close()
             except Exception:
                 pass
-            self._sock = None
-        self._pending_replies.clear()
-        self._pending_events.clear()
         if was_connected:
             logger.info("java_runtime.jdwp.connection.closed")
 
-    def _recv(self, n: int) -> bytes:
-        buf = b""
-        while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
+    def _fill_recv_buffer(
+        self,
+        n: int,
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        """Read until at least ``n`` bytes are buffered, preserving timeouts."""
+        while True:
+            with self._connection_state_lock:
+                if len(self._recv_buffer) >= n:
+                    return
+                sock = self._sock
+                buffered = len(self._recv_buffer)
+            if sock is None:
+                raise JDWPError(-1, "Not connected")
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout("JDWP packet read timed out")
+                try:
+                    sock.settimeout(max(remaining, 0.001))
+                except OSError:
+                    with self._connection_state_lock:
+                        if self._sock is sock:
+                            self._recv_buffer.clear()
+                    raise
+            try:
+                chunk = sock.recv(n - buffered)
+            except socket.timeout:
+                # The bytes already received are valid framing state and must
+                # be continued by the next read attempt.
+                raise
+            except OSError:
+                with self._connection_state_lock:
+                    if self._sock is sock:
+                        self._recv_buffer.clear()
+                raise
             if not chunk:
+                with self._connection_state_lock:
+                    if self._sock is sock:
+                        self._recv_buffer.clear()
                 raise JDWPError(-1, "Connection closed by remote")
-            buf += chunk
-        return buf
+            with self._connection_state_lock:
+                if self._sock is not sock:
+                    raise JDWPError(-1, "Connection closed while receiving")
+                self._recv_buffer.extend(chunk)
+
+    def _recv(self, n: int) -> bytes:
+        with self._reader_lock:
+            self._fill_recv_buffer(n)
+            with self._connection_state_lock:
+                result = bytes(self._recv_buffer[:n])
+                del self._recv_buffer[:n]
+            return result
 
     def _query_id_sizes(self) -> None:
         err, data = self.command(Cmd.VM, 7)  # VM/IDSizes
@@ -227,20 +300,77 @@ class JDWPClient:
     # -- command / reply / event routing --
 
     def _read_packet(self, timeout: float | None = None) -> dict:
-        if self._sock is None:
-            raise JDWPError(-1, "Not connected")
-        previous_timeout = self._sock.gettimeout()
-        if timeout is not None:
-            self._sock.settimeout(max(timeout, 0.001))
-        try:
-            header = self._recv(11)
-            length, packet_id, flags = struct.unpack(">IIB", header[:9])
-            if length < 11:
-                raise JDWPError(-1, f"Invalid packet length: {length}")
-            payload = self._recv(length - 11) if length > 11 else b""
-        finally:
-            if self._sock is not None and timeout is not None:
-                self._sock.settimeout(previous_timeout)
+        with self._reader_lock:
+            with self._connection_state_lock:
+                sock = self._sock
+                connection_generation = self._connection_generation
+            if sock is None:
+                raise JDWPError(-1, "Not connected")
+            try:
+                previous_timeout = sock.gettimeout()
+                deadline = (
+                    time.monotonic() + max(timeout, 0.0)
+                    if timeout is not None
+                    else None
+                )
+                if timeout is not None:
+                    sock.settimeout(max(timeout, 0.001))
+            except OSError:
+                with self._connection_state_lock:
+                    if self._sock is sock:
+                        self._recv_buffer.clear()
+                raise
+            try:
+                # Peek at the header first.  It is intentionally left in the
+                # persistent buffer until the entire body has arrived.
+                self._fill_recv_buffer(11, deadline=deadline)
+                with self._connection_state_lock:
+                    if (
+                        self._sock is not sock
+                        or self._connection_generation != connection_generation
+                        or len(self._recv_buffer) < 11
+                    ):
+                        raise JDWPError(
+                            -1,
+                            "Connection changed while reading packet header",
+                        )
+                    header = bytes(self._recv_buffer[:11])
+                length, packet_id, flags = struct.unpack(">IIB", header[:9])
+                if length < 11:
+                    with self._connection_state_lock:
+                        if (
+                            self._sock is sock
+                            and self._connection_generation
+                            == connection_generation
+                        ):
+                            self._recv_buffer.clear()
+                    raise JDWPError(-1, f"Invalid packet length: {length}")
+                self._fill_recv_buffer(length, deadline=deadline)
+                with self._connection_state_lock:
+                    if (
+                        self._sock is not sock
+                        or self._connection_generation != connection_generation
+                        or len(self._recv_buffer) < length
+                    ):
+                        raise JDWPError(
+                            -1,
+                            "Connection changed while reading packet",
+                        )
+                    raw = bytes(self._recv_buffer[:length])
+                    del self._recv_buffer[:length]
+                header = raw[:11]
+                payload = raw[11:]
+            finally:
+                if timeout is not None:
+                    with self._connection_state_lock:
+                        still_connected = self._sock is sock
+                    if still_connected:
+                        try:
+                            sock.settimeout(previous_timeout)
+                        except OSError:
+                            with self._connection_state_lock:
+                                if self._sock is sock:
+                                    self._recv_buffer.clear()
 
         if flags == 0x80:
             return {
@@ -248,6 +378,7 @@ class JDWPClient:
                 "id": packet_id,
                 "error": struct.unpack(">H", header[9:11])[0],
                 "data": payload,
+                "_connection_generation": connection_generation,
             }
         return {
             "type": "command",
@@ -255,6 +386,7 @@ class JDWPClient:
             "command_set": header[9],
             "command": header[10],
             "data": payload,
+            "_connection_generation": connection_generation,
         }
 
     def _parse_location(self, data: bytes, offset: int) -> tuple[dict, int]:
@@ -348,17 +480,48 @@ class JDWPClient:
         return {"suspend_policy": suspend_policy, "events": events}
 
     def _route_packet(self, packet: dict) -> None:
-        if packet["type"] == "reply":
-            self._pending_replies[packet["id"]] = (
-                packet["error"], packet["data"]
+        packet_generation = packet.pop(
+            "_connection_generation",
+            self._connection_generation,
+        )
+        with self._connection_state_lock:
+            connection_is_current = (
+                self._sock is not None
+                and packet_generation == self._connection_generation
             )
-            return
+            if not connection_is_current:
+                logger.debug(
+                    "java_runtime.jdwp.packet.discard_stale "
+                    "packet_generation=%s connection_generation=%s",
+                    packet_generation,
+                    self._connection_generation,
+                )
+                return
+            if packet["type"] == "reply":
+                self._pending_replies[packet["id"]] = (
+                    packet["error"], packet["data"]
+                )
+                return
 
         # Event/Composite is a target-to-debugger notification.  The JDWP
         # specification explicitly says VM events do not require a reply.
         if packet["command_set"] == 64 and packet["command"] == 100:
             composite = self._parse_composite_event(packet["data"])
-            self._pending_events.append(composite)
+            with self._connection_state_lock:
+                if (
+                    self._sock is None
+                    or packet_generation != self._connection_generation
+                ):
+                    logger.debug(
+                        "java_runtime.jdwp.event.discard_stale "
+                        "packet_id=%s packet_generation=%s "
+                        "connection_generation=%s",
+                        packet["id"],
+                        packet_generation,
+                        self._connection_generation,
+                    )
+                    return
+                self._pending_events.append(composite)
             logger.debug(
                 "java_runtime.jdwp.event.queued packet_id=%s suspend_policy=%s "
                 "event_count=%s event_kinds=%s request_ids=%s",
@@ -370,63 +533,89 @@ class JDWPClient:
 
     def wait_for_event(self, timeout: float = 30.0) -> dict | None:
         """Wait for the next VM event, returning ``None`` on timeout."""
-        if self._pending_events:
-            logger.debug("java_runtime.jdwp.event.dequeue source=pending")
-            return self._pending_events.popleft()
+        with self._reader_lock:
+            with self._connection_state_lock:
+                if self._pending_events:
+                    logger.debug("java_runtime.jdwp.event.dequeue source=pending")
+                    return self._pending_events.popleft()
 
-        deadline = time.monotonic() + max(timeout, 0.0)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                logger.debug("java_runtime.jdwp.event.wait.timeout timeout=%s", timeout)
-                return None
-            try:
-                self._route_packet(self._read_packet(timeout=remaining))
-            except socket.timeout:
-                logger.debug("java_runtime.jdwp.event.wait.timeout timeout=%s", timeout)
-                return None
-            if self._pending_events:
-                logger.debug("java_runtime.jdwp.event.dequeue source=socket")
-                return self._pending_events.popleft()
+            deadline = time.monotonic() + max(timeout, 0.0)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.debug(
+                        "java_runtime.jdwp.event.wait.timeout timeout=%s", timeout
+                    )
+                    return None
+                try:
+                    self._route_packet(self._read_packet(timeout=remaining))
+                except socket.timeout:
+                    logger.debug(
+                        "java_runtime.jdwp.event.wait.timeout timeout=%s", timeout
+                    )
+                    return None
+                with self._connection_state_lock:
+                    if self._pending_events:
+                        logger.debug("java_runtime.jdwp.event.dequeue source=socket")
+                        return self._pending_events.popleft()
 
     def drain_events(self) -> list[dict]:
         """Return already queued/readable VM events without blocking."""
-        if self._sock is None:
-            return []
-        import select
+        with self._reader_lock:
+            import select
 
-        events = list(self._pending_events)
-        self._pending_events.clear()
-        while select.select([self._sock], [], [], 0)[0]:
-            try:
-                self._route_packet(self._read_packet(timeout=0.05))
-            except (socket.timeout, JDWPError, OSError):
-                break
-            while self._pending_events:
-                events.append(self._pending_events.popleft())
-        return events
+            with self._connection_state_lock:
+                sock = self._sock
+                if sock is None:
+                    return []
+                events = list(self._pending_events)
+                self._pending_events.clear()
+            while True:
+                try:
+                    readable = select.select([sock], [], [], 0)[0]
+                except (OSError, ValueError):
+                    break
+                if not readable:
+                    break
+                try:
+                    self._route_packet(self._read_packet(timeout=0.05))
+                except (socket.timeout, JDWPError, OSError):
+                    break
+                with self._connection_state_lock:
+                    while self._pending_events:
+                        events.append(self._pending_events.popleft())
+            return events
 
     def command(self, cmd_set: int, cmd: int, data: bytes = b"") -> tuple[int, bytes]:
         """Send a command and return (error_code, reply_data)."""
-        if self._sock is None:
-            raise JDWPError(-1, "Not connected")
-        self._counter += 1
-        packet_id = self._counter
-        raw = _pack_cmd(cmd_set, cmd, data, packet_id)
-        started_at = time.monotonic()
-        logger.debug(
-            "java_runtime.jdwp.command.send packet_id=%s command_set=%s command=%s "
-            "request_bytes=%s",
-            packet_id, cmd_set, cmd, len(data),
-        )
-        self._sock.sendall(raw)
-        while packet_id not in self._pending_replies:
-            self._route_packet(self._read_packet())
-        error, reply = self._pending_replies.pop(packet_id)
-        logger.debug(
-            "java_runtime.jdwp.command.reply packet_id=%s command_set=%s command=%s "
-            "error_code=%s response_bytes=%s elapsed_ms=%.1f",
-            packet_id, cmd_set, cmd, error, len(reply),
-            (time.monotonic() - started_at) * 1000,
-        )
-        return error, reply
+        with self._reader_lock:
+            with self._connection_state_lock:
+                sock = self._sock
+            if sock is None:
+                raise JDWPError(-1, "Not connected")
+            self._counter += 1
+            packet_id = self._counter
+            raw = _pack_cmd(cmd_set, cmd, data, packet_id)
+            started_at = time.monotonic()
+            logger.debug(
+                "java_runtime.jdwp.command.send packet_id=%s command_set=%s command=%s "
+                "request_bytes=%s",
+                packet_id, cmd_set, cmd, len(data),
+            )
+            try:
+                sock.sendall(raw)
+            except OSError:
+                with self._connection_state_lock:
+                    if self._sock is sock:
+                        self._recv_buffer.clear()
+                raise
+            while packet_id not in self._pending_replies:
+                self._route_packet(self._read_packet())
+            error, reply = self._pending_replies.pop(packet_id)
+            logger.debug(
+                "java_runtime.jdwp.command.reply packet_id=%s command_set=%s command=%s "
+                "error_code=%s response_bytes=%s elapsed_ms=%.1f",
+                packet_id, cmd_set, cmd, error, len(reply),
+                (time.monotonic() - started_at) * 1000,
+            )
+            return error, reply

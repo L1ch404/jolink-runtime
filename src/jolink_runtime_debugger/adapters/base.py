@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ..core.models import RuntimeAction, RuntimeResult
 
@@ -55,7 +56,12 @@ class Runtime(ABC):
         ...
 
     @abstractmethod
-    def wait_event(self, action: RuntimeAction) -> RuntimeResult:
+    def wait_event(
+        self,
+        action: RuntimeAction,
+        *,
+        wait_control: Any | None = None,
+    ) -> RuntimeResult:
         ...
 
     @abstractmethod
@@ -76,6 +82,30 @@ class Runtime(ABC):
 
     @abstractmethod
     def cleanup_debug_state(self, action: RuntimeAction) -> RuntimeResult:
+        ...
+
+    @abstractmethod
+    def interrupt_wait(self) -> None:
+        """Wake a currently blocked debug-event reader without target cleanup."""
+        ...
+
+    def settle_cancelled_wait(self, wait_control: Any) -> bool:
+        """Finish adapter-specific cleanup after a cancelled wait worker exits."""
+        return True
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release this Runtime's target and debugger resources.
+
+        This is an internal ownership-aware lifecycle hook for transport or
+        session shutdown. Implementations must be idempotent and best-effort:
+        they should log isolated cleanup failures rather than raising them.
+        """
+        ...
+
+    @abstractmethod
+    def force_close(self) -> None:
+        """Release target ownership without waiting for debugger cleanup."""
         ...
 
 
