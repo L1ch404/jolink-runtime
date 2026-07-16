@@ -100,6 +100,92 @@ def test_partial_or_unavailable_observation_is_not_a_tool_error() -> None:
         assert result.structuredContent == payload
 
 
+def test_variables_observation_state_is_derived_from_value_states() -> None:
+    cases = [
+        (
+            {
+                "ok": True,
+                "complete": True,
+                "partial": False,
+                "variables": [
+                    {"name": "a", "value_state": "observed", "value": 1},
+                    {"name": "b", "value_state": "observed", "value": None},
+                ],
+            },
+            "complete",
+        ),
+        (
+            {
+                "ok": True,
+                "complete": False,
+                "partial": True,
+                "variables": [
+                    {"name": "a", "value_state": "unavailable"},
+                    {"name": "b", "value_state": "unavailable"},
+                ],
+            },
+            "unavailable",
+        ),
+        (
+            {
+                "ok": True,
+                "complete": True,
+                "partial": False,
+                "variables": [
+                    {"name": "a", "value_state": "observed", "value": 1},
+                    {"name": "items", "value_state": "partial", "value": {}},
+                ],
+            },
+            "partial",
+        ),
+    ]
+
+    async def scenario(
+        payload: dict[str, Any],
+    ) -> types.CallToolResult:
+        return await RuntimeMCPBoundary(
+            _FakeDispatcher(payload)
+        ).call_tool("java_runtime", {"action": "variables"})
+
+    for payload, expected in cases:
+        result = anyio.run(scenario, payload)
+        assert result.isError is False
+        assert result.structuredContent["observation_state"] == expected
+
+
+def test_empty_variables_are_complete_only_when_runtime_read_succeeded() -> None:
+    complete = {
+        "ok": True,
+        "complete": True,
+        "partial": False,
+        "variables": [],
+        "getvalues_error": None,
+    }
+    incomplete = {
+        "ok": True,
+        "complete": False,
+        "partial": True,
+        "variables": [],
+        "getvalues_error": "StackFrame/GetValues failed",
+    }
+
+    async def scenario(
+        payload: dict[str, Any],
+    ) -> types.CallToolResult:
+        return await RuntimeMCPBoundary(
+            _FakeDispatcher(payload)
+        ).call_tool("java_runtime", {"action": "variables"})
+
+    complete_result = anyio.run(scenario, complete)
+    unavailable_result = anyio.run(scenario, incomplete)
+
+    assert complete_result.structuredContent["observation_state"] == "complete"
+    assert (
+        unavailable_result.structuredContent["observation_state"]
+        == "unavailable"
+    )
+
+
 def test_java_processes_payload_without_ok_remains_successful() -> None:
     payload = {"message": "Found 0 Java process(es)", "count": 0, "processes": []}
     boundary = RuntimeMCPBoundary(_FakeDispatcher(payload))

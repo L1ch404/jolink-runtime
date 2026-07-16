@@ -103,10 +103,14 @@ class RuntimeResult:
 
     def to_json(self) -> str:
         import json
+        data = {
+            key: value
+            for key, value in self.data.items()
+            if key not in {"ok", "error"}
+        }
         if self.error:
             return json.dumps(
-                {"ok": False, "error": self.error, **self.data},
+                {**data, "ok": False, "error": self.error},
                 ensure_ascii=False,
             )
-        return json.dumps({"ok": self.ok, **self.data}, ensure_ascii=False)
-
+        return json.dumps({**data, "ok": self.ok}, ensure_ascii=False)

@@ -34,6 +34,7 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     runtime = get_mcp_tools()[0]
     actions = runtime.inputSchema["properties"]["action"]["enum"]
 
+    assert runtime.inputSchema["additionalProperties"] is False
     assert actions == list(PUBLIC_RUNTIME_ACTIONS)
     assert len(actions) == 15
     assert "wait_event" in actions
@@ -41,7 +42,17 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     assert "skill_view" not in runtime.inputSchema["properties"]
 
 
+def test_mcp_v01_schemas_reject_unknown_fields_and_remote_hosts() -> None:
+    runtime, processes = get_mcp_tools()
+    host = runtime.inputSchema["properties"]["host"]
+
+    assert runtime.inputSchema["additionalProperties"] is False
+    assert processes.inputSchema["additionalProperties"] is False
+    assert host["enum"] == ["127.0.0.1", "localhost"]
+
+
 def test_java_runtime_description_contains_required_selection_and_safety_signals() -> None:
+    assert "Stateful" in JAVA_RUNTIME_DESCRIPTION
     assert "local JVM" in JAVA_RUNTIME_DESCRIPTION
     assert "source code, logs, or tests" in JAVA_RUNTIME_DESCRIPTION
     assert "suspension_id" in JAVA_RUNTIME_DESCRIPTION

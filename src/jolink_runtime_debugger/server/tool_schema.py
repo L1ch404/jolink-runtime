@@ -30,15 +30,17 @@ PUBLIC_RUNTIME_ACTIONS = (
 )
 
 JAVA_RUNTIME_DESCRIPTION = (
-    "Observe and control a local JVM when source code, logs, or tests cannot "
-    "determine the executed path or runtime state. Supports launch/attach, "
-    "breakpoints, exception events, stack frames, variables, and resume. "
+    "Stateful tool to observe and control a local JVM when source code, logs, "
+    "or tests cannot determine the executed path or runtime state. Supports "
+    "launch/attach, breakpoints, exception events, stack frames, variables, "
+    "and resume. "
     "After wait_event returns a suspension_id, always call resume or "
     "cleanup_debug_state after inspection."
 )
 
 JAVA_RUNTIME_INPUT_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "action": {
             "type": "string",
@@ -82,6 +84,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         },
         "host": {
             "type": "string",
+            "enum": ["127.0.0.1", "localhost"],
             "default": "127.0.0.1",
             "description": "JDWP host; v0.1 accepts localhost only.",
         },
@@ -220,6 +223,7 @@ JAVA_PROCESSES_DESCRIPTION = (
 
 JAVA_PROCESSES_INPUT_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "filter": {
             "type": "string",
