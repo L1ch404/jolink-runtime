@@ -7,6 +7,7 @@ from typing import Any
 import anyio
 
 from jolink_runtime_debugger.core.wait_state import WaitControl
+from jolink_runtime_debugger.server import mcp_server as mcp_server_module
 from jolink_runtime_debugger.server.mcp_server import RuntimeMCPBoundary
 
 
@@ -85,6 +86,463 @@ class _CancellableDispatcher:
         timeout: float | None = None,
     ) -> bool:
         return self.close_release.wait(timeout)
+
+
+class _PublishWindowDispatcher(_CancellableDispatcher):
+    """Return a suspension immediately so publication can be gated."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.suspension_active = False
+
+    def dispatch(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        session_key: str = "default",
+        wait_control: WaitControl | None = None,
+    ) -> dict[str, Any]:
+        action = (arguments or {}).get("action", "")
+        self.calls.append(action or tool_name)
+        assert action == "wait_event"
+        assert wait_control is not None
+        self.started.set()
+        self.suspension_active = True
+        return {
+            "ok": True,
+            "status": "breakpoint_hit",
+            "suspension_id": "susp_publish_race",
+        }
+
+    def settle_cancelled_wait(
+        self,
+        wait_control: WaitControl,
+        *,
+        session_key: str = "default",
+    ) -> bool:
+        assert wait_control.worker_done is True
+        self.suspension_active = False
+        return super().settle_cancelled_wait(
+            wait_control,
+            session_key=session_key,
+        )
+
+
+class _TwoPhaseDispatcher(_CancellableDispatcher):
+    """Small deterministic dispatcher for arm -> trigger -> await tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trigger = threading.Event()
+        self.suspension_active = False
+        self.resume_calls: list[str] = []
+
+    def dispatch(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        session_key: str = "default",
+        wait_control: WaitControl | None = None,
+    ) -> dict[str, Any]:
+        action = (arguments or {}).get("action", "")
+        self.calls.append(action or tool_name)
+        if action == "resume":
+            suspension_id = str((arguments or {}).get("suspension_id", ""))
+            self.resume_calls.append(suspension_id)
+            self.suspension_active = False
+            return {"ok": True, "status": "resumed"}
+        if action != "wait_event":
+            return {"ok": True, "status": action}
+
+        assert wait_control is not None
+        self.started.set()
+        wait_control.mark_armed(
+            breakpoint_ids=["bp_001"],
+            exception_ids=[7],
+        )
+        while not self.trigger.wait(0.005):
+            if wait_control.cancelled:
+                self.cancel_seen.set()
+                return {"ok": True, "status": "internally_cancelled"}
+        self.suspension_active = True
+        return {
+            "ok": True,
+            "status": "breakpoint_hit",
+            "breakpoint_id": "bp_001",
+            "suspension_id": "susp_two_phase",
+        }
+
+    def settle_cancelled_wait(
+        self,
+        wait_control: WaitControl,
+        *,
+        session_key: str = "default",
+    ) -> bool:
+        assert wait_control.worker_done is True
+        self.suspension_active = False
+        return super().settle_cancelled_wait(
+            wait_control,
+            session_key=session_key,
+        )
+
+    def interrupt_wait(self, session_key: str = "default") -> bool:
+        self.suspension_active = False
+        return super().interrupt_wait(session_key)
+
+
+def test_wait_result_claim_and_expiration_are_mutually_exclusive() -> None:
+    control = WaitControl(waiter_id="race", wait_generation=1)
+    control.publish_result({"ok": True, "suspension_id": "susp_race"})
+    barrier = threading.Barrier(3)
+    outcomes: list[tuple[str, bool]] = []
+
+    def claim() -> None:
+        barrier.wait()
+        outcomes.append(("claimed", control.claim_result()))
+
+    def expire() -> None:
+        barrier.wait()
+        outcomes.append(("expired", control.expire_unclaimed_result()))
+
+    claim_thread = threading.Thread(target=claim)
+    expire_thread = threading.Thread(target=expire)
+    claim_thread.start()
+    expire_thread.start()
+    barrier.wait()
+    claim_thread.join(timeout=1)
+    expire_thread.join(timeout=1)
+
+    assert sorted(success for _name, success in outcomes) == [False, True]
+    assert control.result_disposition in {"claimed", "expired"}
+
+
+def test_two_phase_wait_arms_before_trigger_then_awaits_hit() -> None:
+    dispatcher = _TwoPhaseDispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        armed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "arm",
+                "timeout": 5,
+            },
+        )
+        armed_payload = dict(armed.structuredContent or {})
+        assert armed_payload["ok"] is True
+        assert armed_payload["status"] == "armed"
+        assert armed_payload["armed_breakpoint_ids"] == ["bp_001"]
+        assert armed_payload["armed_exception_ids"] == [7]
+        assert armed_payload["result_ready"] is False
+        wait_handle = str(armed_payload["wait_handle"])
+
+        rejected = await boundary.call_tool(
+            "java_runtime",
+            {"action": "status"},
+        )
+        assert rejected.isError is True
+        assert rejected.structuredContent["error_code"] == (
+            "ACTIVE_WAITER_EXISTS"
+        )
+        assert rejected.structuredContent["wait_handle"] == wait_handle
+
+        dispatcher.trigger.set()
+        hit = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": wait_handle,
+                "timeout": 1,
+            },
+        )
+        hit_payload = dict(hit.structuredContent or {})
+        assert hit_payload["status"] == "breakpoint_hit"
+        assert hit_payload["breakpoint_id"] == "bp_001"
+        assert hit_payload["wait_handle"] == wait_handle
+
+        resumed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "resume",
+                "suspension_id": hit_payload["suspension_id"],
+            },
+        )
+        assert resumed.structuredContent["status"] == "resumed"
+        assert dispatcher.resume_calls == ["susp_two_phase"]
+
+    anyio.run(scenario)
+
+
+def test_two_phase_await_timeout_keeps_observation_active() -> None:
+    dispatcher = _TwoPhaseDispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        armed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "arm",
+                "timeout": 5,
+            },
+        )
+        wait_handle = str(armed.structuredContent["wait_handle"])
+        waiting = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": wait_handle,
+                "timeout": 0.1,
+            },
+        )
+        assert waiting.structuredContent["status"] == "waiting"
+        assert boundary._active_background_waiter() is not None
+
+        dispatcher.trigger.set()
+        hit = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": wait_handle,
+                "timeout": 1,
+            },
+        )
+        assert hit.structuredContent["status"] == "breakpoint_hit"
+
+    anyio.run(scenario)
+
+
+def test_cleanup_cancels_two_phase_wait_before_dispatch() -> None:
+    dispatcher = _TwoPhaseDispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        armed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "arm",
+                "timeout": 5,
+            },
+        )
+        wait_handle = str(armed.structuredContent["wait_handle"])
+        cleaned = await boundary.call_tool(
+            "java_runtime",
+            {"action": "cleanup_debug_state"},
+        )
+        assert cleaned.structuredContent["status"] == "cleanup_debug_state"
+        assert dispatcher.cancel_seen.is_set()
+        assert len(dispatcher.settled) == 1
+        assert dispatcher.settled[0][0].startswith("local_")
+        assert dispatcher.settled[0][1] == 1
+        assert boundary._find_wait(wait_handle) is None
+        assert dispatcher.calls == ["wait_event", "cleanup_debug_state"]
+
+    anyio.run(scenario)
+
+
+def test_unclaimed_two_phase_suspension_is_resumed_and_expired() -> None:
+    dispatcher = _TwoPhaseDispatcher()
+    boundary = RuntimeMCPBoundary(
+        dispatcher,
+        unclaimed_suspension_grace_seconds=0.03,
+    )
+
+    async def scenario() -> None:
+        armed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "arm",
+                "timeout": 5,
+            },
+        )
+        wait_handle = str(armed.structuredContent["wait_handle"])
+        dispatcher.trigger.set()
+        with anyio.fail_after(1):
+            while dispatcher.resume_calls != ["susp_two_phase"]:
+                await anyio.sleep(0.005)
+
+        expired = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": wait_handle,
+                "timeout": 1,
+            },
+        )
+        assert expired.isError is True
+        payload = dict(expired.structuredContent or {})
+        assert payload["error_code"] == "WAIT_RESULT_EXPIRED"
+        assert payload["invalidated_suspension_id"] == "susp_two_phase"
+        assert dispatcher.suspension_active is False
+
+    anyio.run(scenario)
+
+
+def test_unclaimed_resume_exception_falls_back_to_jdwp_disconnect() -> None:
+    class ResumeFailureDispatcher(_TwoPhaseDispatcher):
+        def dispatch(
+            self,
+            tool_name: str,
+            arguments: dict[str, Any] | None = None,
+            *,
+            session_key: str = "default",
+            wait_control: WaitControl | None = None,
+        ) -> dict[str, Any]:
+            if (arguments or {}).get("action") == "resume":
+                raise RuntimeError("resume failed")
+            return super().dispatch(
+                tool_name,
+                arguments,
+                session_key=session_key,
+                wait_control=wait_control,
+            )
+
+    dispatcher = ResumeFailureDispatcher()
+    boundary = RuntimeMCPBoundary(
+        dispatcher,
+        unclaimed_suspension_grace_seconds=0.03,
+    )
+
+    async def scenario() -> None:
+        armed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "arm",
+                "timeout": 5,
+            },
+        )
+        wait_handle = str(armed.structuredContent["wait_handle"])
+        dispatcher.trigger.set()
+        with anyio.fail_after(1):
+            while dispatcher.interrupt_count != 1:
+                await anyio.sleep(0.005)
+
+        expired = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": wait_handle,
+                "timeout": 1,
+            },
+        )
+        assert expired.structuredContent["error_code"] == "WAIT_RESULT_EXPIRED"
+        assert expired.structuredContent["retryable"] is True
+        assert dispatcher.suspension_active is False
+
+    anyio.run(scenario)
+
+
+def test_two_phase_wait_rejects_invalid_handle_combinations() -> None:
+    boundary = RuntimeMCPBoundary(_TwoPhaseDispatcher())
+
+    async def scenario() -> None:
+        missing = await boundary.call_tool(
+            "java_runtime",
+            {"action": "wait_event", "wait_mode": "await", "timeout": 1},
+        )
+        assert missing.isError is True
+        assert missing.structuredContent["error_code"] == (
+            "INVALID_WAIT_ARGUMENTS"
+        )
+        assert missing.structuredContent["argument"] == "wait_handle"
+
+        unknown = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": "wait_missing",
+                "timeout": 1,
+            },
+        )
+        assert unknown.isError is True
+        assert unknown.structuredContent["error_code"] == (
+            "WAIT_HANDLE_NOT_FOUND"
+        )
+
+        blocking_handle = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "blocking",
+                "wait_handle": "wait_invalid",
+                "timeout": 1,
+            },
+        )
+        assert blocking_handle.isError is True
+        assert blocking_handle.structuredContent["error_code"] == (
+            "INVALID_WAIT_ARGUMENTS"
+        )
+
+    anyio.run(scenario)
+
+
+def test_cancel_after_worker_return_before_publication_settles_suspension(
+    monkeypatch: Any,
+) -> None:
+    dispatcher = _PublishWindowDispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        publication_checkpoint = anyio.Event()
+        caller_done = anyio.Event()
+        holder: dict[str, anyio.CancelScope] = {}
+        returned_payloads: list[dict[str, Any]] = []
+        cancellations: list[bool] = []
+
+        async def hold_publication() -> None:
+            publication_checkpoint.set()
+            await anyio.sleep_forever()
+
+        monkeypatch.setattr(
+            mcp_server_module,
+            "checkpoint_if_cancelled",
+            hold_publication,
+        )
+
+        async def wait_caller() -> None:
+            with anyio.CancelScope() as scope:
+                holder["scope"] = scope
+                try:
+                    result = await boundary.call_tool(
+                        "java_runtime",
+                        {"action": "wait_event", "timeout": 30},
+                        request_id="request-publish-race",
+                    )
+                    returned_payloads.append(
+                        dict(result.structuredContent or {})
+                    )
+                except anyio.get_cancelled_exc_class():
+                    cancellations.append(True)
+            caller_done.set()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(wait_caller)
+            with anyio.fail_after(2):
+                await publication_checkpoint.wait()
+            assert dispatcher.suspension_active is True
+            holder["scope"].cancel()
+            with anyio.fail_after(2):
+                await caller_done.wait()
+
+        assert cancellations == [True]
+        assert returned_payloads == []
+        assert dispatcher.settled == [("request-publish-race", 1)]
+        assert dispatcher.suspension_active is False
+        assert boundary._current_waiter is None
+
+    anyio.run(scenario)
 
 
 def test_cancelled_wait_settles_before_next_call_enters_dispatcher() -> None:

@@ -97,7 +97,9 @@ class SessionManager:
         with self._lock:
             runtime = self._runtimes.pop(key, None)
             if runtime is None:
-                return False
+                # Shutdown is idempotent. A genuinely absent session is
+                # already closed; an in-progress close is not yet complete.
+                return key not in self._closing_runtimes
             self._closing_runtimes[key] = runtime
             close_done = threading.Event()
             self._closing_done[key] = close_done
@@ -144,7 +146,7 @@ class SessionManager:
             if runtime is None:
                 runtime = self._closing_runtimes.get(key)
             if runtime is None:
-                return False
+                return True
         try:
             runtime.force_close()
         except Exception:

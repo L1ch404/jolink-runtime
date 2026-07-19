@@ -93,7 +93,12 @@ def _runtime(client: _EventClient) -> JavaRuntime:
     runtime = JavaRuntime()
     runtime._proc = _RunningProcess()
     runtime._breakpoints = {
-        42: {"class": "LExample;", "method": "run()V", "line": 123}
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "LExample;",
+            "method": "run()V",
+            "line": 123,
+        }
     }
     runtime._connect = lambda: client
     runtime._describe_location = lambda _jdwp, _location: {
@@ -102,7 +107,17 @@ def _runtime(client: _EventClient) -> JavaRuntime:
         "line": 123,
     }
     runtime._thread_name = lambda _jdwp, _thread_id: "main"
+    runtime._arm_debug_requests = lambda _jdwp, _kinds, _control: (
+        runtime._armed_breakpoint_requests.update({42: "bp_001"}) or None
+    )
     return runtime
+
+
+def _disarm_commands() -> list[tuple[int, int, bytes]]:
+    return [
+        (Cmd.EVENT, 2, bytes([EventKind.BREAKPOINT]) + (42).to_bytes(4, "big")),
+        (Cmd.VM, 1, b""),
+    ]
 
 
 def _control(generation: int = 1) -> WaitControl:
@@ -132,7 +147,8 @@ def test_wait_event_checks_cancellation_between_short_poll_slices() -> None:
     assert len(client.wait_timeouts) == 1
     assert client.wait_timeouts[0] <= control.poll_interval
     assert runtime._active_suspension is None
-    assert set(runtime._breakpoints) == {42}
+    assert set(runtime._breakpoints) == {"bp_001"}
+    assert client.commands == _disarm_commands()
 
 
 def test_event_arriving_after_cancel_is_resumed_without_suspension() -> None:
@@ -152,9 +168,10 @@ def test_event_arriving_after_cancel_is_resumed_without_suspension() -> None:
 
     assert result.data["status"] == "wait_cancelled"
     assert runtime._active_suspension is None
-    assert set(runtime._breakpoints) == {42}
+    assert set(runtime._breakpoints) == {"bp_001"}
     assert client.commands == [
         (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
+        *_disarm_commands(),
     ]
 
 
@@ -177,9 +194,11 @@ def test_cancel_before_capture_falls_back_to_vm_resume() -> None:
     assert [(item[0], item[1]) for item in client.commands] == [
         (Cmd.THREAD, 3),
         (Cmd.VM, 9),
+        (Cmd.EVENT, 2),
+        (Cmd.VM, 1),
     ]
     assert client.close_count == 0
-    assert set(runtime._breakpoints) == {42}
+    assert set(runtime._breakpoints) == {"bp_001"}
     assert runtime._active_suspension is None
 
 
@@ -206,7 +225,7 @@ def test_cancel_before_capture_force_disconnects_if_all_resume_fails() -> None:
     ]
     assert client.close_count == 1
     assert runtime._jdwp is None
-    assert runtime._breakpoints == {}
+    assert set(runtime._breakpoints) == {"bp_001"}
     assert runtime._debug_connection_dirty is True
     assert runtime._active_suspension is None
 
@@ -235,6 +254,7 @@ def test_cancel_after_suspension_creation_auto_resumes_owned_snapshot() -> None:
     assert control.phase == "settling"
     assert client.commands == [
         (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
+        *_disarm_commands(),
     ]
 
 
@@ -301,7 +321,7 @@ def test_settle_cancelled_wait_drains_and_resumes_pending_event() -> None:
     runtime.settle_cancelled_wait(control)
 
     assert runtime._active_suspension is None
-    assert set(runtime._breakpoints) == {42}
+    assert set(runtime._breakpoints) == {"bp_001"}
     assert client.commands == [
         (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
     ]
@@ -382,6 +402,7 @@ def test_composite_event_thread_resume_covers_every_suspended_thread() -> None:
             "index": 41,
         },
     })
+    runtime._armed_breakpoint_requests = {42: "bp_001"}
 
     hit = runtime._handle_debug_composite(
         client,
@@ -442,7 +463,8 @@ def test_cancel_event_race_is_stable_across_repeated_waiters() -> None:
 
         assert result.data["status"] == "wait_cancelled"
         assert runtime._active_suspension is None
-        assert set(runtime._breakpoints) == {42}
+        assert set(runtime._breakpoints) == {"bp_001"}
         assert client.commands == [
             (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
+            *_disarm_commands(),
         ]

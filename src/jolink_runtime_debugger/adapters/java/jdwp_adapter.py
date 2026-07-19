@@ -47,6 +47,8 @@ class SuspensionSnapshot:
     thread_id: int
     location: dict[str, int]
     observed_at: str
+    jdwp_request_id: int = 0
+    breakpoint_id: str = ""
     created_at: str = ""
     event_kind: str = "breakpoint"
     event_type: str = "breakpoint"
@@ -116,8 +118,14 @@ class JavaRuntime(Runtime):
         self._host = host
         self._proc = ProcessManager(host)
         self._log = LogManager()
-        self._breakpoints: dict[int, dict[str, Any]] = {}
+        # These dictionaries contain stable Runtime definitions, not live
+        # JDWP EventRequest ids.  A suspending request exists only while one
+        # wait_event call owns the session; see _arm_debug_requests().
+        self._breakpoints: dict[str, dict[str, Any]] = {}
         self._exceptions: dict[int, dict[str, Any]] = {}
+        self._armed_breakpoint_requests: dict[int, str] = {}
+        self._armed_exception_requests: dict[int, int] = {}
+        self._exception_counter = 0
         self._jdwp: JDWPClient | None = None  # persistent debugger connection
         self._active_suspension: SuspensionSnapshot | None = None
         self._suspension_generation = 0
@@ -129,7 +137,7 @@ class JavaRuntime(Runtime):
         self._debug_connection_dirty = False
         self._debug_connection_warning = ""
         self._target_release_lock = threading.Lock()
-        self._target_released = False
+        self._released_target_tokens: set[tuple[int, int, int, bool]] = set()
 
     # ── Lifecycle ──────────────────────────────────────
 
@@ -153,18 +161,18 @@ class JavaRuntime(Runtime):
                 self._jdwp = None
             self._invalidate_connection_scoped_requests(
                 "The JDWP connection was force-closed while cancelling "
-                "wait_event; breakpoint and exception requests were "
-                "invalidated and must be set again.",
+                "wait_event; live requests were invalidated while stable "
+                "breakpoint and exception definitions were preserved.",
                 force_warning=True,
             )
 
     def settle_cancelled_wait(self, wait_control: WaitControl) -> bool:
-        """Resume only state owned by a cancelled waiter, preserving requests.
+        """Resume only state owned by a cancelled waiter.
 
         The MCP boundary calls this only after the wait worker has exited and
-        before another Runtime action may acquire the session.  Persistent
-        breakpoint/exception requests stay registered; only a suspension or
-        queued event consumed by the cancelled waiter is settled here.
+        before another Runtime action may acquire the session. Breakpoint and
+        exception *definitions* remain available, while the worker has already
+        disarmed their connection-scoped JDWP requests.
         """
         if not wait_control.cancelled:
             return True
@@ -293,15 +301,31 @@ class JavaRuntime(Runtime):
     ) -> None:
         if current is None:
             return
+        token = (
+            int(getattr(current, "generation", 0)),
+            id(current),
+            int(current.pid),
+            bool(current.owned),
+        )
         with self._target_release_lock:
-            if self._target_released:
+            if token in self._released_target_tokens:
                 return
             try:
                 if current.owned:
-                    result = self._proc.stop()
+                    stop_target = getattr(self._proc, "stop_target", None)
+                    result = (
+                        stop_target(current)
+                        if callable(stop_target)
+                        else self._proc.stop()
+                    )
                 else:
-                    result = self._proc.detach()
-                self._target_released = True
+                    detach_target = getattr(self._proc, "detach_target", None)
+                    result = (
+                        detach_target(current)
+                        if callable(detach_target)
+                        else self._proc.detach()
+                    )
+                self._released_target_tokens.add(token)
                 logger.info(
                     "java_runtime.shutdown.target_released "
                     "pid=%s ownership=%s status=%s forced=%s",
@@ -364,6 +388,9 @@ class JavaRuntime(Runtime):
         if self._force_closed:
             return
         self._force_closed = True
+        prevent_new_targets = getattr(self._proc, "prevent_new_targets", None)
+        if callable(prevent_new_targets):
+            prevent_new_targets()
         try:
             current = self._proc.current
         except Exception:
@@ -381,6 +408,8 @@ class JavaRuntime(Runtime):
         self.interrupt_wait()
         self._breakpoints.clear()
         self._exceptions.clear()
+        self._armed_breakpoint_requests.clear()
+        self._armed_exception_requests.clear()
         self._invalidate_suspension()
         self._release_target_for_shutdown(
             current,
@@ -399,6 +428,9 @@ class JavaRuntime(Runtime):
             logger.debug("java_runtime.shutdown.skipped reason=already_closed")
             return
         self._closed = True
+        prevent_new_targets = getattr(self._proc, "prevent_new_targets", None)
+        if callable(prevent_new_targets):
+            prevent_new_targets()
 
         try:
             current = self._proc.current
@@ -489,6 +521,8 @@ class JavaRuntime(Runtime):
         # even when remote request cleanup failed.
         self._breakpoints.clear()
         self._exceptions.clear()
+        self._armed_breakpoint_requests.clear()
+        self._armed_exception_requests.clear()
         self._invalidate_suspension()
         self._host = "127.0.0.1"
 
@@ -598,6 +632,8 @@ class JavaRuntime(Runtime):
         self._disconnect()
         self._breakpoints.clear()
         self._exceptions.clear()
+        self._armed_breakpoint_requests.clear()
+        self._armed_exception_requests.clear()
         self._invalidate_suspension()
         data = self._proc.stop()
         logger.info(
@@ -696,6 +732,8 @@ class JavaRuntime(Runtime):
         self._invalidate_suspension()
         self._breakpoints.clear()
         self._exceptions.clear()
+        self._armed_breakpoint_requests.clear()
+        self._armed_exception_requests.clear()
         self._disconnect()
         current = self._proc.current
         if current is not None and current.owned and current.is_alive():
@@ -757,24 +795,30 @@ class JavaRuntime(Runtime):
         }
         if self._debug_connection_dirty:
             info["debug_requests_invalidated"] = True
-            info["warnings"] = [self._debug_connection_warning]
+            info.setdefault("warnings", []).append(self._debug_connection_warning)
             info["suggested_next_step"] = (
-                "Set the required breakpoint or exception event again before "
-                "calling wait_event."
+                "Retry wait_event; stable breakpoint and exception definitions "
+                "will be re-armed on the current connection."
             )
         if proc.launch_mode == "jar":
             info["jar_path"] = proc.jar_path
         else:
             info["main_class"] = proc.main_class
 
-        # Try JDWP for extra info and promote any already-queued debug event.
-        # This keeps status honest when the JVM is suspended but the agent has
-        # not called wait_event yet.
+        # Try JDWP for extra info. A queued event without an owning waiter is
+        # stale by definition and must be resumed, never promoted to a new
+        # public suspension.
         try:
             jdwp = self._connect()
-            promoted: RuntimeResult | None = None
+            orphan_events_resumed = 0
             if self._active_suspension is None:
-                promoted = self._drain_pending_debug_events(jdwp, "status")
+                for composite in jdwp.drain_events():
+                    self._resume_ignored_suspending_event(
+                        jdwp,
+                        "status_without_waiter",
+                        composite,
+                    )
+                    orphan_events_resumed += 1
 
             info["debug_state"] = (
                 "suspended" if self._active_suspension is not None else "attached"
@@ -783,32 +827,14 @@ class JavaRuntime(Runtime):
                 self._active_suspension.suspension_id
                 if self._active_suspension is not None else None
             )
-            if promoted is not None:
-                if promoted.ok:
-                    info["pending_event_promoted"] = True
-                    info["pending_event"] = {
-                        key: promoted.data[key]
-                        for key in (
-                            "status",
-                            "event_kind",
-                            "event_type",
-                            "suspend_policy",
-                            "suspend_policy_name",
-                            "request_id",
-                            "thread_id",
-                            "location",
-                            "throw_location",
-                        )
-                        if key in promoted.data
-                    }
-                    info["suggested_next_step"] = (
-                        "Inspect stack/variables for the promoted suspension, "
-                        "then call resume with the suspension_id."
-                    )
-                else:
-                    info["pending_event_error"] = promoted.error
-                    if promoted.data:
-                        info["pending_event_error_code"] = promoted.data.get("error_code")
+            if orphan_events_resumed:
+                info["orphan_events_resumed"] = orphan_events_resumed
+                info.setdefault("warnings", []).append(
+                    "Stale debug events without an active waiter were automatically resumed."
+                )
+                info["suggested_next_step"] = (
+                    "Start wait_event before triggering the next target scenario."
+                )
 
             err, data = jdwp.command(Cmd.VM, 1)  # Version
             if err == 0:
@@ -834,10 +860,11 @@ class JavaRuntime(Runtime):
         info["exception_count"] = len(self._exceptions)
         if self._debug_connection_dirty:
             info["debug_requests_invalidated"] = True
-            info["warnings"] = [self._debug_connection_warning]
+            if self._debug_connection_warning not in info.get("warnings", []):
+                info.setdefault("warnings", []).append(self._debug_connection_warning)
             info["suggested_next_step"] = (
-                "Set the required breakpoint or exception event again before "
-                "calling wait_event."
+                "Retry wait_event; stable breakpoint and exception definitions "
+                "will be re-armed on the current connection."
             )
 
         return RuntimeResult(ok=True, data=info)
@@ -894,10 +921,27 @@ class JavaRuntime(Runtime):
                         },
                     )
 
-            jdwp = self._connect()
+            if action.bp_action == "remove" and action.request_id:
+                return RuntimeResult(
+                    ok=False,
+                    error=(
+                        "request_id is an exception-watch identifier; "
+                        "breakpoint removal requires breakpoint_id"
+                    ),
+                    data={
+                        "error_code": "invalid_argument",
+                        "argument": "request_id",
+                        "bp_action": "remove",
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Use the stable breakpoint_id returned by breakpoint set/list, "
+                            "or remove by class_pattern and line."
+                        ),
+                    },
+                )
 
             if action.bp_action == "set":
-                ids = jdwp.ids
+                jdwp = self._connect()
                 candidate, resolution_error, _ignored_proxy = self._resolve_breakpoint_class(
                     jdwp, action
                 )
@@ -911,37 +955,12 @@ class JavaRuntime(Runtime):
                 if location_error is not None:
                     return location_error
                 location = locations[0]
-
-                # ── Step 4: set breakpoint (EventRequest/Set, eventKind=BREAKPOINT) ──
-                # eventKind=2 (BREAKPOINT), suspendPolicy=1 (EVENT_THREAD), modifiers=1
-                # modifier: modKind=7 (LocationOnly), typeTag from JVM, classID, methodID, codeIndex
-                bp_payload = struct.pack(
-                    ">BBI", EventKind.BREAKPOINT, SuspendPolicy.EVENT_THREAD, 1
-                )
-                bp_payload += struct.pack(">B", 7)  # modKind = LocationOnly
-                bp_payload += struct.pack(">B", candidate.type_tag)  # typeTag from JVM (1=class, 2=interface, etc.)
-                bp_payload += ids.pack_ref(candidate.class_id)
-                bp_payload += ids.pack_method(location.method_id)
-                bp_payload += struct.pack(">Q", location.code_index)  # jlocation = code index, NOT line number
-
-                err, bp_data = jdwp.command(Cmd.EVENT, 1, bp_payload)
-                if err:
-                    return RuntimeResult(
-                        ok=False,
-                        error=f"Set breakpoint failed (err {err})",
-                        data={
-                            "error_code": "SET_BREAKPOINT_FAILED",
-                            "matched_class": candidate.name,
-                            "line": action.line,
-                            "retryable": True,
-                            "suggested_next_step": "Retry, or call cleanup_debug_state and set the breakpoint again.",
-                        },
-                    )
-
-                request_id = struct.unpack_from(">I", bp_data, 0)[0]
                 breakpoint_id = self._next_breakpoint_id()
-                self._breakpoints[request_id] = {
+                self._breakpoints[breakpoint_id] = {
                     "breakpoint_id": breakpoint_id,
+                    "requested_class_pattern": action.class_pattern,
+                    "include_proxy": action.include_proxy,
+                    "include_generated": action.include_generated,
                     "class": candidate.signature,
                     "matched_class": candidate.name,
                     "source_file": candidate.source_file,
@@ -957,8 +976,9 @@ class JavaRuntime(Runtime):
                 self._debug_connection_warning = ""
 
                 logger.info(
-                    "java_runtime.breakpoint.set breakpoint_id=%s request_id=%s class=%s method=%s line=%s code_index=%s",
-                    breakpoint_id, request_id, candidate.name, location.method,
+                    "java_runtime.breakpoint.set breakpoint_id=%s class=%s method=%s line=%s "
+                    "code_index=%s armed=false",
+                    breakpoint_id, candidate.name, location.method,
                     action.line, location.code_index,
                 )
 
@@ -972,15 +992,18 @@ class JavaRuntime(Runtime):
                     "suspend_policy": self._suspend_policy_name(SuspendPolicy.EVENT_THREAD),
                     "warnings": candidate.warnings,
                     # Compatibility / diagnostics fields below. LLMs should use
-                    # breakpoint_id; jdwp.request_id is intentionally nested.
+                    # breakpoint_id; a JDWP request does not exist until wait_event.
                     "bp_action": "set",
                     "class": candidate.signature,
                     "method_signature": location.method_signature,
                     "proxy_type": candidate.proxy_type,
                     "jdwp": {
-                        "request_id": request_id,
                         "suspend_policy": self._suspend_policy_name(SuspendPolicy.EVENT_THREAD),
+                        "armed": False,
                     },
+                    "suggested_next_step": (
+                        "Start wait_event, then trigger the target scenario while that wait is active."
+                    ),
                 })
 
             elif action.bp_action == "remove":
@@ -999,25 +1022,35 @@ class JavaRuntime(Runtime):
                         },
                     )
 
-                removed = []
+                removed: list[str] = []
                 removed_breakpoint_ids = []
+                cleared_remote_ids: list[int] = []
                 failed = []
-                for rid in target_ids:
-                    # EventRequest/Clear: eventKind (BREAKPOINT) + requestID.
-                    payload = struct.pack(">BI", EventKind.BREAKPOINT, rid)
-                    err, _ = jdwp.command(Cmd.EVENT, 2, payload)
-                    if err == 0:
-                        breakpoint = self._breakpoints.pop(rid, None) or {}
-                        removed.append(rid)
-                        removed_breakpoint_ids.append(
-                            breakpoint.get("breakpoint_id", f"jdwp_{rid}")
-                        )
-                    else:
+                for breakpoint_id in target_ids:
+                    remote_ids = [
+                        remote_id
+                        for remote_id, logical_id in self._armed_breakpoint_requests.items()
+                        if logical_id == breakpoint_id
+                    ]
+                    clear_error = ""
+                    for remote_id in remote_ids:
+                        jdwp = self._connect()
+                        payload = struct.pack(">BI", EventKind.BREAKPOINT, remote_id)
+                        err, _ = jdwp.command(Cmd.EVENT, 2, payload)
+                        if err:
+                            clear_error = f"Clear breakpoint failed (err {err})"
+                            break
+                        self._armed_breakpoint_requests.pop(remote_id, None)
+                        cleared_remote_ids.append(remote_id)
+                    if clear_error:
                         failed.append({
-                            "breakpoint_id": self._breakpoints.get(rid, {}).get("breakpoint_id", ""),
-                            "jdwp": {"request_id": rid},
-                            "error": f"Clear breakpoint failed (err {err})",
+                            "breakpoint_id": breakpoint_id,
+                            "error": clear_error,
                         })
+                        continue
+                    self._breakpoints.pop(breakpoint_id, None)
+                    removed.append(breakpoint_id)
+                    removed_breakpoint_ids.append(breakpoint_id)
 
                 if not removed:
                     return RuntimeResult(
@@ -1031,7 +1064,7 @@ class JavaRuntime(Runtime):
                         },
                     )
                 logger.info(
-                    "java_runtime.breakpoint.removed request_ids=%s failed=%s remaining=%s",
+                    "java_runtime.breakpoint.removed breakpoint_ids=%s failed=%s remaining=%s",
                     removed, len(failed), len(self._breakpoints),
                 )
                 return RuntimeResult(ok=True, data={
@@ -1043,13 +1076,12 @@ class JavaRuntime(Runtime):
                     "partial": bool(failed),
                     "cleared_all": (
                         not action.breakpoint_id
-                        and not action.request_id
                         and not action.class_pattern
                         and not action.line
                     ),
                     "remaining": len(self._breakpoints),
                     "breakpoints": self._breakpoint_observations(),
-                    "jdwp": {"cleared_request_ids": removed},
+                    "jdwp": {"cleared_request_ids": cleared_remote_ids},
                 })
 
             else:
@@ -1118,32 +1150,18 @@ class JavaRuntime(Runtime):
                             ],
                         },
                     )
-                _type_tag, class_id, _signature = found
-
-                # EventRequest/Set: eventKind=EXCEPTION, suspendPolicy=EVENT_THREAD,
-                # modifiers=1. ExceptionOnly modifier: modKind=8, referenceTypeID,
-                # notifyCaught, notifyUncaught.
-                payload = struct.pack(
-                    ">BBI", EventKind.EXCEPTION, SuspendPolicy.EVENT_THREAD, 1
-                )
-                payload += struct.pack(">B", 8)
-                payload += jdwp.ids.pack_ref(class_id)
-                payload += struct.pack(">BB", int(action.caught), int(action.uncaught))
-
-                err, data = jdwp.command(Cmd.EVENT, 1, payload)
-                if err:
-                    return RuntimeResult(ok=False, error=f"Set exception event failed (err {err})")
-
-                request_id = struct.unpack_from(">I", data, 0)[0]
+                request_id = self._next_exception_request_id()
                 self._exceptions[request_id] = {
                     "exception_class": normalized_class,
                     "caught": action.caught,
                     "uncaught": action.uncaught,
+                    "suspend_policy": SuspendPolicy.EVENT_THREAD,
                 }
                 self._debug_connection_dirty = False
                 self._debug_connection_warning = ""
                 logger.info(
-                    "java_runtime.exception.set request_id=%s exception_class=%s caught=%s uncaught=%s",
+                    "java_runtime.exception.set request_id=%s exception_class=%s caught=%s "
+                    "uncaught=%s armed=false",
                     request_id, normalized_class, action.caught, action.uncaught,
                 )
                 return RuntimeResult(ok=True, data={
@@ -1153,6 +1171,10 @@ class JavaRuntime(Runtime):
                     "signature": normalized_class,
                     "caught": action.caught,
                     "uncaught": action.uncaught,
+                    "suspend_policy": self._suspend_policy_name(SuspendPolicy.EVENT_THREAD),
+                    "suggested_next_step": (
+                        "Start wait_event, then trigger the target scenario while that wait is active."
+                    ),
                 })
 
             if action.exception_action == "remove":
@@ -1171,20 +1193,33 @@ class JavaRuntime(Runtime):
                         },
                     )
 
-                jdwp = self._connect()
-                removed = []
+                removed: list[int] = []
+                cleared_remote_ids: list[int] = []
                 failed = []
-                for rid in target_ids:
-                    payload = struct.pack(">BI", EventKind.EXCEPTION, rid)
-                    err, _ = jdwp.command(Cmd.EVENT, 2, payload)
-                    if err == 0:
-                        self._exceptions.pop(rid, None)
-                        removed.append(rid)
-                    else:
+                for request_id in target_ids:
+                    remote_ids = [
+                        remote_id
+                        for remote_id, logical_id in self._armed_exception_requests.items()
+                        if logical_id == request_id
+                    ]
+                    clear_error = ""
+                    for remote_id in remote_ids:
+                        jdwp = self._connect()
+                        payload = struct.pack(">BI", EventKind.EXCEPTION, remote_id)
+                        err, _ = jdwp.command(Cmd.EVENT, 2, payload)
+                        if err:
+                            clear_error = f"Clear exception event failed (err {err})"
+                            break
+                        self._armed_exception_requests.pop(remote_id, None)
+                        cleared_remote_ids.append(remote_id)
+                    if clear_error:
                         failed.append({
-                            "request_id": rid,
-                            "error": f"Clear exception event failed (err {err})",
+                            "request_id": request_id,
+                            "error": clear_error,
                         })
+                        continue
+                    self._exceptions.pop(request_id, None)
+                    removed.append(request_id)
 
                 if not removed:
                     return RuntimeResult(
@@ -1211,6 +1246,7 @@ class JavaRuntime(Runtime):
                     "cleared_all": not action.request_id and not action.exception_class,
                     "remaining": len(self._exceptions),
                     "exceptions": self._exception_observations(),
+                    "jdwp": {"cleared_request_ids": cleared_remote_ids},
                 })
 
             return RuntimeResult(ok=False, error=f"Unknown exception_action: {action.exception_action}")
@@ -1221,6 +1257,304 @@ class JavaRuntime(Runtime):
                 action.exception_action, action.exception_class or "-", e,
             )
             return RuntimeResult(ok=False, error=str(e))
+
+    def _arm_debug_requests(
+        self,
+        jdwp: JDWPClient,
+        accepted_kinds: set[int],
+        wait_control: WaitControl | None,
+    ) -> RuntimeResult | None:
+        """Create suspend-capable requests owned by exactly one active wait."""
+        if self._armed_breakpoint_requests or self._armed_exception_requests:
+            return RuntimeResult(
+                ok=False,
+                error="ACTIVE_DEBUG_REQUESTS_REMAIN",
+                data={
+                    "error_code": "active_debug_requests_remain",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Call cleanup_debug_state, then set the required events and wait again."
+                    ),
+                },
+            )
+
+        if EventKind.BREAKPOINT in accepted_kinds:
+            for breakpoint_id, definition in self._breakpoints.items():
+                if self._wait_cancelled(wait_control):
+                    return self._cancelled_wait_result("debug_event", wait_control)
+
+                resolve_action = RuntimeAction(
+                    action="breakpoint",
+                    bp_action="set",
+                    class_pattern=str(definition.get("matched_class", "")),
+                    line=int(definition.get("line", 0)),
+                    include_proxy=bool(definition.get("include_proxy", False)),
+                    include_generated=bool(definition.get("include_generated", False)),
+                )
+                candidate, resolution_error, _ = self._resolve_breakpoint_class(
+                    jdwp,
+                    resolve_action,
+                )
+                if resolution_error is not None:
+                    return resolution_error
+                assert candidate is not None
+                locations, _nearby, location_error = self._line_locations_for_class(
+                    jdwp,
+                    candidate,
+                    resolve_action.line,
+                )
+                if location_error is not None:
+                    return location_error
+
+                expected_signature = str(definition.get("class", ""))
+                expected_method_signature = str(
+                    definition.get("method_signature", "")
+                )
+                expected_code_index = int(definition.get("code_index", -1))
+                location = next((
+                    item
+                    for item in locations
+                    if item.method_signature == expected_method_signature
+                    and item.code_index == expected_code_index
+                ), None)
+                if candidate.signature != expected_signature or location is None:
+                    return RuntimeResult(
+                        ok=False,
+                        error="BREAKPOINT_DEFINITION_STALE",
+                        data={
+                            "error_code": "BREAKPOINT_DEFINITION_STALE",
+                            "breakpoint_id": breakpoint_id,
+                            "matched_class": definition.get("matched_class", ""),
+                            "line": definition.get("line", 0),
+                            "retryable": True,
+                            "suggested_next_step": (
+                                "Remove this breakpoint, set it again against the current bytecode, "
+                                "then retry wait_event."
+                            ),
+                        },
+                    )
+
+                payload = struct.pack(
+                    ">BBI", EventKind.BREAKPOINT, SuspendPolicy.EVENT_THREAD, 1
+                )
+                payload += struct.pack(">B", 7)
+                payload += struct.pack(">B", candidate.type_tag)
+                payload += jdwp.ids.pack_ref(candidate.class_id)
+                payload += jdwp.ids.pack_method(location.method_id)
+                payload += struct.pack(">Q", location.code_index)
+                err, data = jdwp.command(Cmd.EVENT, 1, payload)
+                if not err and len(data) < 4:
+                    # The VM may already have installed the request, but a
+                    # malformed success reply gives us no id with which to
+                    # clear it. Disconnecting is the only safe way to avoid
+                    # an unowned future suspension.
+                    self._disconnect()
+                    self._invalidate_connection_scoped_requests(
+                        "A malformed breakpoint EventRequest.Set reply forced "
+                        "the JDWP connection to close; stable definitions were preserved.",
+                        force_warning=True,
+                    )
+                if err or len(data) < 4:
+                    return RuntimeResult(
+                        ok=False,
+                        error=f"Arm breakpoint failed (err {err})",
+                        data={
+                            "error_code": "ARM_BREAKPOINT_FAILED",
+                            "breakpoint_id": breakpoint_id,
+                            "retryable": True,
+                            "suggested_next_step": (
+                                "Retry wait_event, or call cleanup_debug_state and set the breakpoint again."
+                            ),
+                        },
+                    )
+                remote_id = struct.unpack_from(">I", data, 0)[0]
+                self._armed_breakpoint_requests[remote_id] = breakpoint_id
+
+        if EventKind.EXCEPTION in accepted_kinds:
+            for request_id, definition in self._exceptions.items():
+                if self._wait_cancelled(wait_control):
+                    return self._cancelled_wait_result("debug_event", wait_control)
+                signature = str(definition.get("exception_class", ""))
+                found = self._find_loaded_class_by_signature(jdwp, signature)
+                if found is None:
+                    return RuntimeResult(
+                        ok=False,
+                        error=f"Exception class '{signature}' is not loaded in the target VM",
+                        data={
+                            "error_code": "exception_class_not_loaded",
+                            "request_id": request_id,
+                            "exception_class": signature,
+                            "retryable": True,
+                            "suggested_next_step": (
+                                "Trigger class loading without relying on this watch, then retry wait_event."
+                            ),
+                        },
+                    )
+                _type_tag, class_id, _signature = found
+                payload = struct.pack(
+                    ">BBI", EventKind.EXCEPTION, SuspendPolicy.EVENT_THREAD, 1
+                )
+                payload += struct.pack(">B", 8)
+                payload += jdwp.ids.pack_ref(class_id)
+                payload += struct.pack(
+                    ">BB",
+                    int(definition.get("caught", False)),
+                    int(definition.get("uncaught", False)),
+                )
+                err, data = jdwp.command(Cmd.EVENT, 1, payload)
+                if not err and len(data) < 4:
+                    self._disconnect()
+                    self._invalidate_connection_scoped_requests(
+                        "A malformed exception EventRequest.Set reply forced "
+                        "the JDWP connection to close; stable definitions were preserved.",
+                        force_warning=True,
+                    )
+                if err or len(data) < 4:
+                    return RuntimeResult(
+                        ok=False,
+                        error=f"Arm exception event failed (err {err})",
+                        data={
+                            "error_code": "ARM_EXCEPTION_EVENT_FAILED",
+                            "request_id": request_id,
+                            "retryable": True,
+                            "suggested_next_step": (
+                                "Retry wait_event, or call cleanup_debug_state and set the exception watch again."
+                            ),
+                        },
+                    )
+                remote_id = struct.unpack_from(">I", data, 0)[0]
+                self._armed_exception_requests[remote_id] = request_id
+
+        self._debug_connection_dirty = False
+        self._debug_connection_warning = ""
+        logger.info(
+            "java_runtime.debug_requests.armed waiter_id=%s wait_generation=%s "
+            "breakpoints=%s exceptions=%s",
+            wait_control.waiter_id if wait_control is not None else "legacy",
+            wait_control.wait_generation if wait_control is not None else 0,
+            len(self._armed_breakpoint_requests),
+            len(self._armed_exception_requests),
+        )
+        if wait_control is not None:
+            wait_control.mark_armed(
+                breakpoint_ids=list(self._armed_breakpoint_requests.values()),
+                exception_ids=list(self._armed_exception_requests.values()),
+            )
+        return None
+
+    def _disarm_debug_requests(
+        self,
+        jdwp: JDWPClient,
+        *,
+        wait_label: str,
+    ) -> RuntimeResult | None:
+        """Clear one wait generation and auto-resume every late event."""
+        if not self._armed_breakpoint_requests and not self._armed_exception_requests:
+            return None
+
+        failures: list[dict[str, Any]] = []
+        armed_breakpoints = dict(self._armed_breakpoint_requests)
+        armed_exceptions = dict(self._armed_exception_requests)
+        try:
+            for remote_id, breakpoint_id in armed_breakpoints.items():
+                err, _ = jdwp.command(
+                    Cmd.EVENT,
+                    2,
+                    struct.pack(">BI", EventKind.BREAKPOINT, remote_id),
+                )
+                if err:
+                    failures.append({
+                        "event_kind": "breakpoint",
+                        "breakpoint_id": breakpoint_id,
+                        "jdwp_request_id": remote_id,
+                        "error": f"Clear failed (err {err})",
+                    })
+
+            for remote_id, request_id in armed_exceptions.items():
+                err, _ = jdwp.command(
+                    Cmd.EVENT,
+                    2,
+                    struct.pack(">BI", EventKind.EXCEPTION, remote_id),
+                )
+                if err:
+                    failures.append({
+                        "event_kind": "exception",
+                        "request_id": request_id,
+                        "jdwp_request_id": remote_id,
+                        "error": f"Clear failed (err {err})",
+                    })
+
+            # A command/reply round trip is a protocol barrier: events already
+            # emitted while requests were being cleared are queued by command().
+            err, _ = jdwp.command(Cmd.VM, 1)
+            if err:
+                failures.append({
+                    "event_kind": "barrier",
+                    "error": f"VM.Version barrier failed (err {err})",
+                })
+
+            for composite in jdwp.drain_events():
+                events = composite.get("events", [])
+                if any(
+                    event.get("kind") in {
+                        EventKind.VM_DEATH,
+                        EventKind.VM_DISCONNECTED,
+                    }
+                    for event in events
+                ):
+                    self._invalidate_suspension()
+                    continue
+                try:
+                    self._resume_ignored_suspending_event(
+                        jdwp,
+                        f"{wait_label}_disarm",
+                        composite,
+                    )
+                except (JDWPError, OSError) as exc:
+                    failures.append({
+                        "event_kind": "late_event",
+                        "error": str(exc),
+                    })
+        except (JDWPError, OSError) as exc:
+            failures.append({
+                "event_kind": "disarm",
+                "error": str(exc),
+            })
+        finally:
+            self._armed_breakpoint_requests.clear()
+            self._armed_exception_requests.clear()
+
+        logger.info(
+            "java_runtime.debug_requests.disarmed wait=%s breakpoints=%s "
+            "exceptions=%s failures=%s",
+            wait_label,
+            len(armed_breakpoints),
+            len(armed_exceptions),
+            len(failures),
+        )
+        if not failures:
+            return None
+
+        # A failed clear means a future hit could suspend a JVM without a
+        # waiter. Closing the debugger connection is the only safe fallback.
+        self._disconnect()
+        self._invalidate_connection_scoped_requests(
+            "JDWP request cleanup failed; the debugger connection was closed. "
+            "Logical breakpoint and exception definitions were preserved.",
+            force_warning=True,
+        )
+        return RuntimeResult(
+            ok=False,
+            error="DEBUG_REQUEST_DISARM_FAILED",
+            data={
+                "error_code": "DEBUG_REQUEST_DISARM_FAILED",
+                "failures": failures,
+                "retryable": True,
+                "suggested_next_step": (
+                    "Call status, then retry wait_event; definitions will be re-armed on the new connection."
+                ),
+            },
+        )
 
     def wait_breakpoint(self, action: RuntimeAction) -> RuntimeResult:
         if not self._proc.is_running:
@@ -1287,47 +1621,82 @@ class JavaRuntime(Runtime):
                 ),
             })
 
+        jdwp: JDWPClient | None = None
+        result: RuntimeResult | None = None
+        disarm_error: RuntimeResult | None = None
         try:
             logger.info(
                 "java_runtime.%s.wait.start timeout_seconds=%s active_breakpoints=%s active_exceptions=%s",
                 wait_label, action.timeout, len(self._breakpoints), len(self._exceptions),
             )
             jdwp = self._connect()
-            if self._wait_cancelled(wait_control):
-                return self._cancelled_wait_result(wait_label, wait_control)
-            promoted = self._drain_pending_debug_events(
-                jdwp,
-                wait_label,
-                accepted_kinds,
-                wait_control=wait_control,
-            )
-            if promoted is not None:
-                return promoted
-            deadline = time.monotonic() + max(action.timeout, 0.1)
-            while True:
-                if self._wait_cancelled(wait_control):
-                    return self._cancelled_wait_result(wait_label, wait_control)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return self._debug_event_timeout(wait_label, action.timeout)
-                wait_slice = remaining
-                if wait_control is not None:
-                    wait_slice = min(remaining, max(wait_control.poll_interval, 0.01))
-                composite = jdwp.wait_for_event(wait_slice)
-                if composite is None:
-                    if wait_control is None:
-                        return self._debug_event_timeout(wait_label, action.timeout)
-                    continue
-                handled = self._handle_debug_composite(
+
+            # Defensive recovery only. With the arm/disarm invariant there
+            # should be no suspending event while no waiter owns the session.
+            for composite in jdwp.drain_events():
+                self._resume_ignored_suspending_event(
                     jdwp,
+                    f"{wait_label}_pre_arm",
                     composite,
-                    accepted_kinds,
-                    wait_label,
-                    wait_control=wait_control,
                 )
-                if handled is not None:
-                    return handled
-        except (JDWPError, OSError) as e:
+
+            if self._wait_cancelled(wait_control):
+                result = self._cancelled_wait_result(wait_label, wait_control)
+            else:
+                arm_error = self._arm_debug_requests(
+                    jdwp,
+                    accepted_kinds,
+                    wait_control,
+                )
+                if arm_error is not None:
+                    result = arm_error
+                else:
+                    promoted = self._drain_pending_debug_events(
+                        jdwp,
+                        wait_label,
+                        accepted_kinds,
+                        wait_control=wait_control,
+                    )
+                    if promoted is not None:
+                        result = promoted
+                    else:
+                        deadline = time.monotonic() + max(action.timeout, 0.1)
+                        while result is None:
+                            if self._wait_cancelled(wait_control):
+                                result = self._cancelled_wait_result(
+                                    wait_label,
+                                    wait_control,
+                                )
+                                break
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                result = self._debug_event_timeout(
+                                    wait_label,
+                                    action.timeout,
+                                )
+                                break
+                            wait_slice = remaining
+                            if wait_control is not None:
+                                wait_slice = min(
+                                    remaining,
+                                    max(wait_control.poll_interval, 0.01),
+                                )
+                            composite = jdwp.wait_for_event(wait_slice)
+                            if composite is None:
+                                if wait_control is None:
+                                    result = self._debug_event_timeout(
+                                        wait_label,
+                                        action.timeout,
+                                    )
+                                continue
+                            result = self._handle_debug_composite(
+                                jdwp,
+                                composite,
+                                accepted_kinds,
+                                wait_label,
+                                wait_control=wait_control,
+                            )
+        except (JDWPError, OSError, RuntimeError) as e:
             if self._wait_cancelled(wait_control):
                 if wait_control is not None:
                     wait_control.mark_dirty()
@@ -1339,9 +1708,33 @@ class JavaRuntime(Runtime):
                     wait_control.wait_generation if wait_control is not None else "-",
                     type(e).__name__,
                 )
-                return self._cancelled_wait_result(wait_label, wait_control)
-            logger.warning("java_runtime.%s.wait.failed error=%s", wait_label, e)
-            return RuntimeResult(ok=False, error=str(e))
+                result = self._cancelled_wait_result(wait_label, wait_control)
+            else:
+                logger.warning("java_runtime.%s.wait.failed error=%s", wait_label, e)
+                result = RuntimeResult(ok=False, error=str(e))
+        finally:
+            if jdwp is not None and (
+                self._armed_breakpoint_requests
+                or self._armed_exception_requests
+            ):
+                disarm_error = self._disarm_debug_requests(
+                    jdwp,
+                    wait_label=wait_label,
+                )
+
+        if disarm_error is not None:
+            return disarm_error
+        if result is None:
+            return RuntimeResult(
+                ok=False,
+                error="wait_event ended without a result",
+                data={
+                    "error_code": "WAIT_EVENT_INCOMPLETE",
+                    "retryable": True,
+                    "suggested_next_step": "Retry wait_event.",
+                },
+            )
+        return result
 
     def threads(self, action: RuntimeAction) -> RuntimeResult:
         try:
@@ -1582,8 +1975,8 @@ class JavaRuntime(Runtime):
                 "process_state": "running",
                 "debug_state": "attached",
                 "suggested_next_step": (
-                    "Continue the scenario, then call wait_event or wait_breakpoint "
-                    "for the next expected debug event."
+                    "Arrange the next trigger, start wait_event, and fire the trigger "
+                    "while that wait is active."
                 ),
             })
         except (JDWPError, RuntimeError) as e:
@@ -1605,8 +1998,8 @@ class JavaRuntime(Runtime):
         drained_events = 0
         resumed_active_suspension = False
         emergency_vm_resume = False
-        cleared_breakpoints: list[int] = []
-        cleared_exceptions: list[int] = []
+        cleared_breakpoints: list[str] = list(self._breakpoints)
+        cleared_exceptions: list[int] = list(self._exceptions)
         clear_failures: list[dict[str, Any]] = []
 
         try:
@@ -1621,29 +2014,31 @@ class JavaRuntime(Runtime):
                 except JDWPError as exc:
                     warnings.append(str(exc))
 
-            for request_id in list(self._breakpoints):
-                payload = struct.pack(">BI", EventKind.BREAKPOINT, request_id)
+            for remote_id, breakpoint_id in list(
+                self._armed_breakpoint_requests.items()
+            ):
+                payload = struct.pack(">BI", EventKind.BREAKPOINT, remote_id)
                 err, _ = jdwp.command(Cmd.EVENT, 2, payload)
                 if err:
                     clear_failures.append({
                         "event_kind": "breakpoint",
-                        "request_id": request_id,
+                        "breakpoint_id": breakpoint_id,
+                        "jdwp_request_id": remote_id,
                         "error": f"Clear breakpoint failed (err {err})",
                     })
-                else:
-                    cleared_breakpoints.append(request_id)
 
-            for request_id in list(self._exceptions):
-                payload = struct.pack(">BI", EventKind.EXCEPTION, request_id)
+            for remote_id, request_id in list(
+                self._armed_exception_requests.items()
+            ):
+                payload = struct.pack(">BI", EventKind.EXCEPTION, remote_id)
                 err, _ = jdwp.command(Cmd.EVENT, 2, payload)
                 if err:
                     clear_failures.append({
                         "event_kind": "exception",
                         "request_id": request_id,
+                        "jdwp_request_id": remote_id,
                         "error": f"Clear exception event failed (err {err})",
                     })
-                else:
-                    cleared_exceptions.append(request_id)
 
             if (
                 self._active_suspension is not None
@@ -1665,7 +2060,18 @@ class JavaRuntime(Runtime):
 
             self._breakpoints.clear()
             self._exceptions.clear()
+            self._armed_breakpoint_requests.clear()
+            self._armed_exception_requests.clear()
             self._invalidate_suspension()
+            debug_state = "attached"
+            if clear_failures:
+                # Clear failures cannot be left behind: a future event could
+                # otherwise suspend a JVM after local definitions are gone.
+                self._disconnect()
+                debug_state = "detached"
+                warnings.append(
+                    "JDWP was disconnected because one or more event requests could not be cleared."
+                )
             if not warnings and not clear_failures:
                 self._debug_connection_dirty = False
                 self._debug_connection_warning = ""
@@ -1681,7 +2087,7 @@ class JavaRuntime(Runtime):
             return RuntimeResult(ok=True, data={
                 "status": "debug_state_cleaned",
                 "process_state": "running",
-                "debug_state": "attached",
+                "debug_state": debug_state,
                 "drained_events": drained_events,
                 "resumed_active_suspension": resumed_active_suspension,
                 "emergency_vm_resume": emergency_vm_resume,
@@ -1692,8 +2098,8 @@ class JavaRuntime(Runtime):
                 "clear_failures": clear_failures,
                 "warnings": warnings,
                 "suggested_next_step": (
-                    "Call status to confirm debug_state=attached and counts are 0, "
-                    "then set the needed breakpoint or exception event again."
+                    "Call status to confirm counts are 0, then set the needed "
+                    "breakpoint or exception event again."
                 ),
             })
         except (JDWPError, OSError) as e:
@@ -1712,20 +2118,23 @@ class JavaRuntime(Runtime):
         self,
         jdwp: JDWPClient,
         event: dict[str, Any],
+        breakpoint_id: str,
         suspend_policy: int = SuspendPolicy.EVENT_THREAD,
         wait_control: WaitControl | None = None,
         suspended_thread_ids: tuple[int, ...] = (),
     ) -> RuntimeResult:
-        request_id = int(event.get("request_id", 0))
+        jdwp_request_id = int(event.get("request_id", 0))
         self._suspension_generation += 1
         observed_at = datetime.now(timezone.utc).isoformat()
         snapshot = SuspensionSnapshot(
             suspension_id=f"susp_{uuid.uuid4().hex[:12]}",
             generation=self._suspension_generation,
-            request_id=request_id,
+            request_id=0,
             thread_id=int(event["thread_id"]),
             location=event.get("location") or {},
             observed_at=observed_at,
+            jdwp_request_id=jdwp_request_id,
+            breakpoint_id=breakpoint_id,
             created_at=observed_at,
             event_kind="breakpoint",
             event_type="breakpoint",
@@ -1743,11 +2152,13 @@ class JavaRuntime(Runtime):
         location_description = self._describe_location(jdwp, snapshot.location)
         thread_name = self._thread_name(jdwp, snapshot.thread_id)
         logger.info(
-            "java_runtime.breakpoint.hit suspension=%s generation=%s request_id=%s "
+            "java_runtime.breakpoint.hit suspension=%s generation=%s breakpoint_id=%s "
+            "jdwp_request_id=%s "
             "thread=%s class=%s method=%s line=%s",
             snapshot.suspension_id,
             snapshot.generation,
-            request_id,
+            breakpoint_id,
+            jdwp_request_id,
             thread_name,
             location_description.get("class", "-"),
             location_description.get("method", "-"),
@@ -1756,7 +2167,10 @@ class JavaRuntime(Runtime):
         return RuntimeResult(ok=True, data={
             "status": "breakpoint_hit",
             **self._snapshot_context(snapshot),
-            "breakpoint": self._breakpoints[request_id],
+            "breakpoint": self._breakpoint_observation(
+                breakpoint_id,
+                self._breakpoints[breakpoint_id],
+            ),
             "thread": {"name": thread_name},
             "location": location_description,
         })
@@ -1765,11 +2179,12 @@ class JavaRuntime(Runtime):
         self,
         jdwp: JDWPClient,
         event: dict[str, Any],
+        request_id: int,
         suspend_policy: int = SuspendPolicy.EVENT_THREAD,
         wait_control: WaitControl | None = None,
         suspended_thread_ids: tuple[int, ...] = (),
     ) -> RuntimeResult:
-        request_id = int(event.get("request_id", 0))
+        jdwp_request_id = int(event.get("request_id", 0))
         exception_request = self._exceptions[request_id]
         self._suspension_generation += 1
         observed_at = datetime.now(timezone.utc).isoformat()
@@ -1780,6 +2195,7 @@ class JavaRuntime(Runtime):
             thread_id=int(event["thread_id"]),
             location=event.get("location") or {},
             observed_at=observed_at,
+            jdwp_request_id=jdwp_request_id,
             created_at=observed_at,
             event_kind="exception",
             event_type="exception",
@@ -1808,10 +2224,12 @@ class JavaRuntime(Runtime):
         thrown_class = self._object_class_signature(jdwp, object_id) if object_id else "unknown"
         logger.info(
             "java_runtime.exception.hit suspension=%s generation=%s request_id=%s "
+            "jdwp_request_id=%s "
             "thread=%s exception_class=%s thrown_class=%s class=%s method=%s line=%s caught=%s",
             snapshot.suspension_id,
             snapshot.generation,
             request_id,
+            jdwp_request_id,
             thread_name,
             exception_request.get("exception_class", "-"),
             thrown_class,
@@ -1834,6 +2252,7 @@ class JavaRuntime(Runtime):
                 "request_caught": exception_request.get("caught", False),
                 "request_uncaught": exception_request.get("uncaught", False),
             },
+            "jdwp": {"request_id": jdwp_request_id},
             "thread": {"name": thread_name},
             "throw_location": location_description,
             "location": location_description,
@@ -1856,8 +2275,8 @@ class JavaRuntime(Runtime):
             "process_state": "running",
             "debug_state": "attached",
             "suggested_next_step": (
-                "Trigger the target code path again, or call status/list to confirm "
-                "the expected breakpoint or exception event is still registered."
+                "Confirm the logical breakpoint or exception definition with list, "
+                "then start a new wait_event before triggering the scenario again."
             ),
         })
 
@@ -1934,11 +2353,17 @@ class JavaRuntime(Runtime):
             event_kind = int(event.get("kind", 0))
             if event_kind not in accepted_kinds:
                 continue
-            if event_kind == EventKind.BREAKPOINT and request_id in self._breakpoints:
+            breakpoint_id = self._armed_breakpoint_requests.get(request_id)
+            if (
+                event_kind == EventKind.BREAKPOINT
+                and breakpoint_id is not None
+                and breakpoint_id in self._breakpoints
+            ):
                 handled = True
                 result = self._capture_breakpoint_event(
                     jdwp,
                     event,
+                    breakpoint_id,
                     suspend_policy,
                     wait_control,
                     suspended_thread_ids,
@@ -1954,11 +2379,17 @@ class JavaRuntime(Runtime):
                         )
                     return self._cancelled_wait_result(wait_label, wait_control)
                 return result
-            if event_kind == EventKind.EXCEPTION and request_id in self._exceptions:
+            exception_request_id = self._armed_exception_requests.get(request_id)
+            if (
+                event_kind == EventKind.EXCEPTION
+                and exception_request_id is not None
+                and exception_request_id in self._exceptions
+            ):
                 handled = True
                 result = self._capture_exception_event(
                     jdwp,
                     event,
+                    exception_request_id,
                     suspend_policy,
                     wait_control,
                     suspended_thread_ids,
@@ -2119,8 +2550,8 @@ class JavaRuntime(Runtime):
                     self._jdwp = None
                 self._invalidate_connection_scoped_requests(
                     "The JDWP connection was force-closed after a cancelled "
-                    "event could not be resumed; breakpoint and exception "
-                    "requests must be set again.",
+                    "event could not be resumed; stable event definitions "
+                    "were preserved for the next wait_event.",
                     force_warning=True,
                 )
                 if wait_control is not None:
@@ -2220,7 +2651,10 @@ class JavaRuntime(Runtime):
         self._disconnect()
         self._breakpoints.clear()
         self._exceptions.clear()
+        self._armed_breakpoint_requests.clear()
+        self._armed_exception_requests.clear()
         self._breakpoint_counter = 0
+        self._exception_counter = 0
         self._invalidate_suspension()
         self._debug_connection_dirty = False
         self._debug_connection_warning = ""
@@ -2252,10 +2686,9 @@ class JavaRuntime(Runtime):
         return snapshot
 
     def _snapshot_context(self, snapshot: SuspensionSnapshot) -> dict[str, Any]:
-        return {
+        context: dict[str, Any] = {
             "suspension_id": snapshot.suspension_id,
             "generation": snapshot.generation,
-            "request_id": snapshot.request_id,
             "thread_id": snapshot.thread_id,
             "observed_at": snapshot.observed_at,
             "created_at": snapshot.created_at or snapshot.observed_at,
@@ -2267,7 +2700,13 @@ class JavaRuntime(Runtime):
             "suspend_policy": snapshot.suspend_policy,
             "suspend_policy_name": self._suspend_policy_name(snapshot.suspend_policy),
             "resumed": snapshot.resumed,
+            "jdwp": {"request_id": snapshot.jdwp_request_id},
         }
+        if snapshot.breakpoint_id:
+            context["breakpoint_id"] = snapshot.breakpoint_id
+        if snapshot.request_id:
+            context["request_id"] = snapshot.request_id
+        return context
 
     def _variable_observation(self, variable: Variable) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -2294,19 +2733,26 @@ class JavaRuntime(Runtime):
         self._breakpoint_counter += 1
         return f"bp_{self._breakpoint_counter:03d}"
 
+    def _next_exception_request_id(self) -> int:
+        self._exception_counter = max(
+            self._exception_counter,
+            max(self._exceptions, default=0),
+        ) + 1
+        return self._exception_counter
+
     def _breakpoint_observations(self) -> list[dict[str, Any]]:
         return [
-            self._breakpoint_observation(request_id, breakpoint)
-            for request_id, breakpoint in sorted(self._breakpoints.items())
+            self._breakpoint_observation(breakpoint_id, breakpoint)
+            for breakpoint_id, breakpoint in sorted(self._breakpoints.items())
         ]
 
     def _breakpoint_observation(
         self,
-        request_id: int,
+        breakpoint_id: str,
         breakpoint: dict[str, Any],
     ) -> dict[str, Any]:
         return {
-            "breakpoint_id": breakpoint.get("breakpoint_id", ""),
+            "breakpoint_id": breakpoint.get("breakpoint_id", breakpoint_id),
             "class": breakpoint.get("class", ""),
             "matched_class": breakpoint.get("matched_class", breakpoint.get("class", "")),
             "source_file": breakpoint.get("source_file"),
@@ -2314,10 +2760,10 @@ class JavaRuntime(Runtime):
             "method": breakpoint.get("method", ""),
             "line": breakpoint.get("line", 0),
             "jdwp": {
-                "request_id": request_id,
                 "suspend_policy": self._suspend_policy_name(
                     int(breakpoint.get("suspend_policy", SuspendPolicy.EVENT_THREAD))
                 ),
+                "armed": False,
             },
         }
 
@@ -2325,8 +2771,6 @@ class JavaRuntime(Runtime):
         selector: dict[str, Any] = {}
         if action.breakpoint_id:
             selector["breakpoint_id"] = action.breakpoint_id
-        if action.request_id:
-            selector["request_id"] = action.request_id
         if action.class_pattern:
             selector["class_pattern"] = action.class_pattern
         if action.line:
@@ -2335,28 +2779,22 @@ class JavaRuntime(Runtime):
             selector["all"] = True
         return selector
 
-    def _breakpoint_remove_targets(self, action: RuntimeAction) -> list[int]:
+    def _breakpoint_remove_targets(self, action: RuntimeAction) -> list[str]:
         if action.breakpoint_id:
-            return [
-                request_id
-                for request_id, breakpoint in self._breakpoints.items()
-                if breakpoint.get("breakpoint_id") == action.breakpoint_id
-            ]
-        if action.request_id:
-            return [action.request_id] if action.request_id in self._breakpoints else []
+            return [action.breakpoint_id] if action.breakpoint_id in self._breakpoints else []
         if not action.class_pattern and not action.line:
             return list(self._breakpoints)
 
         class_pattern = action.class_pattern.lower()
-        targets: list[int] = []
-        for request_id, breakpoint in self._breakpoints.items():
+        targets: list[str] = []
+        for breakpoint_id, breakpoint in self._breakpoints.items():
             class_matches = (
                 not class_pattern
                 or class_pattern in str(breakpoint.get("class", "")).lower()
             )
             line_matches = not action.line or breakpoint.get("line") == action.line
             if class_matches and line_matches:
-                targets.append(request_id)
+                targets.append(breakpoint_id)
         return targets
 
     def _breakpoint_class_name(self, signature: str) -> str:
@@ -4313,13 +4751,13 @@ class JavaRuntime(Runtime):
                 self._jdwp = None
                 invalidated = self._invalidate_connection_scoped_requests(
                     "The previous JDWP connection became unreachable; "
-                    "breakpoint and exception requests were invalidated and "
-                    "must be set again."
+                    "live JDWP requests were invalidated while stable Runtime "
+                    "definitions were preserved."
                 )
                 if invalidated:
                     raise RuntimeError(
                         "JDWP connection changed while debug state was active; "
-                        "set the required breakpoint or exception event again."
+                        "retry wait_event to re-arm stable event definitions."
                     ) from exc
         jdwp = JDWPClient()
         proc = self._proc.current
@@ -4349,14 +4787,14 @@ class JavaRuntime(Runtime):
         *,
         force_warning: bool = False,
     ) -> bool:
-        """Forget debugger ids that cannot survive a JDWP disconnect."""
+        """Forget live JDWP ids while preserving stable Runtime definitions."""
         had_remote_state = bool(
-            self._breakpoints
-            or self._exceptions
+            self._armed_breakpoint_requests
+            or self._armed_exception_requests
             or self._active_suspension is not None
         )
-        self._breakpoints.clear()
-        self._exceptions.clear()
+        self._armed_breakpoint_requests.clear()
+        self._armed_exception_requests.clear()
         self._invalidate_suspension()
         if had_remote_state or force_warning:
             self._debug_connection_dirty = True

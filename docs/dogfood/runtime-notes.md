@@ -4,6 +4,15 @@
 > Scope: Java Runtime / Debug Session dogfood
 > Purpose: record practical problems found during dogfood, especially how to trigger real backend code paths and where HTTP request parameters should come from.
 
+> Stage 2.1.1 lifecycle note: some workflow sketches below are historical and
+> predate wait-scoped arming. A breakpoint/exception `set` now creates a stable
+> logical definition; its suspend-capable JDWP request exists only during an
+> active `wait_event`. Prepare a delayed/background trigger, start
+> `wait_event`, and let the trigger fire while that wait is active. After a
+> hit/resume, start a new wait and replay the scenario for the next observation
+> point. Do not expect one HTTP request to cross several waits, and matching
+> traffic with no waiter or after timeout must never suspend the JVM.
+
 ---
 
 ## 1. Background

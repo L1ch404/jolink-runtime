@@ -145,11 +145,19 @@ def test_full_stdio_debug_chain_and_owned_shutdown(tmp_path: Path) -> None:
                     assert breakpoint["line"] == breakpoint_line
                     assert breakpoint["suspend_policy"] == "EVENT_THREAD"
 
-                    trigger.write_text("go", encoding="utf-8")
-                    hit = assert_ok(await call_payload(session, {
-                        "action": "wait_event",
-                        "timeout": 10,
-                    }))
+                    hit_holder: dict[str, Any] = {}
+
+                    async def wait_for_hit() -> None:
+                        hit_holder.update(assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "timeout": 10,
+                        })))
+
+                    async with anyio.create_task_group() as task_group:
+                        task_group.start_soon(wait_for_hit)
+                        await anyio.sleep(0.5)
+                        trigger.write_text("go", encoding="utf-8")
+                    hit = hit_holder
                     assert hit["status"] == "breakpoint_hit"
                     assert hit["location"]["line"] == breakpoint_line
                     suspension_id = str(hit["suspension_id"])
@@ -237,11 +245,19 @@ def test_shutdown_resumes_and_detaches_suspended_attached_jvm(
                         "class_pattern": "AttachedMcpFixture",
                         "line": breakpoint_line,
                     }))
-                    trigger.write_text("go", encoding="utf-8")
-                    hit = assert_ok(await call_payload(session, {
-                        "action": "wait_event",
-                        "timeout": 10,
-                    }))
+                    hit_holder: dict[str, Any] = {}
+
+                    async def wait_for_hit() -> None:
+                        hit_holder.update(assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "timeout": 10,
+                        })))
+
+                    async with anyio.create_task_group() as task_group:
+                        task_group.start_soon(wait_for_hit)
+                        await anyio.sleep(0.5)
+                        trigger.write_text("go", encoding="utf-8")
+                    hit = hit_holder
                     assert hit["status"] == "breakpoint_hit"
 
                     # Keep the event thread suspended. Server shutdown must
@@ -343,6 +359,35 @@ def test_cancelled_notification_releases_waiter_and_preserves_breakpoint(
                     for iteration in range(5):
                         await cancel_current_wait(session, iteration)
 
+                    # No waiter is active here. Executing the breakpoint line
+                    # must not suspend the JVM; the marker is written after it.
+                    trigger.write_text("outside-wait", encoding="utf-8")
+                    await wait_until_async(marker.exists)
+                    assert marker.read_text(encoding="utf-8") == "0\n"
+                    status = assert_ok(await call_payload(session, {
+                        "action": "status",
+                    }))
+                    assert status["debug_state"] != "suspended"
+                    assert status.get("suspension_id") in {None, ""}
+
+                    timed_out = assert_ok(await call_payload(session, {
+                        "action": "wait_event",
+                        "timeout": 0.2,
+                    }))
+                    assert timed_out["status"] == "timeout"
+
+                    # A request created for a timed-out wait must also be
+                    # gone before a later trigger executes.
+                    trigger.write_text("after-timeout", encoding="utf-8")
+                    with anyio.fail_after(10):
+                        while marker.read_text(encoding="utf-8") != "0\n1\n":
+                            await anyio.sleep(0.05)
+                    status = assert_ok(await call_payload(session, {
+                        "action": "status",
+                    }))
+                    assert status["debug_state"] != "suspended"
+                    assert status.get("suspension_id") in {None, ""}
+
                     listed = assert_ok(await call_payload(session, {
                         "action": "breakpoint",
                         "bp_action": "list",
@@ -366,13 +411,137 @@ def test_cancelled_notification_releases_waiter_and_preserves_breakpoint(
                         trigger.write_text("go", encoding="utf-8")
 
                     assert hit_holder["status"] == "breakpoint_hit"
+                    assert hit_holder["breakpoint_id"] == breakpoint_id
                     resumed = assert_ok(await call_payload(session, {
                         "action": "resume",
                         "suspension_id": hit_holder["suspension_id"],
                     }))
                     assert resumed["status"] == "resumed"
-                    await wait_until_async(marker.exists)
+                    with anyio.fail_after(10):
+                        while marker.read_text(encoding="utf-8") != "0\n1\n2\n":
+                            await anyio.sleep(0.05)
 
+                    # A completed hit disarms its raw JDWP request but keeps
+                    # the logical definition. A new wait must re-arm it.
+                    second_hit: dict[str, Any] = {}
+
+                    async def wait_for_second_hit() -> None:
+                        second_hit.update(assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "timeout": 10,
+                        })))
+
+                    async with anyio.create_task_group() as task_group:
+                        task_group.start_soon(wait_for_second_hit)
+                        await anyio.sleep(0.3)
+                        trigger.write_text("go-again", encoding="utf-8")
+
+                    assert second_hit["status"] == "breakpoint_hit"
+                    assert second_hit["breakpoint_id"] == breakpoint_id
+                    assert_ok(await call_payload(session, {
+                        "action": "resume",
+                        "suspension_id": second_hit["suspension_id"],
+                    }))
+                    with anyio.fail_after(10):
+                        while marker.read_text(encoding="utf-8") != "0\n1\n2\n3\n":
+                            await anyio.sleep(0.05)
+
+                    assert_ok(await call_payload(session, {"action": "stop"}))
+
+    anyio.run(scenario)
+
+
+def test_two_phase_wait_arms_before_immediate_trigger_and_rearms(
+    tmp_path: Path,
+) -> None:
+    """The trigger may run immediately after arm; no sleep window is needed."""
+    require_real_mcp_java_e2e()
+    compile_java(tmp_path, "CancellationMcpFixture", CANCELLATION_SOURCE)
+    breakpoint_line = source_line(
+        CANCELLATION_SOURCE,
+        "System.out.println(observed)",
+    )
+    trigger = tmp_path / "two-phase-trigger"
+    marker = tmp_path / "two-phase-marker"
+    jdwp_port = reserve_local_port()
+
+    async def arm_trigger_await(
+        session: Any,
+        trigger_value: str,
+    ) -> dict[str, Any]:
+        armed = assert_ok(await call_payload(session, {
+            "action": "wait_event",
+            "wait_mode": "arm",
+            "timeout": 10,
+        }))
+        assert armed["status"] == "armed"
+        assert armed["armed_breakpoint_ids"] == ["bp_001"]
+        wait_handle = str(armed["wait_handle"])
+
+        # This write happens immediately after the MCP response.  Unlike the
+        # legacy blocking pattern, correctness does not depend on guessing a
+        # sleep long enough for EventRequest.Set to finish.
+        trigger.write_text(trigger_value, encoding="utf-8")
+        hit = assert_ok(await call_payload(session, {
+            "action": "wait_event",
+            "wait_mode": "await",
+            "wait_handle": wait_handle,
+            "timeout": 10,
+        }))
+        assert hit["status"] == "breakpoint_hit"
+        assert hit["breakpoint_id"] == "bp_001"
+        assert hit["wait_handle"] == wait_handle
+        return hit
+
+    async def scenario() -> None:
+        with temporary_stderr() as stderr:
+            with anyio.fail_after(60):
+                async with open_mcp_session(stderr) as session:
+                    assert_ok(await call_payload(session, {
+                        "action": "run",
+                        "classpath": str(tmp_path),
+                        "main_class": "CancellationMcpFixture",
+                        "app_args": [str(trigger), str(marker)],
+                        "jdwp_port": jdwp_port,
+                    }))
+                    breakpoint = assert_ok(await call_payload(session, {
+                        "action": "breakpoint",
+                        "bp_action": "set",
+                        "class_pattern": "CancellationMcpFixture",
+                        "line": breakpoint_line,
+                    }))
+                    assert breakpoint["breakpoint_id"] == "bp_001"
+
+                    first = await arm_trigger_await(session, "first")
+                    first_request_id = int(first["jdwp"]["request_id"])
+                    assert_ok(await call_payload(session, {
+                        "action": "resume",
+                        "suspension_id": first["suspension_id"],
+                    }))
+                    await wait_until_async(marker.exists)
+                    with anyio.fail_after(10):
+                        while marker.read_text(encoding="utf-8") != "0\n":
+                            await anyio.sleep(0.02)
+
+                    second = await arm_trigger_await(session, "second")
+                    second_request_id = int(second["jdwp"]["request_id"])
+                    assert second_request_id != first_request_id
+                    assert_ok(await call_payload(session, {
+                        "action": "resume",
+                        "suspension_id": second["suspension_id"],
+                    }))
+                    with anyio.fail_after(10):
+                        while marker.read_text(encoding="utf-8") != "0\n1\n":
+                            await anyio.sleep(0.02)
+
+                    listed = assert_ok(await call_payload(session, {
+                        "action": "breakpoint",
+                        "bp_action": "list",
+                    }))
+                    assert [
+                        item["breakpoint_id"]
+                        for item in listed["breakpoints"]
+                    ] == ["bp_001"]
                     assert_ok(await call_payload(session, {"action": "stop"}))
 
     anyio.run(scenario)

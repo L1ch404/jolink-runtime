@@ -4,6 +4,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+import anyio
+
 from jolink_runtime_debugger.adapters.java.jdwp_adapter import (
     JavaRuntime,
     SuspensionSnapshot,
@@ -18,6 +20,7 @@ from jolink_runtime_debugger.core.dispatcher import Dispatcher
 from jolink_runtime_debugger.core.models import RuntimeAction, RuntimeResult
 from jolink_runtime_debugger.core.session_manager import SessionManager
 from jolink_runtime_debugger.core.wait_state import WaitControl
+from jolink_runtime_debugger.server.mcp_server import RuntimeMCPBoundary
 
 
 class _SessionRuntime:
@@ -91,9 +94,24 @@ def test_shutdown_helpers_do_not_allocate_a_missing_session() -> None:
         control,
         session_key="missing",
     ) is False
-    assert dispatcher.close_session("missing") is False
+    assert dispatcher.close_session("missing") is True
     assert created == 0
     assert dispatcher.sessions.session_keys == ()
+
+
+def test_boundary_shutdown_with_absent_session_is_clean_and_idempotent() -> None:
+    dispatcher = Dispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        await boundary.shutdown()
+        await boundary.shutdown()
+
+    anyio.run(scenario)
+
+    assert dispatcher.sessions.session_keys == ()
+    assert boundary._closed is True
+    assert boundary._poisoned_reason == ""
 
 
 def test_close_session_removes_and_closes_runtime_once() -> None:
@@ -102,7 +120,7 @@ def test_close_session_removes_and_closes_runtime_once() -> None:
     assert sessions.get_runtime("dogfood") is runtime
 
     assert sessions.close_session("dogfood") is True
-    assert sessions.close_session("dogfood") is False
+    assert sessions.close_session("dogfood") is True
     assert runtime.close_count == 1
     assert sessions.get_existing_runtime("dogfood") is None
 
@@ -409,6 +427,80 @@ def test_attach_forgets_target_published_after_force_close_race() -> None:
     assert process.current is None
 
 
+def test_force_close_releases_each_late_target_by_identity() -> None:
+    @dataclass
+    class Info:
+        pid: int
+        generation: int
+        owned: bool = True
+
+    class ExactProcessManager:
+        def __init__(self, current: Info) -> None:
+            self.current = current
+            self.released: list[Info] = []
+
+        def stop_target(self, expected: Info) -> dict[str, Any]:
+            self.released.append(expected)
+            if self.current is expected:
+                self.current = None
+            return {"status": "stopped", "pid": expected.pid}
+
+        def detach_target(self, expected: Info) -> dict[str, Any]:
+            raise AssertionError(f"owned target {expected.pid} must be stopped")
+
+    first = Info(pid=101, generation=1)
+    second = Info(pid=202, generation=2)
+    process = ExactProcessManager(first)
+    runtime = JavaRuntime()
+    runtime._proc = process
+
+    runtime.force_close()
+    process.current = second
+    closing = runtime._release_late_published_target(second, operation="run")
+
+    assert closing is not None
+    assert closing.data["error_code"] == "SERVER_SHUTTING_DOWN"
+    assert [target.pid for target in process.released] == [101, 202]
+    assert process.current is None
+
+
+def test_force_close_releases_each_late_attached_target_by_identity() -> None:
+    @dataclass
+    class Info:
+        pid: int
+        generation: int
+        owned: bool = False
+
+    class ExactProcessManager:
+        def __init__(self, current: Info) -> None:
+            self.current = current
+            self.released: list[Info] = []
+
+        def stop_target(self, expected: Info) -> dict[str, Any]:
+            raise AssertionError(f"attached target {expected.pid} must not be stopped")
+
+        def detach_target(self, expected: Info) -> dict[str, Any]:
+            self.released.append(expected)
+            if self.current is expected:
+                self.current = None
+            return {"status": "detached", "pid": expected.pid}
+
+    first = Info(pid=301, generation=1)
+    second = Info(pid=302, generation=2)
+    process = ExactProcessManager(first)
+    runtime = JavaRuntime()
+    runtime._proc = process
+
+    runtime.force_close()
+    process.current = second
+    closing = runtime._release_late_published_target(second, operation="attach")
+
+    assert closing is not None
+    assert closing.data["error_code"] == "SERVER_SHUTTING_DOWN"
+    assert [target.pid for target in process.released] == [301, 302]
+    assert process.current is None
+
+
 class _DebugClient:
     ids = IDSizes(8, 8, 8, 8, 8)
 
@@ -447,13 +539,9 @@ def test_close_resumes_snapshot_cleans_requests_then_detaches() -> None:
 
     commands = [(command_set, command) for command_set, command, _ in client.commands]
     assert commands == [
-        (Cmd.EVENT, 2),
-        (Cmd.EVENT, 2),
         (Cmd.THREAD, 3),
         (Cmd.VM, 9),
     ]
-    assert client.commands[0][2][:1] == bytes([EventKind.BREAKPOINT])
-    assert client.commands[1][2][:1] == bytes([EventKind.EXCEPTION])
     assert client.close_count == 1
     assert process.stop_count == 0
     assert process.detach_count == 1
@@ -485,15 +573,17 @@ def test_close_uses_emergency_resume_when_cleanup_returns_error() -> None:
     assert process.detach_count == 1
 
 
-def test_interrupt_wait_invalidates_connection_scoped_debug_requests() -> None:
+def test_interrupt_wait_preserves_definitions_and_invalidates_live_requests() -> None:
     runtime = JavaRuntime()
     process = _ProcessManager(owned=False)
     client = _DebugClient()
     snapshot = _snapshot()
     runtime._proc = process
     runtime._jdwp = client
-    runtime._breakpoints = {17: {"line": 42}}
-    runtime._exceptions = {18: {"class": "Ljava/lang/Exception;"}}
+    runtime._breakpoints = {"bp_001": {"breakpoint_id": "bp_001", "line": 42}}
+    runtime._exceptions = {18: {"exception_class": "Ljava/lang/Exception;"}}
+    runtime._armed_breakpoint_requests = {17: "bp_001"}
+    runtime._armed_exception_requests = {19: 18}
     runtime._active_suspension = snapshot
 
     runtime.interrupt_wait()
@@ -501,12 +591,14 @@ def test_interrupt_wait_invalidates_connection_scoped_debug_requests() -> None:
 
     assert client.close_count == 1
     assert runtime._jdwp is None
-    assert runtime._breakpoints == {}
-    assert runtime._exceptions == {}
+    assert set(runtime._breakpoints) == {"bp_001"}
+    assert set(runtime._exceptions) == {18}
+    assert runtime._armed_breakpoint_requests == {}
+    assert runtime._armed_exception_requests == {}
     assert runtime._active_suspension is None
     assert snapshot.valid is False
     assert runtime._debug_connection_dirty is True
-    assert "must be set again" in runtime._debug_connection_warning
+    assert "definitions were preserved" in runtime._debug_connection_warning
     assert process.stop_count == 0
     assert process.detach_count == 0
 
@@ -542,10 +634,21 @@ def test_status_explains_force_disconnected_debug_requests() -> None:
     assert status.data["breakpoint_count"] == 0
     assert status.data["exception_count"] == 0
     assert status.data["warnings"] == ["requests must be set again"]
-    assert "Set the required breakpoint" in status.data["suggested_next_step"]
+    assert "Retry wait_event" in status.data["suggested_next_step"]
 
 
 def test_stale_connection_invalidates_requests_before_reconnect() -> None:
+    class ProcessInfo:
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+        jdwp_port = 5005
+        pid = 4321
+
+    class Process:
+        current = ProcessInfo()
+
     class StaleClient:
         def __init__(self) -> None:
             self.close_count = 0
@@ -557,10 +660,13 @@ def test_stale_connection_invalidates_requests_before_reconnect() -> None:
             self.close_count += 1
 
     runtime = JavaRuntime()
+    runtime._proc = Process()
     client = StaleClient()
     runtime._jdwp = client
-    runtime._breakpoints = {17: {"line": 42}}
-    runtime._exceptions = {18: {"class": "Ljava/lang/Exception;"}}
+    runtime._breakpoints = {"bp_001": {"breakpoint_id": "bp_001", "line": 42}}
+    runtime._exceptions = {18: {"exception_class": "Ljava/lang/Exception;"}}
+    runtime._armed_breakpoint_requests = {17: "bp_001"}
+    runtime._armed_exception_requests = {19: 18}
 
     try:
         runtime._connect()
@@ -571,6 +677,8 @@ def test_stale_connection_invalidates_requests_before_reconnect() -> None:
 
     assert client.close_count == 1
     assert runtime._jdwp is None
-    assert runtime._breakpoints == {}
-    assert runtime._exceptions == {}
+    assert set(runtime._breakpoints) == {"bp_001"}
+    assert set(runtime._exceptions) == {18}
+    assert runtime._armed_breakpoint_requests == {}
+    assert runtime._armed_exception_requests == {}
     assert runtime._debug_connection_dirty is True

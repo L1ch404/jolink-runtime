@@ -33,6 +33,7 @@ def test_mcp_v01_exposes_only_two_compact_tools() -> None:
 def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     runtime = get_mcp_tools()[0]
     actions = runtime.inputSchema["properties"]["action"]["enum"]
+    wait_mode = runtime.inputSchema["properties"]["wait_mode"]
 
     assert runtime.inputSchema["additionalProperties"] is False
     assert actions == list(PUBLIC_RUNTIME_ACTIONS)
@@ -40,6 +41,9 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     assert "wait_event" in actions
     assert "wait_breakpoint" not in actions
     assert "skill_view" not in runtime.inputSchema["properties"]
+    assert wait_mode["enum"] == ["blocking", "arm", "await"]
+    assert wait_mode["default"] == "blocking"
+    assert "wait_handle" in runtime.inputSchema["properties"]
 
 
 def test_mcp_v01_schemas_reject_unknown_fields_and_remote_hosts() -> None:
@@ -52,12 +56,20 @@ def test_mcp_v01_schemas_reject_unknown_fields_and_remote_hosts() -> None:
 
 
 def test_java_runtime_description_contains_required_selection_and_safety_signals() -> None:
-    assert "Stateful" in JAVA_RUNTIME_DESCRIPTION
-    assert "local JVM" in JAVA_RUNTIME_DESCRIPTION
-    assert "source code, logs, or tests" in JAVA_RUNTIME_DESCRIPTION
-    assert "suspension_id" in JAVA_RUNTIME_DESCRIPTION
-    assert "resume" in JAVA_RUNTIME_DESCRIPTION
-    assert "cleanup_debug_state" in JAVA_RUNTIME_DESCRIPTION
+    runtime_description = get_mcp_tools()[0].description or ""
+    assert runtime_description == JAVA_RUNTIME_DESCRIPTION
+    normalized = runtime_description.lower()
+    for signal in (
+        "stateful",
+        "java debugger",
+        "local jvm",
+        "source code, logs, or tests",
+        "armed only during wait_event",
+        "suspension_id",
+        "resume",
+        "cleanup_debug_state",
+    ):
+        assert signal in normalized
 
 
 def test_mcp_schema_budget_is_enforced() -> None:

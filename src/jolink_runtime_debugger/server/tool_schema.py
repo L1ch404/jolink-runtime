@@ -30,10 +30,14 @@ PUBLIC_RUNTIME_ACTIONS = (
 )
 
 JAVA_RUNTIME_DESCRIPTION = (
-    "Stateful tool to observe and control a local JVM when source code, logs, "
-    "or tests cannot determine the executed path or runtime state. Supports "
+    "Stateful Java debugger for observing and controlling a local JVM when "
+    "source code, logs, or tests are insufficient to determine the executed "
+    "path or runtime state. Supports "
     "launch/attach, breakpoints, exception events, stack frames, variables, "
     "and resume. "
+    "Breakpoints and exception watches are armed only during wait_event; "
+    "use wait_mode=arm, trigger the scenario after the armed response, then "
+    "use wait_mode=await with its wait_handle. Blocking mode remains available. "
     "After wait_event returns a suspension_id, always call resume or "
     "cleanup_debug_state after inspection."
 )
@@ -208,6 +212,18 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "maximum": 300,
             "default": 30,
             "description": "Seconds to wait for an event.",
+        },
+        "wait_mode": {
+            "type": "string",
+            "enum": ["blocking", "arm", "await"],
+            "default": "blocking",
+            "description": (
+                "wait_event mode: blocking, arm and return a handle, or await a handle."
+            ),
+        },
+        "wait_handle": {
+            "type": "string",
+            "description": "Observation handle returned by wait_mode=arm.",
         },
         "suspension_id": {
             "type": "string",

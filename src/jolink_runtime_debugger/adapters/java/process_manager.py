@@ -9,6 +9,7 @@ import os
 import signal
 import socket
 import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -31,6 +32,7 @@ class ProcessInfo:
         jar_path: str = "",
         pid: int | None = None,
         owned: bool = True,
+        generation: int = 0,
     ):
         self.proc = proc
         self._pid = proc.pid if proc is not None else int(pid or 0)
@@ -39,6 +41,7 @@ class ProcessInfo:
         self.jar_path = jar_path
         self.launch_mode = "jar" if jar_path else "class" if owned else "attached"
         self.owned = owned
+        self.generation = generation
 
     @property
     def pid(self) -> int:
@@ -64,6 +67,28 @@ class ProcessManager:
     def __init__(self, host: str = "localhost"):
         self._host = host
         self._process: Optional[ProcessInfo] = None
+        self._generation = 0
+        self._state_lock = threading.RLock()
+        self._accept_new_targets = True
+
+    def _publish(self, process: ProcessInfo) -> ProcessInfo:
+        """Publish a new target with a manager-local monotonic generation."""
+        with self._state_lock:
+            self._generation += 1
+            process.generation = self._generation
+            self._process = process
+        return process
+
+    def _forget_target(self, process: ProcessInfo) -> None:
+        """Forget a failed target without clearing a newer replacement."""
+        with self._state_lock:
+            if self._process is process:
+                self._process = None
+
+    def prevent_new_targets(self) -> None:
+        """Close the spawn/attach gate before Runtime shutdown inspects state."""
+        with self._state_lock:
+            self._accept_new_targets = False
 
     # -- helpers --
 
@@ -132,14 +157,18 @@ class ProcessManager:
             len(app_args or []), len(vm_args or []), startup_timeout,
         )
         # Auto-restart: stop old process first
-        if self._process and self._process.is_alive():
+        with self._state_lock:
+            previous = self._process
+        if previous and previous.is_alive():
             logger.info(
                 "java_runtime.process.start.replacing pid=%s",
-                self._process.pid,
+                previous.pid,
             )
-            self.stop()
+            self.stop_target(previous)
 
         log_fp = None
+        proc: subprocess.Popen | None = None
+        process: ProcessInfo | None = None
         try:
             if log_file:
                 # The Java child writes bytes directly to this file descriptor.
@@ -168,10 +197,23 @@ class ProcessManager:
                 popen_kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP
             else:
                 popen_kwargs["start_new_session"] = True
-            proc = subprocess.Popen(
-                cmd,
-                **popen_kwargs,
-            )
+            # Spawn and publish under the same lock. Shutdown must never
+            # observe an empty manager after the OS process exists, even while
+            # this method is still waiting for JDWP readiness.
+            with self._state_lock:
+                if not self._accept_new_targets:
+                    raise RuntimeError("Process manager is shutting down")
+                proc = subprocess.Popen(
+                    cmd,
+                    **popen_kwargs,
+                )
+                process = ProcessInfo(
+                    proc,
+                    jdwp_port,
+                    main_class,
+                    jar_path=jar_path,
+                )
+                self._publish(process)
             logger.info(
                 "java_runtime.process.spawned pid=%s launch_mode=%s target=%s jdwp_port=%s",
                 proc.pid, launch_mode, jar_path or main_class, jdwp_port,
@@ -179,6 +221,19 @@ class ProcessManager:
         except Exception as exc:
             if log_fp:
                 log_fp.close()
+            if process is not None:
+                try:
+                    self.stop_target(process)
+                except Exception:
+                    logger.exception(
+                        "java_runtime.process.spawn.rollback_failed pid=%s",
+                        process.pid,
+                    )
+            elif proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             logger.error(
                 "java_runtime.process.spawn.failed launch_mode=%s target=%s jdwp_port=%s "
                 "error_type=%s error=%s",
@@ -188,9 +243,12 @@ class ProcessManager:
             raise
 
         # Wait for process to confirm ready (JDWP handshake verified)
+        assert process is not None
+        assert proc is not None
         deadline = time.time() + startup_timeout
         while time.time() < deadline:
             if proc.poll() is not None:
+                self._forget_target(process)
                 if log_fp:
                     log_fp.close()
                 log_tail = self._read_log_tail(log_file)
@@ -209,6 +267,7 @@ class ProcessManager:
                 # JDWP handshake verified — wait 2s and confirm process stayed alive
                 time.sleep(2.0)
                 if proc.poll() is not None:
+                    self._forget_target(process)
                     if log_fp:
                         log_fp.close()
                     log_tail = self._read_log_tail(log_file)
@@ -234,6 +293,7 @@ class ProcessManager:
                 proc.kill()
             except Exception:
                 pass
+            self._forget_target(process)
             logger.warning(
                 "java_runtime.process.start.timeout pid=%s jdwp_port=%s "
                 "timeout_seconds=%s captured_log_chars=%s",
@@ -246,19 +306,13 @@ class ProcessManager:
 
         if log_fp:
             log_fp.close()
-        self._process = ProcessInfo(
-            proc,
-            jdwp_port,
-            main_class,
-            jar_path=jar_path,
-        )
         logger.info(
             "java_runtime.process.start.ready pid=%s launch_mode=%s target=%s jdwp_port=%s "
             "elapsed_ms=%.1f log_file=%s",
             proc.pid, launch_mode, jar_path or main_class, jdwp_port,
             (time.monotonic() - started_at) * 1000, log_file or "-",
         )
-        return self._process
+        return process
 
     def attach(
         self,
@@ -282,48 +336,89 @@ class ProcessManager:
             raise RuntimeError("attach requires a positive pid")
         if not psutil.pid_exists(pid):
             raise RuntimeError(f"Java process {pid} is not running")
-        self._process = ProcessInfo(
-            None,
-            jdwp_port,
-            main_class,
-            pid=pid,
-            owned=False,
-        )
+        with self._state_lock:
+            if not self._accept_new_targets:
+                raise RuntimeError("Process manager is shutting down")
+            process = ProcessInfo(
+                None,
+                jdwp_port,
+                main_class,
+                pid=pid,
+                owned=False,
+            )
+            self._publish(process)
         logger.info(
             "java_runtime.process.attach.ready pid=%s jdwp=%s:%s main_class=%s",
             pid, target_host, jdwp_port, main_class or "-",
         )
-        return self._process
+        return process
 
     def detach(self) -> dict:
         """Forget an attached process without terminating it."""
-        if self._process is None:
+        with self._state_lock:
+            process = self._process
+        return self.detach_target(process)
+
+    def detach_target(self, process: ProcessInfo | None) -> dict:
+        """Forget ``process`` without clearing a newer published target."""
+        if process is None:
             logger.info("java_runtime.process.detach.skipped reason=not_attached")
             return {"status": "not_attached"}
-        pid = self._process.pid
-        self._process = None
+        pid = process.pid
+        with self._state_lock:
+            if self._process is process:
+                self._process = None
+                status = "detached"
+            else:
+                # The expected target is already outside this manager. Treat
+                # that as an idempotent release without forgetting its
+                # replacement.
+                status = "already_detached"
         logger.info("java_runtime.process.detached pid=%s", pid)
-        return {"status": "detached", "pid": pid}
+        return {"status": status, "pid": pid}
 
     def stop(self) -> dict:
         """Stop the process. Returns {'status': ..., 'pid': ...}."""
-        if self._process is None or not self._process.is_alive():
+        with self._state_lock:
+            process = self._process
+        return self.stop_target(process)
+
+    def stop_target(self, process: ProcessInfo | None) -> dict:
+        """Stop exactly ``process`` without clearing a newer target.
+
+        Shutdown can race a slow ``run``/``restart``.  Operating on an
+        expected ProcessInfo object prevents a close that captured target A
+        from accidentally stopping or forgetting a later target B.
+        """
+        if process is None:
             logger.info("java_runtime.process.stop.skipped reason=not_running")
             return {"status": "not_running"}
 
-        if not self._process.owned:
-            return self.detach()
+        if not process.is_alive():
+            with self._state_lock:
+                if self._process is process:
+                    self._process = None
+            logger.info(
+                "java_runtime.process.stop.skipped reason=not_running pid=%s",
+                process.pid,
+            )
+            return {"status": "not_running", "pid": process.pid}
 
-        pid = self._process.pid
-        proc = self._process.proc
+        if not process.owned:
+            return self.detach_target(process)
+
+        pid = process.pid
+        proc = process.proc
         if proc is None:
-            return self.detach()
+            return self.detach_target(process)
         if _IS_WINDOWS:
             self._stop_windows(proc)
         else:
             self._stop_posix(proc)
 
-        self._process = None
+        with self._state_lock:
+            if self._process is process:
+                self._process = None
         logger.info(
             "java_runtime.process.stop.finish pid=%s exit_code=%s",
             pid, proc.poll(),
@@ -416,8 +511,11 @@ class ProcessManager:
 
     @property
     def current(self) -> Optional[ProcessInfo]:
-        return self._process
+        with self._state_lock:
+            return self._process
 
     @property
     def is_running(self) -> bool:
-        return self._process is not None and self._process.is_alive()
+        with self._state_lock:
+            process = self._process
+        return process is not None and process.is_alive()

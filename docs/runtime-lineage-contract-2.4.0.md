@@ -112,6 +112,25 @@ The standalone MCP boundary adds internal `WaitControl` ownership to
 
 Normal, non-cancelled Runtime results remain unchanged.
 
+### Wait-scoped suspend-capable requests
+
+Stage 2.1.1 fixes a lifecycle race inherited from the migrated implementation.
+Breakpoint and exception configuration is now split into two layers:
+
+- stable Runtime definitions remain visible through `list` and retain their
+  public `breakpoint_id` or exception `request_id`;
+- suspend-capable JDWP EventRequests exist only while one `wait_event` owns the
+  session and are cleared on hit, timeout, cancellation, or error.
+
+Late events racing request cleanup are automatically resumed. Raw JDWP request
+ids are connection-scoped diagnostics and are never stable operation ids. This
+prevents a target thread from being suspended when no waiter can receive and
+own the event.
+
+Breakpoint removal accepts the stable `breakpoint_id` (or class/line
+selectors), not a raw JDWP `request_id`. The integer `request_id` remains the
+stable public identifier for exception watches only.
+
 ### JDWP receive framing and connection generation
 
 The migrated socket reader discarded partial JDWP headers/bodies when a
@@ -130,6 +149,11 @@ operations used by MCP shutdown:
 
 - launched JVMs are stopped;
 - attached JVMs are resumed/detached and never terminated;
+- shutdown closes a process-manager gate before inspecting the current target;
+  OS process creation and target publication are atomic under that gate, so a
+  JVM cannot appear after shutdown has concluded;
+- each released target is identified by process object and generation, so a
+  late cleanup for target A cannot stop or forget replacement target B;
 - forced JDWP disconnect invalidates connection-scoped event requests instead
   of reporting stale breakpoint/exception ids as active;
 - normal public `stop` and `detach` behavior is unchanged.

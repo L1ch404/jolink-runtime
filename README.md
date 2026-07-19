@@ -20,8 +20,17 @@ Stage 2.1 provides the MCP path plus cancellation and shutdown safety:
 - Runtime `ok=false` mapped to MCP `isError=true`;
 - stdio transport with stdout reserved for protocol messages.
 - cancellable `wait_event` with generation ownership and automatic resume;
+- optional two-phase `wait_event` (`arm` -> external trigger -> `await`) so a
+  client can know that JDWP requests are installed before firing a scenario;
+- wait-scoped JDWP requests, so no breakpoint can suspend a JVM without an
+  active waiter;
 - ownership-aware shutdown: stop launched JVMs, detach attached JVMs;
 - persistent JDWP packet framing across short polling timeouts.
+
+The current two-phase implementation is intended for controlled dogfood. Its
+confirmed cancellation, cleanup-preemption, handle-publication, and response
+delivery limitations are tracked in
+[`docs/stage-2.1.2-lifecycle-backlog.md`](docs/stage-2.1.2-lifecycle-backlog.md).
 
 ## Requirements
 

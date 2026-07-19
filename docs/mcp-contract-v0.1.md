@@ -1,6 +1,7 @@
 # joLink Runtime Debugger MCP Contract v0.1
 
-Status: implemented stdio boundary with Stage 2.1 lifecycle hardening.
+Status: implemented stdio boundary with Stage 2.1 lifecycle hardening and
+deterministic two-phase event waiting.
 
 This is the client-facing MCP contract. The migrated implementation it wraps
 is frozen separately in
@@ -51,7 +52,10 @@ The compact description must tell the model:
    executed path or runtime state.
 3. It supports lifecycle, breakpoint/exception events, stack, variables, and
    resume.
-4. A suspension returned by `wait_event` must be resumed or cleaned up after
+4. Breakpoints and exception watches are armed only while `wait_event` is
+   active. Prefer `wait_mode=arm`, trigger only after the armed result, then
+   collect the event with `wait_mode=await`.
+5. A suspension returned by `wait_event` must be resumed or cleaned up after
    inspection.
 
 The Tool description carries these rules; correct basic use does not depend
@@ -91,6 +95,68 @@ into a Runtime `ok=false` payload because the Dispatcher was never invoked.
 
 ## Suspension and cancellation
 
+### Public wait modes
+
+`wait_event` has three modes without adding a new Runtime action:
+
+- `blocking` is the compatibility default. The call arms requests and blocks
+  until a hit, timeout, cancellation, or error.
+- `arm` starts one protected background observation and returns only after all
+  applicable JDWP EventRequests have been installed. Its successful result
+  contains an opaque `wait_handle`, `armed_at`, `expires_at`, and the stable
+  logical breakpoint/exception ids armed for that wait.
+- `await` accepts the `wait_handle` returned by `arm`. It returns the event or
+  terminal wait result. If only the await call's timeout expires while the
+  underlying observation is still active, it returns `status=waiting`; the
+  same handle may be awaited again.
+
+The intended deterministic sequence is:
+
+```text
+wait_event(wait_mode=arm)
+-> receive status=armed
+-> start the scenario through a non-blocking external mechanism
+-> wait_event(wait_mode=await, wait_handle=...)
+-> inspect the suspension
+-> resume(suspension_id=...)
+```
+
+There is at most one active wait per Runtime session. While a two-phase wait
+is active, normal Runtime observation or mutation calls are rejected with
+`ACTIVE_WAITER_EXISTS`; `cleanup_debug_state`, `stop`, `restart`, and `detach`
+first cancel and settle the wait safely. Cancelling an `arm` or `await` MCP
+request also cancels the underlying observation.
+
+If a two-phase wait creates a suspension but no `await` call claims its result
+within the bounded delivery grace period, Runtime resumes that exact
+suspension (or disconnects JDWP as the safe fallback) and preserves an
+explicit `WAIT_RESULT_EXPIRED` result for the handle. The public `wait_handle`
+is an opaque observation token; it is not a JDWP request id, suspension id,
+internal waiter id, or generation.
+
+#### Current dogfood implementation limitations
+
+The lifecycle statements above are the target v0.1 contract. The current
+dogfood implementation has confirmed concurrency defects, recorded with
+reproductions in
+[`stage-2.1.2-lifecycle-backlog.md`](stage-2.1.2-lifecycle-backlog.md):
+
+- cancellation of `arm` or `await` can be deferred until its local
+  `threading.Event.wait()` deadline;
+- an in-flight passive `await` holds the global call lock, so
+  `cleanup_debug_state`, `stop`, `restart`, `detach`, and `status` cannot
+  promptly preempt or report the active waiter;
+- a completed handle has a brief non-atomic transition in which `await` can
+  incorrectly return `WAIT_HANDLE_NOT_FOUND`;
+- when `result_ready=true`, the current hint still tells the Agent to trigger
+  before awaiting, even though it should collect the existing result first;
+- the post-handler MCP response-delivery suspension gap remains unbounded by
+  the complete delivery/inspection lease.
+
+Consequently this implementation is suitable for controlled dogfood, not yet
+for unattended long-running use. These are documented limitations, not
+accepted final semantics.
+
 - Only one active suspension is allowed per Runtime session.
 - Stack frames, variables, and object references are valid only while their
   suspension remains active.
@@ -105,7 +171,19 @@ into a Runtime `ok=false` payload because the Dispatcher was never invoked.
   suspension. It is resumed according to its suspend policy.
 - The old worker must finish and cancellation settlement must complete before
   another Runtime call can enter the session.
-- Normal cancellation preserves breakpoint and exception requests.
+- `breakpoint set` and `exception set` create stable Runtime definitions.
+  Their `breakpoint_id` and exception `request_id` values remain stable across
+  waits.
+- Suspend-capable JDWP EventRequests are created only for the active waiter
+  generation. Every hit, timeout, cancellation, and error exit clears them
+  before the wait finishes.
+- With no active waiter, no Runtime-owned JDWP EventRequest may remain capable
+  of suspending the target JVM. Events racing request cleanup are drained and
+  automatically resumed instead of becoming public suspensions.
+- The next `wait_event` re-arms the same logical definitions. Raw JDWP request
+  ids may change between waits and are diagnostics, not operation ids.
+- Normal cancellation preserves logical breakpoint and exception definitions,
+  not their temporary JDWP requests.
 - If the reader does not exit within the cancellation grace period, the
   boundary closes the JDWP connection. Connection-scoped requests are then
   invalidated, and `status` tells the caller to set them again.
@@ -121,9 +199,17 @@ into a Runtime `ok=false` payload because the Dispatcher was never invoked.
 - A Runtime-owned JVM is stopped when the MCP server exits.
 - An externally attached JVM is resumed/detached and is never terminated by
   MCP shutdown.
-- Shutdown uses bounded grace periods. If normal debugger cleanup blocks, an
-  ownership-aware force release closes JDWP, stops only owned targets, and
-  only forgets attached targets.
+- Shutdown waits for bounded Java cleanup primitives and performs best-effort
+  fallback cleanup. If normal debugger cleanup exceeds its grace period, an
+  ownership-aware force release closes JDWP, stops only the exact owned target,
+  and only forgets the exact attached target.
+- Shutdown closes the target-publication gate before taking its process
+  snapshot. A JVM cannot be spawned after that point, and a JVM already being
+  spawned is published atomically before shutdown chooses how to release it.
+- v0.1 does not claim a hard process-exit deadline for an arbitrary Python or
+  operating-system call that never returns. Real Java shutdown paths are
+  covered by subprocess E2E; MCP hosts may still terminate an unresponsive
+  stdio child after their own transport deadline.
 - Explicit `resume`, `cleanup_debug_state`, `detach`, and `stop` remain
   available during normal operation.
 - Remote JDWP attachment is not part of v0.1.
@@ -157,4 +243,5 @@ artifacts; they are never advertised by the MCP server.
 - No HTTP transport
 - No setup installer
 - No remote JDWP attach
-- No public waiter/cancellation fields in the Tool Schema
+- No public internal waiter/generation/cancellation fields in the Tool Schema;
+  only the opaque two-phase `wait_handle` is public

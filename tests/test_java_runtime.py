@@ -28,6 +28,8 @@ from jolink_runtime_debugger.adapters.java.process_manager import (
     ProcessManager,
 )
 from jolink_runtime_debugger.adapters.java.jdwp_adapter import (
+    BreakpointClassCandidate,
+    BreakpointLocation,
     JavaRuntime,
     SuspensionSnapshot,
 )
@@ -53,6 +55,188 @@ def test_external_process_liveness_uses_psutil(monkeypatch) -> None:
 
     assert info.is_alive() is True
     assert checked == [3488]
+
+
+def test_process_manager_releases_expected_target_without_clearing_replacement(
+    monkeypatch,
+) -> None:
+    class FakeProc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        @staticmethod
+        def poll():
+            return None
+
+    stopped: list[int] = []
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_posix",
+        staticmethod(lambda proc: stopped.append(proc.pid)),
+    )
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_windows",
+        staticmethod(lambda proc: stopped.append(proc.pid)),
+    )
+
+    manager = ProcessManager()
+    first = manager._publish(ProcessInfo(FakeProc(101), 5005, "First"))
+    second = manager._publish(ProcessInfo(FakeProc(202), 5006, "Second"))
+
+    assert first.generation == 1
+    assert second.generation == 2
+    released = manager.stop_target(first)
+
+    assert released == {"status": "stopped", "pid": 101}
+    assert stopped == [101]
+    assert manager.current is second
+
+
+def test_process_manager_detaches_expected_target_without_clearing_replacement() -> None:
+    manager = ProcessManager()
+    first = manager._publish(ProcessInfo(
+        None,
+        5005,
+        "First",
+        pid=101,
+        owned=False,
+    ))
+    second = manager._publish(ProcessInfo(
+        None,
+        5006,
+        "Second",
+        pid=202,
+        owned=False,
+    ))
+
+    released = manager.detach_target(first)
+
+    assert released == {"status": "already_detached", "pid": 101}
+    assert manager.current is second
+
+
+def test_force_close_sees_owned_process_while_start_waits_for_jdwp(
+    monkeypatch,
+) -> None:
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    stopped: list[int] = []
+    start_errors: list[Exception] = []
+
+    class FakeProc:
+        pid = 303
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    proc = FakeProc()
+    monkeypatch.setattr(process_module, "_IS_WINDOWS", False)
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: proc,
+    )
+
+    def blocked_probe(*args, **kwargs) -> bool:
+        probe_started.set()
+        assert release_probe.wait(timeout=2)
+        return False
+
+    monkeypatch.setattr(ProcessManager, "_check_jdwp_port", blocked_probe)
+
+    def stop_posix(target) -> None:
+        stopped.append(target.pid)
+        target.returncode = -15
+
+    monkeypatch.setattr(ProcessManager, "_stop_posix", staticmethod(stop_posix))
+
+    runtime = JavaRuntime()
+
+    def start_process() -> None:
+        try:
+            runtime._proc.start(
+                classpath=".",
+                main_class="StartingFixture",
+                jdwp_port=5005,
+                startup_timeout=2,
+            )
+        except Exception as error:
+            start_errors.append(error)
+
+    starter = threading.Thread(target=start_process)
+    starter.start()
+    assert probe_started.wait(timeout=2)
+
+    in_flight = runtime._proc.current
+    assert in_flight is not None
+    assert in_flight.pid == 303
+
+    runtime.force_close()
+    release_probe.set()
+    starter.join(timeout=3)
+
+    assert not starter.is_alive()
+    assert stopped == [303]
+    assert runtime._proc.current is None
+    assert len(start_errors) == 1
+    assert "Process exited with code -15" in str(start_errors[0])
+
+
+def test_failed_start_forgets_early_published_target(monkeypatch) -> None:
+    class ExitedProc:
+        pid = 304
+        returncode = 7
+
+        def poll(self):
+            return self.returncode
+
+    manager = ProcessManager()
+    monkeypatch.setattr(
+        process_module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: ExitedProc(),
+    )
+
+    with pytest.raises(RuntimeError, match="Process exited with code 7"):
+        manager.start(
+            classpath=".",
+            main_class="FailingFixture",
+            jdwp_port=5005,
+            startup_timeout=1,
+        )
+
+    assert manager.current is None
+
+
+def test_shutdown_gate_prevents_late_spawn_and_attach(monkeypatch) -> None:
+    manager = ProcessManager()
+    popen_called = False
+
+    def unexpected_popen(*args, **kwargs):
+        nonlocal popen_called
+        popen_called = True
+        raise AssertionError("shutdown gate must reject before Popen")
+
+    monkeypatch.setattr(process_module.subprocess, "Popen", unexpected_popen)
+    monkeypatch.setattr(process_module.psutil, "pid_exists", lambda pid: True)
+    manager.prevent_new_targets()
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        manager.start(
+            classpath=".",
+            main_class="TooLate",
+            jdwp_port=5005,
+        )
+    with pytest.raises(RuntimeError, match="shutting down"):
+        manager.attach(999, 5005, "TooLate")
+
+    assert popen_called is False
+    assert manager.current is None
 
 
 def test_attach_uses_non_destructive_pid_probe(monkeypatch) -> None:
@@ -371,7 +555,7 @@ def test_id_sizes_pack_each_jdwp_id_kind() -> None:
     assert ids.pack_frame(0x010203) == bytes.fromhex("010203")
 
 
-def test_breakpoint_clear_includes_event_kind() -> None:
+def test_breakpoint_remove_disarmed_definition_uses_no_protocol_call() -> None:
     class FakeProcessManager:
         is_running = True
 
@@ -385,16 +569,43 @@ def test_breakpoint_clear_includes_event_kind() -> None:
 
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
-    runtime._breakpoints = {17: {"line": 10}}
+    runtime._breakpoints = {
+        "bp_001": {"breakpoint_id": "bp_001", "line": 10}
+    }
     client = FakeClient()
     runtime._connect = lambda: client
 
     result = runtime.breakpoint(RuntimeAction(action="breakpoint", bp_action="remove"))
 
     assert result.error == ""
-    assert client.calls == [
-        (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 17))
-    ]
+    assert client.calls == []
+
+
+def test_breakpoint_remove_rejects_raw_jdwp_request_id() -> None:
+    class FakeProcessManager:
+        is_running = True
+
+    runtime = JavaRuntime()
+    runtime._proc = FakeProcessManager()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "last_jdwp_request_id": 77,
+            "line": 10,
+        }
+    }
+
+    result = runtime.breakpoint(RuntimeAction(
+        action="breakpoint",
+        bp_action="remove",
+        request_id=77,
+    ))
+
+    assert result.ok is False
+    assert result.data["error_code"] == "invalid_argument"
+    assert result.data["argument"] == "request_id"
+    assert "breakpoint_id" in result.data["suggested_next_step"]
+    assert set(runtime._breakpoints) == {"bp_001"}
 
 
 def test_breakpoint_set_validates_required_arguments_without_connecting() -> None:
@@ -514,16 +725,12 @@ def test_breakpoint_set_skips_proxy_by_default_and_can_opt_in() -> None:
     assert opt_in_result.data["method"] == "handle"
     assert opt_in_result.data["suspend_policy"] == "EVENT_THREAD"
     assert opt_in_result.data["warnings"] == []
-    assert opt_in_result.data["jdwp"]["request_id"] == 99
+    assert opt_in_result.data["jdwp"] == {
+        "armed": False,
+        "suspend_policy": "EVENT_THREAD",
+    }
+    assert (Cmd.EVENT, 1) not in [call[:2] for call in opt_in_client.calls]
     assert opt_in_result.data["class"] == "Lcom/example/UserServiceImpl$$SpringCGLIB$$0;"
-    event_payload = next(
-        data
-        for command_set, command, data in opt_in_client.calls
-        if (command_set, command) == (Cmd.EVENT, 1)
-    )
-    assert event_payload[:6] == struct.pack(
-        ">BBI", EventKind.BREAKPOINT, SuspendPolicy.EVENT_THREAD, 1
-    )
 
 
 def test_breakpoint_set_returns_matched_application_location_summary() -> None:
@@ -582,10 +789,257 @@ def test_breakpoint_set_returns_matched_application_location_summary() -> None:
     assert result.data["warnings"] == []
     assert "request_id" not in result.data
     assert result.data["jdwp"] == {
-        "request_id": 17,
+        "armed": False,
         "suspend_policy": "EVENT_THREAD",
     }
-    assert runtime._breakpoints[17]["breakpoint_id"] == "bp_001"
+    assert runtime._breakpoints["bp_001"]["breakpoint_id"] == "bp_001"
+
+
+def test_wait_event_owns_breakpoint_request_and_resumes_late_timeout_event() -> None:
+    class FakeProcessManager:
+        is_running = True
+
+    class FakeClient:
+        ids = IDSizes(8, 8, 8, 8, 8)
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, bytes]] = []
+            self.pending: list[dict[str, Any]] = []
+
+        def command(self, command_set, command, data=b""):
+            self.calls.append((command_set, command, data))
+            if (command_set, command) == (Cmd.VM, 3):
+                return 0, _pack_all_classes((1, 42, "LExample;", 7))
+            if (command_set, command) == (Cmd.REF_TYPE, 7):
+                source = b"Example.java"
+                return 0, struct.pack(">I", len(source)) + source
+            if (command_set, command) == (Cmd.REF_TYPE, 5):
+                name = b"run"
+                signature = b"()V"
+                return 0, (
+                    struct.pack(">I", 1)
+                    + (7).to_bytes(8, "big")
+                    + struct.pack(">I", len(name)) + name
+                    + struct.pack(">I", len(signature)) + signature
+                    + struct.pack(">I", 0)
+                )
+            if (command_set, command) == (Cmd.METHOD, 1):
+                return 0, (
+                    struct.pack(">QQI", 0, 20, 1)
+                    + struct.pack(">QI", 9, 25)
+                )
+            if (command_set, command) == (Cmd.EVENT, 1):
+                return 0, struct.pack(">I", 77)
+            if (command_set, command) == (Cmd.EVENT, 2):
+                self.pending.append({
+                    "suspend_policy": SuspendPolicy.EVENT_THREAD,
+                    "events": [{
+                        "kind": EventKind.BREAKPOINT,
+                        "request_id": 77,
+                        "thread_id": 10,
+                        "location": {"class_id": 42, "method_id": 7, "index": 9},
+                    }],
+                })
+                return 0, b""
+            if (command_set, command) in {(Cmd.VM, 1), (Cmd.THREAD, 3)}:
+                return 0, b""
+            raise AssertionError((command_set, command, data))
+
+        def drain_events(self):
+            pending = list(self.pending)
+            self.pending.clear()
+            return pending
+
+        def wait_for_event(self, timeout):
+            return None
+
+    runtime = JavaRuntime()
+    runtime._proc = FakeProcessManager()
+    client = FakeClient()
+    runtime._connect = lambda: client
+
+    configured = runtime.breakpoint(RuntimeAction(
+        action="breakpoint",
+        bp_action="set",
+        class_pattern="Example",
+        line=25,
+    ))
+    assert configured.ok is True
+    assert (Cmd.EVENT, 1) not in [call[:2] for call in client.calls]
+
+    result = runtime.wait_event(RuntimeAction(action="wait_event", timeout=0.01))
+
+    assert result.data["status"] == "timeout"
+    assert set(runtime._breakpoints) == {"bp_001"}
+    assert runtime._armed_breakpoint_requests == {}
+    assert runtime._active_suspension is None
+    event_calls = [call for call in client.calls if call[0] == Cmd.EVENT]
+    assert event_calls[0][1] == 1
+    assert event_calls[0][2][:6] == struct.pack(
+        ">BBI", EventKind.BREAKPOINT, SuspendPolicy.EVENT_THREAD, 1
+    )
+    assert event_calls[1] == (
+        Cmd.EVENT,
+        2,
+        struct.pack(">BI", EventKind.BREAKPOINT, 77),
+    )
+    assert (Cmd.THREAD, 3, (10).to_bytes(8, "big")) in client.calls
+
+
+def test_partial_arm_failure_rolls_back_first_remote_request() -> None:
+    class FakeProcessManager:
+        is_running = True
+
+    class FakeClient:
+        ids = IDSizes(8, 8, 8, 8, 8)
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, bytes]] = []
+            self.set_count = 0
+
+        def command(self, command_set, command, data=b""):
+            self.calls.append((command_set, command, data))
+            if (command_set, command) == (Cmd.EVENT, 1):
+                self.set_count += 1
+                if self.set_count == 1:
+                    return 0, struct.pack(">I", 71)
+                return 99, b""
+            if (command_set, command) in {(Cmd.EVENT, 2), (Cmd.VM, 1)}:
+                return 0, b""
+            raise AssertionError((command_set, command, data))
+
+        @staticmethod
+        def drain_events():
+            return []
+
+    runtime = JavaRuntime()
+    runtime._proc = FakeProcessManager()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "LExample;",
+            "matched_class": "Example",
+            "method_signature": "()V",
+            "code_index": 9,
+            "line": 25,
+        },
+        "bp_002": {
+            "breakpoint_id": "bp_002",
+            "class": "LExample;",
+            "matched_class": "Example",
+            "method_signature": "()V",
+            "code_index": 9,
+            "line": 25,
+        },
+    }
+    candidate = BreakpointClassCandidate(
+        type_tag=1,
+        class_id=42,
+        signature="LExample;",
+        name="Example",
+        simple_name="Example",
+        source_file="Example.java",
+        is_proxy=False,
+        proxy_type=None,
+        is_generated=False,
+        match_type="fully_qualified_exact",
+        match_rank=10,
+        warnings=[],
+    )
+    location = BreakpointLocation(
+        method_id=7,
+        method="run",
+        method_signature="()V",
+        line=25,
+        code_index=9,
+    )
+    runtime._resolve_breakpoint_class = lambda jdwp, action: (candidate, None, [])
+    runtime._line_locations_for_class = (
+        lambda jdwp, resolved, line: ([location], [], None)
+    )
+    client = FakeClient()
+    runtime._connect = lambda: client
+
+    result = runtime.wait_event(RuntimeAction(action="wait_event", timeout=1))
+
+    assert result.data["error_code"] == "ARM_BREAKPOINT_FAILED"
+    assert set(runtime._breakpoints) == {"bp_001", "bp_002"}
+    assert runtime._armed_breakpoint_requests == {}
+    assert (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 71)) in client.calls
+
+
+def test_malformed_arm_reply_disconnects_instead_of_leaving_unknown_request() -> None:
+    class FakeProcessManager:
+        is_running = True
+
+    class FakeClient:
+        ids = IDSizes(8, 8, 8, 8, 8)
+
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        @staticmethod
+        def command(command_set, command, data=b""):
+            if (command_set, command) == (Cmd.EVENT, 1):
+                return 0, b""
+            raise AssertionError((command_set, command, data))
+
+        @staticmethod
+        def drain_events():
+            return []
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    runtime = JavaRuntime()
+    runtime._proc = FakeProcessManager()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "LExample;",
+            "matched_class": "Example",
+            "method_signature": "()V",
+            "code_index": 9,
+            "line": 25,
+        },
+    }
+    candidate = BreakpointClassCandidate(
+        type_tag=1,
+        class_id=42,
+        signature="LExample;",
+        name="Example",
+        simple_name="Example",
+        source_file="Example.java",
+        is_proxy=False,
+        proxy_type=None,
+        is_generated=False,
+        match_type="fully_qualified_exact",
+        match_rank=10,
+        warnings=[],
+    )
+    location = BreakpointLocation(
+        method_id=7,
+        method="run",
+        method_signature="()V",
+        line=25,
+        code_index=9,
+    )
+    runtime._resolve_breakpoint_class = lambda jdwp, action: (candidate, None, [])
+    runtime._line_locations_for_class = (
+        lambda jdwp, resolved, line: ([location], [], None)
+    )
+    client = FakeClient()
+    runtime._jdwp = client
+    runtime._connect = lambda: client
+
+    result = runtime.wait_event(RuntimeAction(action="wait_event", timeout=1))
+
+    assert result.data["error_code"] == "ARM_BREAKPOINT_FAILED"
+    assert client.close_count == 1
+    assert runtime._jdwp is None
+    assert set(runtime._breakpoints) == {"bp_001"}
+    assert runtime._armed_breakpoint_requests == {}
+    assert runtime._debug_connection_dirty is True
 
 
 def test_breakpoint_set_returns_ambiguous_class_match() -> None:
@@ -702,14 +1156,14 @@ def test_generated_class_match_requires_explicit_opt_in() -> None:
     ) == ""
 
 
-def test_breakpoint_list_returns_request_ids_without_protocol_call() -> None:
+def test_breakpoint_list_returns_stable_ids_without_protocol_call() -> None:
     class FakeProcessManager:
         is_running = True
 
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        17: {
+        "bp_001": {
             "breakpoint_id": "bp_001",
             "class": "Lcom/example/Foo;",
             "matched_class": "com.example.Foo",
@@ -718,7 +1172,7 @@ def test_breakpoint_list_returns_request_ids_without_protocol_call() -> None:
             "method": "run",
             "line": 10,
         },
-        23: {
+        "bp_002": {
             "breakpoint_id": "bp_002",
             "class": "Lcom/example/Bar;",
             "matched_class": "com.example.Bar",
@@ -744,7 +1198,7 @@ def test_breakpoint_list_returns_request_ids_without_protocol_call() -> None:
             "is_proxy": False,
             "method": "run",
             "line": 10,
-            "jdwp": {"request_id": 17, "suspend_policy": "EVENT_THREAD"},
+            "jdwp": {"armed": False, "suspend_policy": "EVENT_THREAD"},
         },
         {
             "breakpoint_id": "bp_002",
@@ -754,12 +1208,12 @@ def test_breakpoint_list_returns_request_ids_without_protocol_call() -> None:
             "is_proxy": False,
             "method": "handle",
             "line": 20,
-            "jdwp": {"request_id": 23, "suspend_policy": "EVENT_THREAD"},
+            "jdwp": {"armed": False, "suspend_policy": "EVENT_THREAD"},
         },
     ]
 
 
-def test_breakpoint_remove_by_request_id_only_clears_that_breakpoint() -> None:
+def test_breakpoint_remove_by_breakpoint_id_removes_only_that_definition() -> None:
     class FakeProcessManager:
         is_running = True
 
@@ -774,8 +1228,8 @@ def test_breakpoint_remove_by_request_id_only_clears_that_breakpoint() -> None:
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        17: {"breakpoint_id": "bp_001", "class": "Lcom/example/Foo;", "method": "run", "line": 10},
-        23: {"breakpoint_id": "bp_002", "class": "Lcom/example/Bar;", "method": "handle", "line": 20},
+        "bp_001": {"breakpoint_id": "bp_001", "class": "Lcom/example/Foo;", "method": "run", "line": 10},
+        "bp_002": {"breakpoint_id": "bp_002", "class": "Lcom/example/Bar;", "method": "handle", "line": 20},
     }
     client = FakeClient()
     runtime._connect = lambda: client
@@ -783,18 +1237,16 @@ def test_breakpoint_remove_by_request_id_only_clears_that_breakpoint() -> None:
     result = runtime.breakpoint(RuntimeAction(
         action="breakpoint",
         bp_action="remove",
-        request_id=23,
+        breakpoint_id="bp_002",
     ))
 
     assert result.error == ""
     assert result.data["cleared_ids"] == ["bp_002"]
     assert result.data["cleared_breakpoint_ids"] == ["bp_002"]
-    assert result.data["jdwp"]["cleared_request_ids"] == [23]
+    assert result.data["jdwp"]["cleared_request_ids"] == []
     assert result.data["remaining"] == 1
-    assert list(runtime._breakpoints) == [17]
-    assert client.calls == [
-        (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 23))
-    ]
+    assert list(runtime._breakpoints) == ["bp_001"]
+    assert client.calls == []
 
 
 def test_breakpoint_remove_by_class_and_line_filters_existing_breakpoints() -> None:
@@ -812,9 +1264,9 @@ def test_breakpoint_remove_by_class_and_line_filters_existing_breakpoints() -> N
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        17: {"breakpoint_id": "bp_001", "class": "Lcom/example/Foo;", "method": "run", "line": 10},
-        23: {"breakpoint_id": "bp_002", "class": "Lcom/example/Bar;", "method": "handle", "line": 20},
-        29: {"breakpoint_id": "bp_003", "class": "Lcom/example/Bar;", "method": "other", "line": 21},
+        "bp_001": {"breakpoint_id": "bp_001", "class": "Lcom/example/Foo;", "method": "run", "line": 10},
+        "bp_002": {"breakpoint_id": "bp_002", "class": "Lcom/example/Bar;", "method": "handle", "line": 20},
+        "bp_003": {"breakpoint_id": "bp_003", "class": "Lcom/example/Bar;", "method": "other", "line": 21},
     }
     client = FakeClient()
     runtime._connect = lambda: client
@@ -829,10 +1281,8 @@ def test_breakpoint_remove_by_class_and_line_filters_existing_breakpoints() -> N
     assert result.error == ""
     assert result.data["cleared_ids"] == ["bp_002"]
     assert result.data["cleared_breakpoint_ids"] == ["bp_002"]
-    assert set(runtime._breakpoints) == {17, 29}
-    assert client.calls == [
-        (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 23))
-    ]
+    assert set(runtime._breakpoints) == {"bp_001", "bp_003"}
+    assert client.calls == []
 
 
 def _pack_all_classes(*classes: tuple[int, int, str, int]) -> bytes:
@@ -890,7 +1340,7 @@ def test_broad_caught_exception_watch_is_rejected_without_connecting() -> None:
     assert "allow_broad_caught=true" in result.error
 
 
-def test_exception_set_builds_exception_only_request() -> None:
+def test_exception_set_creates_stable_definition_without_protocol_request() -> None:
     class FakeProcessManager:
         is_running = True
 
@@ -906,8 +1356,6 @@ def test_exception_set_builds_exception_only_request() -> None:
                 return 0, _pack_all_classes(
                     (1, 42, "Ljava/lang/NullPointerException;", 7),
                 )
-            if (command_set, command) == (Cmd.EVENT, 1):
-                return 0, struct.pack(">I", 91)
             raise AssertionError((command_set, command, data))
 
     runtime = JavaRuntime()
@@ -920,26 +1368,98 @@ def test_exception_set_builds_exception_only_request() -> None:
         exception_class="java.lang.NullPointerException",
     ))
 
-    expected_payload = struct.pack(
-        ">BBI", EventKind.EXCEPTION, SuspendPolicy.EVENT_THREAD, 1
-    )
-    expected_payload += struct.pack(">B", 8)
-    expected_payload += (42).to_bytes(8, "big")
-    expected_payload += struct.pack(">BB", 1, 1)
     assert result.error == ""
-    assert result.data == {
-        "exception_action": "set",
-        "request_id": 91,
-        "exception_class": "Ljava/lang/NullPointerException;",
-        "signature": "Ljava/lang/NullPointerException;",
-        "caught": True,
-        "uncaught": True,
+    assert result.data["request_id"] == 1
+    assert result.data["exception_class"] == "Ljava/lang/NullPointerException;"
+    assert result.data["caught"] is True
+    assert result.data["uncaught"] is True
+    assert result.data["suspend_policy"] == "EVENT_THREAD"
+    assert client.calls == [(Cmd.VM, 3, b"")]
+    assert runtime._exceptions[1]["exception_class"] == "Ljava/lang/NullPointerException;"
+
+
+def test_exception_logical_request_id_survives_rearming() -> None:
+    class FakeProcessManager:
+        is_running = True
+
+    class FakeClient:
+        ids = IDSizes(8, 8, 8, 8, 8)
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, bytes]] = []
+            self.remote_ids = iter((91, 92))
+            self.current_remote_id = 0
+
+        def command(self, command_set, command, data=b""):
+            self.calls.append((command_set, command, data))
+            if (command_set, command) == (Cmd.VM, 3):
+                return 0, _pack_all_classes(
+                    (1, 42, "Ljava/lang/NullPointerException;", 7),
+                )
+            if (command_set, command) == (Cmd.EVENT, 1):
+                self.current_remote_id = next(self.remote_ids)
+                return 0, struct.pack(">I", self.current_remote_id)
+            if (command_set, command) in {
+                (Cmd.EVENT, 2),
+                (Cmd.VM, 1),
+                (Cmd.THREAD, 3),
+            }:
+                return 0, b""
+            raise AssertionError((command_set, command, data))
+
+        def drain_events(self):
+            return []
+
+        def wait_for_event(self, timeout):
+            return {
+                "suspend_policy": SuspendPolicy.EVENT_THREAD,
+                "events": [{
+                    "kind": EventKind.EXCEPTION,
+                    "request_id": self.current_remote_id,
+                    "thread_id": 10,
+                    "location": {"class_id": 20, "method_id": 30, "index": 40},
+                    "exception": {"tag": Tag.OBJECT, "object_id": 50},
+                    "catch_location": {},
+                }],
+            }
+
+    runtime = JavaRuntime()
+    runtime._proc = FakeProcessManager()
+    client = FakeClient()
+    runtime._connect = lambda: client
+    runtime._describe_location = lambda jdwp, location: {
+        "class": "LExample;",
+        "method": "run()V",
+        "line": 123,
     }
-    assert client.calls == [
-        (Cmd.VM, 3, b""),
-        (Cmd.EVENT, 1, expected_payload),
-    ]
-    assert runtime._exceptions[91]["exception_class"] == "Ljava/lang/NullPointerException;"
+    runtime._thread_name = lambda jdwp, thread_id: "main"
+    runtime._object_class_signature = (
+        lambda jdwp, obj_id: "Ljava/lang/NullPointerException;"
+    )
+
+    configured = runtime.exception(RuntimeAction(
+        action="exception",
+        exception_class="java.lang.NullPointerException",
+    ))
+    logical_request_id = configured.data["request_id"]
+    assert logical_request_id == 1
+
+    first = runtime.wait_event(RuntimeAction(action="wait_event", timeout=1))
+    assert first.data["request_id"] == logical_request_id
+    assert first.data["jdwp"]["request_id"] == 91
+    assert not any(
+        (command_set, command) == (Cmd.THREAD, 3)
+        for command_set, command, _ in client.calls
+    )
+    runtime.resume(RuntimeAction(
+        action="resume",
+        suspension_id=first.data["suspension_id"],
+    ))
+
+    second = runtime.wait_event(RuntimeAction(action="wait_event", timeout=1))
+    assert second.data["request_id"] == logical_request_id
+    assert second.data["jdwp"]["request_id"] == 92
+    assert runtime._armed_exception_requests == {}
 
 
 def test_exception_set_returns_structured_not_loaded_error() -> None:
@@ -1031,9 +1551,7 @@ def test_exception_list_and_remove_by_request_id() -> None:
     assert removed.error == ""
     assert removed.data["cleared_ids"] == [91]
     assert set(runtime._exceptions) == {92}
-    assert client.calls == [
-        (Cmd.EVENT, 2, struct.pack(">BI", EventKind.EXCEPTION, 91))
-    ]
+    assert client.calls == []
 
 
 def test_wait_event_returns_exception_suspension() -> None:
@@ -1041,6 +1559,11 @@ def test_wait_event_returns_exception_suspension() -> None:
         is_running = True
 
     class FakeClient:
+        ids = IDSizes(8, 8, 8, 8, 8)
+
+        def __init__(self):
+            self.commands = []
+
         def drain_events(self):
             return []
 
@@ -1049,13 +1572,19 @@ def test_wait_event_returns_exception_suspension() -> None:
                 "suspend_policy": SuspendPolicy.EVENT_THREAD,
                 "events": [{
                     "kind": EventKind.EXCEPTION,
-                    "request_id": 91,
+                    "request_id": 501,
                     "thread_id": 10,
                     "location": {"class_id": 20, "method_id": 30, "index": 40},
                     "exception": {"tag": Tag.OBJECT, "object_id": 50},
                     "catch_location": {"class_id": 21, "method_id": 31, "index": 41},
                 }],
             }
+
+        def command(self, command_set, command, data=b""):
+            self.commands.append((command_set, command, data))
+            if (command_set, command) in {(Cmd.EVENT, 2), (Cmd.VM, 1)}:
+                return 0, b""
+            raise AssertionError((command_set, command, data))
 
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
@@ -1066,7 +1595,11 @@ def test_wait_event_returns_exception_suspension() -> None:
             "uncaught": True,
         }
     }
-    runtime._connect = lambda: FakeClient()
+    client = FakeClient()
+    runtime._connect = lambda: client
+    runtime._arm_debug_requests = lambda jdwp, kinds, control: (
+        runtime._armed_exception_requests.update({501: 91}) or None
+    )
     runtime._describe_location = lambda jdwp, location: {
         "class": "LExample;",
         "method": "run()V",
@@ -1101,6 +1634,10 @@ def test_wait_event_returns_exception_suspension() -> None:
     assert result.data["suspend_policy"] == SuspendPolicy.EVENT_THREAD
     assert result.data["suspend_policy_name"] == "EVENT_THREAD"
     assert result.data["resumed"] is False
+    assert result.data["request_id"] == 91
+    assert result.data["jdwp"]["request_id"] == 501
+    assert runtime._armed_exception_requests == {}
+    assert (Cmd.EVENT, 2, struct.pack(">BI", EventKind.EXCEPTION, 501)) in client.commands
 
 
 def test_wait_event_requires_resuming_active_suspension_first() -> None:
@@ -1110,7 +1647,7 @@ def test_wait_event_requires_resuming_active_suspension_first() -> None:
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        42: {"class": "LExample;", "method": "run()V", "line": 123}
+        "bp_001": {"breakpoint_id": "bp_001", "class": "LExample;", "method": "run()V", "line": 123}
     }
     runtime._active_suspension = SuspensionSnapshot(
         suspension_id="susp_active",
@@ -1174,12 +1711,14 @@ def test_wait_event_resumes_ignored_stale_suspending_event() -> None:
             self.commands.append((command_set, command, data))
             if (command_set, command) == (Cmd.THREAD, 3):
                 return 0, b""
+            if (command_set, command) in {(Cmd.EVENT, 2), (Cmd.VM, 1)}:
+                return 0, b""
             raise AssertionError((command_set, command, data))
 
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        42: {"class": "LExample;", "method": "run()V", "line": 123}
+        "bp_001": {"breakpoint_id": "bp_001", "class": "LExample;", "method": "run()V", "line": 123}
     }
     client = FakeClient()
     runtime._connect = lambda: client
@@ -1189,6 +1728,9 @@ def test_wait_event_resumes_ignored_stale_suspending_event() -> None:
         "line": 123,
     }
     runtime._thread_name = lambda jdwp, thread_id: "main"
+    runtime._arm_debug_requests = lambda jdwp, kinds, control: (
+        runtime._armed_breakpoint_requests.update({42: "bp_001"}) or None
+    )
 
     result = runtime.wait_event(RuntimeAction(action="wait_event", timeout=1))
 
@@ -1196,7 +1738,11 @@ def test_wait_event_resumes_ignored_stale_suspending_event() -> None:
     assert result.data["status"] == "breakpoint_hit"
     assert result.data["breakpoint"]["line"] == 123
     assert client.waits == 2
-    assert client.commands == [(Cmd.THREAD, 3, (10).to_bytes(8, "big"))]
+    assert client.commands == [
+        (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
+        (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 42)),
+        (Cmd.VM, 1, b""),
+    ]
 
 
 def test_resume_uses_thread_resume_for_event_thread_suspension() -> None:
@@ -1285,7 +1831,7 @@ def _jdwp_version_payload() -> bytes:
     )
 
 
-def test_status_promotes_pending_breakpoint_event_to_suspension() -> None:
+def test_status_auto_resumes_pending_event_without_creating_suspension() -> None:
     class FakeManagedProcess:
         pid = 4321
         jdwp_port = 5005
@@ -1306,6 +1852,7 @@ def test_status_promotes_pending_breakpoint_event_to_suspension() -> None:
 
         def __init__(self):
             self.drained = False
+            self.commands = []
 
         def drain_events(self):
             if self.drained:
@@ -1322,6 +1869,9 @@ def test_status_promotes_pending_breakpoint_event_to_suspension() -> None:
             }]
 
         def command(self, command_set, command, data=b""):
+            self.commands.append((command_set, command, data))
+            if (command_set, command) == (Cmd.THREAD, 3):
+                return 0, b""
             if (command_set, command) == (Cmd.VM, 1):
                 return 0, _jdwp_version_payload()
             raise AssertionError((command_set, command, data))
@@ -1329,9 +1879,10 @@ def test_status_promotes_pending_breakpoint_event_to_suspension() -> None:
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        42: {"class": "LExample;", "method": "run()V", "line": 123}
+        "bp_001": {"breakpoint_id": "bp_001", "class": "LExample;", "method": "run()V", "line": 123}
     }
-    runtime._connect = lambda: FakeClient()
+    client = FakeClient()
+    runtime._connect = lambda: client
     runtime._describe_location = lambda jdwp, location: {
         "class": "LExample;",
         "method": "run()V",
@@ -1342,12 +1893,12 @@ def test_status_promotes_pending_breakpoint_event_to_suspension() -> None:
     result = runtime.status(RuntimeAction(action="status"))
 
     assert result.error == ""
-    assert result.data["debug_state"] == "suspended"
-    assert result.data["pending_event_promoted"] is True
-    assert result.data["pending_event"]["event_kind"] == "breakpoint"
-    assert result.data["pending_event"]["suspend_policy_name"] == "EVENT_THREAD"
-    assert result.data["suspension_id"] == runtime._active_suspension.suspension_id
-    assert "Inspect stack/variables" in result.data["suggested_next_step"]
+    assert result.data["debug_state"] == "attached"
+    assert result.data["orphan_events_resumed"] == 1
+    assert result.data["suspension_id"] is None
+    assert runtime._active_suspension is None
+    assert client.commands[0] == (Cmd.THREAD, 3, (10).to_bytes(8, "big"))
+    assert "Start wait_event" in result.data["suggested_next_step"]
 
 
 def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:
@@ -1378,7 +1929,7 @@ def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:
     runtime = JavaRuntime()
     runtime._proc = FakeProcessManager()
     runtime._breakpoints = {
-        42: {"class": "LExample;", "method": "run()V", "line": 123}
+        "bp_001": {"breakpoint_id": "bp_001", "class": "LExample;", "method": "run()V", "line": 123}
     }
     runtime._exceptions = {
         91: {
@@ -1398,6 +1949,8 @@ def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:
     )
     client = FakeClient()
     runtime._connect = lambda: client
+    runtime._armed_breakpoint_requests = {42: "bp_001"}
+    runtime._armed_exception_requests = {91: 91}
 
     result = runtime.cleanup_debug_state(RuntimeAction(action="cleanup_debug_state"))
 
@@ -1406,7 +1959,7 @@ def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:
     assert result.data["drained_events"] == 1
     assert result.data["resumed_active_suspension"] is True
     assert result.data["emergency_vm_resume"] is True
-    assert result.data["cleared_breakpoint_ids"] == [42]
+    assert result.data["cleared_breakpoint_ids"] == ["bp_001"]
     assert result.data["cleared_exception_ids"] == [91]
     assert runtime._breakpoints == {}
     assert runtime._exceptions == {}
@@ -2274,11 +2827,18 @@ public class DebugFixture {
         ))
         assert breakpoint.error == ""
 
-        trigger.write_text("go", encoding="utf-8")
-        hit = runtime.wait_breakpoint(RuntimeAction(
-            action="wait_breakpoint",
-            timeout=10,
-        ))
+        trigger_timer = threading.Timer(
+            0.2,
+            lambda: trigger.write_text("go", encoding="utf-8"),
+        )
+        trigger_timer.start()
+        try:
+            hit = runtime.wait_breakpoint(RuntimeAction(
+                action="wait_breakpoint",
+                timeout=10,
+            ))
+        finally:
+            trigger_timer.join(timeout=2)
         assert hit.error == ""
         assert hit.data["status"] == "breakpoint_hit"
         suspension_id = hit.data["suspension_id"]
@@ -2403,11 +2963,18 @@ public class ExceptionFixture {
         assert exception.data["caught"] is True
         assert exception.data["uncaught"] is True
 
-        trigger.write_text("go", encoding="utf-8")
-        hit = runtime.wait_event(RuntimeAction(
-            action="wait_event",
-            timeout=10,
-        ))
+        trigger_timer = threading.Timer(
+            0.2,
+            lambda: trigger.write_text("go", encoding="utf-8"),
+        )
+        trigger_timer.start()
+        try:
+            hit = runtime.wait_event(RuntimeAction(
+                action="wait_event",
+                timeout=10,
+            ))
+        finally:
+            trigger_timer.join(timeout=2)
 
         assert hit.error == ""
         assert hit.data["status"] == "exception_hit"

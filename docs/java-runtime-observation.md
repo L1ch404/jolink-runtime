@@ -39,11 +39,16 @@ requires them.
 2. Call `status` to confirm the process and debug connection state.
 3. Set a focused `breakpoint`, or register an `exception` watch when
    investigating a thrown exception.
-4. Trigger the relevant scenario without blocking the agent:
-    - when using a tool that supports background execution, such as
-      `background=true`, use that mode;
-    - otherwise trigger it manually, from another terminal/client, or through
-      another non-blocking asynchronous mechanism.
+4. Arm a deterministic observation before firing the relevant scenario:
+
+    ```json
+    {"action":"wait_event","wait_mode":"arm","timeout":30}
+    ```
+
+   Continue only after it returns `status=armed`; keep its `wait_handle`.
+5. Start the scenario through a non-blocking mechanism after the armed result:
+    - for example, launch `curl ...` as a background terminal task;
+    - otherwise ask the user to trigger it from another terminal/client.
 
    Do not wait synchronously for a request that may pause at the breakpoint,
    because the request may not complete until the suspension is resumed.
@@ -51,13 +56,20 @@ requires them.
    After resuming the suspension, inspect the background task or request result
    when its outcome is relevant to the investigation.
 
-5. Call `wait_event` and keep the returned `suspension_id`.
-6. Use `stack` to inspect the actual call path of the suspended event thread.
-7. Use `variables` only on the relevant stack frames and objects.
-8. Call `resume` with the active `suspension_id` after completing the required
+6. Collect the result with the handle:
+
+    ```json
+    {"action":"wait_event","wait_mode":"await","wait_handle":"<wait_handle>","timeout":30}
+    ```
+
+   Keep the returned `suspension_id`. If the result is `status=waiting`, await
+   the same handle again; do not arm a second observation.
+7. Use `stack` to inspect the actual call path of the suspended event thread.
+8. Use `variables` only on the relevant stack frames and objects.
+9. Call `resume` with the active `suspension_id` after completing the required
    inspection.
-9. Repeat the observation loop only when more evidence is required.
-10. When finished:
+10. Repeat the observation loop only when more evidence is required.
+11. When finished:
     - If the debug connection will remain active, remove breakpoints or
       exception watches that are no longer needed.
     - Use `stop` to end an application launched and owned by the Runtime.
@@ -110,9 +122,10 @@ Prefer an existing authenticated client or temporary, test-only,
 least-privileged credentials. Do not extract and reuse credentials from logs or
 Runtime observations, and do not unnecessarily expose full credential values.
 
-Trigger requests that may hit a breakpoint through a non-blocking mechanism,
-such as `background=true`. If credentials cannot be safely provided, ask the
-user to trigger the scenario manually.
+After `wait_mode=arm` returns, trigger requests that may hit a breakpoint
+through a non-blocking mechanism, such as `background=true`. No guessed sleep
+is needed between the armed response and the trigger. If credentials cannot be
+safely provided, ask the user to trigger the scenario manually.
 
 ## 1. Distinguish facts, inferences, and unknowns
 
