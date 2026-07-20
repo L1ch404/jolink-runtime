@@ -30,7 +30,7 @@ from .tool_schema import (
 
 logger = logging.getLogger(__name__)
 
-SERVER_NAME = "jolink-runtime-debugger"
+SERVER_NAME = "jolink-runtime"
 SERVER_INSTRUCTIONS = (
     "Use java_runtime to run, operate, observe, and debug a local Java application. "
     "Use its runtime evidence to verify code changes against actual behavior. "

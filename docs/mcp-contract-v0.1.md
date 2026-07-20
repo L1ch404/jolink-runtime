@@ -9,7 +9,8 @@ is frozen separately in
 
 ## Identity and versions
 
-- Package/server version: `0.1.0`
+- Package prerelease version: `0.1.0a1`
+- MCP Server name: `jolink-runtime`
 - Migrated Runtime lineage: `2.4.0`
 - Runtime lineage is not independently published or incremented during the
   migration.

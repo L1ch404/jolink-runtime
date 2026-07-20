@@ -60,4 +60,43 @@ jobs:
         env:
           JOLINK_RUN_MCP_JAVA_E2E: "1"
         run: uv run pytest -m mcp_java_e2e tests/e2e/test_stdio_mcp_java.py
-      - run: uv build --wheel
+
+  distribution-windows:
+    name: Windows clean wheel/sdist MCP E2E / JDK ${{ matrix.java }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["8", "17"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build wheel and sdist without workspace sources
+        run: uv build --no-sources --clear
+      - name: Verify wheel and sdist from clean environments
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheel = (Get-ChildItem "dist/*.whl").FullName
+          $sdist = (Get-ChildItem "dist/*.tar.gz").FullName
+          foreach ($artifact in @($wheel, $sdist)) {
+            $kind = if ($artifact.EndsWith(".whl")) { "wheel" } else { "sdist" }
+            $environment = Join-Path $env:RUNNER_TEMP "jolink-$kind"
+            uv venv $environment --python 3.11
+            $python = Join-Path $environment "Scripts/python.exe"
+            $server = Join-Path $environment "Scripts/jolink-runtime-debugger.exe"
+            uv pip install --python $python $artifact
+            & $python "scripts/verify_distribution.py" `
+              --server $server `
+              --expected-source-root $env:GITHUB_WORKSPACE `
+              --expected-version "0.1.0a1"
+          }

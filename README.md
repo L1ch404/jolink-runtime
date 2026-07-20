@@ -34,8 +34,40 @@ delivery limitations are tracked in
 
 ## Requirements
 
-- Python 3.11–3.13
-- JDK 8 or newer for Java integration tests and real debugging
+- JDK 8 or newer
+- [uv](https://docs.astral.sh/uv/) (manages the Python environment automatically)
+
+## Install
+
+Install `uv` once if it is not already available:
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Add this server configuration to an MCP client. `uvx` downloads and caches the
+package automatically; no repository clone or virtual environment is needed.
+
+```json
+{
+  "mcpServers": {
+    "jolink-runtime": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "jolink-runtime-debugger==0.1.0a1",
+        "jolink-runtime-debugger"
+      ]
+    }
+  }
+}
+```
 
 ## Development
 

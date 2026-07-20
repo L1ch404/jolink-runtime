@@ -28,8 +28,8 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown() -> None:
             ):
                 async with ClientSession(read_stream, write_stream) as session:
                     initialized = await session.initialize()
-                    assert initialized.serverInfo.name == "jolink-runtime-debugger"
-                    assert initialized.serverInfo.version == "0.1.0"
+                    assert initialized.serverInfo.name == "jolink-runtime"
+                    assert initialized.serverInfo.version == "0.1.0a1"
 
                     listed = await session.list_tools()
                     assert [tool.name for tool in listed.tools] == [
@@ -58,3 +58,7 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown() -> None:
 
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr:
         anyio.run(scenario, stderr)
+        stderr.seek(0)
+        log_text = stderr.read()
+        assert "java_runtime.action.start action=status" in log_text
+        assert "java_runtime.action.finish action=status" in log_text
