@@ -27,13 +27,14 @@ from .tool_schema import (
     get_mcp_tools,
 )
 
-
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "jolink-runtime-debugger"
 SERVER_INSTRUCTIONS = (
-    "Use java_processes to find a local JVM and java_runtime to observe it. "
-    "After inspecting a suspension, resume or clean it up."
+    "Use java_runtime to run, operate, observe, and debug a local Java application. "
+    "Use its runtime evidence to verify code changes against actual behavior. "
+    "Use java_processes only when discovering an existing JVM for attach. "
+    "After inspecting a suspension, always call resume or cleanup_debug_state."
 )
 
 _TOOL_INPUT_SCHEMAS = {
@@ -50,20 +51,20 @@ class DispatchesRuntimeTools(Protocol):
     """Structural type used by the MCP boundary and its tests."""
 
     def dispatch(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any] | None = None,
-        *,
-        session_key: str = "default",
-        wait_control: WaitControl | None = None,
+            self,
+            tool_name: str,
+            arguments: dict[str, Any] | None = None,
+            *,
+            session_key: str = "default",
+            wait_control: WaitControl | None = None,
     ) -> dict[str, Any]:
         ...
 
     def settle_cancelled_wait(
-        self,
-        wait_control: WaitControl,
-        *,
-        session_key: str = "default",
+            self,
+            wait_control: WaitControl,
+            *,
+            session_key: str = "default",
     ) -> bool:
         ...
 
@@ -77,16 +78,16 @@ class DispatchesRuntimeTools(Protocol):
         ...
 
     def wait_for_close_session(
-        self,
-        session_key: str = "default",
-        timeout: float | None = None,
+            self,
+            session_key: str = "default",
+            timeout: float | None = None,
     ) -> bool:
         ...
 
 
 def _validation_argument(
-    error: ValidationError,
-    arguments: dict[str, Any],
+        error: ValidationError,
+        arguments: dict[str, Any],
 ) -> str | None:
     if error.absolute_path:
         return str(next(iter(error.absolute_path)))
@@ -102,8 +103,8 @@ def _validation_argument(
 
 
 def _invalid_argument_payload(
-    error: ValidationError,
-    arguments: dict[str, Any],
+        error: ValidationError,
+        arguments: dict[str, Any],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "ok": False,
@@ -194,9 +195,9 @@ def _active_waiter_payload(control: WaitControl) -> dict[str, Any]:
 
 
 def _wait_argument_error(
-    argument: str,
-    message: str,
-    suggested_next_step: str,
+        argument: str,
+        message: str,
+        suggested_next_step: str,
 ) -> dict[str, Any]:
     return {
         "ok": False,
@@ -235,15 +236,15 @@ def _variables_observation_state(payload: dict[str, Any]) -> str:
 
 
 def _normalize_mcp_payload(
-    name: str,
-    arguments: dict[str, Any],
-    payload: dict[str, Any],
+        name: str,
+        arguments: dict[str, Any],
+        payload: dict[str, Any],
 ) -> dict[str, Any]:
     if (
-        name == "java_runtime"
-        and arguments.get("action") == "variables"
-        and payload.get("ok") is True
-        and "observation_state" not in payload
+            name == "java_runtime"
+            and arguments.get("action") == "variables"
+            and payload.get("ok") is True
+            and "observation_state" not in payload
     ):
         payload = dict(payload)
         payload["observation_state"] = _variables_observation_state(payload)
@@ -254,14 +255,14 @@ class RuntimeMCPBoundary:
     """Serialize MCP calls and adapt Dispatcher dictionaries to MCP results."""
 
     def __init__(
-        self,
-        dispatcher: DispatchesRuntimeTools | None = None,
-        *,
-        session_key: str = "default",
-        wait_poll_interval: float = 0.2,
-        cancellation_grace_seconds: float = 3.0,
-        unclaimed_suspension_grace_seconds: float = 45.0,
-        completed_wait_limit: int = 32,
+            self,
+            dispatcher: DispatchesRuntimeTools | None = None,
+            *,
+            session_key: str = "default",
+            wait_poll_interval: float = 0.2,
+            cancellation_grace_seconds: float = 3.0,
+            unclaimed_suspension_grace_seconds: float = 45.0,
+            completed_wait_limit: int = 32,
     ) -> None:
         self.dispatcher = dispatcher if dispatcher is not None else Dispatcher()
         self.session_key = session_key
@@ -285,11 +286,11 @@ class RuntimeMCPBoundary:
         return get_mcp_tools()
 
     async def call_tool(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None,
-        *,
-        request_id: str | None = None,
+            self,
+            name: str,
+            arguments: dict[str, Any] | None,
+            *,
+            request_id: str | None = None,
     ) -> types.CallToolResult:
         with self._state_lock:
             if self._closing:
@@ -373,12 +374,12 @@ class RuntimeMCPBoundary:
         return _call_tool_result(payload)
 
     def _start_waiter(
-        self,
-        request_id: str | None,
-        *,
-        wait_handle: str = "",
-        background: bool = False,
-        event_timeout: float = 30.0,
+            self,
+            request_id: str | None,
+            *,
+            wait_handle: str = "",
+            background: bool = False,
+            event_timeout: float = 30.0,
     ) -> WaitControl:
         with self._state_lock:
             if self._closing:
@@ -401,9 +402,9 @@ class RuntimeMCPBoundary:
         with self._state_lock:
             control = self._current_waiter
             if (
-                control is None
-                or not control.background
-                or control.worker_done
+                    control is None
+                    or not control.background
+                    or control.worker_done
             ):
                 return None
             return control
@@ -426,8 +427,8 @@ class RuntimeMCPBoundary:
     def _find_wait(self, wait_handle: str) -> WaitControl | None:
         with self._state_lock:
             if (
-                self._current_waiter is not None
-                and self._current_waiter.wait_handle == wait_handle
+                    self._current_waiter is not None
+                    and self._current_waiter.wait_handle == wait_handle
             ):
                 return self._current_waiter
             return self._completed_waits.get(wait_handle)
@@ -457,10 +458,10 @@ class RuntimeMCPBoundary:
                 self._poisoned_reason = reason
 
     def _run_wait_worker(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        control: WaitControl,
+            self,
+            name: str,
+            arguments: dict[str, Any],
+            control: WaitControl,
     ) -> dict[str, Any]:
         try:
             return self.dispatcher.dispatch(
@@ -473,10 +474,10 @@ class RuntimeMCPBoundary:
             control.mark_worker_done()
 
     def _run_background_wait_worker(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        control: WaitControl,
+            self,
+            name: str,
+            arguments: dict[str, Any],
+            control: WaitControl,
     ) -> None:
         try:
             payload = self.dispatcher.dispatch(
@@ -489,15 +490,15 @@ class RuntimeMCPBoundary:
 
             suspension_id = payload.get("suspension_id")
             if not (
-                payload.get("ok") is True
-                and isinstance(suspension_id, str)
-                and suspension_id
+                    payload.get("ok") is True
+                    and isinstance(suspension_id, str)
+                    and suspension_id
             ):
                 return
 
             deadline = (
-                time.monotonic()
-                + self._unclaimed_suspension_grace_seconds
+                    time.monotonic()
+                    + self._unclaimed_suspension_grace_seconds
             )
             while True:
                 if control.result_claimed or control.cancelled:
@@ -573,8 +574,8 @@ class RuntimeMCPBoundary:
             self._background_wait_finished(control)
 
     async def _wait_for_worker_exit(
-        self,
-        control: WaitControl,
+            self,
+            control: WaitControl,
     ) -> bool:
         done = await anyio.to_thread.run_sync(
             control.wait_until_worker_done,
@@ -656,10 +657,10 @@ class RuntimeMCPBoundary:
             return False
 
     async def _cancel_background_wait(
-        self,
-        control: WaitControl,
-        *,
-        reason: str,
+            self,
+            control: WaitControl,
+            *,
+            reason: str,
     ) -> bool:
         control.request_cancel(reason)
         with anyio.CancelScope(shield=True):
@@ -668,11 +669,11 @@ class RuntimeMCPBoundary:
         return settled
 
     async def _route_wait_event(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        *,
-        request_id: str | None,
+            self,
+            name: str,
+            arguments: dict[str, Any],
+            *,
+            request_id: str | None,
     ) -> types.CallToolResult:
         wait_mode = str(arguments.get("wait_mode", "blocking"))
         wait_handle = str(arguments.get("wait_handle", "") or "")
@@ -712,11 +713,11 @@ class RuntimeMCPBoundary:
         )
 
     async def _call_wait_event_blocking(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        *,
-        request_id: str | None,
+            self,
+            name: str,
+            arguments: dict[str, Any],
+            *,
+            request_id: str | None,
     ) -> types.CallToolResult:
         async with self._call_lock:
             try:
@@ -765,11 +766,11 @@ class RuntimeMCPBoundary:
                 self._clear_waiter(control)
 
     async def _call_wait_event_arm(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        *,
-        request_id: str | None,
+            self,
+            name: str,
+            arguments: dict[str, Any],
+            *,
+            request_id: str | None,
     ) -> types.CallToolResult:
         async with self._call_lock:
             wait_handle = f"wait_{uuid.uuid4().hex[:12]}"
@@ -876,10 +877,10 @@ class RuntimeMCPBoundary:
                 raise
 
     async def _call_wait_event_await(
-        self,
-        wait_handle: str,
-        *,
-        timeout: float,
+            self,
+            wait_handle: str,
+            *,
+            timeout: float,
     ) -> types.CallToolResult:
         async with self._call_lock:
             control = self._find_wait(wait_handle)
@@ -967,7 +968,7 @@ class RuntimeMCPBoundary:
             lock_acquired = False
             if worker_done:
                 with anyio.move_on_after(
-                    self._cancellation_grace_seconds
+                        self._cancellation_grace_seconds
                 ):
                     await self._call_lock.acquire()
                     lock_acquired = True
@@ -975,7 +976,7 @@ class RuntimeMCPBoundary:
                     close_timed_out = False
                     try:
                         with anyio.move_on_after(
-                            self._cancellation_grace_seconds
+                                self._cancellation_grace_seconds
                         ) as close_scope:
                             close_result = await anyio.to_thread.run_sync(
                                 self.dispatcher.close_session,
@@ -983,8 +984,8 @@ class RuntimeMCPBoundary:
                                 abandon_on_cancel=True,
                             )
                         normal_close_completed = (
-                            not close_scope.cancel_called
-                            and bool(close_result)
+                                not close_scope.cancel_called
+                                and bool(close_result)
                         )
                         close_timed_out = close_scope.cancel_called
                     except Exception:
@@ -1028,7 +1029,7 @@ class RuntimeMCPBoundary:
                 )
                 try:
                     with anyio.move_on_after(
-                        self._cancellation_grace_seconds
+                            self._cancellation_grace_seconds
                     ) as force_scope:
                         await anyio.to_thread.run_sync(
                             self.dispatcher.force_close_session,
@@ -1054,7 +1055,7 @@ class RuntimeMCPBoundary:
 
 
 def create_mcp_server(
-    dispatcher: DispatchesRuntimeTools | None = None,
+        dispatcher: DispatchesRuntimeTools | None = None,
 ) -> Server:
     """Create the official low-level MCP Server with Runtime handlers."""
     boundary = RuntimeMCPBoundary(dispatcher)
@@ -1080,8 +1081,8 @@ def create_mcp_server(
 
     @server.call_tool(validate_input=False)
     async def call_tool(
-        name: str,
-        arguments: dict[str, Any],
+            name: str,
+            arguments: dict[str, Any],
     ) -> types.CallToolResult:
         try:
             request_id = str(server.request_context.request_id)

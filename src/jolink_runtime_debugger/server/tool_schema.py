@@ -10,7 +10,6 @@ from copy import deepcopy
 
 import mcp.types as types
 
-
 PUBLIC_RUNTIME_ACTIONS = (
     "run",
     "stop",
@@ -30,15 +29,17 @@ PUBLIC_RUNTIME_ACTIONS = (
 )
 
 JAVA_RUNTIME_DESCRIPTION = (
-    "Stateful Java debugger for observing and controlling a local JVM when "
-    "source code, logs, or tests are insufficient to determine the executed "
-    "path or runtime state. Supports "
-    "launch/attach, breakpoints, exception events, stack frames, variables, "
-    "and resume. "
-    "Breakpoints and exception watches are armed only during wait_event; "
-    "use wait_mode=arm, trigger the scenario after the armed response, then "
-    "use wait_mode=await with its wait_handle. Blocking mode remains available. "
-    "After wait_event returns a suspension_id, always call resume or "
+    "Run, operate, observe, and debug a local Java application. "
+    "Use this tool to launch the target application when it is not running, "
+    "restart it after code changes, inspect status and logs, and verify tests, "
+    "endpoints, and actual runtime outputs before making further assumptions. "
+    "When a fix must be verified, or repeated code changes have not solved "
+    "the problem, prefer running the current application and observing its "
+    "actual behavior before applying another patch. "
+    "For deeper investigation, it can attach to an existing JVM, set "
+    "breakpoints or exception watches, inspect stack frames and variables, "
+    "and resume suspended threads. "
+    "When runtime inspection suspends the JVM, always resume it or call "
     "cleanup_debug_state after inspection."
 )
 
@@ -218,7 +219,10 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "enum": ["blocking", "arm", "await"],
             "default": "blocking",
             "description": (
-                "wait_event mode: blocking, arm and return a handle, or await a handle."
+                "Controls wait_event behavior. Prefer two-phase waiting: use arm, trigger the"
+                "scenario externally only after status=armed, then use await with the returned"
+                "wait_handle. blocking remains available. Always resume a returned"
+                "suspension_id or call cleanup_debug_state."
             ),
         },
         "wait_handle": {
