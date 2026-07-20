@@ -60,16 +60,43 @@ def test_java_runtime_description_contains_required_selection_and_safety_signals
     assert runtime_description == JAVA_RUNTIME_DESCRIPTION
     normalized = runtime_description.lower()
     for signal in (
-        "stateful",
-        "java debugger",
-        "local jvm",
-        "source code, logs, or tests",
-        "armed only during wait_event",
-        "suspension_id",
+        "run, operate, observe, and debug",
+        "local java application",
+        "launch",
+        "restart",
+        "status and logs",
+        "verify tests",
+        "endpoints",
+        "actual behavior",
+        "breakpoints",
+        "exception watches",
+        "stack frames",
+        "variables",
         "resume",
         "cleanup_debug_state",
     ):
         assert signal in normalized
+
+
+def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
+    runtime = get_mcp_tools()[0]
+    wait_description = (
+        runtime.inputSchema["properties"]["wait_mode"]["description"].lower()
+    )
+
+    for signal in (
+        "two-phase waiting",
+        "use arm",
+        "the scenario",
+        "status=armed",
+        "use await",
+        "returned wait_handle",
+        "blocking",
+        "returned suspension_id",
+        "resume",
+        "cleanup_debug_state",
+    ):
+        assert signal in wait_description
 
 
 def test_mcp_schema_budget_is_enforced() -> None:

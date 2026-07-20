@@ -219,9 +219,9 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "enum": ["blocking", "arm", "await"],
             "default": "blocking",
             "description": (
-                "Controls wait_event behavior. Prefer two-phase waiting: use arm, trigger the"
-                "scenario externally only after status=armed, then use await with the returned"
-                "wait_handle. blocking remains available. Always resume a returned"
+                "Controls wait_event behavior. Prefer two-phase waiting: use arm, trigger the "
+                "scenario externally only after status=armed, then use await with the returned "
+                "wait_handle. Blocking remains available. Always resume a returned "
                 "suspension_id or call cleanup_debug_state."
             ),
         },
