@@ -12,10 +12,10 @@ from typing import Any
 
 import pytest
 
-from jolink_runtime_debugger.adapters.java import process_discovery
-from jolink_runtime_debugger.core.dispatcher import Dispatcher
-from jolink_runtime_debugger.core.models import RuntimeResult
-from jolink_runtime_debugger.core.session_manager import SessionManager
+from jolink_runtime.adapters.java import process_discovery
+from jolink_runtime.core.dispatcher import Dispatcher
+from jolink_runtime.core.models import RuntimeResult
+from jolink_runtime.core.session_manager import SessionManager
 
 
 def _hermes_root() -> Path:

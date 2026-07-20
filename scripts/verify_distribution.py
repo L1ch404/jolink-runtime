@@ -4,7 +4,7 @@
 This script is intentionally independent of the pytest suite.  Run it with
 the Python interpreter from a clean environment where either the wheel or the
 sdist has been installed, and point ``--server`` at that environment's
-``jolink-runtime-debugger`` executable.
+``jolink-runtime`` executable.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import psutil
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-import jolink_runtime_debugger
+import jolink_runtime
 
 
 JAVA_SOURCE = """\
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         "--server",
         required=True,
         type=Path,
-        help="Absolute path to the installed jolink-runtime-debugger executable.",
+        help="Absolute path to the installed jolink-runtime executable.",
     )
     parser.add_argument(
         "--expected-source-root",
@@ -410,7 +410,7 @@ async def verify_mcp(
 
 
 def validate_install_location(expected_source_root: Path | None) -> Path:
-    package_file = Path(jolink_runtime_debugger.__file__).resolve()
+    package_file = Path(jolink_runtime.__file__).resolve()
     if expected_source_root is not None:
         source_root = expected_source_root.resolve()
         assert not package_file.is_relative_to(source_root), (
@@ -424,7 +424,7 @@ def main() -> None:
     server = args.server.resolve()
     assert server.is_absolute()
     assert server.is_file(), f"installed server executable not found: {server}"
-    assert jolink_runtime_debugger.__version__ == args.expected_version
+    assert jolink_runtime.__version__ == args.expected_version
     package_file = validate_install_location(args.expected_source_root)
     for command in ("java", "javac"):
         assert shutil.which(command), f"required JDK command not found: {command}"

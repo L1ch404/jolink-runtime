@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from jolink_runtime_debugger.adapters.java.tool_schema import JAVA_RUNTIME_SCHEMA
-from jolink_runtime_debugger.server.tool_schema import (
+from jolink_runtime.adapters.java.tool_schema import JAVA_RUNTIME_SCHEMA
+from jolink_runtime.server.tool_schema import (
     JAVA_RUNTIME_DESCRIPTION,
     PUBLIC_RUNTIME_ACTIONS,
     get_mcp_tools,

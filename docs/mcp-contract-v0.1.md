@@ -1,4 +1,4 @@
-# joLink Runtime Debugger MCP Contract v0.1
+# joLink Runtime MCP Contract v0.1
 
 Status: implemented stdio boundary with Stage 2.1 lifecycle hardening and
 deterministic two-phase event waiting.

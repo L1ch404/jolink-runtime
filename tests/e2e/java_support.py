@@ -78,7 +78,7 @@ async def open_mcp_session(
 ) -> AsyncIterator[ClientSession]:
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "jolink_runtime_debugger.transport.stdio"],
+        args=["-m", "jolink_runtime.transport.stdio"],
         cwd=REPOSITORY_ROOT,
     )
     async with stdio_client(parameters, errlog=stderr) as (

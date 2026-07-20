@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from jolink_runtime_debugger.adapters.java.tool_schema import (
+from jolink_runtime.adapters.java.tool_schema import (
     JAVA_PROCESSES_SCHEMA,
     JAVA_RUNTIME_SCHEMA,
 )

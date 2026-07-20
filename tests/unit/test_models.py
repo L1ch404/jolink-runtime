@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from jolink_runtime_debugger.core.models import RuntimeResult
+from jolink_runtime.core.models import RuntimeResult
 
 
 def test_runtime_result_data_cannot_override_reserved_fields() -> None:

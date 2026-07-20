@@ -6,7 +6,7 @@ from typing import Any
 import anyio
 import mcp.types as types
 
-from jolink_runtime_debugger.server.mcp_server import RuntimeMCPBoundary
+from jolink_runtime.server.mcp_server import RuntimeMCPBoundary
 
 
 class _FakeDispatcher:

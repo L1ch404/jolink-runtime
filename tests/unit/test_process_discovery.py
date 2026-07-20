@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from jolink_runtime_debugger.adapters.java import process_discovery
+from jolink_runtime.adapters.java import process_discovery
 
 
 def _completed(*, stdout: str = "", stderr: str = "") -> SimpleNamespace:

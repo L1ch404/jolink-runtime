@@ -14,12 +14,12 @@ from typing import Any
 
 import pytest
 
-from jolink_runtime_debugger.adapters.java import process_discovery
-from jolink_runtime_debugger.adapters.java.tool_schema import (
+from jolink_runtime.adapters.java import process_discovery
+from jolink_runtime.adapters.java.tool_schema import (
     JAVA_PROCESSES_SCHEMA,
     JAVA_RUNTIME_SCHEMA,
 )
-from jolink_runtime_debugger.core.dispatcher import Dispatcher, parse_runtime_action
+from jolink_runtime.core.dispatcher import Dispatcher, parse_runtime_action
 
 
 FIXTURE_ROOT = (

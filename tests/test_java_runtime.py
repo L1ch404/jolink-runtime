@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 
-from jolink_runtime_debugger.core.models import RuntimeAction, Variable
-from jolink_runtime_debugger.adapters.java.jdwp_client import (
+from jolink_runtime.core.models import RuntimeAction, Variable
+from jolink_runtime.adapters.java.jdwp_client import (
     Cmd,
     EventKind,
     IDSizes,
@@ -21,13 +21,13 @@ from jolink_runtime_debugger.adapters.java.jdwp_client import (
     SuspendPolicy,
     Tag,
 )
-from jolink_runtime_debugger.adapters.java.log_manager import LogManager
-from jolink_runtime_debugger.adapters.java import process_manager as process_module
-from jolink_runtime_debugger.adapters.java.process_manager import (
+from jolink_runtime.adapters.java.log_manager import LogManager
+from jolink_runtime.adapters.java import process_manager as process_module
+from jolink_runtime.adapters.java.process_manager import (
     ProcessInfo,
     ProcessManager,
 )
-from jolink_runtime_debugger.adapters.java.jdwp_adapter import (
+from jolink_runtime.adapters.java.jdwp_adapter import (
     BreakpointClassCandidate,
     BreakpointLocation,
     JavaRuntime,

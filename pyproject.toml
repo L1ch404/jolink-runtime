@@ -3,9 +3,9 @@ requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jolink-runtime-debugger"
+name = "jolink-runtime"
 version = "0.1.0a1"
-description = "A local runtime debugger for coding agents"
+description = "Local runtime evidence and debugging for coding agents"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jolink-runtime-debugger = "jolink_runtime_debugger.transport.stdio:main"
+jolink-runtime = "jolink_runtime.transport.stdio:main"
 
 [project.optional-dependencies]
 dev = [

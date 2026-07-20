@@ -6,9 +6,9 @@ from typing import Any
 
 import anyio
 
-from jolink_runtime_debugger.core.wait_state import WaitControl
-from jolink_runtime_debugger.server import mcp_server as mcp_server_module
-from jolink_runtime_debugger.server.mcp_server import RuntimeMCPBoundary
+from jolink_runtime.core.wait_state import WaitControl
+from jolink_runtime.server import mcp_server as mcp_server_module
+from jolink_runtime.server.mcp_server import RuntimeMCPBoundary
 
 
 class _CancellableDispatcher:

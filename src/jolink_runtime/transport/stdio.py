@@ -1,4 +1,4 @@
-"""stdio entry point for the joLink Runtime Debugger MCP server."""
+"""stdio entry point for the joLink Runtime MCP server."""
 
 from __future__ import annotations
 

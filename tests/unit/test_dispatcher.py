@@ -6,12 +6,12 @@ from typing import Any
 
 import pytest
 
-from jolink_runtime_debugger.adapters.java.jdwp_adapter import JavaRuntime
-from jolink_runtime_debugger.adapters.java.tool_schema import JAVA_RUNTIME_SCHEMA
-from jolink_runtime_debugger.core import dispatcher as dispatcher_module
-from jolink_runtime_debugger.core.dispatcher import Dispatcher, parse_runtime_action
-from jolink_runtime_debugger.core.models import RuntimeResult
-from jolink_runtime_debugger.core.session_manager import SessionManager
+from jolink_runtime.adapters.java.jdwp_adapter import JavaRuntime
+from jolink_runtime.adapters.java.tool_schema import JAVA_RUNTIME_SCHEMA
+from jolink_runtime.core import dispatcher as dispatcher_module
+from jolink_runtime.core.dispatcher import Dispatcher, parse_runtime_action
+from jolink_runtime.core.models import RuntimeResult
+from jolink_runtime.core.session_manager import SessionManager
 
 
 def test_standalone_preserves_runtime_schema_and_observation_guide() -> None:

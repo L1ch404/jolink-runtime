@@ -279,7 +279,7 @@ generation-bound delivery/inspection lease described above.
 
 ## Release hygiene: stale local wheel
 
-The local `dist/jolink_runtime_debugger-0.1.0-py3-none-any.whl` may predate the
+The local `dist/jolink_runtime-0.1.0-py3-none-any.whl` may predate the
 latest lifecycle fixes. `dist/` is gitignored, so this is not a source-tree or
 push defect, but installing that wheel can test old behavior under the same
 package version.

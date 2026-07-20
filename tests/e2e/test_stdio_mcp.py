@@ -18,7 +18,7 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown() -> None:
     async def scenario(stderr: TextIO) -> None:
         parameters = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "jolink_runtime_debugger.transport.stdio"],
+            args=["-m", "jolink_runtime.transport.stdio"],
             cwd=repository_root,
         )
         with anyio.fail_after(30):

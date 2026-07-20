@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from jolink_runtime_debugger.adapters.java.jdwp_adapter import (
+from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
     SuspensionSnapshot,
 )
-from jolink_runtime_debugger.adapters.java.jdwp_client import (
+from jolink_runtime.adapters.java.jdwp_client import (
     Cmd,
     EventKind,
     IDSizes,
     SuspendPolicy,
 )
-from jolink_runtime_debugger.core.models import RuntimeAction
-from jolink_runtime_debugger.core.wait_state import WaitControl
+from jolink_runtime.core.models import RuntimeAction
+from jolink_runtime.core.wait_state import WaitControl
 
 
 class _RunningProcess:

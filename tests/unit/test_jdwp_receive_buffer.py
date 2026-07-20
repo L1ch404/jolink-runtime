@@ -7,8 +7,8 @@ from collections import deque
 
 import pytest
 
-import jolink_runtime_debugger.adapters.java.jdwp_client as jdwp_module
-from jolink_runtime_debugger.adapters.java.jdwp_client import (
+import jolink_runtime.adapters.java.jdwp_client as jdwp_module
+from jolink_runtime.adapters.java.jdwp_client import (
     IDSizes,
     JDWPClient,
     JDWPError,
