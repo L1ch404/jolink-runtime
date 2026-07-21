@@ -175,6 +175,11 @@ Use the available evidence to distinguish between these possibilities.
 - Remember that Runtime evidence can be interpreted incorrectly.
 - Use Runtime observation to reduce uncertainty, not replace careful reasoning.
 
+An anonymized dogfood example of this failure mode is documented in
+[`Case-003: Runtime Evidence semantic overconfidence`](dogfood/case-003-runtime-evidence-semantic-overconfidence.md).
+It shows how a correct observed value can still lead to a wrong root cause when
+the Agent has not verified the field's lineage and business meaning.
+
 ## 5. Keep observations focused
 
 - Inspect only the threads, stack frames, variables, and objects relevant to the current question.
