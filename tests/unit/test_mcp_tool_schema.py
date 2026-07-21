@@ -60,18 +60,22 @@ def test_java_runtime_description_contains_required_selection_and_safety_signals
     assert runtime_description == JAVA_RUNTIME_DESCRIPTION
     normalized = runtime_description.lower()
     for signal in (
-        "run, operate, observe, and debug",
+        "run, observe, and debug",
         "local java application",
         "launch",
         "restart",
         "status and logs",
-        "verify tests",
-        "endpoints",
-        "actual behavior",
+        "code changes",
+        "actual runtime behavior",
+        "runtime evidence",
         "breakpoints",
         "exception watches",
         "stack frames",
         "variables",
+        "bounded observations",
+        "observed facts",
+        "interpretations",
+        "unverified conclusions",
         "resume",
         "cleanup_debug_state",
     ):

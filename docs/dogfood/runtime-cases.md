@@ -138,9 +138,9 @@ This lifecycle is intentional:
 - After `wait_event` times out, its JDWP requests have been disarmed. A later
   trigger must also continue normally.
 - A hit ends that wait and disarms its JDWP requests. After inspection and
-  `resume`, start a new `wait_event` and trigger a new request to observe the
-  next hit. The stable breakpoint/exception definition is re-armed for that
-  new wait.
+  `resume`, arm a new `wait_event`, trigger a new request after `status=armed`,
+  and await the returned `wait_handle` to observe the next hit. The stable
+  breakpoint/exception definition is re-armed for that new wait.
 - Do not expect one HTTP request to pause at several breakpoints across
   several `wait_event` calls. For an ordered multi-breakpoint investigation,
   replay the scenario once per observation point and remove earlier

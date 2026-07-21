@@ -33,6 +33,28 @@ from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
     SuspensionSnapshot,
 )
+
+
+def _assert_two_phase_wait_next_step(
+    value: str,
+    *,
+    subject: str | None = None,
+) -> None:
+    normalized = value.lower()
+    if subject is not None:
+        assert subject in normalized
+    for signal in (
+        "wait_mode='arm'",
+        "status='armed'",
+        "trigger",
+        "wait_mode='await'",
+        "wait_handle",
+    ):
+        assert signal in normalized
+    assert "withwait_mode" not in normalized
+    assert "scenario,then" not in normalized
+
+
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
     result = b""
     while len(result) < size:
@@ -792,6 +814,10 @@ def test_breakpoint_set_returns_matched_application_location_summary() -> None:
         "armed": False,
         "suspend_policy": "EVENT_THREAD",
     }
+    _assert_two_phase_wait_next_step(
+        result.data["suggested_next_step"],
+        subject="breakpoint",
+    )
     assert runtime._breakpoints["bp_001"]["breakpoint_id"] == "bp_001"
 
 
@@ -870,6 +896,7 @@ def test_wait_event_owns_breakpoint_request_and_resumes_late_timeout_event() -> 
     result = runtime.wait_event(RuntimeAction(action="wait_event", timeout=0.01))
 
     assert result.data["status"] == "timeout"
+    _assert_two_phase_wait_next_step(result.data["suggested_next_step"])
     assert set(runtime._breakpoints) == {"bp_001"}
     assert runtime._armed_breakpoint_requests == {}
     assert runtime._active_suspension is None
@@ -1374,6 +1401,10 @@ def test_exception_set_creates_stable_definition_without_protocol_request() -> N
     assert result.data["caught"] is True
     assert result.data["uncaught"] is True
     assert result.data["suspend_policy"] == "EVENT_THREAD"
+    _assert_two_phase_wait_next_step(
+        result.data["suggested_next_step"],
+        subject="exception watch",
+    )
     assert client.calls == [(Cmd.VM, 3, b"")]
     assert runtime._exceptions[1]["exception_class"] == "Ljava/lang/NullPointerException;"
 
@@ -1779,6 +1810,7 @@ def test_resume_uses_thread_resume_for_event_thread_suspension() -> None:
     assert result.data["resume_scope"] == "event_thread"
     assert result.data["suspend_policy_name"] == "EVENT_THREAD"
     assert result.data["debug_state"] == "attached"
+    _assert_two_phase_wait_next_step(result.data["suggested_next_step"])
     assert runtime._active_suspension is None
     assert client.commands == [(Cmd.THREAD, 3, (10).to_bytes(8, "big"))]
 
@@ -1898,7 +1930,7 @@ def test_status_auto_resumes_pending_event_without_creating_suspension() -> None
     assert result.data["suspension_id"] is None
     assert runtime._active_suspension is None
     assert client.commands[0] == (Cmd.THREAD, 3, (10).to_bytes(8, "big"))
-    assert "Start wait_event" in result.data["suggested_next_step"]
+    _assert_two_phase_wait_next_step(result.data["suggested_next_step"])
 
 
 def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:

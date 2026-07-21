@@ -6,7 +6,10 @@ from typing import Any
 import anyio
 import mcp.types as types
 
-from jolink_runtime.server.mcp_server import RuntimeMCPBoundary
+from jolink_runtime.server.mcp_server import (
+    SERVER_INSTRUCTIONS,
+    RuntimeMCPBoundary,
+)
 
 
 class _FakeDispatcher:
@@ -38,6 +41,16 @@ def _text_payload(result: types.CallToolResult) -> dict[str, Any]:
     content = result.content[0]
     assert isinstance(content, types.TextContent)
     return json.loads(content.text)
+
+
+def test_server_instructions_separate_observation_from_inference() -> None:
+    normalized = SERVER_INSTRUCTIONS.lower()
+
+    assert "directly observed" in normalized
+    assert "inferences" in normalized
+    assert "remains unverified" in normalized
+    assert "evidence shows" in normalized
+    assert "actually occurred in the current scenario" in normalized
 
 
 def test_success_returns_json_text_and_structured_content() -> None:
@@ -98,6 +111,42 @@ def test_partial_or_unavailable_observation_is_not_a_tool_error() -> None:
         result = anyio.run(scenario)
         assert result.isError is False
         assert result.structuredContent == payload
+
+
+def test_no_active_suspension_gets_two_phase_mcp_guidance() -> None:
+    lineage_payload = {
+        "ok": False,
+        "error": (
+            "No active debug suspension. Call wait_event or wait_breakpoint "
+            "after triggering the debug event."
+        ),
+    }
+
+    async def scenario(action: str) -> types.CallToolResult:
+        return await RuntimeMCPBoundary(
+            _FakeDispatcher(lineage_payload)
+        ).call_tool("java_runtime", {"action": action})
+
+    for action in ("variables", "resume"):
+        result = anyio.run(scenario, action)
+        payload = result.structuredContent
+        assert payload is not None
+        assert result.isError is True
+        assert payload["error"] == "No active debug suspension."
+        assert payload["error_code"] == "NO_ACTIVE_SUSPENSION"
+        assert payload["retryable"] is True
+        suggestion = payload["suggested_next_step"]
+        assert "wait_breakpoint" not in suggestion
+        for signal in (
+            "List the current breakpoint and exception definitions",
+            "only if it is missing",
+            "wait_mode='arm'",
+            "status='armed'",
+            "trigger",
+            "wait_mode='await'",
+            "wait_handle",
+        ):
+            assert signal in suggestion
 
 
 def test_variables_observation_state_is_derived_from_value_states() -> None:

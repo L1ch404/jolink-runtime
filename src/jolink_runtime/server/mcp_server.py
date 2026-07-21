@@ -31,10 +31,23 @@ from .tool_schema import (
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "jolink-runtime"
+_NO_ACTIVE_SUSPENSION_NEXT_STEP = (
+    "List the current breakpoint and exception definitions, and configure "
+    "the required one only if it is missing. Then call wait_event with "
+    "wait_mode='arm'. After status='armed', trigger the target scenario and "
+    "call wait_event with wait_mode='await' using the returned wait_handle."
+)
 SERVER_INSTRUCTIONS = (
-    "Use java_runtime to run, operate, observe, and debug a local Java application. "
-    "Use its runtime evidence to verify code changes against actual behavior. "
-    "Use java_processes only when discovering an existing JVM for attach. "
+    "Use java_runtime to run, observe, verify, and debug a local Java application. "
+    "Use java_processes only to discover an existing JVM for attach. "
+    "Treat runtime outputs as bounded observations, not as self-explanatory "
+    "causal conclusions. "
+    "Clearly separate directly observed facts, inferences, and what remains "
+    "unverified. "
+    "Do not declare a root cause until evidence shows that the suspected "
+    "mechanism actually occurred in the current scenario. "
+    "When multiple explanations remain consistent with the evidence, seek the "
+    "next piece of evidence that best distinguishes them. "
     "After inspecting a suspension, always call resume or cleanup_debug_state."
 )
 
@@ -241,6 +254,18 @@ def _normalize_mcp_payload(
     arguments: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    if (
+        name == "java_runtime"
+        and payload.get("ok") is False
+        and str(payload.get("error", "")).startswith(
+            "No active debug suspension."
+        )
+    ):
+        payload = dict(payload)
+        payload["error"] = "No active debug suspension."
+        payload["error_code"] = "NO_ACTIVE_SUSPENSION"
+        payload["retryable"] = True
+        payload["suggested_next_step"] = _NO_ACTIVE_SUSPENSION_NEXT_STEP
     if (
         name == "java_runtime"
         and arguments.get("action") == "variables"
@@ -851,6 +876,17 @@ class RuntimeMCPBoundary:
                     return _call_tool_result(result)
 
                 expires_at = control.armed_at + event_timeout
+                result_ready = control.result_copy() is not None
+                suggested_next_step = (
+                    "The wait result is already ready. Call wait_event with "
+                    "wait_mode='await' and this wait_handle now; do not "
+                    "trigger the scenario again."
+                    if result_ready
+                    else
+                    "If the target scenario has not already been triggered, "
+                    "trigger it now. Then call wait_event with "
+                    "wait_mode='await' and this wait_handle."
+                )
                 return _call_tool_result({
                     "ok": True,
                     "status": "armed",
@@ -864,11 +900,8 @@ class RuntimeMCPBoundary:
                     "armed_exception_ids": list(
                         control.armed_exception_ids
                     ),
-                    "result_ready": control.result_copy() is not None,
-                    "suggested_next_step": (
-                        "Trigger the scenario now, then call wait_event with "
-                        "wait_mode='await' and this wait_handle."
-                    ),
+                    "result_ready": result_ready,
+                    "suggested_next_step": suggested_next_step,
                 })
             except anyio.get_cancelled_exc_class():
                 control.request_cancel("mcp_arm_request_cancelled")

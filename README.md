@@ -108,7 +108,7 @@ These actions support:
 Current package version:
 
 ```text
-0.1.0a1
+0.1.0a2
 ```
 
 Status:
@@ -182,7 +182,7 @@ Many MCP clients support a stdio server configuration similar to the following:
   "mcpServers": {
     "jolink-runtime": {
       "command": "uvx",
-      "args": ["jolink-runtime@0.1.0a1"]
+      "args": ["jolink-runtime@0.1.0a2"]
     }
   }
 }
@@ -267,7 +267,7 @@ when an external action must occur only after JDWP requests are installed.
 
 ## Runtime safety
 
-joLink `0.1.0a1` is designed for local, trusted development environments.
+joLink `0.1.0a2` is designed for local, trusted development environments.
 
 Current safety boundaries:
 

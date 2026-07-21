@@ -634,7 +634,7 @@ def test_status_explains_force_disconnected_debug_requests() -> None:
     assert status.data["breakpoint_count"] == 0
     assert status.data["exception_count"] == 0
     assert status.data["warnings"] == ["requests must be set again"]
-    assert "Retry wait_event" in status.data["suggested_next_step"]
+    assert "wait_mode='arm'" in status.data["suggested_next_step"]
 
 
 def test_stale_connection_invalidates_requests_before_reconnect() -> None:

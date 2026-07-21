@@ -29,18 +29,17 @@ PUBLIC_RUNTIME_ACTIONS = (
 )
 
 JAVA_RUNTIME_DESCRIPTION = (
-    "Run, operate, observe, and debug a local Java application. "
-    "Use this tool to launch the target application when it is not running, "
-    "restart it after code changes, inspect status and logs, and verify tests, "
-    "endpoints, and actual runtime outputs before making further assumptions. "
-    "When a fix must be verified, or repeated code changes have not solved "
-    "the problem, prefer running the current application and observing its "
-    "actual behavior before applying another patch. "
-    "For deeper investigation, it can attach to an existing JVM, set "
+    "Run, observe, and debug a local Java application. "
+    "Launch or restart the target, inspect status and logs, and verify code "
+    "changes against actual runtime behavior before making further assumptions. "
+    "When repeated edits fail or a fix needs verification, obtain runtime "
+    "evidence before applying another patch. "
+    "For deeper investigation, attach to an existing JVM, set "
     "breakpoints or exception watches, inspect stack frames and variables, "
     "and resume suspended threads. "
-    "When runtime inspection suspends the JVM, always resume it or call "
-    "cleanup_debug_state after inspection."
+    "Treat runtime outputs as bounded observations; separate observed facts from "
+    "interpretations and unverified conclusions. "
+    "Always resume a suspended JVM or call cleanup_debug_state after inspection."
 )
 
 JAVA_RUNTIME_INPUT_SCHEMA = {

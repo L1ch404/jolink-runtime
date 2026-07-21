@@ -7,11 +7,14 @@
 > Stage 2.1.1 lifecycle note: some workflow sketches below are historical and
 > predate wait-scoped arming. A breakpoint/exception `set` now creates a stable
 > logical definition; its suspend-capable JDWP request exists only during an
-> active `wait_event`. Prepare a delayed/background trigger, start
-> `wait_event`, and let the trigger fire while that wait is active. After a
-> hit/resume, start a new wait and replay the scenario for the next observation
-> point. Do not expect one HTTP request to cross several waits, and matching
-> traffic with no waiter or after timeout must never suspend the JVM.
+> active `wait_event`. Prefer deterministic two-phase waiting: call
+> `wait_event` with `wait_mode=arm`, wait for `status=armed`, start the trigger,
+> then call `wait_event` with `wait_mode=await` and the returned `wait_handle`.
+> Blocking mode remains available for compatibility and requires a delayed or
+> background trigger. After a hit/resume, arm a new wait and replay the scenario
+> for the next observation point. Do not expect one HTTP request to cross several
+> waits, and matching traffic with no waiter or after timeout must never suspend
+> the JVM.
 
 ---
 

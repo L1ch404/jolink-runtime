@@ -237,6 +237,12 @@ def test_two_phase_wait_arms_before_trigger_then_awaits_hit() -> None:
         assert armed_payload["armed_breakpoint_ids"] == ["bp_001"]
         assert armed_payload["armed_exception_ids"] == [7]
         assert armed_payload["result_ready"] is False
+        suggestion = armed_payload["suggested_next_step"].lower()
+        assert (
+            "if the target scenario has not already been triggered"
+            in suggestion
+        )
+        assert "wait_mode='await'" in suggestion
         wait_handle = str(armed_payload["wait_handle"])
 
         rejected = await boundary.call_tool(
@@ -273,6 +279,72 @@ def test_two_phase_wait_arms_before_trigger_then_awaits_hit() -> None:
         )
         assert resumed.structuredContent["status"] == "resumed"
         assert dispatcher.resume_calls == ["susp_two_phase"]
+
+    anyio.run(scenario)
+
+
+def test_two_phase_arm_does_not_retrigger_when_result_is_already_ready(
+    monkeypatch: Any,
+) -> None:
+    dispatcher = _TwoPhaseDispatcher()
+    dispatcher.trigger.set()
+    boundary = RuntimeMCPBoundary(dispatcher)
+    original_wait_until_ready = WaitControl.wait_until_ready
+
+    def wait_until_result_is_ready(
+        control: WaitControl,
+        timeout: float | None = None,
+    ) -> bool:
+        if not original_wait_until_ready(control, timeout):
+            return False
+        return control.wait_until_result(timeout)
+
+    # Make the event-before-arm-response race deterministic: the boundary's
+    # ready wait returns only after the background worker publishes its hit.
+    monkeypatch.setattr(
+        WaitControl,
+        "wait_until_ready",
+        wait_until_result_is_ready,
+    )
+
+    async def scenario() -> None:
+        armed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "arm",
+                "timeout": 5,
+            },
+        )
+        armed_payload = dict(armed.structuredContent or {})
+        assert armed_payload["status"] == "armed"
+        assert armed_payload["result_ready"] is True
+        suggestion = armed_payload["suggested_next_step"].lower()
+        assert "wait result is already ready" in suggestion
+        assert "wait_mode='await'" in suggestion
+        assert "trigger the scenario now" not in suggestion
+        assert "do not trigger the scenario again" in suggestion
+
+        hit = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "wait_event",
+                "wait_mode": "await",
+                "wait_handle": armed_payload["wait_handle"],
+                "timeout": 1,
+            },
+        )
+        hit_payload = dict(hit.structuredContent or {})
+        assert hit_payload["status"] == "breakpoint_hit"
+
+        resumed = await boundary.call_tool(
+            "java_runtime",
+            {
+                "action": "resume",
+                "suspension_id": hit_payload["suspension_id"],
+            },
+        )
+        assert resumed.structuredContent["status"] == "resumed"
 
     anyio.run(scenario)
 

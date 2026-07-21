@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Fail if the imported package comes from this source checkout.",
     )
-    parser.add_argument("--expected-version", default="0.1.0a1")
+    parser.add_argument("--expected-version", default="0.1.0a2")
     return parser.parse_args()
 
 

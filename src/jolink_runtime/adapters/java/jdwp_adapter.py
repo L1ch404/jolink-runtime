@@ -30,6 +30,12 @@ from .log_manager import LogManager
 
 logger = logging.getLogger(__name__)
 
+_TWO_PHASE_WAIT_NEXT_STEP = (
+    "Call wait_event with wait_mode='arm'. After it returns status='armed', "
+    "trigger the target scenario, then call wait_event with wait_mode='await' "
+    "and the returned wait_handle."
+)
+
 
 def _error_summary(error: Exception) -> str:
     """Return one safe diagnostic line, excluding captured application logs."""
@@ -797,8 +803,8 @@ class JavaRuntime(Runtime):
             info["debug_requests_invalidated"] = True
             info.setdefault("warnings", []).append(self._debug_connection_warning)
             info["suggested_next_step"] = (
-                "Retry wait_event; stable breakpoint and exception definitions "
-                "will be re-armed on the current connection."
+                "Stable breakpoint and exception definitions will be re-armed "
+                "on the current connection. " + _TWO_PHASE_WAIT_NEXT_STEP
             )
         if proc.launch_mode == "jar":
             info["jar_path"] = proc.jar_path
@@ -832,9 +838,7 @@ class JavaRuntime(Runtime):
                 info.setdefault("warnings", []).append(
                     "Stale debug events without an active waiter were automatically resumed."
                 )
-                info["suggested_next_step"] = (
-                    "Start wait_event before triggering the next target scenario."
-                )
+                info["suggested_next_step"] = _TWO_PHASE_WAIT_NEXT_STEP
 
             err, data = jdwp.command(Cmd.VM, 1)  # Version
             if err == 0:
@@ -863,8 +867,8 @@ class JavaRuntime(Runtime):
             if self._debug_connection_warning not in info.get("warnings", []):
                 info.setdefault("warnings", []).append(self._debug_connection_warning)
             info["suggested_next_step"] = (
-                "Retry wait_event; stable breakpoint and exception definitions "
-                "will be re-armed on the current connection."
+                "Stable breakpoint and exception definitions will be re-armed "
+                "on the current connection. " + _TWO_PHASE_WAIT_NEXT_STEP
             )
 
         return RuntimeResult(ok=True, data=info)
@@ -1002,7 +1006,8 @@ class JavaRuntime(Runtime):
                         "armed": False,
                     },
                     "suggested_next_step": (
-                        "Start wait_event, then trigger the target scenario while that wait is active."
+                        "The breakpoint definition is configured but not armed. "
+                        + _TWO_PHASE_WAIT_NEXT_STEP
                     ),
                 })
 
@@ -1173,7 +1178,8 @@ class JavaRuntime(Runtime):
                     "uncaught": action.uncaught,
                     "suspend_policy": self._suspend_policy_name(SuspendPolicy.EVENT_THREAD),
                     "suggested_next_step": (
-                        "Start wait_event, then trigger the target scenario while that wait is active."
+                        "The exception watch is configured but not armed. "
+                        + _TWO_PHASE_WAIT_NEXT_STEP
                     ),
                 })
 
@@ -1273,7 +1279,9 @@ class JavaRuntime(Runtime):
                     "error_code": "active_debug_requests_remain",
                     "retryable": True,
                     "suggested_next_step": (
-                        "Call cleanup_debug_state, then set the required events and wait again."
+                        "Call cleanup_debug_state, set the required breakpoint or "
+                        "exception watch again, then call wait_event with "
+                        "wait_mode='arm'."
                     ),
                 },
             )
@@ -1329,7 +1337,7 @@ class JavaRuntime(Runtime):
                             "retryable": True,
                             "suggested_next_step": (
                                 "Remove this breakpoint, set it again against the current bytecode, "
-                                "then retry wait_event."
+                                "then call wait_event with wait_mode='arm'."
                             ),
                         },
                     )
@@ -1363,7 +1371,8 @@ class JavaRuntime(Runtime):
                             "breakpoint_id": breakpoint_id,
                             "retryable": True,
                             "suggested_next_step": (
-                                "Retry wait_event, or call cleanup_debug_state and set the breakpoint again."
+                                "Retry wait_event with wait_mode='arm', or call "
+                                "cleanup_debug_state and set the breakpoint again."
                             ),
                         },
                     )
@@ -1386,7 +1395,8 @@ class JavaRuntime(Runtime):
                             "exception_class": signature,
                             "retryable": True,
                             "suggested_next_step": (
-                                "Trigger class loading without relying on this watch, then retry wait_event."
+                                "Trigger class loading without relying on this watch, then "
+                                "retry wait_event with wait_mode='arm'."
                             ),
                         },
                     )
@@ -1418,7 +1428,8 @@ class JavaRuntime(Runtime):
                             "request_id": request_id,
                             "retryable": True,
                             "suggested_next_step": (
-                                "Retry wait_event, or call cleanup_debug_state and set the exception watch again."
+                                "Retry wait_event with wait_mode='arm', or call "
+                                "cleanup_debug_state and set the exception watch again."
                             ),
                         },
                     )
@@ -1551,7 +1562,8 @@ class JavaRuntime(Runtime):
                 "failures": failures,
                 "retryable": True,
                 "suggested_next_step": (
-                    "Call status, then retry wait_event; definitions will be re-armed on the new connection."
+                    "Call status, then retry wait_event with wait_mode='arm'; "
+                    "definitions will be re-armed on the new connection."
                 ),
             },
         )
@@ -1731,7 +1743,9 @@ class JavaRuntime(Runtime):
                 data={
                     "error_code": "WAIT_EVENT_INCOMPLETE",
                     "retryable": True,
-                    "suggested_next_step": "Retry wait_event.",
+                    "suggested_next_step": (
+                        "Start a new observation with wait_event and wait_mode='arm'."
+                    ),
                 },
             )
         return result
@@ -1974,10 +1988,7 @@ class JavaRuntime(Runtime):
                 "thread_id": snapshot.thread_id,
                 "process_state": "running",
                 "debug_state": "attached",
-                "suggested_next_step": (
-                    "Arrange the next trigger, start wait_event, and fire the trigger "
-                    "while that wait is active."
-                ),
+                "suggested_next_step": _TWO_PHASE_WAIT_NEXT_STEP,
             })
         except (JDWPError, RuntimeError) as e:
             return RuntimeResult(ok=False, error=str(e))
@@ -2276,7 +2287,7 @@ class JavaRuntime(Runtime):
             "debug_state": "attached",
             "suggested_next_step": (
                 "Confirm the logical breakpoint or exception definition with list, "
-                "then start a new wait_event before triggering the scenario again."
+                "then start a new observation. " + _TWO_PHASE_WAIT_NEXT_STEP
             ),
         })
 
@@ -2673,7 +2684,8 @@ class JavaRuntime(Runtime):
         snapshot = self._active_suspension
         if snapshot is None or not snapshot.valid:
             raise RuntimeError(
-                "No active debug suspension. Call wait_event or wait_breakpoint after triggering the debug event."
+                "No active debug suspension. Call wait_event or wait_breakpoint "
+                "after triggering the debug event."
             )
         if action.suspension_id and action.suspension_id != snapshot.suspension_id:
             raise RuntimeError(
@@ -4757,7 +4769,8 @@ class JavaRuntime(Runtime):
                 if invalidated:
                     raise RuntimeError(
                         "JDWP connection changed while debug state was active; "
-                        "retry wait_event to re-arm stable event definitions."
+                        "start a new wait_event with wait_mode='arm' to re-arm "
+                        "stable event definitions."
                     ) from exc
         jdwp = JDWPClient()
         proc = self._proc.current
