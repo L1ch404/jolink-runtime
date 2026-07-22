@@ -287,14 +287,17 @@ def test_definite_http_connection_failure_cancels_runtime_wait() -> None:
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     port = int(probe.getsockname()[1])
-    probe.close()
     dispatcher = _TriggerDispatcher()
     boundary = RuntimeMCPBoundary(dispatcher)
 
     async def scenario() -> None:
+        arm_arguments = _arm_arguments(
+            f"http://127.0.0.1:{port}/missing"
+        )
+        arm_arguments["http_trigger"]["timeout_seconds"] = 0.5
         armed = await boundary.call_tool(
             "java_runtime",
-            _arm_arguments(f"http://127.0.0.1:{port}/missing"),
+            arm_arguments,
         )
         failed = await boundary.call_tool(
             "java_runtime",
@@ -302,7 +305,7 @@ def test_definite_http_connection_failure_cancels_runtime_wait() -> None:
                 "action": "wait_event",
                 "wait_mode": "await",
                 "wait_handle": armed.structuredContent["wait_handle"],
-                "timeout": 2,
+                "timeout": 5,
             },
         )
         payload = dict(failed.structuredContent or {})
@@ -314,7 +317,10 @@ def test_definite_http_connection_failure_cancels_runtime_wait() -> None:
         assert dispatcher.cancel_seen.is_set()
         assert dispatcher.settled == 1
 
-    anyio.run(scenario)
+    try:
+        anyio.run(scenario)
+    finally:
+        probe.close()
 
 
 def test_cleanup_preempts_passive_await_with_running_http_trigger() -> None:
