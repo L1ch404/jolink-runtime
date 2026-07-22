@@ -9,7 +9,7 @@ is frozen separately in
 
 ## Identity and versions
 
-- Package prerelease version: `0.1.0a2`
+- Package prerelease version: `0.1.0a3`
 - MCP Server name: `jolink-runtime`
 - Migrated Runtime lineage: `2.4.0`
 - Runtime lineage is not independently published or incremented during the
@@ -54,8 +54,8 @@ The compact description must tell the model:
 3. It supports lifecycle, breakpoint/exception events, stack, variables, and
    resume.
 4. Breakpoints and exception watches are armed only while `wait_event` is
-   active. Prefer `wait_mode=arm`, trigger only after the armed result, then
-   collect the event with `wait_mode=await`.
+   active. Prefer `wait_mode=arm`, optionally let it start a local HTTP trigger
+   after arming, then collect the event with `wait_mode=await`.
 5. A suspension returned by `wait_event` must be resumed or cleaned up after
    inspection.
 
@@ -105,7 +105,8 @@ into a Runtime `ok=false` payload because the Dispatcher was never invoked.
 - `arm` starts one protected background observation and returns only after all
   applicable JDWP EventRequests have been installed. Its successful result
   contains an opaque `wait_handle`, `armed_at`, `expires_at`, and the stable
-  logical breakpoint/exception ids armed for that wait.
+  logical breakpoint/exception ids armed for that wait. It may also start one
+  optional `http_trigger` after arming is confirmed.
 - `await` accepts the `wait_handle` returned by `arm`. It returns the event or
   terminal wait result. If only the await call's timeout expires while the
   underlying observation is still active, it returns `status=waiting`; the
@@ -122,11 +123,76 @@ wait_event(wait_mode=arm)
 -> resume(suspension_id=...)
 ```
 
+For a simple local HTTP scenario, the server can own the ordering-sensitive
+trigger step:
+
+```text
+wait_event(wait_mode=arm, http_trigger=...)
+-> receive status=armed and required_next_action=await
+-> wait_event(wait_mode=await, wait_handle=...)
+-> inspect the suspension
+-> resume(suspension_id=...)
+```
+
+### Arm-bound HTTP trigger
+
+The optional `http_trigger` is an MCP-boundary convenience, not a new Runtime
+action and not a general-purpose HTTP client.
+
+- It is valid only with `wait_event(wait_mode=arm)` and one trigger belongs to
+  one `wait_handle`.
+- Supported methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`.
+- The target must be `http://127.0.0.1`; redirects and environment proxies are
+  disabled.
+- The request starts asynchronously only after JDWP reports the wait as armed.
+  `arm` never waits for the HTTP response.
+- If a Runtime result was already published before trigger-start ownership is
+  claimed, the trigger is not sent and its status is
+  `not_started_event_already_ready`.
+- An armed response with a trigger includes `required_next_action` containing
+  the exact `await` call shape. The caller must not send the request again.
+- Trigger output is deliberately bounded. It may expose method, lifecycle
+  status, HTTP status, timestamps, and a stable error code, but never echoes
+  the URL, headers, request body, or response body. Validation failures follow
+  the same rule: they identify the invalid field and rule without echoing its
+  value.
+- `response_headers_received` means that HTTP response headers and the status
+  code were observed. joLink does not consume or return the response body.
+- Response headers received without a Runtime event do not close the wait.
+  Server work may continue asynchronously after the HTTP response, so the same
+  handle remains awaitable until its Runtime deadline or explicit cleanup.
+- A definite connection/start failure terminates and safely settles the wait.
+  A Runtime result already published at the failure boundary takes priority.
+- If the Runtime wait reaches a terminal result without a suspension, joLink
+  requests cancellation of any still-running client-side HTTP wait before the
+  public handle is released.
+- Client timeout or connection cancellation leaves server execution as
+  `unknown`; it is not reported as proof that business work stopped.
+- `cleanup_debug_state`, `stop`, `restart`, `detach`, and MCP shutdown cancel
+  joLink's client-side HTTP wait as well as settling Runtime state. This is a
+  non-blocking cancellation signal: JVM lifecycle actions do not wait for the
+  HTTP client thread to exit. Closing the client connection cannot undo work
+  already accepted by the application.
+- Limits: 32 headers, 16 KiB aggregate header data, 256 KiB serialized JSON
+  body, and a 0.1-120 second HTTP client timeout. An automatically added JSON
+  `Content-Type` counts toward both header limits.
+
+Only one `await` request may own a handle at a time. A concurrent duplicate is
+rejected with `WAIT_HANDLE_IN_USE`; after a non-terminal `status=waiting`, the
+same handle may be awaited again.
+
 There is at most one active wait per Runtime session. While a two-phase wait
 is active, normal Runtime observation or mutation calls are rejected with
 `ACTIVE_WAITER_EXISTS`; `cleanup_debug_state`, `stop`, `restart`, and `detach`
 first cancel and settle the wait safely. Cancelling an `arm` or `await` MCP
 request also cancels the underlying observation.
+
+Successful `cleanup_debug_state` results contain `verification_state` and a
+`verification` object covering active suspension, logical definitions,
+Runtime-tracked JDWP requests, and MCP wait state. A separate
+`http_trigger_cleanup_state` reports whether local HTTP-client cancellation is
+complete or still settling. A settling client is not evidence that server-side
+business execution was cancelled.
 
 If a two-phase wait creates a suspension but no `await` call claims its result
 within the bounded delivery grace period, Runtime resumes that exact
@@ -138,19 +204,15 @@ internal waiter id, or generation.
 #### Current dogfood implementation limitations
 
 The lifecycle statements above are the target v0.1 contract. The current
-dogfood implementation has confirmed concurrency defects, recorded with
+dogfood implementation still has confirmed concurrency defects, recorded with
 reproductions in
 [`stage-2.1.2-lifecycle-backlog.md`](stage-2.1.2-lifecycle-backlog.md):
 
-- cancellation of `arm` or `await` can be deferred until its local
-  `threading.Event.wait()` deadline;
-- an in-flight passive `await` holds the global call lock, so
-  `cleanup_debug_state`, `stop`, `restart`, `detach`, and `status` cannot
-  promptly preempt or report the active waiter;
+- cancellation of `arm` can still be deferred until its local setup wait
+  deadline; passive `await` now uses short local polling and no longer holds
+  the global call lock;
 - a completed handle has a brief non-atomic transition in which `await` can
   incorrectly return `WAIT_HANDLE_NOT_FOUND`;
-- when `result_ready=true`, the current hint still tells the Agent to trigger
-  before awaiting, even though it should collect the existing result first;
 - the post-handler MCP response-delivery suspension gap remains unbounded by
   the complete delivery/inspection lease.
 
@@ -228,8 +290,8 @@ accepted final semantics.
 
 ## Schema budget
 
-- Compact `java_runtime` Schema: at most 5 KB.
-- All advertised tool Schemas combined: at most 6 KB.
+- Compact `java_runtime` Schema: at most 5.6 KB.
+- All advertised tool Schemas combined: at most 6.6 KB.
 - The budget must not remove the required tool-description semantics above.
 - Cross-field action validation belongs in Runtime results rather than large
   `oneOf` branches.
@@ -241,7 +303,8 @@ artifacts; they are never advertised by the MCP server.
 
 - No new Runtime actions
 - No additional language adapters
-- No HTTP transport
+- No HTTP MCP transport (the arm-bound loopback request is a scenario trigger,
+  not a server transport)
 - No setup installer
 - No remote JDWP attach
 - No public internal waiter/generation/cancellation fields in the Tool Schema;

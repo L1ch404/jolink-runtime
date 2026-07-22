@@ -29,7 +29,7 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown() -> None:
                 async with ClientSession(read_stream, write_stream) as session:
                     initialized = await session.initialize()
                     assert initialized.serverInfo.name == "jolink-runtime"
-                    assert initialized.serverInfo.version == "0.1.0a2"
+                    assert initialized.serverInfo.version == "0.1.0a3"
 
                     listed = await session.list_tools()
                     assert [tool.name for tool in listed.tools] == [

@@ -1,12 +1,40 @@
 # Stage 2.1.2 Lifecycle Backlog
 
 > Status: P1 deterministic arming is implemented in the MCP v0.1 contract.
-> A follow-up concurrency review confirmed two new P0 timing/lock defects and
-> one P1 handle-publication race. P0's complete response-delivery/inspection
-> lease also remains backlog work. None of the confirmed items below has been
-> fixed yet.
+> The `result_ready` hint was corrected in `0.1.0a2`. The `0.1.0a3` HTTP-trigger
+> work removes the passive-await global lock, adds short await polling, and
+> enforces one await owner per handle; those changes are pending full race/E2E
+> verification. Arm setup cancellation, atomic completed-handle publication,
+> and the complete response-delivery/inspection lease remain backlog work.
 >
 > Origin: lifecycle race review after Stage 2.1.1.
+
+## HTTP Trigger review hardening (`0.1.0a3`)
+
+Status: implemented, pending independent verification.
+
+The post-implementation review found one data-disclosure bug and several HTTP
+client lifecycle gaps. This hardening keeps JDWP behavior unchanged:
+
+- JSON Schema and HTTP parser errors now return only a safe field path,
+  validation rule, and fixed guidance. Supplied URLs, header names/values, and
+  request bodies are not copied into results.
+- HTTP cancellation is idempotent and signal-only. Runtime lifecycle actions
+  no longer wait once per trigger (or serially across triggers) for an HTTP
+  thread that cannot prove server-side cancellation.
+- A terminal Runtime result without a suspension requests HTTP client
+  cancellation before the wait handle is forgotten.
+- `response_received` was replaced with the truthful
+  `response_headers_received`; the response body is not consumed.
+- Header count and byte limits are checked after automatic JSON Content-Type is
+  added.
+- `cleanup_debug_state` now returns direct verification counts. MCP wait state
+  and the independently settling HTTP-client state are reported separately.
+
+Required regression coverage includes sensitive-value validation failures,
+the event-vs-HTTP-failure atomic winner, lifecycle latency with a stalled HTTP
+server, terminal non-suspension cancellation, and a real JVM path where HTTP
+204 arrives before delayed asynchronous Java code hits the breakpoint.
 
 ## Decision summary
 
@@ -16,21 +44,22 @@ delivery gap described below.
 
 Current priority order:
 
-1. P0: make `arm`/`await` cancellation prompt and allow lifecycle cleanup to
-   preempt a passive `await`.
+1. P0: finish prompt `arm` cancellation. Passive `await` preemption is
+   implemented in `0.1.0a3` and awaits verification.
 2. P0: suspension delivery/inspection lease.
 3. P1: atomically publish a completed public `wait_handle`.
 4. P1 deterministic arming is implemented through optional
    `wait_mode=arm|await`; preserve its existing behavior while fixing the
    concurrency defects.
-5. P2: make the armed hint respect `result_ready` and remove/rebuild stale
-   distribution artifacts.
+5. P2: the armed hint now respects `result_ready`; stale distribution artifact
+   checks remain part of release verification.
 6. Do not change the current `status` drain sequence without a new
    reproduction; the reported extra-drain issue is not currently established.
 
 ## Confirmed two-phase wait concurrency defects
 
-Status: reproduced independently on 2026-07-19; recorded only, not fixed.
+Status: reproduced independently on 2026-07-19. Individual fix status is
+recorded under each item.
 
 The deterministic reproductions used the real `RuntimeMCPBoundary` with a
 controlled dispatcher. This isolates MCP boundary scheduling from JDWP and
@@ -40,9 +69,15 @@ and handle publication around that successful main path.
 
 ### P0: cancellation is deferred by non-abandonable Event.wait calls
 
-Both arm setup and await result waiting call `anyio.to_thread.run_sync()` on a
-long `threading.Event.wait()` with `abandon_on_cancel=False`. AnyIO therefore
-defers cancellation until that blocking wait returns.
+Status: `await` now polls its local result event in short slices in
+`0.1.0a3`; the long `arm` readiness wait remains unfixed. Full cancellation
+race verification is pending.
+
+Before `0.1.0a3`, both arm setup and await result waiting called
+`anyio.to_thread.run_sync()` on a long `threading.Event.wait()` with
+`abandon_on_cancel=False`. AnyIO therefore deferred cancellation until that
+blocking wait returned. Arm setup still follows this path; await no longer
+does.
 
 Measured reproductions:
 
@@ -79,10 +114,14 @@ Required fix properties:
 
 ### P0: passive await holds the global call lock and blocks cleanup
 
-`_call_wait_event_await()` holds `_call_lock` for the full result wait. A
-concurrent `cleanup_debug_state`, `stop`, `restart`, or `detach` cannot acquire
-the lock and therefore cannot reach the logic intended to cancel the active
-observation.
+Status: implemented in `0.1.0a3`, pending verification. Passive waiting now
+occurs outside `_call_lock`; result claim and lifecycle transitions reacquire
+the lock. `WaitControl` permits only one await owner for each handle.
+
+Before `0.1.0a3`, `_call_wait_event_await()` held `_call_lock` for the full
+result wait. A concurrent `cleanup_debug_state`, `stop`, `restart`, or `detach`
+could not acquire the lock and therefore could not reach the logic intended to
+cancel the active observation.
 
 Measured reproduction:
 
@@ -94,9 +133,9 @@ start await(timeout=3s)
 -> await exits and cleanup completes after 0.252s
 ```
 
-Without the forced event, cleanup remains queued until await reaches its own
-timeout. `status` is affected by the same lock: rather than promptly returning
-`ACTIVE_WAITER_EXISTS`, it can wait behind the passive await.
+Before the fix, without the forced event, cleanup remained queued until await
+reached its own timeout. `status` was affected by the same lock: rather than
+promptly returning `ACTIVE_WAITER_EXISTS`, it could wait behind passive await.
 
 Required fix properties:
 
@@ -133,6 +172,9 @@ Moving the handle between those states and applying completed-result eviction
 must happen under one `_state_lock` critical section.
 
 ### P2: result_ready hint can ask for the wrong next action
+
+Status: fixed in `0.1.0a2`. The response captures `result_ready` and asks the
+caller to await immediately when the result already exists.
 
 The armed result correctly exposes `result_ready=true` when an event arrived
 before the arm response was constructed, but `suggested_next_step` always asks

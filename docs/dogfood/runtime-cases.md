@@ -184,8 +184,9 @@ Use one known executable application line and keep the returned logical
 2. Call `wait_event` with a short timeout and let it return `timeout`. Trigger
    the line afterwards. The request must again complete without suspending the
    JVM.
-3. Call `wait_event` with `wait_mode=arm`, wait for `status=armed`, start the
-   trigger immediately without a guessed delay, then `await` its handle.
+3. Call `wait_event` with `wait_mode=arm`. For a local HTTP scenario, include
+   `http_trigger`; otherwise wait for `status=armed` and start the trigger
+   externally without blocking. Then `await` its handle.
    Confirm `breakpoint_hit`, inspect if useful, and `resume` with the returned
    `suspension_id`.
 4. Without setting the breakpoint again, arm a second observation, trigger
@@ -199,3 +200,52 @@ Always finish with breakpoint/exception removal and
 `cleanup_debug_state`. A foreground request hanging in steps 1 or 2, a stale
 suspension in `status`, or a definition disappearing after timeout is a
 Stage 2.1.1 regression.
+
+## Arm-bound HTTP trigger regression case
+
+Run this case against a disposable local endpoint on `127.0.0.1` whose request
+path crosses a known executable breakpoint:
+
+1. Set one focused breakpoint. Call `arm` with `http_trigger`; verify the
+   request is not received before JDWP is armed, `arm` returns without waiting
+   for the HTTP response, and its output includes the exact
+   `required_next_action=await` shape.
+2. Await the returned handle. Verify a hit includes the same handle,
+   `suspension_id`, and bounded `http_trigger` state, but never echoes the URL,
+   headers, request body, response body, or credentials.
+3. Resume the suspension and verify the original HTTP handler can complete.
+4. Let an HTTP response complete without hitting the breakpoint. `await` must
+   expose `response_headers_received` and return `status=waiting` rather than
+   falsely declaring that no later event is possible. Add a delayed asynchronous
+   Java path and verify the same handle can still hit after the 204 response.
+5. Use an unused loopback port. A definite connection failure must return
+   `HTTP_TRIGGER_FAILED`, disarm the wait, and leave no suspension or active
+   waiter.
+6. Race event publication against connection failure. A result published at
+   the atomic decision point must win; no hidden suspension may remain.
+7. Start a long `await`, then concurrently call each of
+   `cleanup_debug_state`, `stop`, `restart`, and `detach` in applicable target
+   states. The lifecycle action must not wait for the await deadline or one or
+   more HTTP client grace periods. Cleanup must return its own verification
+   counts; a pending HTTP cancellation is reported separately as `settling`.
+8. Start two concurrent `await` calls for one handle. Exactly one owns it; the
+   other returns `WAIT_HANDLE_IN_USE` without consuming the result.
+9. Shut down the MCP server while both the Runtime waiter and HTTP client are
+   active. Verify an owned JVM is stopped, an attached JVM is resumed/detached
+   and still functional, and no HTTP/JDWP worker remains capable of publishing
+   a stale suspension.
+10. Reject non-loopback URLs, HTTPS, redirects as follow-up targets, URL
+    credentials/fragments, unsupported methods, unsafe framing headers,
+    oversized headers/bodies, and `http_trigger` used outside `wait_mode=arm`.
+    Assert that schema and parser errors contain no supplied URL, header name,
+    header value, or body value. Verify auto-added JSON `Content-Type` is
+    included in the 32-header and 16-KiB limits.
+11. Let the Runtime wait finish with a terminal non-suspension result while the
+    HTTP client is still waiting. The returned trigger state must show client
+    cancellation requested, and the forgotten handle must not leave an
+    uncancelled background client wait.
+
+Run the same breakpoint once more through the existing external background
+trigger flow to confirm backward compatibility. HTTP client cancellation is
+only evidence that joLink stopped waiting or reading; it must never be reported
+as proof that application-side business work was rolled back.

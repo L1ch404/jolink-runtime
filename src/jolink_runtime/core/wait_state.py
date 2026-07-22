@@ -57,6 +57,9 @@ class WaitControl:
     armed_exception_ids: tuple[int, ...] = field(default=(), init=False)
     result_payload: dict[str, Any] | None = field(default=None, init=False)
     result_disposition: str = field(default="pending", init=False)
+    trigger_control: Any | None = field(default=None, init=False, repr=False)
+    trigger_start_claimed: bool = field(default=False, init=False)
+    await_owner: str = field(default="", init=False, repr=False)
 
     @property
     def cancelled(self) -> bool:
@@ -65,6 +68,11 @@ class WaitControl:
     @property
     def worker_done(self) -> bool:
         return self._worker_done.is_set()
+
+    @property
+    def await_in_progress(self) -> bool:
+        with self._state_lock:
+            return bool(self.await_owner)
 
     def request_cancel(self, reason: str) -> None:
         with self._state_lock:
@@ -98,6 +106,48 @@ class WaitControl:
             self._result_event.set()
             # Arm callers must also wake when setup failed before mark_armed().
             self._ready_event.set()
+
+    def attach_trigger(self, trigger_control: Any) -> None:
+        with self._state_lock:
+            if self.trigger_control is not None:
+                raise RuntimeError("A trigger is already attached to this wait")
+            self.trigger_control = trigger_control
+
+    def claim_trigger_start(self) -> bool:
+        """Atomically avoid starting a trigger after an event already won."""
+        with self._state_lock:
+            if (
+                self.trigger_control is None
+                or self.trigger_start_claimed
+                or self.result_payload is not None
+                or self._cancel_event.is_set()
+            ):
+                return False
+            self.trigger_start_claimed = True
+            return True
+
+    def cancel_if_result_pending(self, reason: str) -> bool:
+        """Let trigger failure win only when no Runtime result was published."""
+        with self._state_lock:
+            if self.result_payload is not None or self._cancel_event.is_set():
+                return False
+            self.cancel_reason = reason
+            self.phase = "cancel_requested"
+            self._cancel_event.set()
+            return True
+
+    def claim_await(self, owner: str) -> bool:
+        """Allow one passive await caller to own this handle at a time."""
+        with self._state_lock:
+            if self.await_owner:
+                return False
+            self.await_owner = owner
+            return True
+
+    def release_await(self, owner: str) -> None:
+        with self._state_lock:
+            if self.await_owner == owner:
+                self.await_owner = ""
 
     def replace_result(self, payload: dict[str, Any]) -> None:
         """Replace an unclaimed result after automatic safety recovery."""

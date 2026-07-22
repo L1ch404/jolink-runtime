@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import anyio
 import mcp.types as types
@@ -28,6 +32,60 @@ from java_support import (
 
 
 pytestmark = pytest.mark.mcp_java_e2e
+
+
+class _DaemonHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+
+@contextmanager
+def _java_trigger_server(
+    trigger: Path,
+    marker: Path,
+) -> Iterator[str]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
+            trigger.write_text("http", encoding="utf-8")
+            deadline = time.monotonic() + 20
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.send_response(204 if marker.exists() else 504)
+            self.end_headers()
+
+        def log_message(self, _format: str, *args: Any) -> None:
+            return
+
+    server = _DaemonHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/trigger"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
+@contextmanager
+def _immediate_java_trigger_server(trigger: Path) -> Iterator[str]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
+            trigger.write_text("http", encoding="utf-8")
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, _format: str, *args: Any) -> None:
+            return
+
+    server = _DaemonHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/trigger"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
 
 
 OWNED_SOURCE = """\
@@ -106,6 +164,31 @@ public class CancellationMcpFixture {
                 );
             }
             Thread.sleep(20);
+        }
+    }
+}
+"""
+
+
+DELAYED_HTTP_SOURCE = """\
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+public class DelayedHttpMcpFixture {
+    public static void main(String[] args) throws Exception {
+        Path trigger = Paths.get(args[0]);
+        Path marker = Paths.get(args[1]);
+        while (!Files.exists(trigger)) {
+            Thread.sleep(20);
+        }
+        Thread.sleep(700);
+        int delayedAnswer = 73;
+        System.out.println(delayedAnswer);
+        Files.write(marker, "resumed".getBytes(StandardCharsets.UTF_8));
+        while (true) {
+            Thread.sleep(100);
         }
     }
 }
@@ -545,3 +628,147 @@ def test_two_phase_wait_arms_before_immediate_trigger_and_rearms(
                     assert_ok(await call_payload(session, {"action": "stop"}))
 
     anyio.run(scenario)
+
+
+def test_arm_bound_http_trigger_hits_real_jvm_and_unblocks_after_resume(
+    tmp_path: Path,
+) -> None:
+    """The server sends HTTP only after arming and never waits for its reply."""
+    require_real_mcp_java_e2e()
+    compile_java(tmp_path, "OwnedMcpFixture", OWNED_SOURCE)
+    breakpoint_line = source_line(OWNED_SOURCE, "System.out.println(sex + answer)")
+    trigger = tmp_path / "http-trigger"
+    marker = tmp_path / "http-marker"
+    jdwp_port = reserve_local_port()
+
+    with _java_trigger_server(trigger, marker) as url:
+        async def scenario() -> None:
+            with temporary_stderr() as stderr:
+                with anyio.fail_after(60):
+                    async with open_mcp_session(stderr) as session:
+                        assert_ok(await call_payload(session, {
+                            "action": "run",
+                            "classpath": str(tmp_path),
+                            "main_class": "OwnedMcpFixture",
+                            "app_args": [str(trigger), str(marker)],
+                            "jdwp_port": jdwp_port,
+                        }))
+                        assert_ok(await call_payload(session, {
+                            "action": "breakpoint",
+                            "bp_action": "set",
+                            "class_pattern": "OwnedMcpFixture",
+                            "line": breakpoint_line,
+                        }))
+
+                        armed = assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "wait_mode": "arm",
+                            "timeout": 10,
+                            "http_trigger": {
+                                "method": "POST",
+                                "url": url,
+                                "json_body": {"scenario": "local-e2e"},
+                                "timeout_seconds": 20,
+                            },
+                        }))
+                        assert armed["status"] == "armed"
+                        assert armed["required_next_action"] == {
+                            "action": "wait_event",
+                            "wait_mode": "await",
+                            "wait_handle": armed["wait_handle"],
+                        }
+
+                        hit = assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "wait_mode": "await",
+                            "wait_handle": armed["wait_handle"],
+                            "timeout": 10,
+                        }))
+                        assert hit["status"] == "breakpoint_hit"
+                        assert hit["location"]["line"] == breakpoint_line
+                        assert hit["http_trigger"]["status"] == "running"
+
+                        assert_ok(await call_payload(session, {
+                            "action": "resume",
+                            "suspension_id": hit["suspension_id"],
+                        }))
+                        await wait_until_async(marker.exists)
+                        assert_ok(await call_payload(session, {"action": "stop"}))
+
+        anyio.run(scenario)
+
+
+def test_http_response_headers_can_arrive_before_delayed_real_jvm_hit(
+    tmp_path: Path,
+) -> None:
+    """A completed trigger response does not end the armed Runtime wait."""
+    require_real_mcp_java_e2e()
+    compile_java(tmp_path, "DelayedHttpMcpFixture", DELAYED_HTTP_SOURCE)
+    breakpoint_line = source_line(
+        DELAYED_HTTP_SOURCE,
+        "System.out.println(delayedAnswer)",
+    )
+    trigger = tmp_path / "delayed-http-trigger"
+    marker = tmp_path / "delayed-http-marker"
+    jdwp_port = reserve_local_port()
+
+    with _immediate_java_trigger_server(trigger) as url:
+        async def scenario() -> None:
+            with temporary_stderr() as stderr:
+                with anyio.fail_after(60):
+                    async with open_mcp_session(stderr) as session:
+                        assert_ok(await call_payload(session, {
+                            "action": "run",
+                            "classpath": str(tmp_path),
+                            "main_class": "DelayedHttpMcpFixture",
+                            "app_args": [str(trigger), str(marker)],
+                            "jdwp_port": jdwp_port,
+                        }))
+                        assert_ok(await call_payload(session, {
+                            "action": "breakpoint",
+                            "bp_action": "set",
+                            "class_pattern": "DelayedHttpMcpFixture",
+                            "line": breakpoint_line,
+                        }))
+
+                        armed = assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "wait_mode": "arm",
+                            "timeout": 10,
+                            "http_trigger": {
+                                "method": "POST",
+                                "url": url,
+                                "timeout_seconds": 5,
+                            },
+                        }))
+                        hit = assert_ok(await call_payload(session, {
+                            "action": "wait_event",
+                            "wait_mode": "await",
+                            "wait_handle": armed["wait_handle"],
+                            "timeout": 10,
+                        }))
+                        assert hit["status"] == "breakpoint_hit"
+                        assert hit["location"]["line"] == breakpoint_line
+                        assert hit["http_trigger"]["status"] == (
+                            "response_headers_received"
+                        )
+                        assert hit["http_trigger"]["http_status"] == 204
+
+                        variables = assert_ok(await call_payload(session, {
+                            "action": "variables",
+                            "suspension_id": hit["suspension_id"],
+                            "frame_index": 0,
+                        }))
+                        observed = {
+                            variable["name"]: variable["value"]
+                            for variable in variables["variables"]
+                        }
+                        assert observed["delayedAnswer"] == 73
+                        assert_ok(await call_payload(session, {
+                            "action": "resume",
+                            "suspension_id": hit["suspension_id"],
+                        }))
+                        await wait_until_async(marker.exists)
+                        assert_ok(await call_payload(session, {"action": "stop"}))
+
+        anyio.run(scenario)

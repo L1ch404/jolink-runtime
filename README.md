@@ -108,7 +108,7 @@ These actions support:
 Current package version:
 
 ```text
-0.1.0a2
+0.1.0a3
 ```
 
 Status:
@@ -127,6 +127,7 @@ The current MCP implementation includes:
 - Runtime `ok=false` mapped to MCP `isError=true`;
 - cancellable `wait_event`;
 - optional two-phase waiting with `arm` and `await`;
+- an optional loopback HTTP trigger started only after `arm` is ready;
 - wait-scoped JDWP requests;
 - ownership-aware shutdown;
 - automatic cleanup and resume paths;
@@ -182,7 +183,7 @@ Many MCP clients support a stdio server configuration similar to the following:
   "mcpServers": {
     "jolink-runtime": {
       "command": "uvx",
-      "args": ["jolink-runtime@0.1.0a2"]
+      "args": ["jolink-runtime@0.1.0a3"]
     }
   }
 }
@@ -264,10 +265,30 @@ run or attach
 
 Blocking `wait_event` mode remains available, but two-phase waiting is useful
 when an external action must occur only after JDWP requests are installed.
+For a local HTTP endpoint, `arm` can perform that trigger without making the
+agent synchronously wait for a request that may pause at the breakpoint:
+
+```json
+{
+  "action": "wait_event",
+  "wait_mode": "arm",
+  "timeout": 30,
+  "http_trigger": {
+    "method": "POST",
+    "url": "http://127.0.0.1:8080/example",
+    "json_body": {"id": 1},
+    "timeout_seconds": 30
+  }
+}
+```
+
+After the armed result, call `await` with its `wait_handle`; do not send the
+same request again. External background triggers remain supported when the
+scenario is not a simple local HTTP request.
 
 ## Runtime safety
 
-joLink `0.1.0a2` is designed for local, trusted development environments.
+joLink `0.1.0a3` is designed for local, trusted development environments.
 
 Current safety boundaries:
 
@@ -280,6 +301,16 @@ Current safety boundaries:
 - an attached JVM is never intentionally terminated;
 - raw JDWP requests are armed only while a waiter owns them; logical
   breakpoint and exception definitions persist until removed or cleaned up;
+- built-in HTTP triggers accept only `http://127.0.0.1`, do not use environment
+  proxies or redirects, and never return the request URL, headers, body, or
+  their raw values in validation errors;
+- `response_headers_received` reports only the HTTP status/response headers;
+  joLink does not read or return the response body;
+- cancelling an HTTP client wait closes joLink's side of the connection but
+  cannot guarantee that server-side business work has been undone;
+- successful `cleanup_debug_state` includes its own debug-state verification;
+  a separate HTTP cleanup state may remain `settling` without delaying JVM
+  cleanup;
 - after receiving a `suspension_id`, the agent must call `resume` or
   `cleanup_debug_state`.
 

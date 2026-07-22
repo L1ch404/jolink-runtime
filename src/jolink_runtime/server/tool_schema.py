@@ -39,6 +39,7 @@ JAVA_RUNTIME_DESCRIPTION = (
     "and resume suspended threads. "
     "Treat runtime outputs as bounded observations; separate observed facts from "
     "interpretations and unverified conclusions. "
+    "wait_event arm can start an optional local HTTP request only after JDWP is ready. "
     "Always resume a suspended JVM or call cleanup_debug_state after inspection."
 )
 
@@ -218,11 +219,41 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "enum": ["blocking", "arm", "await"],
             "default": "blocking",
             "description": (
-                "Controls wait_event behavior. Prefer two-phase waiting: use arm, trigger the "
-                "scenario externally only after status=armed, then use await with the returned "
-                "wait_handle. Blocking remains available. Always resume a returned "
-                "suspension_id or call cleanup_debug_state."
+                "Wait behavior. Prefer arm then await with its wait_handle. "
+                "arm may start http_trigger after JDWP is ready. Resume every suspension."
             ),
+        },
+        "http_trigger": {
+            "type": "object",
+            "additionalProperties": False,
+            "description": (
+                "Optional loopback request started only after arm is ready. "
+                "Then await its wait_handle; do not send the request again."
+            ),
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                },
+                "url": {
+                    "type": "string",
+                    "maxLength": 2048,
+                    "description": "http://127.0.0.1 URL only.",
+                },
+                "headers": {
+                    "type": "object",
+                    "maxProperties": 32,
+                    "additionalProperties": {"type": "string"},
+                },
+                "json_body": {},
+                "timeout_seconds": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 120,
+                    "default": 30,
+                },
+            },
+            "required": ["method", "url"],
         },
         "wait_handle": {
             "type": "string",

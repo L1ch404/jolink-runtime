@@ -2002,7 +2002,18 @@ class JavaRuntime(Runtime):
                 "process_state": "absent",
                 "debug_state": "detached",
                 "message": "No running application; local debug state was cleared.",
-                "suggested_next_step": "Start or attach to an application before setting debug events again.",
+                "verification_state": "complete",
+                "verification": {
+                    "active_suspension": False,
+                    "logical_breakpoint_count": 0,
+                    "logical_exception_count": 0,
+                    "runtime_tracked_breakpoint_request_count": 0,
+                    "runtime_tracked_exception_request_count": 0,
+                },
+                "suggested_next_step": (
+                    "Debug state is clean. Start or attach to an application "
+                    "before configuring another observation."
+                ),
             })
 
         warnings: list[str] = []
@@ -2012,6 +2023,11 @@ class JavaRuntime(Runtime):
         cleared_breakpoints: list[str] = list(self._breakpoints)
         cleared_exceptions: list[int] = list(self._exceptions)
         clear_failures: list[dict[str, Any]] = []
+        had_active_suspension = (
+            self._active_suspension is not None
+            and self._active_suspension.valid
+            and not self._active_suspension.resumed
+        )
 
         try:
             jdwp = self._connect()
@@ -2075,6 +2091,14 @@ class JavaRuntime(Runtime):
             self._armed_exception_requests.clear()
             self._invalidate_suspension()
             debug_state = "attached"
+            if not had_active_suspension:
+                suspension_recovery = "not_needed"
+            elif resumed_active_suspension:
+                suspension_recovery = "thread_resumed"
+            elif emergency_vm_resume:
+                suspension_recovery = "vm_resumed"
+            else:
+                suspension_recovery = "unverified"
             if clear_failures:
                 # Clear failures cannot be left behind: a future event could
                 # otherwise suspend a JVM after local definitions are gone.
@@ -2083,9 +2107,41 @@ class JavaRuntime(Runtime):
                 warnings.append(
                     "JDWP was disconnected because one or more event requests could not be cleared."
                 )
+            if had_active_suspension and not (
+                resumed_active_suspension or emergency_vm_resume
+            ):
+                if debug_state != "detached":
+                    self._disconnect()
+                    debug_state = "detached"
+                suspension_recovery = "jdwp_disconnected"
+                warnings.append(
+                    "JDWP was disconnected because suspension recovery could "
+                    "not be confirmed by ThreadReference.Resume or VM.Resume."
+                )
             if not warnings and not clear_failures:
                 self._debug_connection_dirty = False
                 self._debug_connection_warning = ""
+
+            verification_state = (
+                "complete" if not warnings and not clear_failures else "partial"
+            )
+            verification = {
+                "active_suspension": False,
+                "logical_breakpoint_count": len(self._breakpoints),
+                "logical_exception_count": len(self._exceptions),
+                "runtime_tracked_breakpoint_request_count": len(
+                    self._armed_breakpoint_requests
+                ),
+                "runtime_tracked_exception_request_count": len(
+                    self._armed_exception_requests
+                ),
+                "remote_request_release": (
+                    "jdwp_disconnected"
+                    if debug_state == "detached"
+                    else "cleared"
+                ),
+                "suspension_recovery": suspension_recovery,
+            }
 
             logger.info(
                 "java_runtime.cleanup_debug_state.finish drained_events=%s "
@@ -2108,9 +2164,16 @@ class JavaRuntime(Runtime):
                 "cleared_local_exception_count": len(cleared_exceptions),
                 "clear_failures": clear_failures,
                 "warnings": warnings,
+                "verification_state": verification_state,
+                "verification": verification,
                 "suggested_next_step": (
-                    "Call status to confirm counts are 0, then set the needed "
-                    "breakpoint or exception event again."
+                    "Debug state is clean. Configure another breakpoint or "
+                    "exception observation when needed."
+                    if verification_state == "complete"
+                    else
+                    "Debug state was released with warnings. Review the returned "
+                    "warnings before starting another observation; attach again "
+                    "first if debug_state is detached."
                 ),
             })
         except (JDWPError, OSError) as e:

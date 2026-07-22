@@ -34,6 +34,7 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     runtime = get_mcp_tools()[0]
     actions = runtime.inputSchema["properties"]["action"]["enum"]
     wait_mode = runtime.inputSchema["properties"]["wait_mode"]
+    http_trigger = runtime.inputSchema["properties"]["http_trigger"]
 
     assert runtime.inputSchema["additionalProperties"] is False
     assert actions == list(PUBLIC_RUNTIME_ACTIONS)
@@ -44,6 +45,16 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     assert wait_mode["enum"] == ["blocking", "arm", "await"]
     assert wait_mode["default"] == "blocking"
     assert "wait_handle" in runtime.inputSchema["properties"]
+    assert http_trigger["additionalProperties"] is False
+    assert http_trigger["required"] == ["method", "url"]
+    assert http_trigger["properties"]["method"]["enum"] == [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+    ]
+    assert "json_body" in http_trigger["properties"]
 
 
 def test_mcp_v01_schemas_reject_unknown_fields_and_remote_hosts() -> None:
@@ -76,6 +87,8 @@ def test_java_runtime_description_contains_required_selection_and_safety_signals
         "observed facts",
         "interpretations",
         "unverified conclusions",
+        "local http request",
+        "jdwp",
         "resume",
         "cleanup_debug_state",
     ):
@@ -89,16 +102,12 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
     )
 
     for signal in (
-        "two-phase waiting",
-        "use arm",
-        "the scenario",
-        "status=armed",
-        "use await",
-        "returned wait_handle",
-        "blocking",
-        "returned suspension_id",
+        "arm",
+        "await",
+        "wait_handle",
+        "http_trigger",
+        "jdwp",
         "resume",
-        "cleanup_debug_state",
     ):
         assert signal in wait_description
 
@@ -111,8 +120,8 @@ def test_mcp_schema_budget_is_enforced() -> None:
     runtime_size = _serialized_size(serialized[0])
     total_size = _serialized_size(serialized)
 
-    assert runtime_size <= 5_000
-    assert total_size <= 6_000
+    assert runtime_size <= 5_600
+    assert total_size <= 6_600
 
 
 def test_legacy_lineage_schema_remains_separate_and_unchanged_in_shape() -> None:

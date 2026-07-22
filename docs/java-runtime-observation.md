@@ -46,7 +46,26 @@ requires them.
     ```
 
    Continue only after it returns `status=armed`; keep its `wait_handle`.
-5. Start the scenario through a non-blocking mechanism after the armed result:
+   For a simple local HTTP endpoint, `arm` may safely start the request itself:
+
+    ```json
+    {
+      "action":"wait_event",
+      "wait_mode":"arm",
+      "timeout":30,
+      "http_trigger":{
+        "method":"POST",
+        "url":"http://127.0.0.1:8080/example",
+        "json_body":{"id":1},
+        "timeout_seconds":30
+      }
+    }
+    ```
+
+   The HTTP request starts only after JDWP is armed. Call `await` with the
+   returned handle and do not send the same request again.
+5. If the scenario cannot use the built-in local HTTP trigger, start it through
+   a non-blocking mechanism after the armed result:
     - for example, launch `curl ...` as a background terminal task;
     - otherwise ask the user to trigger it from another terminal/client.
 
@@ -123,9 +142,15 @@ least-privileged credentials. Do not extract and reuse credentials from logs or
 Runtime observations, and do not unnecessarily expose full credential values.
 
 After `wait_mode=arm` returns, trigger requests that may hit a breakpoint
-through a non-blocking mechanism, such as `background=true`. No guessed sleep
-is needed between the armed response and the trigger. If credentials cannot be
-safely provided, ask the user to trigger the scenario manually.
+with `http_trigger`, or use a non-blocking mechanism such as `background=true`.
+No guessed sleep is needed. The built-in trigger accepts only
+`http://127.0.0.1` and deliberately does not echo its URL, headers, body, or
+response body, including on validation failures. A
+`response_headers_received` state proves only that the status and response
+headers arrived; it does not mean that joLink read the response body.
+Cancelling its client wait does not prove that server-side work was cancelled.
+If credentials cannot be safely provided, ask the user to trigger the scenario
+manually.
 
 ## 1. Distinguish facts, inferences, and unknowns
 
@@ -142,6 +167,7 @@ safely provided, ask the user to trigger the scenario manually.
 - Do not leave application threads suspended longer than necessary.
 - Resume the suspended thread after completing the required inspection.
 - Use `cleanup_debug_state` only when the current state is inconsistent or suspended threads, breakpoints, or event requests may have been left behind. For normal completion, `resume` and `remove` the relevant watches, or use `stop`/`detach` as appropriate.
+- A successful cleanup already returns `verification_state` and verification counts. Do not call `status` mechanically when that verification is complete; inspect warnings or partial verification instead.
 - Do not interpret observations made from stale or invalid suspension state as reliable evidence.
 
 ## 3. Interpret breakpoint locations correctly
@@ -164,6 +190,11 @@ Possible causes of a breakpoint not being hit include:
 - The actual execution path differs from the expected path
 
 Use the available evidence to distinguish between these possibilities.
+
+An anonymized dogfood example of choosing a breakpoint before business context
+is compressed into scalar arguments, and of triggering a suspended HTTP request
+without blocking the observation workflow, is documented in
+[`Case-004: Breakpoint context and suspension workflow`](dogfood/case-004-breakpoint-context-and-suspension-workflow.md).
 
 ## 4. Understand the boundaries of Runtime evidence
 

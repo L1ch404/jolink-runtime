@@ -239,7 +239,7 @@ def test_two_phase_wait_arms_before_trigger_then_awaits_hit() -> None:
         assert armed_payload["result_ready"] is False
         suggestion = armed_payload["suggested_next_step"].lower()
         assert (
-            "if the target scenario has not already been triggered"
+            "start the target scenario without waiting for its response"
             in suggestion
         )
         assert "wait_mode='await'" in suggestion

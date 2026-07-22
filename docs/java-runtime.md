@@ -55,7 +55,8 @@ variables
 * exception：异常事件相关（set/remove/list；默认用于具体异常，如 NullPointerException）
 * wait_event：等待断点或异常事件命中，并返回 suspension_id；默认 blocking，
   也可用 `wait_mode=arm` 等确认完成底层注册后触发场景，再用
-  `wait_mode=await` 和返回的 `wait_handle` 收取结果
+  `wait_mode=await` 和返回的 `wait_handle` 收取结果；简单的本地 HTTP
+  场景可在 `arm` 中提供 `http_trigger`，由 Runtime 在 armed 后异步触发
 * variables：读取断点处变量值（默认跳过 this，并使用浅层对象展开）
 
 ---

@@ -21,6 +21,11 @@ from mcp.server.lowlevel import Server
 from .. import __version__
 from ..core.dispatcher import Dispatcher
 from ..core.wait_state import WaitControl
+from .http_trigger import (
+    HTTPTriggerControl,
+    HTTPTriggerValidationError,
+    parse_http_trigger,
+)
 from .tool_schema import (
     JAVA_PROCESSES_INPUT_SCHEMA,
     JAVA_RUNTIME_INPUT_SCHEMA,
@@ -103,33 +108,60 @@ def _validation_argument(
     error: ValidationError,
     arguments: dict[str, Any],
 ) -> str | None:
-    if error.absolute_path:
-        return str(next(iter(error.absolute_path)))
+    path = [str(part) for part in error.absolute_path]
     if error.validator == "required":
+        container: Any = arguments
+        for part in path:
+            if not isinstance(container, dict):
+                break
+            container = container.get(part)
         missing = [
             name
             for name in error.validator_value
-            if name not in arguments
+            if not isinstance(container, dict) or name not in container
         ]
         if missing:
-            return str(missing[0])
-    return None
+            path.append(str(missing[0]))
+    if not path:
+        return None
+    # Header names are user-controlled.  The field location is enough to
+    # correct a type error without copying a potentially sensitive name.
+    if len(path) > 2 and path[:2] == ["http_trigger", "headers"]:
+        path = ["http_trigger", "headers", "<header>"]
+    return ".".join(path)
 
 
 def _invalid_argument_payload(
     error: ValidationError,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
+    argument = _validation_argument(error, arguments)
     payload: dict[str, Any] = {
         "ok": False,
-        "error": f"Invalid tool arguments: {error.message}",
+        "error": (
+            f"Invalid value for {argument}."
+            if argument is not None
+            else "Invalid tool arguments."
+        ),
         "error_code": "INVALID_ARGUMENT",
         "retryable": True,
         "suggested_next_step": "Correct the indicated argument and retry.",
     }
-    argument = _validation_argument(error, arguments)
     if argument is not None:
         payload["argument"] = argument
+    payload["validation_rule"] = str(error.validator)
+    if error.validator in {
+        "type",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minProperties",
+        "maxProperties",
+    }:
+        payload["expected"] = error.validator_value
     return payload
 
 
@@ -145,10 +177,10 @@ def _execution_error_payload(error: Exception) -> dict[str, Any]:
     }
 
 
-def _argument_parsing_error_payload(error: Exception) -> dict[str, Any]:
+def _argument_parsing_error_payload(_error: Exception) -> dict[str, Any]:
     return {
         "ok": False,
-        "error": f"Invalid tool arguments: {type(error).__name__}: {error}",
+        "error": "Invalid tool argument types.",
         "error_code": "INVALID_ARGUMENT",
         "retryable": True,
         "suggested_next_step": "Correct the argument types and retry.",
@@ -205,6 +237,8 @@ def _active_waiter_payload(control: WaitControl) -> dict[str, Any]:
     }
     if control.armed_at is not None:
         payload["armed_at"] = _iso_timestamp(control.armed_at)
+    if control.trigger_control is not None:
+        payload["http_trigger"] = control.trigger_control.snapshot()
     return payload
 
 
@@ -221,6 +255,57 @@ def _wait_argument_error(
         "retryable": True,
         "suggested_next_step": suggested_next_step,
     }
+
+
+def _http_trigger_error_payload(
+    error: HTTPTriggerValidationError,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": str(error),
+        "error_code": error.code,
+        "argument": "http_trigger",
+        "retryable": True,
+        "suggested_next_step": (
+            "Correct the local HTTP trigger and retry wait_event with "
+            "wait_mode='arm'."
+        ),
+    }
+
+
+def _trigger_failed_payload(
+    control: WaitControl,
+) -> dict[str, Any]:
+    trigger = control.trigger_control
+    snapshot = trigger.snapshot() if trigger is not None else None
+    return {
+        "ok": False,
+        "error": (
+            "The local HTTP trigger could not be started or connected to "
+            "the target."
+        ),
+        "error_code": "HTTP_TRIGGER_FAILED",
+        "status": "http_trigger_failed",
+        "retryable": True,
+        "wait_handle": control.wait_handle,
+        "http_trigger": snapshot,
+        "suggested_next_step": (
+            "Verify the local application port and URL, then start a new "
+            "wait_event with wait_mode='arm'."
+        ),
+    }
+
+
+def _with_http_trigger(
+    payload: dict[str, Any],
+    control: WaitControl,
+) -> dict[str, Any]:
+    trigger = control.trigger_control
+    if trigger is None:
+        return payload
+    combined = dict(payload)
+    combined["http_trigger"] = trigger.snapshot()
+    return combined
 
 
 def _variables_observation_state(payload: dict[str, Any]) -> str:
@@ -301,12 +386,48 @@ class RuntimeMCPBoundary:
         self._wait_generation = 0
         self._current_waiter: WaitControl | None = None
         self._completed_waits: dict[str, WaitControl] = {}
+        self._http_triggers: dict[str, HTTPTriggerControl] = {}
         self._wait_poll_interval = wait_poll_interval
         self._cancellation_grace_seconds = cancellation_grace_seconds
         self._unclaimed_suspension_grace_seconds = (
             unclaimed_suspension_grace_seconds
         )
         self._completed_wait_limit = max(completed_wait_limit, 1)
+
+    def _register_http_trigger(
+        self,
+        wait_handle: str,
+        trigger: HTTPTriggerControl,
+    ) -> None:
+        with self._state_lock:
+            self._http_triggers[wait_handle] = trigger
+
+    def _http_trigger_finished(
+        self,
+        wait_handle: str,
+        trigger: HTTPTriggerControl,
+    ) -> None:
+        with self._state_lock:
+            if self._http_triggers.get(wait_handle) is trigger:
+                self._http_triggers.pop(wait_handle, None)
+
+    def _cancel_http_trigger(
+        self,
+        control: WaitControl,
+        *,
+        reason: str,
+    ) -> None:
+        trigger = control.trigger_control
+        if trigger is None:
+            return
+        trigger.cancel_client_wait(reason)
+
+    def _cancel_all_http_triggers(self, *, reason: str) -> int:
+        with self._state_lock:
+            triggers = list(self._http_triggers.values())
+        for trigger in triggers:
+            trigger.cancel_client_wait(reason)
+        return len(triggers)
 
     async def list_tools(self) -> list[types.Tool]:
         return get_mcp_tools()
@@ -336,6 +457,17 @@ class RuntimeMCPBoundary:
                 _invalid_argument_payload(validation_errors[0], args)
             )
 
+        if (
+            name == "java_runtime"
+            and args.get("http_trigger") is not None
+            and args.get("action") != "wait_event"
+        ):
+            return _call_tool_result(_wait_argument_error(
+                "http_trigger",
+                "http_trigger is only valid for wait_event with wait_mode='arm'.",
+                "Remove http_trigger or use action='wait_event' and wait_mode='arm'.",
+            ))
+
         if name == "java_runtime" and args.get("action") == "wait_event":
             return await self._route_wait_event(
                 name,
@@ -351,8 +483,8 @@ class RuntimeMCPBoundary:
 
                 if name == "java_runtime":
                     active = self._active_background_waiter()
+                    action = str(args.get("action", ""))
                     if active is not None:
-                        action = str(args.get("action", ""))
                         if action in {
                             "cleanup_debug_state",
                             "stop",
@@ -382,6 +514,15 @@ class RuntimeMCPBoundary:
                             return _call_tool_result(
                                 _active_waiter_payload(active)
                             )
+                    if action in {
+                        "cleanup_debug_state",
+                        "stop",
+                        "restart",
+                        "detach",
+                    }:
+                        self._cancel_all_http_triggers(
+                            reason=f"superseded_by_{action}",
+                        )
                 payload = await anyio.to_thread.run_sync(
                     lambda: self.dispatcher.dispatch(
                         name,
@@ -390,6 +531,21 @@ class RuntimeMCPBoundary:
                     ),
                     abandon_on_cancel=False,
                 )
+                if (
+                    name == "java_runtime"
+                    and action in {
+                        "cleanup_debug_state",
+                        "stop",
+                        "restart",
+                        "detach",
+                    }
+                    and payload.get("ok") is True
+                ):
+                    self._invalidate_completed_waits(
+                        reason=f"superseded_by_{action}",
+                    )
+                    if action == "cleanup_debug_state":
+                        payload = self._augment_cleanup_verification(payload)
         except (TypeError, ValueError) as error:
             payload = _argument_parsing_error_payload(error)
         except Exception as error:
@@ -466,6 +622,88 @@ class RuntimeMCPBoundary:
             if control.wait_handle:
                 self._completed_waits.pop(control.wait_handle, None)
 
+    def _invalidate_completed_waits(self, *, reason: str) -> None:
+        """Prevent lifecycle cleanup from leaving stale suspension results."""
+        with self._state_lock:
+            controls = list(self._completed_waits.values())
+            self._completed_waits.clear()
+        for control in controls:
+            control.request_cancel(reason)
+
+    def _augment_cleanup_verification(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add MCP wait/trigger state to Runtime cleanup verification."""
+        with self._state_lock:
+            current_waiter = self._current_waiter
+            triggers = list(self._http_triggers.values())
+
+        # A trigger completion callback takes the trigger lock before this
+        # boundary lock, so snapshots must be read after releasing it.
+        trigger_snapshots = [trigger.snapshot() for trigger in triggers]
+        active_wait = bool(
+            current_waiter is not None and not current_waiter.worker_done
+        )
+        pending_http_clients = sum(
+            snapshot.get("status")
+            in {"running", "client_wait_cancel_requested"}
+            for snapshot in trigger_snapshots
+        )
+        cancel_requested = sum(
+            snapshot.get("client_wait_cancel_requested") is True
+            for snapshot in trigger_snapshots
+        )
+        server_execution_unknown = sum(
+            snapshot.get("server_execution_state") == "unknown"
+            for snapshot in trigger_snapshots
+        )
+
+        combined = dict(payload)
+        verification = dict(combined.get("verification") or {})
+        verification.update({
+            "active_wait": active_wait,
+            "http_trigger_client_wait_count": pending_http_clients,
+            "http_trigger_cancel_requested_count": cancel_requested,
+            "http_trigger_server_execution_unknown_count": (
+                server_execution_unknown
+            ),
+        })
+        combined["verification"] = verification
+
+        warnings = list(combined.get("warnings") or [])
+        if active_wait:
+            combined["verification_state"] = "partial"
+            warning = (
+                "A Runtime wait worker remained active after debug cleanup."
+            )
+            if warning not in warnings:
+                warnings.append(warning)
+        if pending_http_clients:
+            combined["http_trigger_cleanup_state"] = "settling"
+            warning = (
+                "A local HTTP client cancellation is settling in the "
+                "background; server-side request execution may already have "
+                "started and cannot be inferred from client cancellation."
+            )
+            if warning not in warnings:
+                warnings.append(warning)
+        else:
+            combined["http_trigger_cleanup_state"] = "complete"
+        combined["warnings"] = warnings
+
+        if combined.get("verification_state") == "complete":
+            combined["suggested_next_step"] = (
+                "Debug state is clean. Configure another observation when "
+                "needed."
+                if not pending_http_clients
+                else
+                "Debug state is clean. The local HTTP client cancellation is "
+                "settling in the background; do not assume that server-side "
+                "business execution was undone."
+            )
+        return combined
+
     def _clear_waiter(self, control: WaitControl) -> None:
         with self._state_lock:
             if self._current_waiter is control:
@@ -512,14 +750,20 @@ class RuntimeMCPBoundary:
                 session_key=self.session_key,
                 wait_control=control,
             )
-            control.publish_result(payload)
-
             suspension_id = payload.get("suspension_id")
-            if not (
+            has_suspension = bool(
                 payload.get("ok") is True
                 and isinstance(suspension_id, str)
                 and suspension_id
-            ):
+            )
+            if not has_suspension:
+                self._cancel_http_trigger(
+                    control,
+                    reason="runtime_wait_finished_without_suspension",
+                )
+            control.publish_result(payload)
+
+            if not has_suspension:
                 return
 
             deadline = (
@@ -573,6 +817,11 @@ class RuntimeMCPBoundary:
             if not resumed:
                 self._poison("unclaimed_suspension_resume_failed", control)
 
+            self._cancel_http_trigger(
+                control,
+                reason="unclaimed_wait_result_expired",
+            )
+
             control.replace_result({
                 "ok": False,
                 "error": (
@@ -593,6 +842,10 @@ class RuntimeMCPBoundary:
             logger.exception(
                 "mcp.wait_event.background_failed wait_handle=%s",
                 control.wait_handle,
+            )
+            self._cancel_http_trigger(
+                control,
+                reason="runtime_wait_worker_failed",
             )
             control.publish_result(_execution_error_payload(error))
         finally:
@@ -688,6 +941,9 @@ class RuntimeMCPBoundary:
         *,
         reason: str,
     ) -> bool:
+        trigger = control.trigger_control
+        if trigger is not None:
+            trigger.cancel_client_wait(reason)
         control.request_cancel(reason)
         with anyio.CancelScope(shield=True):
             settled = await self._settle_cancelled_wait(control)
@@ -703,7 +959,14 @@ class RuntimeMCPBoundary:
     ) -> types.CallToolResult:
         wait_mode = str(arguments.get("wait_mode", "blocking"))
         wait_handle = str(arguments.get("wait_handle", "") or "")
+        has_http_trigger = arguments.get("http_trigger") is not None
         if wait_mode == "blocking":
+            if has_http_trigger:
+                return _call_tool_result(_wait_argument_error(
+                    "http_trigger",
+                    "http_trigger is only valid with wait_mode='arm'.",
+                    "Use wait_mode='arm' or remove http_trigger.",
+                ))
             if wait_handle:
                 return _call_tool_result(_wait_argument_error(
                     "wait_handle",
@@ -727,6 +990,12 @@ class RuntimeMCPBoundary:
                 arguments,
                 request_id=request_id,
             )
+        if has_http_trigger:
+            return _call_tool_result(_wait_argument_error(
+                "http_trigger",
+                "http_trigger is only valid with wait_mode='arm'.",
+                "Use the trigger attached during arm; remove it from await.",
+            ))
         if not wait_handle:
             return _call_tool_result(_wait_argument_error(
                 "wait_handle",
@@ -736,6 +1005,7 @@ class RuntimeMCPBoundary:
         return await self._call_wait_event_await(
             wait_handle,
             timeout=float(arguments.get("timeout", 30.0)),
+            request_id=request_id,
         )
 
     async def _call_wait_event_blocking(
@@ -798,6 +1068,14 @@ class RuntimeMCPBoundary:
         *,
         request_id: str | None,
     ) -> types.CallToolResult:
+        trigger_spec = None
+        raw_trigger = arguments.get("http_trigger")
+        if raw_trigger is not None:
+            try:
+                trigger_spec = parse_http_trigger(raw_trigger)
+            except HTTPTriggerValidationError as error:
+                return _call_tool_result(_http_trigger_error_payload(error))
+
         async with self._call_lock:
             wait_handle = f"wait_{uuid.uuid4().hex[:12]}"
             event_timeout = float(arguments.get("timeout", 30.0))
@@ -824,10 +1102,21 @@ class RuntimeMCPBoundary:
                     ),
                 })
 
+            if trigger_spec is not None:
+                trigger = HTTPTriggerControl(
+                    trigger_spec,
+                    on_done=lambda item: self._http_trigger_finished(
+                        wait_handle,
+                        item,
+                    ),
+                )
+                control.attach_trigger(trigger)
+                self._register_http_trigger(wait_handle, trigger)
+
             runtime_arguments = {
                 key: value
                 for key, value in arguments.items()
-                if key not in {"wait_mode", "wait_handle"}
+                if key not in {"wait_mode", "wait_handle", "http_trigger"}
             }
             worker = threading.Thread(
                 target=self._run_background_wait_worker,
@@ -862,6 +1151,10 @@ class RuntimeMCPBoundary:
 
                 result = control.result_copy()
                 if control.armed_at is None:
+                    self._cancel_http_trigger(
+                        control,
+                        reason="wait_ended_before_arm",
+                    )
                     if result is None:
                         result = _execution_error_payload(RuntimeError(
                             "wait_event ended before arming without a result"
@@ -873,21 +1166,37 @@ class RuntimeMCPBoundary:
                         abandon_on_cancel=False,
                     )
                     self._forget_wait(control)
-                    return _call_tool_result(result)
+                    return _call_tool_result(
+                        _with_http_trigger(result, control)
+                    )
+
+                trigger = control.trigger_control
+                if trigger is not None:
+                    if control.claim_trigger_start():
+                        trigger.start()
+                    else:
+                        trigger.skip_event_already_ready()
 
                 expires_at = control.armed_at + event_timeout
                 result_ready = control.result_copy() is not None
-                suggested_next_step = (
-                    "The wait result is already ready. Call wait_event with "
-                    "wait_mode='await' and this wait_handle now; do not "
-                    "trigger the scenario again."
-                    if result_ready
-                    else
-                    "If the target scenario has not already been triggered, "
-                    "trigger it now. Then call wait_event with "
-                    "wait_mode='await' and this wait_handle."
-                )
-                return _call_tool_result({
+                if trigger is not None:
+                    suggested_next_step = (
+                        "The local HTTP trigger is managed by joLink. Call "
+                        "wait_event with wait_mode='await' and this wait_handle "
+                        "now; do not send the HTTP request again."
+                    )
+                else:
+                    suggested_next_step = (
+                        "The wait result is already ready. Call wait_event with "
+                        "wait_mode='await' and this wait_handle now; do not "
+                        "trigger the scenario again."
+                        if result_ready
+                        else
+                        "Start the target scenario without waiting for its "
+                        "response, then call wait_event with wait_mode='await' "
+                        "and this wait_handle immediately."
+                    )
+                payload = {
                     "ok": True,
                     "status": "armed",
                     "wait_handle": wait_handle,
@@ -902,12 +1211,22 @@ class RuntimeMCPBoundary:
                     ),
                     "result_ready": result_ready,
                     "suggested_next_step": suggested_next_step,
-                })
+                }
+                if trigger is not None:
+                    payload["required_next_action"] = {
+                        "action": "wait_event",
+                        "wait_mode": "await",
+                        "wait_handle": wait_handle,
+                    }
+                return _call_tool_result(
+                    _with_http_trigger(payload, control)
+                )
             except anyio.get_cancelled_exc_class():
-                control.request_cancel("mcp_arm_request_cancelled")
                 with anyio.CancelScope(shield=True):
-                    await self._settle_cancelled_wait(control)
-                self._forget_wait(control)
+                    await self._cancel_background_wait(
+                        control,
+                        reason="mcp_arm_request_cancelled",
+                    )
                 raise
 
     async def _call_wait_event_await(
@@ -915,38 +1234,66 @@ class RuntimeMCPBoundary:
         wait_handle: str,
         *,
         timeout: float,
+        request_id: str | None,
     ) -> types.CallToolResult:
-        async with self._call_lock:
-            control = self._find_wait(wait_handle)
-            if control is None:
-                return _call_tool_result({
-                    "ok": False,
-                    "error": f"Unknown or expired wait_handle: {wait_handle}",
-                    "error_code": "WAIT_HANDLE_NOT_FOUND",
-                    "retryable": True,
-                    "wait_handle": wait_handle,
-                    "suggested_next_step": (
-                        "Call wait_event with wait_mode='arm' to start a new observation."
-                    ),
-                })
+        control = self._find_wait(wait_handle)
+        if control is None:
+            return _call_tool_result({
+                "ok": False,
+                "error": f"Unknown or expired wait_handle: {wait_handle}",
+                "error_code": "WAIT_HANDLE_NOT_FOUND",
+                "retryable": True,
+                "wait_handle": wait_handle,
+                "suggested_next_step": (
+                    "Call wait_event with wait_mode='arm' to start a new observation."
+                ),
+            })
 
-            if not control.background:
-                return _call_tool_result(_wait_argument_error(
-                    "wait_handle",
-                    "The supplied wait_handle does not identify a two-phase wait.",
-                    "Use the handle returned by wait_mode='arm'.",
-                ))
+        if not control.background:
+            return _call_tool_result(_wait_argument_error(
+                "wait_handle",
+                "The supplied wait_handle does not identify a two-phase wait.",
+                "Use the handle returned by wait_mode='arm'.",
+            ))
 
-            try:
-                result_ready = await anyio.to_thread.run_sync(
-                    control.wait_until_result,
-                    max(timeout, 0.1),
-                    abandon_on_cancel=False,
-                )
-                await checkpoint_if_cancelled()
-                payload = control.result_copy()
-                if not result_ready or payload is None:
-                    return _call_tool_result({
+        await_owner = request_id or f"local_await_{uuid.uuid4().hex}"
+        if not control.claim_await(await_owner):
+            return _call_tool_result({
+                "ok": False,
+                "error": "Another await call already owns this wait_handle.",
+                "error_code": "WAIT_HANDLE_IN_USE",
+                "retryable": True,
+                "wait_handle": wait_handle,
+                "suggested_next_step": (
+                    "Wait for the current await call to finish, then retry with "
+                    "the same wait_handle if the observation is still active."
+                ),
+            })
+
+        deadline = anyio.current_time() + max(timeout, 0.1)
+        try:
+            while control.result_copy() is None:
+                trigger = control.trigger_control
+                if trigger is not None and trigger.definite_failure:
+                    async with self._call_lock:
+                        # A Runtime event always wins over a simultaneous HTTP
+                        # client failure.  The WaitControl state lock provides
+                        # the exact publication/cancellation linearization.
+                        if not control.cancel_if_result_pending(
+                            "http_trigger_failed_before_send"
+                        ):
+                            break
+                        await self._cancel_background_wait(
+                            control,
+                            reason="http_trigger_failed_before_send",
+                        )
+                        return _call_tool_result(
+                            _trigger_failed_payload(control)
+                        )
+
+                remaining = deadline - anyio.current_time()
+                if remaining <= 0:
+                    payload = {
                         "ok": True,
                         "status": "waiting",
                         "wait_handle": wait_handle,
@@ -955,7 +1302,54 @@ class RuntimeMCPBoundary:
                             "Call wait_event with wait_mode='await' and the same "
                             "wait_handle again, or call cleanup_debug_state to cancel it."
                         ),
+                    }
+                    return _call_tool_result(
+                        _with_http_trigger(payload, control)
+                    )
+
+                await anyio.to_thread.run_sync(
+                    control.wait_until_result,
+                    min(remaining, max(self._wait_poll_interval, 0.01)),
+                    abandon_on_cancel=False,
+                )
+                await checkpoint_if_cancelled()
+
+            async with self._call_lock:
+                if self._find_wait(wait_handle) is not control:
+                    if control.cancelled:
+                        return _call_tool_result({
+                            "ok": False,
+                            "error": "The wait_event observation was cancelled.",
+                            "error_code": "WAIT_CANCELLED",
+                            "retryable": True,
+                            "wait_handle": wait_handle,
+                            "suggested_next_step": (
+                                "Start a new observation with wait_mode='arm' if needed."
+                            ),
+                        })
+                    return _call_tool_result({
+                        "ok": False,
+                        "error": f"Unknown or expired wait_handle: {wait_handle}",
+                        "error_code": "WAIT_HANDLE_NOT_FOUND",
+                        "retryable": True,
+                        "wait_handle": wait_handle,
+                        "suggested_next_step": (
+                            "Call wait_event with wait_mode='arm' to start a new observation."
+                        ),
                     })
+
+                payload = control.result_copy()
+                if payload is None:
+                    return _call_tool_result(_with_http_trigger({
+                        "ok": True,
+                        "status": "waiting",
+                        "wait_handle": wait_handle,
+                        "wait_phase": control.phase,
+                        "suggested_next_step": (
+                            "Call wait_event with wait_mode='await' and the same "
+                            "wait_handle again."
+                        ),
+                    }, control))
 
                 claimed = control.claim_result()
                 await anyio.to_thread.run_sync(
@@ -973,14 +1367,20 @@ class RuntimeMCPBoundary:
                 self._forget_wait(control)
                 payload = dict(payload)
                 payload.setdefault("wait_handle", wait_handle)
+                payload = _with_http_trigger(payload, control)
                 await checkpoint_if_cancelled()
                 return _call_tool_result(payload)
-            except anyio.get_cancelled_exc_class():
-                control.request_cancel("mcp_await_request_cancelled")
-                with anyio.CancelScope(shield=True):
-                    await self._settle_cancelled_wait(control)
-                self._forget_wait(control)
-                raise
+        except anyio.get_cancelled_exc_class():
+            with anyio.CancelScope(shield=True):
+                async with self._call_lock:
+                    if self._find_wait(wait_handle) is control:
+                        await self._cancel_background_wait(
+                            control,
+                            reason="mcp_await_request_cancelled",
+                        )
+            raise
+        finally:
+            control.release_await(await_owner)
 
     async def shutdown(self) -> None:
         """Cancel active waits, then close the existing Runtime session once."""
@@ -992,6 +1392,8 @@ class RuntimeMCPBoundary:
                 control = self._current_waiter
                 if control is not None:
                     control.request_cancel("server_shutdown")
+
+            self._cancel_all_http_triggers(reason="server_shutdown")
 
             worker_done = True
             if control is not None and not control.worker_done:
@@ -1086,6 +1488,7 @@ class RuntimeMCPBoundary:
                 if control is None or control.worker_done:
                     self._current_waiter = None
                 self._completed_waits.clear()
+                self._http_triggers.clear()
 
 
 def create_mcp_server(

@@ -1996,6 +1996,16 @@ def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:
     assert runtime._breakpoints == {}
     assert runtime._exceptions == {}
     assert runtime._active_suspension is None
+    assert result.data["verification_state"] == "complete"
+    assert result.data["verification"] == {
+        "active_suspension": False,
+        "logical_breakpoint_count": 0,
+        "logical_exception_count": 0,
+        "runtime_tracked_breakpoint_request_count": 0,
+        "runtime_tracked_exception_request_count": 0,
+        "remote_request_release": "cleared",
+        "suspension_recovery": "thread_resumed",
+    }
     assert client.commands == [
         (Cmd.THREAD, 3, (11).to_bytes(8, "big")),
         (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 42)),
@@ -2003,7 +2013,7 @@ def test_cleanup_debug_state_drains_resumes_and_clears_debug_requests() -> None:
         (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
         (Cmd.VM, 9, b""),
     ]
-    assert "Call status" in result.data["suggested_next_step"]
+    assert "Call status" not in result.data["suggested_next_step"]
 
 
 def _runtime_with_fake_variable_response(stack_error: int, stack_data: bytes):

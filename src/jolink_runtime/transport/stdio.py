@@ -20,6 +20,9 @@ def _configure_stderr_logging() -> None:
         stream=sys.stderr,
         force=True,
     )
+    # HTTP trigger URLs and headers may contain application-specific data.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 async def run_stdio() -> None:

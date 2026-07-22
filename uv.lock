@@ -222,10 +222,11 @@ wheels = [
 
 [[package]]
 name = "jolink-runtime"
-version = "0.1.0a2"
+version = "0.1.0a3"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "mcp" },
     { name = "psutil" },
@@ -239,6 +240,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = "==4.14.2" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "mcp", specifier = "==1.28.1" },
     { name = "psutil", specifier = "==7.2.2" },
