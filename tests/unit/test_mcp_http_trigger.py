@@ -595,9 +595,10 @@ def test_http_response_without_event_keeps_wait_active() -> None:
             )
             payload = dict(waiting.structuredContent or {})
             assert payload["status"] == "waiting"
-            assert payload["http_trigger"]["status"] == (
-                "response_headers_received"
-            )
+            assert payload["http_trigger"]["status"] in {
+                "running",
+                "response_headers_received",
+            }
             assert boundary._active_background_waiter() is not None
 
             cleaned = await boundary.call_tool(
@@ -628,9 +629,13 @@ def test_blocking_await_timeout_keeps_handle_for_later_event() -> None:
             assert payload["status"] == "waiting"
             wait_handle = str(payload["wait_handle"])
             assert boundary._find_wait(wait_handle) is not None
-            assert payload["http_trigger"]["status"] == (
-                "response_headers_received"
-            )
+            # The Runtime await deadline and HTTP client run concurrently.
+            # A slower scheduler may publish the waiting result just before
+            # the client records response headers; both snapshots are valid.
+            assert payload["http_trigger"]["status"] in {
+                "running",
+                "response_headers_received",
+            }
 
             dispatcher.event_triggered.set()
             hit = await boundary.call_tool(

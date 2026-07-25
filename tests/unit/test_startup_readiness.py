@@ -154,6 +154,11 @@ def test_ready_port_preflight_runs_after_previous_target_is_stopped(
         "_stop_posix",
         staticmethod(stop_previous),
     )
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_windows",
+        staticmethod(stop_previous),
+    )
     monkeypatch.setattr(manager, "_check_tcp_port", probe_ready_port)
     monkeypatch.setattr(
         manager,
