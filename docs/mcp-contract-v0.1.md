@@ -84,7 +84,7 @@ If `run` finishes its bounded wait while the process remains alive, it returns
 that observes process exit still returns `ok=true` because the observation
 succeeded; application failure is represented by `startup_state=failed`.
 
-An arm-bound HTTP trigger is not sent while configured readiness is
+A managed HTTP trigger is not sent while configured readiness is
 `starting`, and the boundary returns `APPLICATION_NOT_READY` with
 `http_trigger_sent=false`. `unverified` readiness remains allowed with a
 warning so attach and non-Web workflows remain compatible.
@@ -99,8 +99,9 @@ The compact description must tell the model:
 3. It supports lifecycle, breakpoint/exception events, stack, variables, and
    resume.
 4. Breakpoints and exception watches are armed only while `wait_event` is
-   active. Prefer `wait_mode=arm`, optionally let it start a local HTTP trigger
-   after arming, then collect the event with `wait_mode=await`.
+   active. Prefer `wait_mode=blocking` with `http_trigger` for a one-call
+   arm/trigger/await flow. Use `arm` then `await` when an external action must
+   occur between arming and collection.
 5. A suspension returned by `wait_event` must be resumed or cleaned up after
    inspection.
 6. For an owned HTTP application, `ready_port` lets `run/status` distinguish
@@ -148,19 +149,31 @@ into a Runtime `ok=false` payload because the Dispatcher was never invoked.
 
 `wait_event` has three modes without adding a new Runtime action:
 
-- `blocking` is the compatibility default. The call arms requests and blocks
-  until a hit, timeout, cancellation, or error.
+- `blocking` is the compatibility default. Without `http_trigger`, the call
+  directly arms requests and blocks until a hit, timeout, cancellation, or
+  error. With `http_trigger`, the boundary reuses the existing protected
+  `arm -> trigger -> await` lifecycle in one MCP call.
 - `arm` starts one protected background observation and returns only after all
   applicable JDWP EventRequests have been installed. Its successful result
   contains an opaque `wait_handle`, `armed_at`, `expires_at`, and the stable
   logical breakpoint/exception ids armed for that wait. It may also start one
   optional `http_trigger` after arming is confirmed.
 - `await` accepts the `wait_handle` returned by `arm`. It returns the event or
-  terminal wait result. If only the await call's timeout expires while the
-  underlying observation is still active, it returns `status=waiting`; the
-  same handle may be awaited again.
+  terminal wait result. It also accepts a handle returned when a composed
+  `blocking` call reaches only its local await deadline. If the underlying
+  observation is still active, it returns `status=waiting`; the same handle
+  may be awaited again.
 
 The intended deterministic sequence is:
+
+```text
+wait_event(wait_mode=blocking, http_trigger=...)
+-> internally arm, start the trigger only after armed, then await
+-> inspect the suspension
+-> resume(suspension_id=...)
+```
+
+When an external action must occur after arming, use:
 
 ```text
 wait_event(wait_mode=arm)
@@ -171,8 +184,8 @@ wait_event(wait_mode=arm)
 -> resume(suspension_id=...)
 ```
 
-For a simple local HTTP scenario, the server can own the ordering-sensitive
-trigger step:
+The explicit two-phase form may also own a local HTTP trigger when the caller
+needs the armed response before awaiting:
 
 ```text
 wait_event(wait_mode=arm, http_trigger=...)
@@ -191,30 +204,40 @@ across JVM thread names. The selected thread must be suspended before its
 stack or variables can be read. Thread names are not lifecycle identifiers
 and must not replace `suspension_id`.
 
-### Arm-bound HTTP trigger
+### Managed HTTP trigger
 
 The optional `http_trigger` is an MCP-boundary convenience, not a new Runtime
 action and not a general-purpose HTTP client.
 
-- It is valid only with `wait_event(wait_mode=arm)` and one trigger belongs to
-  one `wait_handle`.
+- It is valid with `wait_event(wait_mode=blocking|arm)` and one trigger belongs
+  to one Runtime observation `wait_handle`.
+- `blocking` composes the same internal arm, trigger, and await operations;
+  it does not implement a second waiter or trigger state machine.
 - Supported methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`.
 - The target must be `http://127.0.0.1`; redirects and environment proxies are
   disabled.
 - The request starts asynchronously only after JDWP reports the wait as armed.
-  `arm` never waits for the HTTP response.
+  Explicit `arm` returns without waiting for the HTTP response; composed
+  `blocking` awaits the Runtime observation, not HTTP completion.
 - If a Runtime result was already published before trigger-start ownership is
   claimed, the trigger is not sent and its status is
   `not_started_event_already_ready`.
 - An armed response with a trigger includes `required_next_action` containing
   the exact `await` call shape. The caller must not send the request again.
+- A terminal Runtime result consumes and forgets the `wait_handle`. It is not
+  an HTTP-completion handle and cannot be awaited after resume to retrieve a
+  final response.
+- `response_headers_received` proves only that response headers arrived. It
+  does not end the Runtime observation or prove that no later asynchronous
+  debug event can occur.
+- A debug event observed after the trigger does not by itself prove that the
+  event occurred on the HTTP request thread. Trigger state therefore keeps
+  `server_execution_state=unknown`.
 - Trigger output is deliberately bounded. It may expose method, lifecycle
   status, HTTP status, timestamps, and a stable error code, but never echoes
   the URL, headers, request body, or response body. Validation failures follow
   the same rule: they identify the invalid field and rule without echoing its
   value.
-- `response_headers_received` means that HTTP response headers and the status
-  code were observed. joLink does not consume or return the response body.
 - Response headers received without a Runtime event do not close the wait.
   Server work may continue asynchronously after the HTTP response, so the same
   handle remains awaitable until its Runtime deadline or explicit cleanup.
@@ -363,7 +386,7 @@ artifacts; they are never advertised by the MCP server.
 
 - No new Runtime actions
 - No additional language adapters
-- No HTTP MCP transport (the arm-bound loopback request is a scenario trigger,
+- No HTTP MCP transport (the managed loopback request is a scenario trigger,
   not a server transport)
 - No setup installer
 - No remote JDWP attach

@@ -7,13 +7,13 @@
 > Stage 2.1.1 lifecycle note: some workflow sketches below are historical and
 > predate wait-scoped arming. A breakpoint/exception `set` now creates a stable
 > logical definition; its suspend-capable JDWP request exists only during an
-> active `wait_event`. Prefer deterministic two-phase waiting: call
-> `wait_event` with `wait_mode=arm`, optionally include one loopback
-> `http_trigger`, then call `wait_event` with `wait_mode=await` and the returned
-> `wait_handle`. Without a built-in trigger, wait for `status=armed` and start
+> active `wait_event`. For a managed loopback HTTP request, prefer
+> `wait_mode=blocking` with `http_trigger`, which composes
+> `arm → trigger → await`. When an external action is required, use
+> `wait_mode=arm`, wait for `status=armed`, start
 > the scenario through a non-blocking external mechanism before `await`.
-> Blocking mode remains available for compatibility and requires a delayed or
-> background trigger. After a hit/resume, arm a new wait and replay the scenario
+> Blocking without a managed trigger still requires a delayed or background
+> external trigger. After a hit/resume, start a new wait and replay the scenario
 > for the next observation point. Do not expect one HTTP request to cross several
 > waits, and matching traffic with no waiter or after timeout must never suspend
 > the JVM.

@@ -43,19 +43,15 @@ requires them.
    configured, not that the application is ready.
 3. Set a focused `breakpoint`, or register an `exception` watch when
    investigating a thrown exception.
-4. Arm a deterministic observation before firing the relevant scenario:
+4. Choose the smallest deterministic observation flow.
 
-    ```json
-    {"action":"wait_event","wait_mode":"arm","timeout":30}
-    ```
-
-   Continue only after it returns `status=armed`; keep its `wait_handle`.
-   For a simple local HTTP endpoint, `arm` may safely start the request itself:
+   For a managed local HTTP request with no work needed between arming and
+   waiting, prefer one call:
 
     ```json
     {
       "action":"wait_event",
-      "wait_mode":"arm",
+      "wait_mode":"blocking",
       "timeout":30,
       "http_trigger":{
         "method":"POST",
@@ -66,8 +62,21 @@ requires them.
     }
     ```
 
-   The HTTP request starts only after JDWP is armed. Call `await` with the
-   returned handle and do not send the same request again.
+   joLink internally waits for JDWP arming before sending the request, then
+   awaits the Runtime event.
+
+   If an external action must occur between arming and waiting, use the
+   two-phase form:
+
+    ```json
+    {
+      "action":"wait_event",
+      "wait_mode":"arm",
+      "timeout":30
+    }
+    ```
+
+   Continue only after it returns `status=armed`; keep its `wait_handle`.
 5. If the scenario cannot use the built-in local HTTP trigger, start it through
    a non-blocking mechanism after the armed result:
     - for example, launch `curl ...` as a background terminal task;
@@ -79,14 +88,16 @@ requires them.
    After resuming the suspension, inspect the background task or request result
    when its outcome is relevant to the investigation.
 
-6. Collect the result with the handle:
+6. For the two-phase form, collect the result with the handle:
 
     ```json
     {"action":"wait_event","wait_mode":"await","wait_handle":"<wait_handle>","timeout":30}
     ```
 
-   Keep the returned `suspension_id`. If the result is `status=waiting`, await
-   the same handle again; do not arm a second observation.
+   Keep the returned `suspension_id`. If either explicit `await` or the
+   one-call blocking flow returns `status=waiting`, await the same handle
+   again; do not arm a second observation. A terminal result consumes the
+   handle. It cannot later be reused to query HTTP completion.
 7. Use `stack` with the returned `suspension_id` to inspect the actual call
    path. Omit `thread_name` to use the event-hit thread:
 
@@ -171,9 +182,11 @@ Prefer an existing authenticated client or temporary, test-only,
 least-privileged credentials. Do not extract and reuse credentials from logs or
 Runtime observations, and do not unnecessarily expose full credential values.
 
-After `wait_mode=arm` returns, trigger requests that may hit a breakpoint
-with `http_trigger`, or use a non-blocking mechanism such as `background=true`.
-No guessed sleep is needed. The built-in trigger accepts only
+For a managed local HTTP request, prefer
+`wait_mode=blocking` with `http_trigger`; joLink arms before sending and then
+awaits the Runtime result. Use `wait_mode=arm` followed by `await` when an
+external action must occur between those steps. No guessed sleep is needed.
+The built-in trigger accepts only
 `http://127.0.0.1` and deliberately does not echo its URL, headers, body, or
 response body, including on validation failures. A
 `response_headers_received` state proves only that the status and response

@@ -185,6 +185,45 @@ class _TerminalWaitDispatcher(_TriggerDispatcher):
         return {"ok": True, "status": "timeout"}
 
 
+class _ExceptionTriggerDispatcher(_ReadinessDispatcher):
+    def __init__(self) -> None:
+        super().__init__("ready")
+
+    def dispatch(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        session_key: str = "default",
+        wait_control: WaitControl | None = None,
+    ) -> dict[str, Any]:
+        action = str((arguments or {}).get("action", tool_name))
+        if action != "wait_event":
+            return super().dispatch(
+                tool_name,
+                arguments,
+                session_key=session_key,
+                wait_control=wait_control,
+            )
+
+        assert wait_control is not None
+        self.calls.append(action)
+        wait_control.mark_armed(exception_ids=[7])
+        self.armed.set()
+        while not self.event_triggered.wait(0.005):
+            if wait_control.cancelled:
+                self.cancel_seen.set()
+                return {"ok": True, "status": "internally_cancelled"}
+        self.suspension_active = True
+        return {
+            "ok": True,
+            "status": "exception_hit",
+            "event_type": "exception",
+            "exception_id": 7,
+            "suspension_id": "susp_http_exception",
+        }
+
+
 def _arm_arguments(url: str) -> dict[str, Any]:
     return {
         "action": "wait_event",
@@ -200,6 +239,142 @@ def _arm_arguments(url: str) -> dict[str, Any]:
             "timeout_seconds": 2,
         },
     }
+
+
+def _blocking_arguments(url: str) -> dict[str, Any]:
+    arguments = _arm_arguments(url)
+    arguments["wait_mode"] = "blocking"
+    return arguments
+
+
+def test_blocking_http_trigger_composes_arm_trigger_and_await() -> None:
+    dispatcher = _ReadinessDispatcher("ready")
+    request_seen = threading.Event()
+    request_done = threading.Event()
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        assert dispatcher.armed.is_set()
+        request_seen.set()
+        dispatcher.event_triggered.set()
+        dispatcher.response_release.wait(2)
+        _send_response(handler, 200)
+        request_done.set()
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(dispatcher)
+
+        async def scenario() -> None:
+            hit = await boundary.call_tool(
+                "java_runtime",
+                _blocking_arguments(url),
+            )
+            payload = dict(hit.structuredContent or {})
+
+            assert hit.isError is False
+            assert payload["status"] == "breakpoint_hit"
+            assert payload["suspension_id"] == "susp_http_trigger"
+            assert payload["http_trigger"]["status"] == "running"
+            assert request_seen.is_set()
+            wait_handle = str(payload["wait_handle"])
+            assert boundary._find_wait(wait_handle) is None
+
+            consumed = await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "wait_event",
+                    "wait_mode": "await",
+                    "wait_handle": wait_handle,
+                    "timeout": 1,
+                },
+            )
+            assert consumed.isError is True
+            assert consumed.structuredContent["error_code"] == (
+                "WAIT_HANDLE_NOT_FOUND"
+            )
+
+            resumed = await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "resume",
+                    "suspension_id": payload["suspension_id"],
+                },
+            )
+            assert resumed.structuredContent["status"] == "resumed"
+            with anyio.fail_after(1):
+                while not request_done.is_set():
+                    await anyio.sleep(0.005)
+
+        anyio.run(scenario)
+
+
+def test_http_trigger_uses_blocking_when_wait_mode_is_omitted() -> None:
+    dispatcher = _ReadinessDispatcher("ready")
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        assert dispatcher.armed.is_set()
+        dispatcher.event_triggered.set()
+        _send_response(handler)
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(dispatcher)
+
+        async def scenario() -> None:
+            arguments = _blocking_arguments(url)
+            arguments.pop("wait_mode")
+            hit = await boundary.call_tool("java_runtime", arguments)
+            assert hit.structuredContent["status"] == "breakpoint_hit"
+            await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "resume",
+                    "suspension_id": hit.structuredContent["suspension_id"],
+                },
+            )
+
+        anyio.run(scenario)
+
+
+def test_blocking_http_trigger_returns_and_consumes_exception_hit() -> None:
+    dispatcher = _ExceptionTriggerDispatcher()
+    request_done = threading.Event()
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        assert dispatcher.armed.is_set()
+        dispatcher.event_triggered.set()
+        dispatcher.response_release.wait(2)
+        _send_response(handler)
+        request_done.set()
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(dispatcher)
+
+        async def scenario() -> None:
+            hit = await boundary.call_tool(
+                "java_runtime",
+                _blocking_arguments(url),
+            )
+            payload = dict(hit.structuredContent or {})
+
+            assert hit.isError is False
+            assert payload["status"] == "exception_hit"
+            assert payload["event_type"] == "exception"
+            assert payload["exception_id"] == 7
+            assert payload["suspension_id"] == "susp_http_exception"
+            assert boundary._find_wait(str(payload["wait_handle"])) is None
+
+            resumed = await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "resume",
+                    "suspension_id": payload["suspension_id"],
+                },
+            )
+            assert resumed.structuredContent["status"] == "resumed"
+            with anyio.fail_after(1):
+                while not request_done.is_set():
+                    await anyio.sleep(0.005)
+
+        anyio.run(scenario)
 
 
 def test_http_trigger_is_sent_only_after_arm_and_does_not_block_arm() -> None:
@@ -296,6 +471,26 @@ def test_http_trigger_is_rejected_while_application_is_starting() -> None:
     anyio.run(scenario)
 
 
+def test_blocking_http_trigger_is_rejected_before_waiter_while_starting() -> None:
+    dispatcher = _ReadinessDispatcher("starting")
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        result = await boundary.call_tool(
+            "java_runtime",
+            _blocking_arguments("http://127.0.0.1:8080/trigger"),
+        )
+        payload = dict(result.structuredContent or {})
+
+        assert result.isError is True
+        assert payload["error_code"] == "APPLICATION_NOT_READY"
+        assert payload["http_trigger_sent"] is False
+        assert dispatcher.calls == []
+        assert boundary._active_background_waiter() is None
+
+    anyio.run(scenario)
+
+
 def test_unverified_readiness_allows_http_trigger_with_warning() -> None:
     dispatcher = _ReadinessDispatcher("unverified")
 
@@ -342,6 +537,39 @@ def test_unverified_readiness_allows_http_trigger_with_warning() -> None:
         anyio.run(scenario)
 
 
+def test_blocking_result_preserves_unverified_readiness_warning() -> None:
+    dispatcher = _ReadinessDispatcher("unverified")
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        dispatcher.event_triggered.set()
+        _send_response(handler)
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(dispatcher)
+
+        async def scenario() -> None:
+            hit = await boundary.call_tool(
+                "java_runtime",
+                _blocking_arguments(url),
+            )
+            payload = dict(hit.structuredContent or {})
+
+            assert payload["status"] == "breakpoint_hit"
+            assert any(
+                "readiness is unverified" in warning.lower()
+                for warning in payload["warnings"]
+            )
+            await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "resume",
+                    "suspension_id": payload["suspension_id"],
+                },
+            )
+
+        anyio.run(scenario)
+
+
 def test_http_response_without_event_keeps_wait_active() -> None:
     dispatcher = _TriggerDispatcher()
 
@@ -382,6 +610,50 @@ def test_http_response_without_event_keeps_wait_active() -> None:
         anyio.run(scenario)
 
 
+def test_blocking_await_timeout_keeps_handle_for_later_event() -> None:
+    dispatcher = _TriggerDispatcher()
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        _send_response(handler)
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(dispatcher)
+
+        async def scenario() -> None:
+            arguments = _blocking_arguments(url)
+            arguments["timeout"] = 0.1
+            waiting = await boundary.call_tool("java_runtime", arguments)
+            payload = dict(waiting.structuredContent or {})
+
+            assert payload["status"] == "waiting"
+            wait_handle = str(payload["wait_handle"])
+            assert boundary._find_wait(wait_handle) is not None
+            assert payload["http_trigger"]["status"] == (
+                "response_headers_received"
+            )
+
+            dispatcher.event_triggered.set()
+            hit = await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "wait_event",
+                    "wait_mode": "await",
+                    "wait_handle": wait_handle,
+                    "timeout": 1,
+                },
+            )
+            assert hit.structuredContent["status"] == "breakpoint_hit"
+            await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "resume",
+                    "suspension_id": hit.structuredContent["suspension_id"],
+                },
+            )
+
+        anyio.run(scenario)
+
+
 def test_definite_http_connection_failure_cancels_runtime_wait() -> None:
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
@@ -390,22 +662,13 @@ def test_definite_http_connection_failure_cancels_runtime_wait() -> None:
     boundary = RuntimeMCPBoundary(dispatcher)
 
     async def scenario() -> None:
-        arm_arguments = _arm_arguments(
+        blocking_arguments = _blocking_arguments(
             f"http://127.0.0.1:{port}/missing"
         )
-        arm_arguments["http_trigger"]["timeout_seconds"] = 0.5
-        armed = await boundary.call_tool(
-            "java_runtime",
-            arm_arguments,
-        )
+        blocking_arguments["http_trigger"]["timeout_seconds"] = 0.5
         failed = await boundary.call_tool(
             "java_runtime",
-            {
-                "action": "wait_event",
-                "wait_mode": "await",
-                "wait_handle": armed.structuredContent["wait_handle"],
-                "timeout": 5,
-            },
+            blocking_arguments,
         )
         payload = dict(failed.structuredContent or {})
         assert failed.isError is True
@@ -420,6 +683,55 @@ def test_definite_http_connection_failure_cancels_runtime_wait() -> None:
         anyio.run(scenario)
     finally:
         probe.close()
+
+
+def test_cancelling_blocking_http_trigger_cleans_wait_and_client() -> None:
+    dispatcher = _TriggerDispatcher()
+    request_seen = threading.Event()
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        request_seen.set()
+        dispatcher.response_release.wait(2)
+        _send_response(handler)
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(
+            dispatcher,
+            cancellation_grace_seconds=0.5,
+        )
+
+        async def scenario() -> None:
+            holder: dict[str, anyio.CancelScope] = {}
+            caller_done = anyio.Event()
+
+            async def blocking_call() -> None:
+                with anyio.CancelScope() as scope:
+                    holder["scope"] = scope
+                    try:
+                        await boundary.call_tool(
+                            "java_runtime",
+                            _blocking_arguments(url),
+                        )
+                    finally:
+                        caller_done.set()
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(blocking_call)
+                with anyio.fail_after(1):
+                    while not request_seen.is_set():
+                        await anyio.sleep(0.005)
+                holder["scope"].cancel()
+                with anyio.fail_after(1):
+                    await caller_done.wait()
+
+            assert dispatcher.cancel_seen.is_set()
+            assert dispatcher.settled == 1
+            assert boundary._active_background_waiter() is None
+            with anyio.fail_after(3):
+                while boundary._http_triggers:
+                    await anyio.sleep(0.005)
+
+        anyio.run(scenario)
 
 
 def test_cleanup_preempts_passive_await_with_running_http_trigger() -> None:
@@ -852,19 +1164,11 @@ def test_http_trigger_does_not_follow_redirects() -> None:
         anyio.run(scenario)
 
 
-def test_http_trigger_is_rejected_outside_arm_mode() -> None:
+def test_http_trigger_is_rejected_outside_blocking_or_arm_mode() -> None:
     boundary = RuntimeMCPBoundary(_TriggerDispatcher())
 
     async def scenario() -> None:
         for arguments in (
-            {
-                "action": "wait_event",
-                "wait_mode": "blocking",
-                "http_trigger": {
-                    "method": "GET",
-                    "url": "http://127.0.0.1:8080/",
-                },
-            },
             {
                 "action": "wait_event",
                 "wait_mode": "await",

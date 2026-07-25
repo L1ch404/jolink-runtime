@@ -731,10 +731,10 @@ def test_arm_bound_http_trigger_hits_real_jvm_and_unblocks_after_resume(
         anyio.run(scenario)
 
 
-def test_http_response_headers_can_arrive_before_delayed_real_jvm_hit(
+def test_blocking_http_trigger_waits_for_delayed_real_jvm_hit_after_headers(
     tmp_path: Path,
 ) -> None:
-    """A completed trigger response does not end the armed Runtime wait."""
+    """One-call trigger waiting survives response headers before a JVM hit."""
     require_real_mcp_java_e2e()
     compile_java(tmp_path, "DelayedHttpMcpFixture", DELAYED_HTTP_SOURCE)
     breakpoint_line = source_line(
@@ -764,21 +764,15 @@ def test_http_response_headers_can_arrive_before_delayed_real_jvm_hit(
                             "line": breakpoint_line,
                         }))
 
-                        armed = assert_ok(await call_payload(session, {
+                        hit = assert_ok(await call_payload(session, {
                             "action": "wait_event",
-                            "wait_mode": "arm",
+                            "wait_mode": "blocking",
                             "timeout": 10,
                             "http_trigger": {
                                 "method": "POST",
                                 "url": url,
                                 "timeout_seconds": 5,
                             },
-                        }))
-                        hit = assert_ok(await call_payload(session, {
-                            "action": "wait_event",
-                            "wait_mode": "await",
-                            "wait_handle": armed["wait_handle"],
-                            "timeout": 10,
                         }))
                         assert hit["status"] == "breakpoint_hit"
                         assert hit["location"]["line"] == breakpoint_line

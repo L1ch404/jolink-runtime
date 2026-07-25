@@ -42,7 +42,9 @@ JAVA_RUNTIME_DESCRIPTION = (
     "before arming an HTTP trigger. "
     "Treat runtime outputs as bounded observations; separate observed facts from "
     "interpretations and unverified conclusions. "
-    "wait_event arm can start an optional local HTTP request only after JDWP is ready. "
+    "wait_event blocking can arm JDWP event requests, start an optional local "
+    "HTTP request only after arming, and await an event in one call; use arm "
+    "then await when an external action must occur between them. "
     "Always resume a suspended JVM or call cleanup_debug_state after inspection."
 )
 
@@ -247,18 +249,22 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "enum": ["blocking", "arm", "await"],
             "default": "blocking",
             "description": (
-                "Wait behavior. Prefer arm then await with its wait_handle. "
-                "arm may start http_trigger after JDWP is ready. Resume every suspension."
+                "blocking waits directly; with http_trigger it performs "
+                "arm, trigger, and await in one call. Use arm then await with "
+                "its wait_handle when an external action is needed after JDWP "
+                "is armed. Resume every suspension."
             ),
         },
         "http_trigger": {
             "type": "object",
             "additionalProperties": False,
             "description": (
-                "Optional loopback request started only after arm is ready. "
+                "Optional loopback request started only after JDWP is armed. "
+                "Use with blocking for one-call arm/trigger/await, or with arm "
+                "when work must occur before a later await. "
                 "It is rejected while configured application readiness is "
                 "starting; unverified readiness is allowed with a warning. "
-                "Then await its wait_handle; do not send the request again."
+                "Never send the same request again."
             ),
             "properties": {
                 "method": {
@@ -287,7 +293,10 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         },
         "wait_handle": {
             "type": "string",
-            "description": "Observation handle returned by wait_mode=arm.",
+            "description": (
+                "Active observation handle returned by arm or a nonterminal "
+                "blocking result."
+            ),
         },
         "suspension_id": {
             "type": "string",

@@ -38,9 +38,11 @@ logger = logging.getLogger(__name__)
 SERVER_NAME = "jolink-runtime"
 _NO_ACTIVE_SUSPENSION_NEXT_STEP = (
     "List the current breakpoint and exception definitions, and configure "
-    "the required one only if it is missing. Then call wait_event with "
-    "wait_mode='arm'. After status='armed', trigger the target scenario and "
-    "call wait_event with wait_mode='await' using the returned wait_handle."
+    "the required one only if it is missing. For a managed local HTTP request, "
+    "call wait_event with wait_mode='blocking' and http_trigger. For an "
+    "external action, call wait_mode='arm', trigger the scenario after "
+    "status='armed', then call wait_event with wait_mode='await' using the "
+    "returned wait_handle."
 )
 SERVER_INSTRUCTIONS = (
     "Use java_runtime to run, observe, verify, and debug a local Java application. "
@@ -224,7 +226,7 @@ def _iso_timestamp(epoch_seconds: float) -> str:
 def _active_waiter_payload(control: WaitControl) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "ok": False,
-        "error": "A two-phase wait_event observation is still active.",
+        "error": "A managed wait_event observation is still active.",
         "error_code": "ACTIVE_WAITER_EXISTS",
         "status": "active_waiter_exists",
         "retryable": True,
@@ -267,8 +269,8 @@ def _http_trigger_error_payload(
         "argument": "http_trigger",
         "retryable": True,
         "suggested_next_step": (
-            "Correct the local HTTP trigger and retry wait_event with "
-            "wait_mode='arm'."
+            "Correct the local HTTP trigger and start a new wait_event "
+            "observation."
         ),
     }
 
@@ -299,13 +301,13 @@ def _trigger_failed_payload(
                 "keep the JVM running and call status to check startup_state. "
                 "If readiness is unverified, verify the service port and "
                 "configure ready_port on a future run/restart. "
-                "After startup_state is ready, start a new wait_event with "
-                "wait_mode='arm'."
+                "After startup_state is ready, start a new wait_event "
+                "observation."
             )
             if connection_failed
             else (
                 "Verify the local application port and URL, then start a new "
-                "wait_event with wait_mode='arm'."
+                "wait_event observation."
             )
         ),
     }
@@ -330,7 +332,7 @@ def _application_not_ready_payload(
         "next_action": "status",
         "suggested_next_step": (
             "Keep the application running and call status until startup_state "
-            "is ready, then arm the HTTP trigger again."
+            "is ready, then retry the wait_event observation."
         ),
     }
     for key in (
@@ -519,8 +521,10 @@ class RuntimeMCPBoundary:
         ):
             return _call_tool_result(_wait_argument_error(
                 "http_trigger",
-                "http_trigger is only valid for wait_event with wait_mode='arm'.",
-                "Remove http_trigger or use action='wait_event' and wait_mode='arm'.",
+                "http_trigger is only valid for wait_event with wait_mode="
+                "'blocking' or 'arm'.",
+                "Remove http_trigger or use action='wait_event' with "
+                "wait_mode='blocking' or 'arm'.",
             ))
 
         if name == "java_runtime" and args.get("action") == "wait_event":
@@ -889,8 +893,9 @@ class RuntimeMCPBoundary:
                 "invalidated_suspension_id": suspension_id,
                 "retryable": bool(resumed),
                 "suggested_next_step": (
-                    "Start a new wait_event with wait_mode='arm', trigger the "
-                    "scenario after the armed response, then await it promptly."
+                    "Start a new wait_event observation. Use blocking with a "
+                    "managed HTTP trigger, or arm before an external trigger "
+                    "and await it promptly."
                 ),
             })
         except Exception as error:
@@ -1016,18 +1021,18 @@ class RuntimeMCPBoundary:
         wait_handle = str(arguments.get("wait_handle", "") or "")
         has_http_trigger = arguments.get("http_trigger") is not None
         if wait_mode == "blocking":
-            if has_http_trigger:
-                return _call_tool_result(_wait_argument_error(
-                    "http_trigger",
-                    "http_trigger is only valid with wait_mode='arm'.",
-                    "Use wait_mode='arm' or remove http_trigger.",
-                ))
             if wait_handle:
                 return _call_tool_result(_wait_argument_error(
                     "wait_handle",
                     "wait_handle is only valid with wait_mode='await'.",
                     "Remove wait_handle or set wait_mode to 'await'.",
                 ))
+            if has_http_trigger:
+                return await self._call_wait_event_blocking_with_trigger(
+                    name,
+                    arguments,
+                    request_id=request_id,
+                )
             return await self._call_wait_event_blocking(
                 name,
                 arguments,
@@ -1048,20 +1053,82 @@ class RuntimeMCPBoundary:
         if has_http_trigger:
             return _call_tool_result(_wait_argument_error(
                 "http_trigger",
-                "http_trigger is only valid with wait_mode='arm'.",
+                "http_trigger cannot be supplied with wait_mode='await'.",
                 "Use the trigger attached during arm; remove it from await.",
             ))
         if not wait_handle:
             return _call_tool_result(_wait_argument_error(
                 "wait_handle",
-                "wait_mode='await' requires the wait_handle returned by arm.",
-                "Call wait_event with wait_mode='arm' first, then await its handle.",
+                "wait_mode='await' requires an active wait_handle.",
+                "Use the handle returned by arm or by a nonterminal blocking "
+                "result.",
             ))
         return await self._call_wait_event_await(
             wait_handle,
             timeout=float(arguments.get("timeout", 30.0)),
             request_id=request_id,
         )
+
+    async def _call_wait_event_blocking_with_trigger(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        request_id: str | None,
+    ) -> types.CallToolResult:
+        """Compose the existing arm/trigger/await lifecycle in one MCP call."""
+        armed = await self._call_wait_event_arm(
+            name,
+            arguments,
+            request_id=request_id,
+        )
+        armed_payload = dict(armed.structuredContent or {})
+        if armed.isError or armed_payload.get("status") != "armed":
+            return armed
+
+        wait_handle = armed_payload.get("wait_handle")
+        if not isinstance(wait_handle, str) or not wait_handle:
+            logger.error("mcp.wait_event.blocking.arm_missing_wait_handle")
+            control = self._active_background_waiter()
+            if control is not None:
+                await self._cancel_background_wait(
+                    control,
+                    reason="blocking_arm_missing_wait_handle",
+                )
+            return _call_tool_result(_execution_error_payload(RuntimeError(
+                "wait_event arm completed without a wait_handle"
+            )))
+
+        try:
+            await checkpoint_if_cancelled()
+            awaited = await self._call_wait_event_await(
+                wait_handle,
+                timeout=float(arguments.get("timeout", 30.0)),
+                request_id=request_id,
+            )
+        except anyio.get_cancelled_exc_class():
+            # _call_wait_event_await owns cancellation settlement after it
+            # starts. This branch covers cancellation in the narrow handoff
+            # window between the composed arm and await operations.
+            control = self._find_wait(wait_handle)
+            if control is not None:
+                with anyio.CancelScope(shield=True):
+                    await self._cancel_background_wait(
+                        control,
+                        reason="mcp_blocking_trigger_request_cancelled",
+                    )
+            raise
+
+        payload = dict(awaited.structuredContent or {})
+        arm_warnings = armed_payload.get("warnings")
+        if isinstance(arm_warnings, list):
+            warnings = list(payload.get("warnings") or [])
+            for warning in arm_warnings:
+                if isinstance(warning, str) and warning not in warnings:
+                    warnings.append(warning)
+            if warnings:
+                payload["warnings"] = warnings
+        return _call_tool_result(payload)
 
     async def _call_wait_event_blocking(
         self,
@@ -1236,7 +1303,8 @@ class RuntimeMCPBoundary:
                         "retryable": True,
                         "wait_handle": wait_handle,
                         "suggested_next_step": (
-                            "Check status and stderr logs, then retry wait_mode='arm'."
+                            "Check status and stderr logs, then start a new "
+                            "wait_event observation."
                         ),
                     })
 
@@ -1340,15 +1408,16 @@ class RuntimeMCPBoundary:
                 "retryable": True,
                 "wait_handle": wait_handle,
                 "suggested_next_step": (
-                    "Call wait_event with wait_mode='arm' to start a new observation."
+                    "Start a new wait_event observation."
                 ),
             })
 
         if not control.background:
             return _call_tool_result(_wait_argument_error(
                 "wait_handle",
-                "The supplied wait_handle does not identify a two-phase wait.",
-                "Use the handle returned by wait_mode='arm'.",
+                "The supplied wait_handle does not identify an awaitable wait.",
+                "Use the handle returned by arm or by a nonterminal blocking "
+                "result.",
             ))
 
         await_owner = request_id or f"local_await_{uuid.uuid4().hex}"
@@ -1419,7 +1488,7 @@ class RuntimeMCPBoundary:
                             "retryable": True,
                             "wait_handle": wait_handle,
                             "suggested_next_step": (
-                                "Start a new observation with wait_mode='arm' if needed."
+                                "Start a new wait_event observation if needed."
                             ),
                         })
                     return _call_tool_result({
@@ -1429,7 +1498,7 @@ class RuntimeMCPBoundary:
                         "retryable": True,
                         "wait_handle": wait_handle,
                         "suggested_next_step": (
-                            "Call wait_event with wait_mode='arm' to start a new observation."
+                            "Start a new wait_event observation."
                         ),
                     })
 

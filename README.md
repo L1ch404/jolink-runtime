@@ -127,7 +127,8 @@ The current MCP implementation includes:
 - Runtime `ok=false` mapped to MCP `isError=true`;
 - cancellable `wait_event`;
 - optional two-phase waiting with `arm` and `await`;
-- an optional loopback HTTP trigger started only after `arm` is ready;
+- an optional loopback HTTP trigger started only after JDWP is armed, with a
+  one-call `blocking` shortcut or explicit `arm`/`await`;
 - wait-scoped JDWP requests;
 - ownership-aware shutdown;
 - automatic cleanup and resume paths;
@@ -257,22 +258,23 @@ A deeper debugging flow looks like this:
 run or attach
 -> for an owned HTTP application, confirm startup_state=ready
 -> configure a breakpoint or exception watch
--> wait_event(wait_mode=arm)
--> trigger the scenario after status=armed
--> wait_event(wait_mode=await, wait_handle=...)
+-> for a managed local HTTP request:
+   wait_event(wait_mode=blocking, http_trigger=...)
+-> otherwise:
+   wait_event(wait_mode=arm)
+   -> trigger the scenario after status=armed
+   -> wait_event(wait_mode=await, wait_handle=...)
 -> inspect stack frames and variables
 -> resume or cleanup_debug_state
 ```
 
-Blocking `wait_event` mode remains available, but two-phase waiting is useful
-when an external action must occur only after JDWP requests are installed.
-For a local HTTP endpoint, `arm` can perform that trigger without making the
-agent synchronously wait for a request that may pause at the breakpoint:
+For a local HTTP endpoint, `blocking` composes the existing
+`arm -> trigger -> await` lifecycle into one call:
 
 ```json
 {
   "action": "wait_event",
-  "wait_mode": "arm",
+  "wait_mode": "blocking",
   "timeout": 30,
   "http_trigger": {
     "method": "POST",
@@ -283,9 +285,9 @@ agent synchronously wait for a request that may pause at the breakpoint:
 }
 ```
 
-After the armed result, call `await` with its `wait_handle`; do not send the
-same request again. External background triggers remain supported when the
-scenario is not a simple local HTTP request.
+Use explicit `arm` followed by `await` when an external action must occur
+between arming and observation. A terminal result consumes its `wait_handle`;
+the handle observes Runtime events and is not an HTTP-response handle.
 
 For an HTTP application launched by joLink, distinguish process/debugger
 startup from application TCP readiness:

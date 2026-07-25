@@ -76,15 +76,15 @@ seconds after JDWP becomes reachable.
 2. Confirm `run` returns `ok=true`, `status=process_started`,
    `startup_state=starting`, `startup_wait_timed_out=true`, and
    `next_action=status`. The PID must remain alive.
-3. Before the port opens, attempt `wait_event(wait_mode=arm,
+3. Before the port opens, attempt `wait_event(wait_mode=blocking,
    http_trigger=...)`. Confirm `APPLICATION_NOT_READY` and
    `http_trigger_sent=false`; no request or waiter may be created.
 4. Call `status` until it returns `startup_state=ready`. Confirm
    `readiness.type=tcp_port`, the expected port, and `verified=true`.
 5. Call `status` again. `ready_observed_at` and the completed
    `startup_elapsed_ms` must remain stable.
-6. Arm the same HTTP trigger after readiness. It must follow the normal
-   arm/await flow.
+6. Run the same HTTP trigger after readiness through `wait_mode=blocking`.
+   It must arm before sending and return the Runtime observation.
 7. Stop the JVM and call `status`. It must report `process_state=absent`
    without retaining `starting` or `ready`.
 
@@ -147,8 +147,22 @@ If the exception class is not loaded yet, Runtime returns
 `next_action=trigger_code_path_then_retry_exception_set`.
 
 Breakpoint and exception definitions are armed only while `wait_event` is
-active. Prefer the deterministic two-phase form. First arm and keep the
-returned `wait_handle`:
+active. For a managed local HTTP request, prefer the one-call form:
+
+```json
+{
+  "action": "wait_event",
+  "wait_mode": "blocking",
+  "timeout": 30,
+  "http_trigger": {
+    "method": "POST",
+    "url": "http://127.0.0.1:8080/example"
+  }
+}
+```
+
+When an external action must occur after arming, use the deterministic
+two-phase form. First arm and keep the returned `wait_handle`:
 
 ```json
 {"action": "wait_event", "wait_mode": "arm", "timeout": 30}
@@ -166,9 +180,8 @@ then collect the event:
 }
 ```
 
-No guessed sleep is required. Do not synchronously wait for an HTTP trigger
-that can suspend at the breakpoint, because it cannot finish until `resume`.
-The original blocking form remains available for compatibility.
+No guessed sleep is required. Do not make a separate foreground HTTP call that
+must finish before `await`, because it may remain blocked until `resume`.
 
 This lifecycle is intentional:
 
@@ -240,7 +253,7 @@ Always finish with breakpoint/exception removal and
 suspension in `status`, or a definition disappearing after timeout is a
 Stage 2.1.1 regression.
 
-## Arm-bound HTTP trigger regression case
+## Managed HTTP trigger regression case
 
 Run this case against a disposable local endpoint on `127.0.0.1` whose request
 path crosses a known executable breakpoint:
@@ -275,7 +288,8 @@ path crosses a known executable breakpoint:
    a stale suspension.
 10. Reject non-loopback URLs, HTTPS, redirects as follow-up targets, URL
     credentials/fragments, unsupported methods, unsafe framing headers,
-    oversized headers/bodies, and `http_trigger` used outside `wait_mode=arm`.
+    oversized headers/bodies, and `http_trigger` used outside
+    `wait_mode=blocking|arm`.
     Assert that schema and parser errors contain no supplied URL, header name,
     header value, or body value. Verify auto-added JSON `Content-Type` is
     included in the 32-header and 16-KiB limits.
@@ -283,6 +297,14 @@ path crosses a known executable breakpoint:
     HTTP client is still waiting. The returned trigger state must show client
     cancellation requested, and the forgotten handle must not leave an
     uncancelled background client wait.
+12. Repeat the primary hit through `wait_mode=blocking` with the same
+    `http_trigger`. Verify one call performs arm, sends only after arming, and
+    returns the existing hit shape. A terminal result must consume the
+    `wait_handle`; it cannot be reused as an HTTP completion handle.
+13. Let the composed blocking call reach only its local await deadline while
+    the Runtime observation remains active. Verify `status=waiting` preserves
+    the handle, then trigger a delayed event and collect it through explicit
+    `await`.
 
 Run the same breakpoint once more through the existing external background
 trigger flow to confirm backward compatibility. HTTP client cancellation is

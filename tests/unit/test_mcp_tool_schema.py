@@ -104,16 +104,30 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
     wait_description = (
         runtime.inputSchema["properties"]["wait_mode"]["description"].lower()
     )
+    trigger_description = (
+        runtime.inputSchema["properties"]["http_trigger"]["description"].lower()
+    )
 
     for signal in (
+        "blocking",
         "arm",
-        "await",
-        "wait_handle",
+        "trigger",
         "http_trigger",
+        "await",
+        "one call",
+        "wait_handle",
         "jdwp",
         "resume",
     ):
         assert signal in wait_description
+    for signal in (
+        "blocking",
+        "one-call",
+        "arm",
+        "later await",
+        "jdwp",
+    ):
+        assert signal in trigger_description
 
 
 def test_suspension_selectors_prefer_the_event_thread_without_rediscovery() -> None:
