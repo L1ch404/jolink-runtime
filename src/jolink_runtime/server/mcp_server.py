@@ -278,6 +278,10 @@ def _trigger_failed_payload(
 ) -> dict[str, Any]:
     trigger = control.trigger_control
     snapshot = trigger.snapshot() if trigger is not None else None
+    connection_failed = (
+        isinstance(snapshot, dict)
+        and snapshot.get("error_code") == "HTTP_TRIGGER_CONNECTION_FAILED"
+    )
     return {
         "ok": False,
         "error": (
@@ -290,10 +294,61 @@ def _trigger_failed_payload(
         "wait_handle": control.wait_handle,
         "http_trigger": snapshot,
         "suggested_next_step": (
-            "Verify the local application port and URL, then start a new "
-            "wait_event with wait_mode='arm'."
+            (
+                "The request was not sent. The application may still be starting; "
+                "keep the JVM running and call status to check startup_state. "
+                "If readiness is unverified, verify the service port and "
+                "configure ready_port on a future run/restart. "
+                "After startup_state is ready, start a new wait_event with "
+                "wait_mode='arm'."
+            )
+            if connection_failed
+            else (
+                "Verify the local application port and URL, then start a new "
+                "wait_event with wait_mode='arm'."
+            )
         ),
     }
+
+
+def _application_not_ready_payload(
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    state = str(observation.get("startup_state", "starting"))
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": (
+            "The configured local application readiness check has not "
+            "reached ready state."
+        ),
+        "error_code": "APPLICATION_NOT_READY",
+        "status": "application_not_ready",
+        "retryable": True,
+        "process_state": observation.get("process_state", "running"),
+        "startup_state": state,
+        "http_trigger_sent": False,
+        "next_action": "status",
+        "suggested_next_step": (
+            "Keep the application running and call status until startup_state "
+            "is ready, then arm the HTTP trigger again."
+        ),
+    }
+    for key in (
+        "pid",
+        "startup_elapsed_ms",
+        "readiness",
+        "ready_observed_at",
+        "failure_type",
+    ):
+        if key in observation:
+            payload[key] = observation[key]
+    if state == "failed":
+        payload["next_action"] = "logs"
+        payload["suggested_next_step"] = (
+            "Call status to confirm the exited process, then inspect logs "
+            "before running the application again."
+        )
+    return payload
 
 
 def _with_http_trigger(
@@ -1069,6 +1124,7 @@ class RuntimeMCPBoundary:
         request_id: str | None,
     ) -> types.CallToolResult:
         trigger_spec = None
+        readiness_warning = ""
         raw_trigger = arguments.get("http_trigger")
         if raw_trigger is not None:
             try:
@@ -1077,6 +1133,41 @@ class RuntimeMCPBoundary:
                 return _call_tool_result(_http_trigger_error_payload(error))
 
         async with self._call_lock:
+            if trigger_spec is not None:
+                startup_observer = getattr(
+                    self.dispatcher,
+                    "startup_observation",
+                    None,
+                )
+                if callable(startup_observer):
+                    observation = await anyio.to_thread.run_sync(
+                        startup_observer,
+                        self.session_key,
+                        abandon_on_cancel=False,
+                    )
+                    startup_state = str(
+                        observation.get("startup_state", "unverified")
+                    )
+                    process_state = str(
+                        observation.get("process_state", "")
+                    )
+                    if (
+                        startup_state in {"starting", "failed"}
+                        or process_state == "exited"
+                    ):
+                        return _call_tool_result(
+                            _application_not_ready_payload(observation)
+                        )
+                    if (
+                        startup_state == "unverified"
+                        and process_state == "running"
+                    ):
+                        readiness_warning = (
+                            "Application readiness is unverified. The HTTP "
+                            "trigger was allowed for compatibility; a failed "
+                            "request must not be treated as runtime-path evidence."
+                        )
+
             wait_handle = f"wait_{uuid.uuid4().hex[:12]}"
             event_timeout = float(arguments.get("timeout", 30.0))
             try:
@@ -1218,6 +1309,10 @@ class RuntimeMCPBoundary:
                         "wait_mode": "await",
                         "wait_handle": wait_handle,
                     }
+                if readiness_warning:
+                    payload.setdefault("warnings", []).append(
+                        readiness_warning
+                    )
                 return _call_tool_result(
                     _with_http_trigger(payload, control)
                 )

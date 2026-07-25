@@ -125,6 +125,37 @@ class _TriggerDispatcher:
         return True
 
 
+class _ReadinessDispatcher(_TriggerDispatcher):
+    def __init__(
+        self,
+        startup_state: str,
+        *,
+        process_state: str = "running",
+    ) -> None:
+        super().__init__()
+        self.startup_state = startup_state
+        self.process_state = process_state
+
+    def startup_observation(
+        self,
+        session_key: str = "default",
+    ) -> dict[str, Any]:
+        observation: dict[str, Any] = {
+            "process_state": self.process_state,
+            "startup_state": self.startup_state,
+            "startup_elapsed_ms": 30_000,
+            "readiness_configured": self.startup_state != "unverified",
+        }
+        if self.startup_state != "unverified":
+            observation["readiness"] = {
+                "type": "tcp_port",
+                "host": "127.0.0.1",
+                "port": 8080,
+                "verified": self.startup_state == "ready",
+            }
+        return observation
+
+
 class _TerminalWaitDispatcher(_TriggerDispatcher):
     def __init__(self) -> None:
         super().__init__()
@@ -172,7 +203,7 @@ def _arm_arguments(url: str) -> dict[str, Any]:
 
 
 def test_http_trigger_is_sent_only_after_arm_and_does_not_block_arm() -> None:
-    dispatcher = _TriggerDispatcher()
+    dispatcher = _ReadinessDispatcher("ready")
     request_seen = threading.Event()
     request_done = threading.Event()
     received_body: list[dict[str, Any]] = []
@@ -239,6 +270,74 @@ def test_http_trigger_is_sent_only_after_arm_and_does_not_block_arm() -> None:
             with anyio.fail_after(1):
                 while not request_done.is_set():
                     await anyio.sleep(0.005)
+
+        anyio.run(scenario)
+
+
+def test_http_trigger_is_rejected_while_application_is_starting() -> None:
+    dispatcher = _ReadinessDispatcher("starting")
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        result = await boundary.call_tool(
+            "java_runtime",
+            _arm_arguments("http://127.0.0.1:8080/trigger"),
+        )
+        payload = dict(result.structuredContent or {})
+
+        assert result.isError is True
+        assert payload["error_code"] == "APPLICATION_NOT_READY"
+        assert payload["startup_state"] == "starting"
+        assert payload["http_trigger_sent"] is False
+        assert payload["next_action"] == "status"
+        assert dispatcher.calls == []
+        assert dispatcher.armed.is_set() is False
+
+    anyio.run(scenario)
+
+
+def test_unverified_readiness_allows_http_trigger_with_warning() -> None:
+    dispatcher = _ReadinessDispatcher("unverified")
+
+    def handle(handler: BaseHTTPRequestHandler) -> None:
+        dispatcher.event_triggered.set()
+        _send_response(handler)
+
+    with _http_server(handle) as url:
+        boundary = RuntimeMCPBoundary(dispatcher)
+
+        async def scenario() -> None:
+            armed = await boundary.call_tool(
+                "java_runtime",
+                _arm_arguments(url),
+            )
+            payload = dict(armed.structuredContent or {})
+
+            assert armed.isError is False
+            assert payload["status"] == "armed"
+            assert any(
+                "readiness is unverified" in warning.lower()
+                for warning in payload["warnings"]
+            )
+
+            hit = await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "wait_event",
+                    "wait_mode": "await",
+                    "wait_handle": payload["wait_handle"],
+                    "timeout": 1,
+                },
+            )
+            assert hit.structuredContent["status"] == "breakpoint_hit"
+            resumed = await boundary.call_tool(
+                "java_runtime",
+                {
+                    "action": "resume",
+                    "suspension_id": hit.structuredContent["suspension_id"],
+                },
+            )
+            assert resumed.structuredContent["status"] == "resumed"
 
         anyio.run(scenario)
 

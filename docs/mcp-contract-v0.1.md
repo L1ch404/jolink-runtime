@@ -44,6 +44,51 @@ and adapters instead of adding a `language` union to `java_runtime`.
 `wait_breakpoint` remains an internal Runtime-lineage compatibility alias. It
 is not advertised or accepted as a public MCP action.
 
+## Application startup readiness
+
+`run` and `restart` distinguish JVM launch from optional application TCP
+readiness.
+
+- `ready_port` is an optional loopback application port. It must differ from
+  `jdwp_port`.
+- `startup_wait_timeout_seconds` limits only the synchronous readiness wait in
+  the current lifecycle call, defaults to 30 seconds, and is capped at 60
+  seconds so cancellation and shutdown remain bounded. A wait timeout never
+  terminates a live process.
+- Readiness configuration is stored with the launched process. `status`
+  rechecks the same port without reading or interpreting application logs.
+- `restart` reuses the prior launched process's readiness configuration when
+  the caller does not provide a replacement.
+
+The public startup states are:
+
+- `unverified`: no readiness port was configured;
+- `starting`: the process is alive but the configured port has not accepted a
+  TCP connection;
+- `ready`: joLink observed the configured loopback TCP port accept a
+  connection;
+- `failed`: the managed process exited.
+
+TCP readiness proves only that the configured port accepted a connection. It
+does not prove database initialization, cache warmup, background jobs, or
+individual business endpoints are healthy. `ready_observed_at` records the
+first joLink observation, not the exact instant the listener opened.
+
+Before spawning a new JVM, joLink rejects a configured readiness port that is
+already accepting connections. The check runs after the previously managed
+target has been stopped or detached, so a normal `restart` does not mistake the
+old owned process for an unrelated listener.
+
+If `run` finishes its bounded wait while the process remains alive, it returns
+`ok=true`, `startup_state=starting`, and `next_action=status`. A later `status`
+that observes process exit still returns `ok=true` because the observation
+succeeded; application failure is represented by `startup_state=failed`.
+
+An arm-bound HTTP trigger is not sent while configured readiness is
+`starting`, and the boundary returns `APPLICATION_NOT_READY` with
+`http_trigger_sent=false`. `unverified` readiness remains allowed with a
+warning so attach and non-Web workflows remain compatible.
+
 ## Required tool-description semantics
 
 The compact description must tell the model:
@@ -58,6 +103,9 @@ The compact description must tell the model:
    after arming, then collect the event with `wait_mode=await`.
 5. A suspension returned by `wait_event` must be resumed or cleaned up after
    inspection.
+6. For an owned HTTP application, `ready_port` lets `run/status` distinguish
+   `starting` from TCP `ready`; the model must not trigger HTTP while configured
+   readiness is still starting.
 
 The Tool description carries these rules; correct basic use does not depend
 on a Resource or Prompt being loaded.
@@ -134,6 +182,15 @@ wait_event(wait_mode=arm, http_trigger=...)
 -> resume(suspension_id=...)
 ```
 
+Breakpoint and exception hits include copyable `suggested_next_actions` for
+`stack`, `variables`, and `resume`, all bound to the exact `suspension_id`.
+`stack` and `variables` use that suspension's event-hit thread when
+`thread_name` is omitted. An explicit `thread_name` is a fallback selector:
+exact matches are preferred, followed by a unique prefix or substring match
+across JVM thread names. The selected thread must be suspended before its
+stack or variables can be read. Thread names are not lifecycle identifiers
+and must not replace `suspension_id`.
+
 ### Arm-bound HTTP trigger
 
 The optional `http_trigger` is an MCP-boundary convenience, not a new Runtime
@@ -163,6 +220,9 @@ action and not a general-purpose HTTP client.
   handle remains awaitable until its Runtime deadline or explicit cleanup.
 - A definite connection/start failure terminates and safely settles the wait.
   A Runtime result already published at the failure boundary takes priority.
+- A configured application in `startup_state=starting` is rejected before the
+  waiter or HTTP client is created. No request is sent. An unverified attached
+  or launched JVM is allowed with an explicit warning.
 - If the Runtime wait reaches a terminal result without a suspension, joLink
   requests cancellation of any still-running client-side HTTP wait before the
   public handle is released.
@@ -288,11 +348,11 @@ accepted final semantics.
   and `stdio_client` contexts. There is no separate shutdown RPC in the
   Python SDK.
 
-## Schema budget
+## Schema principles
 
-- Compact `java_runtime` Schema: at most 5.6 KB.
-- All advertised tool Schemas combined: at most 6.6 KB.
-- The budget must not remove the required tool-description semantics above.
+- Keep advertised Schemas concise, but do not enforce a fixed byte limit.
+- Required selection, safety, readiness, and recovery semantics take priority
+  over an arbitrary character budget.
 - Cross-field action validation belongs in Runtime results rather than large
   `oneOf` branches.
 

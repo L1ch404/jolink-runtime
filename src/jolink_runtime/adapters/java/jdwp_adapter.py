@@ -16,7 +16,7 @@ import struct
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from ...core.models import RuntimeAction, RuntimeResult, Variable
 from ...core.wait_state import WaitControl
 from ..base import Runtime
 from .jdwp_client import JDWPClient, JDWPError, Cmd, EventKind, SuspendPolicy, Tag
-from .process_manager import ProcessManager
+from .process_manager import ProcessManager, ReadyPortAlreadyInUseError
 from .log_manager import LogManager
 
 logger = logging.getLogger(__name__)
@@ -548,13 +548,15 @@ class JavaRuntime(Runtime):
         launch_mode = "jar" if action.jar_path else "class"
         logger.info(
             "java_runtime.jvm.run.request launch_mode=%s main_class=%s jar_path=%s "
-            "classpath=%s jdwp_port=%s "
+            "classpath=%s jdwp_port=%s ready_port=%s readiness_wait=%s "
             "app_args_count=%s vm_args_count=%s",
             launch_mode,
             action.main_class or "-",
             action.jar_path or "-",
             action.classpath,
             action.jdwp_port,
+            action.ready_port or "-",
+            action.startup_wait_timeout_seconds,
             len(action.app_args or []),
             len(action.vm_args or []),
         )
@@ -566,6 +568,40 @@ class JavaRuntime(Runtime):
             error = "run requires either jar_path or main_class"
             logger.warning("java_runtime.jvm.run.invalid error=%s", error)
             return RuntimeResult(ok=False, error=error)
+        if action.ready_port and action.ready_port == action.jdwp_port:
+            error = "ready_port must differ from jdwp_port"
+            logger.warning("java_runtime.jvm.run.invalid error=%s", error)
+            return RuntimeResult(
+                ok=False,
+                error=error,
+                data={
+                    "error_code": "READY_PORT_CONFLICTS_WITH_JDWP",
+                    "argument": "ready_port",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Use the local application service port for ready_port, "
+                        "not the JDWP debugger port."
+                    ),
+                },
+            )
+        if not 0 <= action.startup_wait_timeout_seconds <= 60:
+            error = (
+                "startup_wait_timeout_seconds must be between 0 and 60"
+            )
+            logger.warning("java_runtime.jvm.run.invalid error=%s", error)
+            return RuntimeResult(
+                ok=False,
+                error=error,
+                data={
+                    "error_code": "INVALID_ARGUMENT",
+                    "argument": "startup_wait_timeout_seconds",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Use a readiness wait timeout from 0 to 60 seconds; "
+                        "call status for applications that take longer."
+                    ),
+                },
+            )
         try:
             self._reset_debug_state()
             self._host = "127.0.0.1"
@@ -582,6 +618,14 @@ class JavaRuntime(Runtime):
                 jdwp_port=action.jdwp_port,
                 vm_args=action.vm_args,
                 log_file=log_file,
+                ready_port=action.ready_port,
+                startup_wait_timeout_seconds=(
+                    action.startup_wait_timeout_seconds
+                ),
+                readiness_config_source=(
+                    action.readiness_config_source
+                    or ("explicit" if action.ready_port else "not_configured")
+                ),
             )
             closing = self._release_late_published_target(
                 info,
@@ -589,23 +633,83 @@ class JavaRuntime(Runtime):
             )
             if closing is not None:
                 return closing
+            readiness = self._proc.wait_for_readiness(
+                info,
+                action.startup_wait_timeout_seconds,
+                should_stop=lambda: self._closed or self._force_closed,
+            )
+            closing = self._release_late_published_target(
+                info,
+                operation="run",
+            )
+            if closing is not None:
+                return closing
+            startup_state = str(readiness["startup_state"])
             data = {
-                "status": "started",
+                "status": "process_started",
                 "pid": info.pid,
                 "jdwp_port": info.jdwp_port,
                 "log_file": log_file,
                 "launch_mode": info.launch_mode,
+                "process_state": (
+                    "exited" if startup_state == "failed" else "running"
+                ),
+                "startup_wait_timeout_seconds": (
+                    info.startup_wait_timeout_seconds
+                ),
+                **readiness,
             }
             if info.launch_mode == "jar":
                 data["jar_path"] = info.jar_path
             else:
                 data["main_class"] = info.main_class
+            if startup_state == "failed":
+                data.update({
+                    "error_code": "APPLICATION_EXITED_BEFORE_READY",
+                    "exit_code": info.exit_code,
+                    "retryable": True,
+                    "next_action": "logs",
+                    "suggested_next_step": (
+                        "The application process exited before TCP readiness "
+                        "was observed. Inspect logs, correct the startup "
+                        "failure, then run it again."
+                    ),
+                })
+                return RuntimeResult(
+                    ok=False,
+                    error=(
+                        "The application process exited before readiness "
+                        "was observed."
+                    ),
+                    data=data,
+                )
+            if startup_state == "starting":
+                data.update({
+                    "next_action": "status",
+                    "suggested_next_step": (
+                        "The application is still starting. Keep it running "
+                        "and call status to check startup_state again before "
+                        "using an HTTP trigger."
+                    ),
+                })
+            elif startup_state == "unverified":
+                data.update({
+                    "warnings": [
+                        "Application readiness was not configured; JVM launch "
+                        "success does not prove that a business service is ready."
+                    ],
+                    "suggested_next_step": (
+                        "For an HTTP application, provide ready_port on a future "
+                        "run/restart or verify service readiness before using "
+                        "an HTTP trigger."
+                    ),
+                })
             result = RuntimeResult(ok=True, data=data)
             logger.info(
-                "java_runtime.jvm.run.ready pid=%s launch_mode=%s target=%s "
-                "jdwp_port=%s log_file=%s",
+                "java_runtime.jvm.run.observed pid=%s launch_mode=%s target=%s "
+                "jdwp_port=%s startup_state=%s ready_port=%s log_file=%s",
                 info.pid, info.launch_mode, info.jar_path or info.main_class,
-                info.jdwp_port, log_file,
+                info.jdwp_port, startup_state, info.ready_port or "-", log_file,
             )
             closing = self._release_late_published_target(
                 info,
@@ -621,6 +725,20 @@ class JavaRuntime(Runtime):
                 launch_mode, action.jar_path or action.main_class or "-", action.jdwp_port,
                 type(e).__name__, _error_summary(e),
             )
+            if isinstance(e, ReadyPortAlreadyInUseError):
+                return RuntimeResult(
+                    ok=False,
+                    error=str(e),
+                    data={
+                        "error_code": "READY_PORT_ALREADY_IN_USE",
+                        "ready_port": action.ready_port,
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Inspect or stop the process already using this "
+                            "local application port, then retry run."
+                        ),
+                    },
+                )
             return RuntimeResult(ok=False, error=str(e))
 
     def stop(self, action: RuntimeAction) -> RuntimeResult:
@@ -649,10 +767,44 @@ class JavaRuntime(Runtime):
         return RuntimeResult(ok=True, data=data)
 
     def restart(self, action: RuntimeAction) -> RuntimeResult:
+        previous = self._proc.current
+        if (
+            action.ready_port <= 0
+            and previous is not None
+            and previous.ready_port > 0
+        ):
+            replacement = replace(action)
+            replacement.configure_startup_readiness(
+                ready_port=previous.ready_port,
+                wait_timeout_seconds=(
+                    action.startup_wait_timeout_seconds
+                    if action.startup_wait_timeout_provided
+                    else previous.startup_wait_timeout_seconds
+                ),
+                wait_timeout_provided=(
+                    action.startup_wait_timeout_provided
+                ),
+                config_source="previous_run",
+            )
+            action = replacement
+        elif action.ready_port > 0 and not action.readiness_config_source:
+            replacement = replace(action)
+            replacement.configure_startup_readiness(
+                ready_port=action.ready_port,
+                wait_timeout_seconds=action.startup_wait_timeout_seconds,
+                wait_timeout_provided=(
+                    action.startup_wait_timeout_provided
+                ),
+                config_source="explicit",
+            )
+            action = replacement
         logger.info(
-            "java_runtime.jvm.restart.request launch_mode=%s target=%s",
+            "java_runtime.jvm.restart.request launch_mode=%s target=%s "
+            "ready_port=%s readiness_source=%s",
             "jar" if action.jar_path else "class",
             action.jar_path or action.main_class or "-",
+            action.ready_port or "-",
+            action.readiness_config_source or "not_configured",
         )
         self.stop(action)
         time.sleep(1)
@@ -770,6 +922,7 @@ class JavaRuntime(Runtime):
             })
         if not proc.is_alive():
             self._invalidate_suspension()
+            readiness = self._proc.observe_readiness(proc, refresh=False)
             return RuntimeResult(ok=True, data={
                 "process_state": "exited",
                 "debug_state": "detached",
@@ -777,8 +930,10 @@ class JavaRuntime(Runtime):
                 "pid": proc.pid,
                 "exit_code": proc.exit_code,
                 "message": "Managed application has exited",
+                **readiness,
             })
 
+        readiness = self._proc.observe_readiness(proc)
         info: dict[str, Any] = {
             "process_state": "running",
             "debug_state": (
@@ -798,7 +953,24 @@ class JavaRuntime(Runtime):
                 self._active_suspension.suspension_id
                 if self._active_suspension is not None else None
             ),
+            **readiness,
         }
+        startup_state = str(readiness["startup_state"])
+        if startup_state == "starting":
+            info["next_action"] = "status"
+            info["suggested_next_step"] = (
+                "The application is still starting. Keep it running and call "
+                "status again before using an HTTP trigger."
+            )
+        elif startup_state == "unverified":
+            info.setdefault("warnings", []).append(
+                "Application readiness is unverified because no ready_port "
+                "was configured."
+            )
+            info["suggested_next_step"] = (
+                "Do not infer business-service readiness from process or JDWP "
+                "state alone. Configure ready_port on run/restart when possible."
+            )
         if self._debug_connection_dirty:
             info["debug_requests_invalidated"] = True
             info.setdefault("warnings", []).append(self._debug_connection_warning)
@@ -872,6 +1044,21 @@ class JavaRuntime(Runtime):
             )
 
         return RuntimeResult(ok=True, data=info)
+
+    def startup_observation(self) -> dict[str, Any]:
+        """Return application readiness without connecting to JDWP."""
+        proc = self._proc.current
+        if proc is None:
+            return {
+                "process_state": "absent",
+                "startup_state": "unverified",
+                "readiness_configured": False,
+            }
+        readiness = self._proc.observe_readiness(proc)
+        return {
+            "pid": proc.pid,
+            **readiness,
+        }
 
     def logs(self, action: RuntimeAction) -> RuntimeResult:
         data = self._log.tail(action.tail)
@@ -2247,6 +2434,14 @@ class JavaRuntime(Runtime):
             ),
             "thread": {"name": thread_name},
             "location": location_description,
+            "suggested_next_step": (
+                "Inspect stack or variables with this suspension_id and omit "
+                "thread_name to use the event-hit thread. Call resume with the "
+                "same suspension_id after inspection."
+            ),
+            "suggested_next_actions": self._suggested_suspension_actions(
+                snapshot
+            ),
         })
 
     def _capture_exception_event(
@@ -2334,6 +2529,14 @@ class JavaRuntime(Runtime):
             "hint": (
                 "throw_location may be inside JDK or framework code. Inspect the stack "
                 "and the first application frame to find the business root cause."
+            ),
+            "suggested_next_step": (
+                "Inspect stack or variables with this suspension_id and omit "
+                "thread_name to use the event-hit thread. Call resume with the "
+                "same suspension_id after inspection."
+            ),
+            "suggested_next_actions": self._suggested_suspension_actions(
+                snapshot
             ),
         })
 
@@ -2782,6 +2985,28 @@ class JavaRuntime(Runtime):
         if snapshot.request_id:
             context["request_id"] = snapshot.request_id
         return context
+
+    @staticmethod
+    def _suggested_suspension_actions(
+        snapshot: SuspensionSnapshot,
+    ) -> dict[str, dict[str, Any]]:
+        """Return copyable calls bound to the exact active suspension."""
+        suspension_id = snapshot.suspension_id
+        return {
+            "variables": {
+                "action": "variables",
+                "suspension_id": suspension_id,
+                "frame_index": 0,
+            },
+            "stack": {
+                "action": "stack",
+                "suspension_id": suspension_id,
+            },
+            "resume": {
+                "action": "resume",
+                "suspension_id": suspension_id,
+            },
+        }
 
     def _variable_observation(self, variable: Variable) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -3357,18 +3582,51 @@ class JavaRuntime(Runtime):
     ) -> int:
         if not thread_name:
             return snapshot.thread_id
-        matches = [
-            thread_id for thread_id in self._all_thread_ids(jdwp)
-            if thread_name.lower() in self._thread_name(jdwp, thread_id).lower()
+
+        requested = thread_name.strip()
+        if not requested:
+            return snapshot.thread_id
+        requested_lower = requested.lower()
+        threads = [
+            (thread_id, self._thread_name(jdwp, thread_id))
+            for thread_id in self._all_thread_ids(jdwp)
         ]
+        ranked_matches = (
+            [
+                (thread_id, name)
+                for thread_id, name in threads
+                if name == requested
+            ],
+            [
+                (thread_id, name)
+                for thread_id, name in threads
+                if name.lower() == requested_lower
+            ],
+            [
+                (thread_id, name)
+                for thread_id, name in threads
+                if name.lower().startswith(requested_lower)
+            ],
+            [
+                (thread_id, name)
+                for thread_id, name in threads
+                if requested_lower in name.lower()
+            ],
+        )
+        matches: list[tuple[int, str]] = []
+        for candidates in ranked_matches:
+            if candidates:
+                matches = candidates
+                break
+
         if not matches:
             raise RuntimeError(f"Thread matching '{thread_name}' not found")
         if len(matches) > 1:
-            names = [self._thread_name(jdwp, thread_id) for thread_id in matches[:5]]
+            names = [name for _, name in matches[:5]]
             raise RuntimeError(
                 f"Thread name '{thread_name}' is ambiguous; matches: {names}"
             )
-        return matches[0]
+        return matches[0][0]
 
     def _read_frames(
         self,

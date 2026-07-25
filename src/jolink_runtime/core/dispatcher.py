@@ -35,7 +35,7 @@ def _bool_arg(arguments: dict[str, Any], name: str, default: bool = False) -> bo
 
 def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
     """Parse arguments with the same defaults and coercions as the old handler."""
-    return RuntimeAction(
+    action = RuntimeAction(
         action=arguments.get("action", "status"),
         classpath=arguments.get("classpath", "."),
         main_class=arguments.get("main_class", ""),
@@ -69,6 +69,16 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         timeout=float(arguments.get("timeout", 30)),
         suspension_id=arguments.get("suspension_id", ""),
     )
+    action.configure_startup_readiness(
+        ready_port=int(arguments.get("ready_port", 0)),
+        wait_timeout_seconds=float(
+            arguments.get("startup_wait_timeout_seconds", 30)
+        ),
+        wait_timeout_provided=(
+            "startup_wait_timeout_seconds" in arguments
+        ),
+    )
+    return action
 
 
 def _runtime_result_payload(result: RuntimeResult) -> dict[str, Any]:
@@ -181,7 +191,7 @@ class Dispatcher:
             log_finish = logger.warning if result.error else logger.info
             log_finish(
                 "java_runtime.action.finish action=%s context=%s ok=%s duration_ms=%.1f "
-                "status=%s process=%s debug=%s pid=%s suspension=%s "
+                "status=%s process=%s startup=%s debug=%s pid=%s suspension=%s "
                 "threads=%s frames=%s variables=%s complete=%s error=%s",
                 action.action,
                 context_key,
@@ -189,6 +199,7 @@ class Dispatcher:
                 (time.monotonic() - started_at) * 1000,
                 data.get("status", "-"),
                 data.get("process_state", "-"),
+                data.get("startup_state", "-"),
                 data.get("debug_state", "-"),
                 data.get("pid", "-"),
                 data.get("suspension_id", data.get("invalidated_suspension_id", "-")),
@@ -229,6 +240,26 @@ class Dispatcher:
     def interrupt_wait(self, session_key: str = "default") -> bool:
         """Wake an existing Runtime wait without allocating a Runtime."""
         return self.sessions.interrupt_wait(session_key)
+
+    def startup_observation(
+        self,
+        session_key: str = "default",
+    ) -> dict[str, Any]:
+        """Return readiness state without allocating a Runtime or touching JDWP."""
+        runtime = self.sessions.get_existing_runtime(session_key)
+        if runtime is None:
+            return {
+                "process_state": "absent",
+                "startup_state": "unverified",
+                "readiness_configured": False,
+            }
+        observer = getattr(runtime, "startup_observation", None)
+        if not callable(observer):
+            return {
+                "startup_state": "unverified",
+                "readiness_configured": False,
+            }
+        return dict(observer())
 
     def close_session(self, session_key: str = "default") -> bool:
         """Close an existing Runtime session without allocating one."""

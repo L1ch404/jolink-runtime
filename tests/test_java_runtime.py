@@ -1667,6 +1667,22 @@ def test_wait_event_returns_exception_suspension() -> None:
     assert result.data["resumed"] is False
     assert result.data["request_id"] == 91
     assert result.data["jdwp"]["request_id"] == 501
+    assert result.data["suggested_next_actions"] == {
+        "variables": {
+            "action": "variables",
+            "suspension_id": result.data["suspension_id"],
+            "frame_index": 0,
+        },
+        "stack": {
+            "action": "stack",
+            "suspension_id": result.data["suspension_id"],
+        },
+        "resume": {
+            "action": "resume",
+            "suspension_id": result.data["suspension_id"],
+        },
+    }
+    assert "omit thread_name" in result.data["suggested_next_step"]
     assert runtime._armed_exception_requests == {}
     assert (Cmd.EVENT, 2, struct.pack(">BI", EventKind.EXCEPTION, 501)) in client.commands
 
@@ -1768,12 +1784,98 @@ def test_wait_event_resumes_ignored_stale_suspending_event() -> None:
     assert result.error == ""
     assert result.data["status"] == "breakpoint_hit"
     assert result.data["breakpoint"]["line"] == 123
+    assert result.data["suggested_next_actions"]["variables"] == {
+        "action": "variables",
+        "suspension_id": result.data["suspension_id"],
+        "frame_index": 0,
+    }
+    assert result.data["suggested_next_actions"]["stack"] == {
+        "action": "stack",
+        "suspension_id": result.data["suspension_id"],
+    }
+    assert result.data["suggested_next_actions"]["resume"] == {
+        "action": "resume",
+        "suspension_id": result.data["suspension_id"],
+    }
+    assert "omit thread_name" in result.data["suggested_next_step"]
     assert client.waits == 2
     assert client.commands == [
         (Cmd.THREAD, 3, (10).to_bytes(8, "big")),
         (Cmd.EVENT, 2, struct.pack(">BI", EventKind.BREAKPOINT, 42)),
         (Cmd.VM, 1, b""),
     ]
+
+
+def test_thread_resolution_prefers_exact_name_over_partial_matches() -> None:
+    runtime = JavaRuntime()
+    snapshot = SuspensionSnapshot(
+        suspension_id="susp_test",
+        generation=1,
+        request_id=1,
+        thread_id=10,
+        location={},
+        observed_at="2026-07-04T00:00:00+00:00",
+    )
+    names = {
+        10: "http-nio-8080-exec-10",
+        1: "http-nio-8080-exec-1",
+    }
+    runtime._all_thread_ids = lambda _jdwp: list(names)
+    runtime._thread_name = lambda _jdwp, thread_id: names[thread_id]
+
+    resolved = runtime._resolve_thread_id(
+        object(),
+        snapshot,
+        "http-nio-8080-exec-1",
+    )
+
+    assert resolved == 1
+
+
+def test_thread_resolution_ranks_case_insensitive_exact_then_prefix() -> None:
+    runtime = JavaRuntime()
+    snapshot = SuspensionSnapshot(
+        suspension_id="susp_test",
+        generation=1,
+        request_id=1,
+        thread_id=10,
+        location={},
+        observed_at="2026-07-04T00:00:00+00:00",
+    )
+    names = {
+        1: "HTTP-Worker",
+        2: "http-worker-pool",
+        3: "background-http-worker",
+    }
+    runtime._all_thread_ids = lambda _jdwp: list(names)
+    runtime._thread_name = lambda _jdwp, thread_id: names[thread_id]
+
+    exact = runtime._resolve_thread_id(object(), snapshot, "http-worker")
+    prefix = runtime._resolve_thread_id(object(), snapshot, "http-worker-p")
+
+    assert exact == 1
+    assert prefix == 2
+
+
+def test_thread_resolution_keeps_ambiguous_partial_match_visible() -> None:
+    runtime = JavaRuntime()
+    snapshot = SuspensionSnapshot(
+        suspension_id="susp_test",
+        generation=1,
+        request_id=1,
+        thread_id=10,
+        location={},
+        observed_at="2026-07-04T00:00:00+00:00",
+    )
+    names = {
+        1: "pool-worker-1",
+        2: "pool-worker-2",
+    }
+    runtime._all_thread_ids = lambda _jdwp: list(names)
+    runtime._thread_name = lambda _jdwp, thread_id: names[thread_id]
+
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        runtime._resolve_thread_id(object(), snapshot, "worker")
 
 
 def test_resume_uses_thread_resume_for_event_thread_suspension() -> None:
@@ -1878,6 +1980,19 @@ def test_status_auto_resumes_pending_event_without_creating_suspension() -> None
     class FakeProcessManager:
         current = FakeManagedProcess()
         is_running = True
+
+        @staticmethod
+        def observe_readiness(
+            _process: FakeManagedProcess,
+            *,
+            refresh: bool = True,
+        ) -> dict:
+            return {
+                "process_state": "running",
+                "startup_state": "unverified",
+                "readiness_configured": False,
+                "readiness_config_source": "not_configured",
+            }
 
     class FakeClient:
         ids = IDSizes(8, 8, 8, 8, 8)

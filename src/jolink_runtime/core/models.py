@@ -88,6 +88,40 @@ class RuntimeAction:
     timeout: float = 30.0
     suspension_id: str = ""
 
+    def configure_startup_readiness(
+        self,
+        *,
+        ready_port: int = 0,
+        wait_timeout_seconds: float = 30.0,
+        wait_timeout_provided: bool = False,
+        config_source: str = "",
+    ) -> None:
+        """Attach MCP-only launch metadata without changing lineage fields."""
+        self._ready_port = int(ready_port)
+        self._startup_wait_timeout_seconds = float(wait_timeout_seconds)
+        self._startup_wait_timeout_provided = bool(wait_timeout_provided)
+        self._readiness_config_source = str(config_source)
+
+    @property
+    def ready_port(self) -> int:
+        return int(getattr(self, "_ready_port", 0))
+
+    @property
+    def startup_wait_timeout_seconds(self) -> float:
+        return float(
+            getattr(self, "_startup_wait_timeout_seconds", 30.0)
+        )
+
+    @property
+    def startup_wait_timeout_provided(self) -> bool:
+        return bool(
+            getattr(self, "_startup_wait_timeout_provided", False)
+        )
+
+    @property
+    def readiness_config_source(self) -> str:
+        return str(getattr(self, "_readiness_config_source", ""))
+
 
 # ============================================================================
 # RuntimeResult — what the handler turns into JSON for the LLM

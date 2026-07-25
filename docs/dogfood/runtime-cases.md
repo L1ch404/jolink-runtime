@@ -52,12 +52,51 @@ Use `jar_path` instead of overloading `classpath` or inventing a main class:
   "action": "run",
   "jar_path": "C:\\work\\demo\\target\\demo.jar",
   "app_args": ["--spring.profiles.active=local"],
-  "jdwp_port": 5005
+  "jdwp_port": 5005,
+  "ready_port": 8080,
+  "startup_wait_timeout_seconds": 30
 }
 ```
 
 `jar_path` selects `java -jar` mode. `main_class` selects `java -cp` mode; the
 two fields are intentionally mutually exclusive.
+
+When `ready_port` is configured, do not use logs to guess whether the service
+is ready. If `run` returns `startup_state=starting`, keep the JVM running and
+call `status` until it reports `ready` or the process exits. The readiness
+probe verifies only that the local TCP port accepts connections.
+
+## Slow-start readiness regression
+
+Use a local Java service that opens its application port at least three
+seconds after JDWP becomes reachable.
+
+1. Launch it with a free `jdwp_port`, its application `ready_port`, and
+   `startup_wait_timeout_seconds=0.1`.
+2. Confirm `run` returns `ok=true`, `status=process_started`,
+   `startup_state=starting`, `startup_wait_timed_out=true`, and
+   `next_action=status`. The PID must remain alive.
+3. Before the port opens, attempt `wait_event(wait_mode=arm,
+   http_trigger=...)`. Confirm `APPLICATION_NOT_READY` and
+   `http_trigger_sent=false`; no request or waiter may be created.
+4. Call `status` until it returns `startup_state=ready`. Confirm
+   `readiness.type=tcp_port`, the expected port, and `verified=true`.
+5. Call `status` again. `ready_observed_at` and the completed
+   `startup_elapsed_ms` must remain stable.
+6. Arm the same HTTP trigger after readiness. It must follow the normal
+   arm/await flow.
+7. Stop the JVM and call `status`. It must report `process_state=absent`
+   without retaining `starting` or `ready`.
+
+Additional guards:
+
+- Omit `ready_port`: `startup_state` must be `unverified`, never `ready`.
+- Occupy `ready_port` before `run`: expect `READY_PORT_ALREADY_IN_USE`, and
+  confirm no new JVM was spawned.
+- Set `ready_port` equal to `jdwp_port`: expect
+  `READY_PORT_CONFLICTS_WITH_JDWP`.
+- Restart without readiness arguments: confirm the prior port and wait timeout
+  are reused with `readiness_config_source=previous_run`.
 
 ## Breakpoint and variable inspection tips
 

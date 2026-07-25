@@ -195,6 +195,39 @@ public class DelayedHttpMcpFixture {
 """
 
 
+READINESS_SOURCE = """\
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+public class ReadinessMcpFixture {
+    public static void main(String[] args) throws Exception {
+        int port = Integer.parseInt(args[0]);
+        Path stop = Paths.get(args[1]);
+        Thread.sleep(3000);
+        try (ServerSocket server = new ServerSocket(
+            port,
+            16,
+            InetAddress.getByName("127.0.0.1")
+        )) {
+            server.setSoTimeout(100);
+            while (!Files.exists(stop)) {
+                try (Socket socket = server.accept()) {
+                    // A successful accept is enough for the TCP readiness probe.
+                } catch (SocketTimeoutException timeout) {
+                    // Re-check the stop marker.
+                }
+            }
+        }
+    }
+}
+"""
+
+
 def test_full_stdio_debug_chain_and_owned_shutdown(tmp_path: Path) -> None:
     require_real_mcp_java_e2e()
     compile_java(tmp_path, "OwnedMcpFixture", OWNED_SOURCE)
@@ -772,3 +805,69 @@ def test_http_response_headers_can_arrive_before_delayed_real_jvm_hit(
                         assert_ok(await call_payload(session, {"action": "stop"}))
 
         anyio.run(scenario)
+
+
+def test_run_status_tracks_delayed_tcp_readiness(tmp_path: Path) -> None:
+    require_real_mcp_java_e2e()
+    compile_java(tmp_path, "ReadinessMcpFixture", READINESS_SOURCE)
+    jdwp_port = reserve_local_port()
+    ready_port = reserve_local_port()
+    while ready_port == jdwp_port:
+        ready_port = reserve_local_port()
+    stop = tmp_path / "readiness-stop"
+
+    async def scenario() -> None:
+        with temporary_stderr() as stderr:
+            with anyio.fail_after(60):
+                async with open_mcp_session(stderr) as session:
+                    started = assert_ok(await call_payload(session, {
+                        "action": "run",
+                        "classpath": str(tmp_path),
+                        "main_class": "ReadinessMcpFixture",
+                        "app_args": [str(ready_port), str(stop)],
+                        "jdwp_port": jdwp_port,
+                        "ready_port": ready_port,
+                        "startup_wait_timeout_seconds": 0.1,
+                    }))
+                    assert started["status"] == "process_started"
+                    assert started["process_state"] == "running"
+                    assert started["startup_state"] == "starting"
+                    assert started["startup_wait_timed_out"] is True
+                    assert started["next_action"] == "status"
+
+                    ready: dict[str, Any] = {}
+                    with anyio.fail_after(10):
+                        while ready.get("startup_state") != "ready":
+                            ready = assert_ok(await call_payload(
+                                session,
+                                {"action": "status"},
+                            ))
+                            if ready.get("startup_state") != "ready":
+                                await anyio.sleep(0.05)
+
+                    assert ready["process_state"] == "running"
+                    readiness = ready["readiness"]
+                    assert readiness["type"] == "tcp_port"
+                    assert readiness["host"] == "127.0.0.1"
+                    assert readiness["port"] == ready_port
+                    assert readiness["verified"] is True
+                    observed_at = ready["ready_observed_at"]
+                    stable = assert_ok(await call_payload(
+                        session,
+                        {"action": "status"},
+                    ))
+                    assert stable["startup_state"] == "ready"
+                    assert stable["ready_observed_at"] == observed_at
+
+                    assert_ok(await call_payload(
+                        session,
+                        {"action": "stop"},
+                    ))
+                    absent = assert_ok(await call_payload(
+                        session,
+                        {"action": "status"},
+                    ))
+                    assert absent["process_state"] == "absent"
+                    assert "startup_state" not in absent
+
+    anyio.run(scenario)

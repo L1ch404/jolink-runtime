@@ -158,6 +158,9 @@ def test_runtime_action_defaults_and_boolean_coercions_are_preserved() -> None:
     assert defaults.action == "status"
     assert defaults.classpath == "."
     assert defaults.jdwp_port == 5005
+    assert defaults.ready_port == 0
+    assert defaults.startup_wait_timeout_seconds == 30.0
+    assert defaults.startup_wait_timeout_provided is False
     assert defaults.caught is True
     assert defaults.uncaught is True
     assert defaults.semantic_collections is True
@@ -178,6 +181,8 @@ def test_runtime_action_defaults_and_boolean_coercions_are_preserved() -> None:
             "allow_broad_caught": "on",
             "include_this": "y",
             "semantic_collections": "0",
+            "ready_port": 8080,
+            "startup_wait_timeout_seconds": 12,
         }
     )
     assert coerced.include_proxy is True
@@ -187,6 +192,9 @@ def test_runtime_action_defaults_and_boolean_coercions_are_preserved() -> None:
     assert coerced.allow_broad_caught is True
     assert coerced.include_this is True
     assert coerced.semantic_collections is False
+    assert coerced.ready_port == 8080
+    assert coerced.startup_wait_timeout_seconds == 12.0
+    assert coerced.startup_wait_timeout_provided is True
 
 
 def test_all_migrated_runtime_actions_route_to_matching_method() -> None:

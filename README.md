@@ -243,9 +243,9 @@ A normal verification flow looks like this:
 ```text
 read the code
 -> change the code
--> java_runtime(run or restart)
--> java_runtime(status)
--> java_runtime(logs)
+-> java_runtime(run or restart, ready_port=<application port>)
+-> if startup_state=starting, call java_runtime(status) until ready
+-> if startup_state=failed, inspect java_runtime(logs)
 -> trigger a test or endpoint
 -> inspect the actual result
 -> update the diagnosis
@@ -255,6 +255,7 @@ A deeper debugging flow looks like this:
 
 ```text
 run or attach
+-> for an owned HTTP application, confirm startup_state=ready
 -> configure a breakpoint or exception watch
 -> wait_event(wait_mode=arm)
 -> trigger the scenario after status=armed
@@ -286,6 +287,35 @@ After the armed result, call `await` with its `wait_handle`; do not send the
 same request again. External background triggers remain supported when the
 scenario is not a simple local HTTP request.
 
+For an HTTP application launched by joLink, distinguish process/debugger
+startup from application TCP readiness:
+
+```json
+{
+  "action": "run",
+  "jar_path": "target/app.jar",
+  "jdwp_port": 5005,
+  "ready_port": 8080,
+  "startup_wait_timeout_seconds": 30
+}
+```
+
+`startup_wait_timeout_seconds` limits only how long that `run` call waits.
+It defaults to 30 seconds and is capped at 60 seconds so the MCP call remains
+bounded.
+If the process is alive but the application port is not accepting connections,
+the result remains successful with `startup_state=starting`; the process is
+kept alive and `next_action=status`. Each later `status` call probes the stored
+port again. `startup_state=ready` means only that the configured loopback TCP
+port accepted a connection; it does not prove that every dependency, cache, or
+business endpoint is healthy.
+
+When `ready_port` is omitted, joLink reports `startup_state=unverified` rather
+than claiming application readiness. An HTTP trigger remains allowed for
+attached and otherwise unverified JVMs, but its result includes a warning.
+When configured readiness is still `starting`, joLink rejects an HTTP trigger
+without sending it.
+
 ## Runtime safety
 
 joLink `0.1.0a3` is designed for local, trusted development environments.
@@ -304,6 +334,9 @@ Current safety boundaries:
 - built-in HTTP triggers accept only `http://127.0.0.1`, do not use environment
   proxies or redirects, and never return the request URL, headers, body, or
   their raw values in validation errors;
+- a configured `ready_port` must be unused before launch and must differ from
+  the JDWP port; the TCP probe is local and does not send an application
+  request;
 - `response_headers_received` reports only the HTTP status/response headers;
   joLink does not read or return the response body;
 - cancelling an HTTP client wait closes joLink's side of the connection but

@@ -619,6 +619,19 @@ def test_status_explains_force_disconnected_debug_requests() -> None:
     class Process:
         current = ProcessInfo()
 
+        @staticmethod
+        def observe_readiness(
+            _process: ProcessInfo,
+            *,
+            refresh: bool = True,
+        ) -> dict[str, Any]:
+            return {
+                "process_state": "running",
+                "startup_state": "unverified",
+                "readiness_configured": False,
+                "readiness_config_source": "not_configured",
+            }
+
     runtime = JavaRuntime()
     runtime._proc = Process()
     runtime._debug_connection_dirty = True
@@ -633,7 +646,11 @@ def test_status_explains_force_disconnected_debug_requests() -> None:
     assert status.data["debug_requests_invalidated"] is True
     assert status.data["breakpoint_count"] == 0
     assert status.data["exception_count"] == 0
-    assert status.data["warnings"] == ["requests must be set again"]
+    assert (
+        "Application readiness is unverified because no ready_port was configured."
+        in status.data["warnings"]
+    )
+    assert "requests must be set again" in status.data["warnings"]
     assert "wait_mode='arm'" in status.data["suggested_next_step"]
 
 

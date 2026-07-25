@@ -11,6 +11,8 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Optional
 
 import psutil
@@ -19,6 +21,14 @@ import psutil
 logger = logging.getLogger(__name__)
 _IS_WINDOWS = os.name == "nt"
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+
+class ReadyPortAlreadyInUseError(RuntimeError):
+    """Raised when readiness would observe a listener that predates launch."""
+
+
+def _iso_timestamp(epoch_seconds: float) -> str:
+    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
 
 
 class ProcessInfo:
@@ -33,6 +43,9 @@ class ProcessInfo:
         pid: int | None = None,
         owned: bool = True,
         generation: int = 0,
+        ready_port: int = 0,
+        startup_wait_timeout_seconds: float = 30.0,
+        readiness_config_source: str = "not_configured",
     ):
         self.proc = proc
         self._pid = proc.pid if proc is not None else int(pid or 0)
@@ -42,6 +55,24 @@ class ProcessInfo:
         self.launch_mode = "jar" if jar_path else "class" if owned else "attached"
         self.owned = owned
         self.generation = generation
+        self.ready_port = int(ready_port or 0)
+        self.startup_wait_timeout_seconds = float(
+            startup_wait_timeout_seconds
+        )
+        self.readiness_config_source = readiness_config_source
+        self._started_monotonic = time.monotonic()
+        self._readiness_lock = threading.Lock()
+        self._startup_state = (
+            "starting" if self.ready_port > 0 else "unverified"
+        )
+        self._readiness_last_checked_at: float | None = None
+        self._readiness_last_result = "not_checked"
+        self._ready_observed_at: float | None = None
+        self._ready_observed_monotonic: float | None = None
+        self._failed_at: float | None = None
+        self._failed_monotonic: float | None = None
+        self._failure_type = ""
+        self._startup_wait_timed_out = False
 
     @property
     def pid(self) -> int:
@@ -57,6 +88,90 @@ class ProcessInfo:
     @property
     def exit_code(self) -> int | None:
         return self.proc.poll() if self.proc is not None else None
+
+    def record_readiness_probe(self, ready: bool) -> None:
+        """Record one TCP probe while preserving the first ready observation."""
+        now = time.time()
+        monotonic_now = time.monotonic()
+        with self._readiness_lock:
+            self._readiness_last_checked_at = now
+            self._readiness_last_result = (
+                "connection_accepted" if ready else "connection_refused"
+            )
+            if ready and self._startup_state != "ready":
+                self._startup_state = "ready"
+                self._ready_observed_at = now
+                self._ready_observed_monotonic = monotonic_now
+                self._startup_wait_timed_out = False
+
+    def mark_startup_wait_timed_out(self) -> None:
+        with self._readiness_lock:
+            if self._startup_state == "starting":
+                self._startup_wait_timed_out = True
+
+    def mark_startup_failed(self, failure_type: str) -> None:
+        now = time.time()
+        monotonic_now = time.monotonic()
+        with self._readiness_lock:
+            self._startup_state = "failed"
+            self._failure_type = failure_type
+            if self._failed_at is None:
+                self._failed_at = now
+                self._failed_monotonic = monotonic_now
+
+    def readiness_snapshot(self) -> dict:
+        """Return a consistent, protocol-free application readiness snapshot."""
+        now_monotonic = time.monotonic()
+        with self._readiness_lock:
+            state = self._startup_state
+            elapsed_until = (
+                self._ready_observed_monotonic
+                if state == "ready"
+                else self._failed_monotonic
+                if state == "failed"
+                else now_monotonic
+            )
+            result: dict = {
+                "startup_state": state,
+                "readiness_configured": self.ready_port > 0,
+                "readiness_config_source": self.readiness_config_source,
+            }
+            if self.owned:
+                result["startup_elapsed_ms"] = max(
+                    0,
+                    int((elapsed_until - self._started_monotonic) * 1000),
+                )
+                result["startup_wait_timeout_seconds"] = (
+                    self.startup_wait_timeout_seconds
+                )
+            if self.ready_port <= 0:
+                return result
+
+            readiness = {
+                "type": "tcp_port",
+                "host": "127.0.0.1",
+                "port": self.ready_port,
+                "verified": state == "ready",
+                "last_result": self._readiness_last_result,
+            }
+            if self._readiness_last_checked_at is not None:
+                readiness["last_checked_at"] = _iso_timestamp(
+                    self._readiness_last_checked_at
+                )
+            result["readiness"] = readiness
+            if self._ready_observed_at is not None:
+                result["ready_observed_at"] = _iso_timestamp(
+                    self._ready_observed_at
+                )
+            if self._failed_at is not None:
+                result["startup_failed_at"] = _iso_timestamp(
+                    self._failed_at
+                )
+            if self._failure_type:
+                result["failure_type"] = self._failure_type
+            if self._startup_wait_timed_out and state == "starting":
+                result["startup_wait_timed_out"] = True
+            return result
 
 
 class ProcessManager:
@@ -122,6 +237,15 @@ class ProcessManager:
         except (ConnectionRefusedError, socket.timeout, OSError):
             return False
 
+    @staticmethod
+    def _check_tcp_port(host: str, port: int, timeout: float = 0.2) -> bool:
+        """Return whether a local TCP listener accepts a connection."""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except (ConnectionRefusedError, socket.timeout, OSError):
+            return False
+
     # -- lifecycle --
 
     def start(
@@ -135,12 +259,16 @@ class ProcessManager:
         vm_args: list[str] | None = None,
         log_file: str | None = None,
         startup_timeout: float = 30.0,
+        ready_port: int = 0,
+        startup_wait_timeout_seconds: float = 30.0,
+        readiness_config_source: str = "not_configured",
     ) -> ProcessInfo:
         """Launch a Java process with JDWP enabled, return ProcessInfo.
 
-        Waits up to startup_timeout seconds for the process to confirm ready
-        (JDWP handshake verified + process survives 2s after). Raises
-        RuntimeError with log tail on failure.
+        Waits up to ``startup_timeout`` seconds only for JDWP reachability
+        (handshake verified + process survives 2s after). Optional application
+        TCP readiness is observed separately and never terminates the process
+        when its bounded wait expires.
         """
         started_at = time.monotonic()
         launch_mode = "jar" if jar_path else "class"
@@ -148,13 +276,17 @@ class ProcessManager:
             raise RuntimeError("Provide either jar_path or main_class, not both")
         if not jar_path and not main_class:
             raise RuntimeError("run requires either jar_path or main_class")
+        if ready_port < 0 or ready_port > 65535:
+            raise RuntimeError("ready_port must be between 1 and 65535")
 
         logger.info(
             "java_runtime.process.start.request launch_mode=%s main_class=%s "
             "jar_path=%s classpath=%s "
-            "jdwp_port=%s app_args_count=%s vm_args_count=%s startup_timeout=%s",
+            "jdwp_port=%s ready_port=%s app_args_count=%s vm_args_count=%s "
+            "jdwp_startup_timeout=%s readiness_wait_timeout=%s",
             launch_mode, main_class or "-", jar_path or "-", classpath, jdwp_port,
-            len(app_args or []), len(vm_args or []), startup_timeout,
+            ready_port or "-", len(app_args or []), len(vm_args or []),
+            startup_timeout, startup_wait_timeout_seconds,
         )
         # Auto-restart: stop old process first
         with self._state_lock:
@@ -165,6 +297,17 @@ class ProcessManager:
                 previous.pid,
             )
             self.stop_target(previous)
+        elif previous is not None:
+            self._forget_target(previous)
+
+        if ready_port and self._check_tcp_port("127.0.0.1", ready_port):
+            logger.warning(
+                "java_runtime.process.readiness.port_in_use port=%s",
+                ready_port,
+            )
+            raise ReadyPortAlreadyInUseError(
+                f"Readiness port {ready_port} is already accepting connections"
+            )
 
         log_fp = None
         proc: subprocess.Popen | None = None
@@ -212,6 +355,11 @@ class ProcessManager:
                     jdwp_port,
                     main_class,
                     jar_path=jar_path,
+                    ready_port=ready_port,
+                    startup_wait_timeout_seconds=(
+                        startup_wait_timeout_seconds
+                    ),
+                    readiness_config_source=readiness_config_source,
                 )
                 self._publish(process)
             logger.info(
@@ -313,6 +461,74 @@ class ProcessManager:
             (time.monotonic() - started_at) * 1000, log_file or "-",
         )
         return process
+
+    def observe_readiness(
+        self,
+        process: ProcessInfo,
+        *,
+        refresh: bool = True,
+    ) -> dict:
+        """Observe process/TCP readiness without reading application logs."""
+        alive = process.is_alive()
+        if not alive:
+            prior_state = process.readiness_snapshot()["startup_state"]
+            failure_type = (
+                "process_exited_after_ready"
+                if prior_state == "ready"
+                else "process_exited_without_readiness"
+                if prior_state == "unverified"
+                else "process_exited_before_ready"
+            )
+            process.mark_startup_failed(failure_type)
+            snapshot = process.readiness_snapshot()
+            snapshot["process_state"] = "exited"
+            return snapshot
+
+        snapshot = process.readiness_snapshot()
+        if (
+            refresh
+            and process.ready_port > 0
+            and snapshot["startup_state"] == "starting"
+        ):
+            process.record_readiness_probe(
+                self._check_tcp_port("127.0.0.1", process.ready_port)
+            )
+            if not process.is_alive():
+                prior_state = process.readiness_snapshot()["startup_state"]
+                process.mark_startup_failed(
+                    "process_exited_after_ready"
+                    if prior_state == "ready"
+                    else "process_exited_before_ready"
+                )
+                snapshot = process.readiness_snapshot()
+                snapshot["process_state"] = "exited"
+                return snapshot
+        snapshot = process.readiness_snapshot()
+        snapshot["process_state"] = "running"
+        return snapshot
+
+    def wait_for_readiness(
+        self,
+        process: ProcessInfo,
+        timeout: float,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> dict:
+        """Wait only for the configured TCP probe; never terminate on timeout."""
+        if process.ready_port <= 0:
+            return process.readiness_snapshot()
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            snapshot = self.observe_readiness(process)
+            if snapshot["startup_state"] in {"ready", "failed"}:
+                return snapshot
+            if should_stop is not None and should_stop():
+                return snapshot
+            if time.monotonic() >= deadline:
+                process.mark_startup_wait_timed_out()
+                return process.readiness_snapshot()
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
 
     def attach(
         self,

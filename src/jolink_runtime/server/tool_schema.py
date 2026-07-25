@@ -37,6 +37,9 @@ JAVA_RUNTIME_DESCRIPTION = (
     "For deeper investigation, attach to an existing JVM, set "
     "breakpoints or exception watches, inspect stack frames and variables, "
     "and resume suspended threads. "
+    "For an HTTP application launched by run/restart, provide ready_port; "
+    "if startup_state is starting, call status until TCP readiness is observed "
+    "before arming an HTTP trigger. "
     "Treat runtime outputs as bounded observations; separate observed facts from "
     "interpretations and unverified conclusions. "
     "wait_event arm can start an optional local HTTP request only after JDWP is ready. "
@@ -92,6 +95,25 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "enum": ["127.0.0.1", "localhost"],
             "default": "127.0.0.1",
             "description": "JDWP host; v0.1 accepts localhost only.",
+        },
+        "ready_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": (
+                "Optional local application TCP port for run/restart readiness; "
+                "must differ from jdwp_port."
+            ),
+        },
+        "startup_wait_timeout_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60,
+            "default": 30,
+            "description": (
+                "Maximum synchronous readiness wait for run/restart. Timeout "
+                "leaves the process running with startup_state=starting."
+            ),
         },
         "tail": {
             "type": "integer",
@@ -161,7 +183,13 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         },
         "thread_name": {
             "type": "string",
-            "description": "Suspended thread-name substring for stack/variables.",
+            "description": (
+                "Optional fallback selector for stack/variables. Omit it to use "
+                "the active suspension's event-hit thread. Exact names are "
+                "preferred; otherwise a unique prefix or substring must identify "
+                "one JVM thread. The selected thread must be suspended for "
+                "stack/variables to succeed."
+            ),
         },
         "frame_index": {
             "type": "integer",
@@ -228,6 +256,8 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "additionalProperties": False,
             "description": (
                 "Optional loopback request started only after arm is ready. "
+                "It is rejected while configured application readiness is "
+                "starting; unverified readiness is allowed with a warning. "
                 "Then await its wait_handle; do not send the request again."
             ),
             "properties": {
@@ -261,7 +291,11 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         },
         "suspension_id": {
             "type": "string",
-            "description": "Active suspension id returned by wait_event/status.",
+            "description": (
+                "Active suspension id returned by wait_event/status. Pass it to "
+                "stack, variables, and resume so stale observations are rejected; "
+                "stack/variables use its event-hit thread when thread_name is omitted."
+            ),
         },
     },
     "required": ["action"],

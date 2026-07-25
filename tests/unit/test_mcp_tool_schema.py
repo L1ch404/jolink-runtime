@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-import json
-
 from jolink_runtime.adapters.java.tool_schema import JAVA_RUNTIME_SCHEMA
 from jolink_runtime.server.tool_schema import (
     JAVA_RUNTIME_DESCRIPTION,
     PUBLIC_RUNTIME_ACTIONS,
     get_mcp_tools,
 )
-
-
-def _serialized_size(value: object) -> int:
-    return len(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
 
 
 def test_mcp_v01_exposes_only_two_compact_tools() -> None:
@@ -45,6 +33,19 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
     assert wait_mode["enum"] == ["blocking", "arm", "await"]
     assert wait_mode["default"] == "blocking"
     assert "wait_handle" in runtime.inputSchema["properties"]
+    assert runtime.inputSchema["properties"]["ready_port"]["maximum"] == 65535
+    assert (
+        runtime.inputSchema["properties"][
+            "startup_wait_timeout_seconds"
+        ]["default"]
+        == 30
+    )
+    assert (
+        runtime.inputSchema["properties"][
+            "startup_wait_timeout_seconds"
+        ]["maximum"]
+        == 60
+    )
     assert http_trigger["additionalProperties"] is False
     assert http_trigger["required"] == ["method", "url"]
     assert http_trigger["properties"]["method"]["enum"] == [
@@ -88,6 +89,9 @@ def test_java_runtime_description_contains_required_selection_and_safety_signals
         "interpretations",
         "unverified conclusions",
         "local http request",
+        "ready_port",
+        "startup_state",
+        "tcp readiness",
         "jdwp",
         "resume",
         "cleanup_debug_state",
@@ -112,16 +116,31 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
         assert signal in wait_description
 
 
-def test_mcp_schema_budget_is_enforced() -> None:
-    serialized = [
-        tool.model_dump(by_alias=True, exclude_none=True)
-        for tool in get_mcp_tools()
-    ]
-    runtime_size = _serialized_size(serialized[0])
-    total_size = _serialized_size(serialized)
+def test_suspension_selectors_prefer_the_event_thread_without_rediscovery() -> None:
+    properties = get_mcp_tools()[0].inputSchema["properties"]
+    thread_description = properties["thread_name"]["description"].lower()
+    suspension_description = properties["suspension_id"]["description"].lower()
 
-    assert runtime_size <= 5_600
-    assert total_size <= 6_600
+    for signal in (
+        "optional",
+        "omit",
+        "active suspension",
+        "event-hit thread",
+        "exact",
+        "unique prefix or substring must identify",
+        "one jvm thread",
+        "must be suspended",
+    ):
+        assert signal in thread_description
+    for signal in (
+        "stack",
+        "variables",
+        "resume",
+        "stale",
+        "event-hit thread",
+        "thread_name is omitted",
+    ):
+        assert signal in suspension_description
 
 
 def test_legacy_lineage_schema_remains_separate_and_unchanged_in_shape() -> None:

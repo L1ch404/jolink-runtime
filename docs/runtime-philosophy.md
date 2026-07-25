@@ -1,8 +1,43 @@
-# Runtime 启动成功的定义（待思考）
+# Runtime 启动成功的定义
 
-> **状态：Draft**
+> **状态：Accepted for MCP v0.1**
 >
-> 当前阶段不做最终设计，仅记录思考，等待 Runtime 支持更多语言后再回顾。
+> 当前采用可选的本地 TCP readiness：Runtime 仍只返回可验证事实，不把
+> TCP 端口开放解释为完整业务健康。
+
+## 2026-07 更新：当前采用的折中方案
+
+Dogfood 证明，仅返回 Process/JDWP Ready 会让 Agent 在大型应用仍处于
+初始化阶段时过早触发业务请求。让 Agent 通过日志猜测 readiness 也不够
+确定。
+
+因此 MCP v0.1 增加两个可选参数：
+
+```text
+ready_port
+startup_wait_timeout_seconds
+```
+
+当调用方明确提供 `ready_port` 时：
+
+```text
+进程存活 + 端口尚未接受连接
+→ startup_state=starting
+
+端口接受本地 TCP 连接
+→ startup_state=ready
+
+进程退出
+→ startup_state=failed
+```
+
+同步等待超时不会终止进程。Runtime 返回 `starting`，后续 `status` 使用
+同一端口继续观察。没有配置端口时返回 `unverified`，绝不把 Process/JDWP
+Ready 冒充 Application Ready。
+
+这不是方案 B 中的完整 Application Ready。Runtime 没有判断数据库、缓存、
+业务接口或框架生命周期，只陈述“指定端口是否接受了 TCP 连接”这一事实。
+因此当前实现仍遵循 Fact Provider 的边界。
 
 ---
 
@@ -205,9 +240,9 @@ Runtime 开始理解业务。
 
 ---
 
-# 当前倾向
+# 此前倾向（保留为设计背景）
 
-目前更倾向于：
+最初更倾向于：
 
 > **Runtime 负责提供确定性的事实（Facts），而不是替 LLM 做业务判断。**
 
@@ -223,11 +258,9 @@ Runtime 可以确认：
 
 这些都是 Runtime 能够确定的事实。
 
-至于：
-
-应用是否真正 Ready：
-
-交给 LLM 根据 Runtime 提供的信息自行判断。
+但 Dogfood 证明，让 LLM 仅依赖日志自行判断 readiness 容易过早触发。
+当前方案因此增加了显式、结构化的 TCP readiness，同时仍不替 LLM 判断
+完整业务健康。
 
 ---
 
@@ -280,23 +313,15 @@ Runtime 应尽可能提供事实。
 
 # 当前决定
 
-**暂不确定最终方案。**
+当前采用：
 
-目前 MVP：
-
-优先保证：
-
-* Java Runtime 可用
-* Debug 能力稳定
-* Runtime 接口稳定
-
-待未来支持：
-
-* Java
-* Python
-* Go
-
-之后，再重新评估 Runtime 的职责边界。
+* Process/JDWP 状态始终返回；
+* 应用 readiness 必须由调用方显式配置；
+* 第一版只支持本地 TCP 端口事实；
+* 未配置返回 `unverified`；
+* 同步等待超时返回 `starting` 并保留进程；
+* `status` 负责结构化复查，不依赖日志推断；
+* 不解析 Spring 日志，不自动扫描端口，不推断业务健康。
 
 ---
 
@@ -304,13 +329,13 @@ Runtime 应尽可能提供事实。
 
 未来验证：
 
-* Runtime 是否应该提供 Ready Strategy？
-* Ready 是否应该可配置？
-* LLM 是否能够仅依赖 Observation 完成 Ready 判断？
+* 是否需要在 TCP 之外增加显式 HTTP Health Ready Strategy？
+* TCP readiness 对真实项目是否已经足够？
 * 多语言 Runtime 下，这套设计是否仍然成立？
 
 ---
 
 > **一句话总结：**
 
-> Runtime 的职责，到底是**执行任务（Task Executor）**，还是**提供事实（Fact Provider）**，这是一个值得持续思考的问题，而不是当前阶段必须立刻解决的问题。
+> Runtime 负责执行受控生命周期动作并提供可验证事实；它不把端口、日志或
+> 变量值自动解释成完整的业务结论。

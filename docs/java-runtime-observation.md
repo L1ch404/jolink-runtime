@@ -34,9 +34,13 @@ Choose and combine different actions when the task or application lifecycle
 requires them.
 
 1. Make a Java application available:
-    - use `run` for an application launched and managed by the Runtime, or
+    - use `run` for an application launched and managed by the Runtime; for an
+      HTTP service, pass its local application port as `ready_port`, or
     - use `attach` for an already running local JVM.
-2. Call `status` to confirm the process and debug connection state.
+2. Inspect `startup_state`. If configured readiness is `starting`, keep the
+   process running and call `status` until it becomes `ready`; do not arm an
+   HTTP trigger yet. `unverified` means no application readiness probe was
+   configured, not that the application is ready.
 3. Set a focused `breakpoint`, or register an `exception` watch when
    investigating a thrown exception.
 4. Arm a deterministic observation before firing the relevant scenario:
@@ -83,8 +87,22 @@ requires them.
 
    Keep the returned `suspension_id`. If the result is `status=waiting`, await
    the same handle again; do not arm a second observation.
-7. Use `stack` to inspect the actual call path of the suspended event thread.
-8. Use `variables` only on the relevant stack frames and objects.
+7. Use `stack` with the returned `suspension_id` to inspect the actual call
+   path. Omit `thread_name` to use the event-hit thread:
+
+    ```json
+    {"action":"stack","suspension_id":"<suspension_id>"}
+    ```
+
+8. Use `variables` with the same `suspension_id` only on relevant frames and
+   objects. Omit `thread_name` for the event-hit thread:
+
+    ```json
+    {"action":"variables","suspension_id":"<suspension_id>","frame_index":0}
+    ```
+
+   Use `thread_name` only when intentionally selecting another suspended
+   thread. Exact names are preferred over partial matches.
 9. Call `resume` with the active `suspension_id` after completing the required
    inspection.
 10. Repeat the observation loop only when more evidence is required.
@@ -114,10 +132,22 @@ requires them.
   HTTP or service port.
 - A successful JDWP connection does not prove that application startup has
   completed or that its service port is ready.
+- `startup_state=ready` proves only that the explicitly configured loopback TCP
+  port accepted a connection. It does not prove that every dependency or
+  business function is healthy.
+- `startup_wait_timeout_seconds` bounds one `run`/`restart` wait. If it expires
+  while the process is alive, the process remains managed and `status` becomes
+  the structured readiness check; do not infer failure from that timeout.
 - `logs` contains only stdout and stderr captured from an application launched
   by this Runtime. It does not capture output from an externally attached JVM.
 - If a port is already occupied or an earlier process may still be alive,
   inspect `status` and the local process state before repeatedly calling `run`.
+
+An anonymized dogfood example of using only `run`, `status`, `logs`, and
+`stop` to support a multi-stage Java E2E workflow is documented in
+[`Case-005: Runtime Operations for a long-running E2E`](dogfood/case-005-runtime-operations-long-running-e2e.md).
+It also shows why process state and logs must be combined with input and
+persistent-result evidence before declaring the business scenario complete.
 
 ### Preparing a trigger request
 
