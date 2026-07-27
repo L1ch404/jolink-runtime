@@ -19,6 +19,24 @@ from .idea_importer import (
     IdeaLaunchImporter,
     ImportedIdeaLaunch,
 )
+from .controller import (
+    LaunchCancelled,
+    LaunchContext,
+    LaunchControlError,
+    LaunchController,
+    LaunchPipelineFailure,
+)
+from .process_supervisor import (
+    AttemptToken,
+    CancellationReport,
+    OperationResult,
+    ProcessSupervisor,
+)
+from .process_tree import (
+    ProcessTreeHandle,
+    ProcessTreeTerminator,
+    TerminationReport,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -26,6 +44,10 @@ __all__ = [
     "BuildOperationSpec",
     "BuildPlan",
     "JvmLaunchPlan",
+    "LaunchCancelled",
+    "LaunchContext",
+    "LaunchControlError",
+    "LaunchController",
     "IdeaLaunchImportError",
     "IdeaLaunchImporter",
     "ImportedIdeaLaunch",
@@ -33,7 +55,15 @@ __all__ = [
     "LaunchContractError",
     "LaunchErrorCode",
     "LaunchIntent",
+    "LaunchPipelineFailure",
     "LaunchPhase",
     "RuntimeProcessState",
+    "AttemptToken",
+    "CancellationReport",
+    "OperationResult",
+    "ProcessSupervisor",
+    "ProcessTreeHandle",
+    "ProcessTreeTerminator",
+    "TerminationReport",
     "launch_rejection",
 ]
