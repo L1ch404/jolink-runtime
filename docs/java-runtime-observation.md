@@ -151,6 +151,11 @@ requires them.
   the structured readiness check; do not infer failure from that timeout.
 - `logs` contains only stdout and stderr captured from an application launched
   by this Runtime. It does not capture output from an externally attached JVM.
+- `logs` is a bounded tail of a fixed file-size snapshot. Check `truncated`,
+  `scan_limit_reached`, `total_lines_exact`, and warnings before treating the
+  absence of a message as evidence that it never appeared. Repeated calls
+  report `growth_state` and newly appended bytes so progress does not depend
+  on an exact whole-file line count.
 - If a port is already occupied or an earlier process may still be alive,
   inspect `status` and the local process state before repeatedly calling `run`.
 

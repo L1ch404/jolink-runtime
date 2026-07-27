@@ -306,6 +306,24 @@ def test_full_stdio_debug_chain_and_owned_shutdown(tmp_path: Path) -> None:
                     assert resumed["invalidated_suspension_id"] == suspension_id
                     await wait_until_async(marker.exists)
 
+                    logs = assert_ok(await call_payload(session, {
+                        "action": "logs",
+                        "tail": 10,
+                    }))
+                    assert any("男42" in line for line in logs["lines"])
+                    assert logs["requested_lines"] == 10
+                    assert logs["returned_lines"] <= 10
+                    assert logs["snapshot_size_bytes"] >= logs["scanned_bytes"]
+                    assert logs["growth_state"] == "first_observation"
+                    assert logs["truncated"] is False
+
+                    unchanged_logs = assert_ok(await call_payload(session, {
+                        "action": "logs",
+                        "tail": 10,
+                    }))
+                    assert unchanged_logs["growth_state"] == "unchanged"
+                    assert unchanged_logs["new_bytes_since_previous_read"] == 0
+
                     # Deliberately omit stop. Server lifespan cleanup owns it.
 
     try:

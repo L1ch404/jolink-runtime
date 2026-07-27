@@ -532,8 +532,14 @@ logs
 → logs
 ```
 
-当前返回包含 `total_lines`，但输入还没有增量 cursor。后续可以继续观察
-是否有更多真实 Case 需要：
+当前 `logs` 使用固定文件大小的有界 tail 快照。小日志完整扫描时，
+`total_lines_exact=true` 且 `total_lines` 为精确值；大日志只读取尾部时，
+`total_lines_exact=false` 且 `total_lines=null`，同时通过 `scanned_bytes`、
+`has_more_before` 和 `truncated` 说明证据边界。重复读取还会返回
+`growth_state` 和 `new_bytes_since_previous_read`，可以判断日志是否继续增长，
+不需要为了比较进度重新统计整个文件。
+
+输入仍然没有增量 cursor。后续可以继续观察是否有更多真实 Case 需要：
 
 ```text
 从上次位置读取新增日志

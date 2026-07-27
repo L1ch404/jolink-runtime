@@ -122,7 +122,11 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "minimum": 1,
             "maximum": 500,
             "default": 50,
-            "description": "Launch-log lines for logs; attach output is unavailable.",
+            "description": (
+                "Lines from a bounded snapshot tail of the Runtime-captured "
+                "launch log. The result reports truncation and scan metadata; "
+                "attach output is unavailable."
+            ),
         },
         "bp_action": {
             "type": "string",

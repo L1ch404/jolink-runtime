@@ -89,6 +89,31 @@ A managed HTTP trigger is not sent while configured readiness is
 `http_trigger_sent=false`. `unverified` readiness remains allowed with a
 warning so attach and non-Web workflows remain compatible.
 
+## Launch-log snapshot semantics
+
+`logs` reads a bounded snapshot of stdout/stderr captured from the currently
+owned launch. It freezes the file end offset at call time and reads backward
+from that offset, so a continuously writing application cannot make the call
+chase a moving EOF.
+
+The result includes:
+
+- `requested_lines` and `returned_lines`;
+- `snapshot_size_bytes` and `scanned_bytes`;
+- `total_lines_exact`; `total_lines` is `null` when the bounded suffix is not
+  enough to count the complete file;
+- `has_more_before`, `scan_limit_reached`, and `truncated`;
+- `growth_state` and, after the first call, the previous size and number of
+  newly appended bytes, so repeated observations can detect progress without
+  rereading or counting the complete file;
+- warnings and `truncation_reasons` when the scan or MCP output bound prevents
+  all requested complete lines from being returned.
+
+These fields describe the completeness of the log observation. A bounded or
+truncated log result is still a successful Runtime operation and must not be
+presented as proof that an unobserved message does not exist elsewhere in the
+file.
+
 ## Required tool-description semantics
 
 The compact description must tell the model:

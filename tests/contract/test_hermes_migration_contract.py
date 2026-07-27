@@ -172,7 +172,18 @@ def test_runtime_action_parsing_matches_old_handler(
     )
 
     assert new_result == old_result
-    assert vars(new_runtime.actions[0]) == vars(old_runtime.actions[0])
+    old_action_fields = vars(old_runtime.actions[0])
+    new_action_fields = vars(new_runtime.actions[0])
+    assert {
+        name: new_action_fields[name]
+        for name in old_action_fields
+    } == old_action_fields
+    assert set(new_action_fields) - set(old_action_fields) == {
+        "_ready_port",
+        "_startup_wait_timeout_seconds",
+        "_startup_wait_timeout_provided",
+        "_readiness_config_source",
+    }
 
 
 def test_java_processes_result_matches_old_handler(

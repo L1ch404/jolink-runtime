@@ -17,6 +17,8 @@ from typing import Optional
 
 import psutil
 
+from .log_manager import read_log_tail_snapshot
+
 
 logger = logging.getLogger(__name__)
 _IS_WINDOWS = os.name == "nt"
@@ -213,9 +215,11 @@ class ProcessManager:
         if not log_file:
             return "[No log file configured]"
         try:
-            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            return "".join(lines[-n:])
+            result = read_log_tail_snapshot(log_file, n)
+            text = "".join(result["lines"])
+            if result["truncated"]:
+                return f"[Log tail was truncated]\n{text}"
+            return text
         except OSError as exc:
             logger.warning(
                 "java_runtime.process.log_tail.failed path=%s error_type=%s error=%s",
