@@ -48,6 +48,42 @@ P0 supports:
 P0 does not implement Eclipse, Gradle, HotSwap, arbitrary IDEA before-launch
 tasks, project-local `.jolink` files, or parallel launch attempts.
 
+## IDEA import boundary
+
+The importer reads, in deterministic order:
+
+```text
+.run/*.xml
+.idea/runConfigurations/*.xml
+.idea/workspace.xml
+```
+
+It accepts only IDEA `Application` and Spring Boot application
+configurations. Default templates are ignored. Duplicate configurations with
+the same effective intent are collapsed; conflicting configurations are
+never selected by fuzzy matching. With multiple candidates the caller must
+provide the exact case-sensitive `launch_name`.
+
+The importer:
+
+- reads regular, non-symlink files contained by the canonical project root;
+- bounds XML bytes, element count, and nesting depth;
+- rejects DTD and entity declarations;
+- expands only `$PROJECT_DIR$`, `$MODULE_DIR$`,
+  `$MODULE_WORKING_DIR$`, and `$USER_HOME$`;
+- never executes an IDEA before-launch task;
+- imports only an explicitly enabled `Make` task as
+  `build_before_run=true`;
+- imports Spring Boot `ACTIVE_PROFILES` into the JVM launch intent;
+- rejects remote targets, other enabled before-launch tasks, and
+  `PASS_PARENT_ENVS=false` instead of silently changing their semantics;
+- retains environment values only in the in-memory `LaunchIntent`;
+- returns candidate and error summaries containing environment names, never
+  values.
+
+Unknown configuration types and unresolved macros produce structured
+failures or safe source warnings; joLink does not guess their meaning.
+
 ## Public action semantics
 
 The existing actions remain `run`, `status`, `stop`, `restart`, and `logs`.

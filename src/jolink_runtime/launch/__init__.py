@@ -14,6 +14,11 @@ from .contracts import (
     RuntimeProcessState,
     launch_rejection,
 )
+from .idea_importer import (
+    IdeaLaunchImportError,
+    IdeaLaunchImporter,
+    ImportedIdeaLaunch,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -21,6 +26,9 @@ __all__ = [
     "BuildOperationSpec",
     "BuildPlan",
     "JvmLaunchPlan",
+    "IdeaLaunchImportError",
+    "IdeaLaunchImporter",
+    "ImportedIdeaLaunch",
     "LaunchAttempt",
     "LaunchContractError",
     "LaunchErrorCode",
