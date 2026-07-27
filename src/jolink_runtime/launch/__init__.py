@@ -19,6 +19,10 @@ from .idea_importer import (
     IdeaLaunchImporter,
     ImportedIdeaLaunch,
 )
+from .idea_environment import (
+    IdeaBuildPreferences,
+    IdeaEnvironmentImporter,
+)
 from .controller import (
     LaunchCancelled,
     LaunchContext,
@@ -37,6 +41,23 @@ from .process_tree import (
     ProcessTreeTerminator,
     TerminationReport,
 )
+from .toolchain import (
+    JavaToolchainCandidate,
+    JavaToolchainResolver,
+    MavenToolCandidate,
+    MavenToolResolver,
+)
+from .maven import (
+    MavenBuildSystemAdapter,
+    MavenExecutionPlan,
+    MavenModule,
+    MavenResolutionError,
+    MavenWorkspace,
+)
+from .java_command import (
+    JavaCommandMaterializer,
+    MaterializedJavaCommand,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -44,12 +65,17 @@ __all__ = [
     "BuildOperationSpec",
     "BuildPlan",
     "JvmLaunchPlan",
+    "JavaToolchainCandidate",
+    "JavaToolchainResolver",
+    "JavaCommandMaterializer",
     "LaunchCancelled",
     "LaunchContext",
     "LaunchControlError",
     "LaunchController",
     "IdeaLaunchImportError",
     "IdeaLaunchImporter",
+    "IdeaBuildPreferences",
+    "IdeaEnvironmentImporter",
     "ImportedIdeaLaunch",
     "LaunchAttempt",
     "LaunchContractError",
@@ -61,6 +87,14 @@ __all__ = [
     "AttemptToken",
     "CancellationReport",
     "OperationResult",
+    "MavenToolCandidate",
+    "MavenToolResolver",
+    "MavenBuildSystemAdapter",
+    "MavenExecutionPlan",
+    "MavenModule",
+    "MavenResolutionError",
+    "MavenWorkspace",
+    "MaterializedJavaCommand",
     "ProcessSupervisor",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
