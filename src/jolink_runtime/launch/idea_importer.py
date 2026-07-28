@@ -234,7 +234,8 @@ class IdeaLaunchImporter:
                 xml_root = self._safe_xml_root(root, source)
             except IdeaLaunchImportError as error:
                 source_warnings.append(
-                    f"{source.relative_to(root)}: {error.error_code.value}"
+                    f"{source.relative_to(root).as_posix()}: "
+                    f"{error.error_code.value}"
                 )
                 continue
 
@@ -453,11 +454,16 @@ class IdeaLaunchImporter:
         ):
             jre_reference = None
         if jre_reference is not None:
-            jre_reference = self._expand_macros(
-                jre_reference,
-                macros,
-                field_name="runtime_jdk_reference",
+            jre_reference = self._strip_file_url(
+                self._expand_macros(
+                    jre_reference,
+                    macros,
+                    field_name="runtime_jdk_reference",
+                )
             )
+            jre_path = Path(jre_reference).expanduser()
+            if jre_path.is_absolute():
+                jre_reference = str(jre_path.resolve(strict=False))
 
         build_before_run = any(
             str(option.get("name", "")).casefold() == "make"

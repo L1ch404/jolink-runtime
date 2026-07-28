@@ -370,9 +370,15 @@ class ProcessTreeTerminator:
     @staticmethod
     def _posix_group_members(process_group_id: int) -> tuple[int, ...]:
         members: list[int] = []
-        for process in psutil.process_iter(["pid"]):
+        non_live_statuses = {psutil.STATUS_ZOMBIE}
+        dead_status = getattr(psutil, "STATUS_DEAD", None)
+        if dead_status is not None:
+            non_live_statuses.add(dead_status)
+        for process in psutil.process_iter(["pid", "status"]):
             try:
                 pid = int(process.info["pid"])
+                if process.info.get("status") in non_live_statuses:
+                    continue
                 if os.getpgid(pid) == process_group_id:
                     members.append(pid)
             except (OSError, psutil.Error):

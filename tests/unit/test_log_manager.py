@@ -69,7 +69,7 @@ def test_large_tail_stops_after_enough_newest_lines(tmp_path: Path) -> None:
         f"{index:06d}-{'x' * 64}\n"
         for index in range(20_000)
     ]
-    log_file.write_text("".join(lines), encoding="utf-8")
+    log_file.write_bytes("".join(lines).encode("utf-8"))
 
     result = _manager_for(log_file).tail(3)
 

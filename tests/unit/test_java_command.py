@@ -40,9 +40,10 @@ def _unfold_manifest_header(manifest: bytes, name: str) -> str:
 def test_short_classpath_uses_direct_argv(tmp_path: Path) -> None:
     classes = tmp_path / "classes"
     classes.mkdir()
+    plan = _plan(tmp_path, (classes,))
 
     command = JavaCommandMaterializer().materialize(
-        _plan(tmp_path, (classes,)),
+        plan,
         jdwp_port=5005,
         attempt_directory=tmp_path / "attempt",
         windows=False,
@@ -50,7 +51,7 @@ def test_short_classpath_uses_direct_argv(tmp_path: Path) -> None:
 
     assert command.materialization == "direct_classpath"
     assert command.retained_files == ()
-    assert command.argv[0].endswith("java")
+    assert command.argv[0] == str(plan.java_executable)
     assert "-cp" in command.argv
     assert command.argv[command.argv.index("-cp") + 1] == str(classes)
     assert "suspend=n" in command.argv[1]

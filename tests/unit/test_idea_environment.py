@@ -17,7 +17,11 @@ def test_imports_only_the_idea_build_environment_subset(
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: home),
+    )
     _write(
         project / ".idea" / "workspace.xml",
         """

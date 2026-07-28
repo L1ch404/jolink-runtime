@@ -10,10 +10,12 @@ import psutil
 import pytest
 
 from jolink_runtime import launch as launch_module
+from jolink_runtime.launch import process_tree as process_tree_module
 from jolink_runtime.launch import (
     AttemptToken,
     BuildOperationSpec,
     ProcessSupervisor,
+    ProcessTreeTerminator,
     TerminationReport,
 )
 
@@ -37,6 +39,35 @@ def _pid_is_effectively_alive(pid: int) -> bool:
         return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
+def test_posix_group_members_exclude_non_running_processes(
+    monkeypatch,
+) -> None:
+    class ObservedProcess:
+        def __init__(self, pid: int, status: str) -> None:
+            self.info = {"pid": pid, "status": status}
+
+    dead_status = getattr(psutil, "STATUS_DEAD", "dead")
+    observed = (
+        ObservedProcess(701, psutil.STATUS_ZOMBIE),
+        ObservedProcess(702, dead_status),
+        ObservedProcess(703, psutil.STATUS_SLEEPING),
+        ObservedProcess(704, psutil.STATUS_RUNNING),
+    )
+    monkeypatch.setattr(
+        process_tree_module.psutil,
+        "process_iter",
+        lambda attrs: observed,
+    )
+    monkeypatch.setattr(
+        process_tree_module.os,
+        "getpgid",
+        lambda pid: 91 if pid != 704 else 92,
+    )
+
+    assert ProcessTreeTerminator._posix_group_members(91) == (703,)
 
 
 def test_supervisor_runs_without_pipe_and_captures_binary_output(

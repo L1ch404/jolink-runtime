@@ -237,13 +237,26 @@ def test_force_close_sees_owned_process_while_start_waits_for_jdwp(
 
 def test_failed_start_forgets_early_published_target(monkeypatch) -> None:
     class ExitedProc:
-        pid = 304
+        pid = 2_000_000_304
         returncode = 7
 
         def poll(self):
             return self.returncode
 
-    manager = ProcessManager()
+    terminated: list[int] = []
+
+    class SettledTerminator:
+        @staticmethod
+        def terminate(handle, *, deadline, force=False):
+            del deadline
+            terminated.append(handle.pid)
+            return TerminationReport(
+                pid=handle.pid,
+                terminated=True,
+                forced=force,
+            )
+
+    manager = ProcessManager(terminator=SettledTerminator())
     monkeypatch.setattr(
         process_module.subprocess,
         "Popen",
@@ -259,6 +272,7 @@ def test_failed_start_forgets_early_published_target(monkeypatch) -> None:
         )
 
     assert manager.current is None
+    assert terminated == [ExitedProc.pid]
 
 
 def test_shutdown_gate_prevents_late_spawn_and_attach(monkeypatch) -> None:
