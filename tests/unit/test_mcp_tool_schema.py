@@ -167,4 +167,25 @@ def test_legacy_lineage_schema_remains_separate_and_unchanged_in_shape() -> None
 
     assert "wait_breakpoint" in legacy_actions
     assert "wait_breakpoint" not in mcp_actions
+    assert (
+        "project_path"
+        not in JAVA_RUNTIME_SCHEMA["parameters"]["properties"]
+    )
+    assert (
+        "launch_name"
+        not in JAVA_RUNTIME_SCHEMA["parameters"]["properties"]
+    )
     assert JAVA_RUNTIME_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_project_launch_schema_stays_small_and_optional() -> None:
+    properties = get_mcp_tools()[0].inputSchema["properties"]
+
+    assert properties["project_path"]["type"] == "string"
+    assert properties["launch_name"]["type"] == "string"
+    assert "project_path" not in get_mcp_tools()[0].inputSchema["required"]
+    assert "default" not in properties["classpath"]
+    assert (
+        "exact case-sensitive"
+        in properties["launch_name"]["description"].lower()
+    )

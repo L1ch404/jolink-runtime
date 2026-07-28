@@ -94,6 +94,9 @@ cleanup_debug_state
 These actions support:
 
 - launching a Java application as an owned JVM process;
+- importing an IntelliJ IDEA Application/Spring Boot launch from a Maven
+  project, compiling it, resolving its runtime classpath, and launching it
+  without first packaging a fat JAR;
 - stopping or restarting an application after code changes;
 - inspecting application status and logs;
 - attaching to an already-running local JVM;

@@ -491,6 +491,39 @@ def test_blocking_http_trigger_is_rejected_before_waiter_while_starting() -> Non
     anyio.run(scenario)
 
 
+def test_http_trigger_is_rejected_during_project_build_without_fake_readiness() -> None:
+    class BuildingDispatcher(_TriggerDispatcher):
+        def startup_observation(
+            self,
+            session_key: str = "default",
+        ) -> dict[str, Any]:
+            return {
+                "process_state": "absent",
+                "launch_phase": "compiling",
+            }
+
+    dispatcher = BuildingDispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario() -> None:
+        result = await boundary.call_tool(
+            "java_runtime",
+            _blocking_arguments("http://127.0.0.1:8080/trigger"),
+        )
+        payload = dict(result.structuredContent or {})
+
+        assert result.isError is True
+        assert payload["error_code"] == "APPLICATION_NOT_READY"
+        assert payload["process_state"] == "absent"
+        assert payload["launch_phase"] == "compiling"
+        assert "startup_state" not in payload
+        assert payload["http_trigger_sent"] is False
+        assert dispatcher.calls == []
+        assert boundary._active_background_waiter() is None
+
+    anyio.run(scenario)
+
+
 def test_unverified_readiness_allows_http_trigger_with_warning() -> None:
     dispatcher = _ReadinessDispatcher("unverified")
 

@@ -12,6 +12,8 @@ LLM never sees JDWP, thread IDs, or protocol details.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import struct
 import threading
 import time
@@ -23,12 +25,55 @@ from typing import Any
 
 from ...core.models import RuntimeAction, RuntimeResult, Variable
 from ...core.wait_state import WaitControl
+from ...launch import (
+    LaunchCancelled,
+    LaunchContext,
+    LaunchControlError,
+    LaunchController,
+    LaunchErrorCode,
+    LaunchPhase,
+    LaunchPipelineFailure,
+    ProjectLaunchPipeline,
+    ProjectLaunchRequest,
+    RuntimeProcessState,
+)
 from ..base import Runtime
 from .jdwp_client import JDWPClient, JDWPError, Cmd, EventKind, SuspendPolicy, Tag
-from .process_manager import ProcessManager, ReadyPortAlreadyInUseError
-from .log_manager import LogManager
+from .process_manager import (
+    ProcessManager,
+    ProcessStartCancelledError,
+    ProcessStartupError,
+    ReadyPortAlreadyInUseError,
+    RuntimeAlreadyRunningError,
+)
+from .log_manager import LogManager, read_log_tail_snapshot
 
 logger = logging.getLogger(__name__)
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_BUILD_SECRET_NAME = (
+    r"(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"private[_-]?key|credential|cookie|authorization)"
+)
+_BUILD_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"((?:-D)?[\"']?[A-Za-z0-9_.-]*"
+    + _BUILD_SECRET_NAME
+    + r"[A-Za-z0-9_.-]*[\"']?)"
+    r"(\s*[:=]\s*)"
+    r"[^\r\n]*"
+)
+_BUILD_SECRET_FLAG = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(--[A-Za-z0-9_.-]*"
+    + _BUILD_SECRET_NAME
+    + r"[A-Za-z0-9_.-]*)"
+    r"(\s+)"
+    r"[^\r\n]*"
+)
+_BUILD_SECRET_HEADER = re.compile(
+    r"(?i)^((?:.*?)\b(?:authorization|cookie)\s*:\s*).*$"
+)
+_URL_USERINFO = re.compile(r"(://)([^/@\s]+)@")
 
 _TWO_PHASE_WAIT_NEXT_STEP = (
     "Call wait_event with wait_mode='arm'. After it returns status='armed', "
@@ -139,11 +184,23 @@ class JavaRuntime(Runtime):
         self._max_array_elements = 64
         self._max_value_depth = 5
         self._closed = False
+        self._close_settled = False
         self._force_closed = False
+        self._closing_requested = False
         self._debug_connection_dirty = False
         self._debug_connection_warning = ""
         self._target_release_lock = threading.Lock()
         self._released_target_tokens: set[tuple[int, int, int, bool]] = set()
+        self._project_pipeline = ProjectLaunchPipeline()
+        self._launch_controller = LaunchController(
+            runtime_releaser=self._release_project_runtime,
+        )
+        self._project_state_lock = threading.Lock()
+        self._project_attempt_directories: dict[str, Path] = {}
+        self._project_processes: dict[str, Any] = {}
+        self._project_warnings: dict[str, tuple[str, ...]] = {}
+        self._last_project_request: ProjectLaunchRequest | None = None
+        self._last_direct_action: RuntimeAction | None = None
 
     # ── Lifecycle ──────────────────────────────────────
 
@@ -304,9 +361,10 @@ class JavaRuntime(Runtime):
         ownership: str,
         *,
         forced: bool,
-    ) -> None:
+        deadline: float | None = None,
+    ) -> bool:
         if current is None:
-            return
+            return True
         token = (
             int(getattr(current, "generation", 0)),
             id(current),
@@ -315,15 +373,23 @@ class JavaRuntime(Runtime):
         )
         with self._target_release_lock:
             if token in self._released_target_tokens:
-                return
+                return True
             try:
                 if current.owned:
                     stop_target = getattr(self._proc, "stop_target", None)
-                    result = (
-                        stop_target(current)
-                        if callable(stop_target)
-                        else self._proc.stop()
-                    )
+                    if callable(stop_target):
+                        try:
+                            result = stop_target(
+                                current,
+                                deadline=deadline,
+                                force=forced,
+                            )
+                        except TypeError as error:
+                            if "unexpected keyword argument" not in str(error):
+                                raise
+                            result = stop_target(current)
+                    else:
+                        result = self._proc.stop()
                 else:
                     detach_target = getattr(self._proc, "detach_target", None)
                     result = (
@@ -331,15 +397,34 @@ class JavaRuntime(Runtime):
                         if callable(detach_target)
                         else self._proc.detach()
                     )
-                self._released_target_tokens.add(token)
+                if current.owned:
+                    liveness = getattr(current, "is_alive", None)
+                    settled = (
+                        result.get("status") in {"stopped", "not_running"}
+                        and (
+                            not bool(liveness())
+                            if callable(liveness)
+                            else True
+                        )
+                    )
+                else:
+                    settled = result.get("status") in {
+                        "detached",
+                        "already_detached",
+                        "not_attached",
+                    }
+                if settled:
+                    self._released_target_tokens.add(token)
                 logger.info(
-                    "java_runtime.shutdown.target_released "
-                    "pid=%s ownership=%s status=%s forced=%s",
+                    "java_runtime.shutdown.target_release_observed "
+                    "pid=%s ownership=%s status=%s forced=%s settled=%s",
                     current.pid,
                     ownership,
                     result.get("status", "-"),
                     forced,
+                    settled,
                 )
+                return settled
             except Exception as exc:
                 logger.warning(
                     "java_runtime.shutdown.target_release_failed "
@@ -350,6 +435,7 @@ class JavaRuntime(Runtime):
                     type(exc).__name__,
                     _error_summary(exc),
                 )
+                return False
 
     def _closing_result(self, operation: str) -> RuntimeResult:
         return RuntimeResult(
@@ -371,7 +457,7 @@ class JavaRuntime(Runtime):
         *,
         operation: str,
     ) -> RuntimeResult | None:
-        if not (self._closed or self._force_closed):
+        if not self._closing_requested:
             return None
         ownership = "launched" if current.owned else "attached"
         logger.warning(
@@ -389,11 +475,23 @@ class JavaRuntime(Runtime):
         )
         return self._closing_result(operation)
 
-    def force_close(self) -> None:
+    def force_close(self) -> bool:
         """Bounded ownership-aware release that performs no JDWP commands."""
         if self._force_closed:
-            return
-        self._force_closed = True
+            return True
+        self._closing_requested = True
+        deadline = time.monotonic() + 2.0
+        controller_settled = True
+        try:
+            controller_result = self._launch_controller.force_close(
+                deadline=deadline
+            )
+            controller_settled = bool(
+                controller_result.get("settled", False)
+            )
+        except Exception:
+            logger.exception("java_runtime.project_launch.force_close_failed")
+            controller_settled = False
         prevent_new_targets = getattr(self._proc, "prevent_new_targets", None)
         if callable(prevent_new_targets):
             prevent_new_targets()
@@ -417,23 +515,45 @@ class JavaRuntime(Runtime):
         self._armed_breakpoint_requests.clear()
         self._armed_exception_requests.clear()
         self._invalidate_suspension()
-        self._release_target_for_shutdown(
+        target_settled = self._release_target_for_shutdown(
             current,
             ownership,
             forced=True,
+            deadline=deadline,
         )
+        settled = controller_settled and target_settled
+        self._force_closed = settled
+        if settled:
+            self._discard_terminal_project_attempt()
         logger.warning(
-            "java_runtime.shutdown.force_finish pid=%s ownership=%s",
+            "java_runtime.shutdown.force_finish pid=%s ownership=%s settled=%s",
             current.pid if current is not None else "-",
             ownership,
+            settled,
         )
+        return settled
 
-    def close(self) -> None:
+    def close(self) -> bool:
         """Best-effort, ownership-aware shutdown for an internal session."""
-        if self._closed:
+        if self._close_settled:
             logger.debug("java_runtime.shutdown.skipped reason=already_closed")
-            return
+            return True
+        if self._closed:
+            return False
+        self._closing_requested = True
         self._closed = True
+        deadline = time.monotonic() + 2.0
+        controller_settled = True
+        try:
+            controller_result = self._launch_controller.close(
+                deadline=deadline
+            )
+            controller_settled = bool(
+                controller_result.get("settled", False)
+            )
+        except Exception:
+            logger.exception("java_runtime.project_launch.close_failed")
+            controller_settled = False
         prevent_new_targets = getattr(self._proc, "prevent_new_targets", None)
         if callable(prevent_new_targets):
             prevent_new_targets()
@@ -532,19 +652,531 @@ class JavaRuntime(Runtime):
         self._invalidate_suspension()
         self._host = "127.0.0.1"
 
-        self._release_target_for_shutdown(
+        target_settled = self._release_target_for_shutdown(
             current,
             ownership,
             forced=False,
+            deadline=deadline,
         )
 
+        settled = controller_settled and target_settled
+        self._close_settled = settled
+        if settled:
+            self._discard_terminal_project_attempt()
         logger.info(
-            "java_runtime.shutdown.finish pid=%s ownership=%s",
+            "java_runtime.shutdown.finish pid=%s ownership=%s settled=%s",
             current.pid if current is not None else "-",
             ownership,
+            settled,
+        )
+        return settled
+
+    def run_project(
+        self,
+        action: RuntimeAction,
+        request: ProjectLaunchRequest,
+    ) -> RuntimeResult:
+        """Start one IDEA/Maven launch attempt without blocking the Tool call."""
+        invalid = self._validate_project_request(action, request)
+        if invalid is not None:
+            return invalid
+        self._reconcile_project_process_exit()
+        current = self._proc.current
+        if current is not None and current.is_alive():
+            return RuntimeResult(
+                ok=False,
+                error="A managed Runtime is already running.",
+                data={
+                    "error_code": "RUNTIME_ALREADY_RUNNING",
+                    "process_state": "running",
+                    "pid": current.pid,
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Call status to inspect the current Runtime, or call "
+                        "restart to replace it explicitly."
+                    ),
+                },
+            )
+        self._discard_terminal_project_attempt()
+        worker = lambda context: self._project_launch_worker(
+            context,
+            request,
+        )
+        try:
+            snapshot = self._launch_controller.start(worker)
+        except LaunchControlError as error:
+            return self._launch_control_result(error)
+        self._last_project_request = request
+        self._last_direct_action = None
+        return RuntimeResult(
+            ok=True,
+            data={
+                "status": "project_launch_started",
+                **snapshot,
+                "suggested_next_step": (
+                    "Call status to observe launch_phase and application "
+                    "readiness. Do not set breakpoints or trigger requests "
+                    "until process_state is running."
+                ),
+            },
+        )
+
+    def restart_project(
+        self,
+        action: RuntimeAction,
+        request: ProjectLaunchRequest,
+    ) -> RuntimeResult:
+        """Explicitly replace a direct target or prior project attempt."""
+        invalid = self._validate_project_request(action, request)
+        if invalid is not None:
+            return invalid
+        current = self._proc.current
+        project_snapshot = self._launch_controller.snapshot()
+        if (
+            current is not None
+            and current.is_alive()
+            and project_snapshot.get("launch_phase")
+            in {
+                LaunchPhase.IDLE.value,
+                LaunchPhase.FAILED.value,
+                LaunchPhase.CANCELLED.value,
+                LaunchPhase.STOPPED.value,
+            }
+        ):
+            self._disconnect()
+            stop_result = self._proc.stop_target(current)
+            if current.is_alive():
+                return RuntimeResult(
+                    ok=False,
+                    error="The current Runtime process could not be stopped.",
+                    data={
+                        "error_code": "PROCESS_STOP_FAILED",
+                        **stop_result,
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Retry restart. If the process remains alive, "
+                            "stop it explicitly before launching a replacement."
+                        ),
+                    },
+                )
+        worker = lambda context: self._project_launch_worker(
+            context,
+            request,
+        )
+        try:
+            snapshot = self._launch_controller.restart(
+                worker,
+                deadline=time.monotonic() + 5.0,
+            )
+        except LaunchControlError as error:
+            return self._launch_control_result(error)
+        self._last_project_request = request
+        self._last_direct_action = None
+        return RuntimeResult(
+            ok=True,
+            data={
+                "status": "project_launch_restarted",
+                **snapshot,
+                "suggested_next_step": (
+                    "Call status to observe the new launch generation."
+                ),
+            },
+        )
+
+    def _validate_project_request(
+        self,
+        action: RuntimeAction,
+        request: ProjectLaunchRequest,
+    ) -> RuntimeResult | None:
+        if self._closing_requested:
+            return self._closing_result(action.action)
+        if request.jdwp_port == request.ready_port and request.ready_port:
+            return RuntimeResult(
+                ok=False,
+                error="ready_port must differ from jdwp_port",
+                data={
+                    "error_code": "READY_PORT_CONFLICTS_WITH_JDWP",
+                    "argument": "ready_port",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Use the application service port for ready_port."
+                    ),
+                },
+            )
+        if not 0 <= request.startup_wait_timeout_seconds <= 60:
+            return RuntimeResult(
+                ok=False,
+                error=(
+                    "startup_wait_timeout_seconds must be between 0 and 60"
+                ),
+                data={
+                    "error_code": "INVALID_ARGUMENT",
+                    "argument": "startup_wait_timeout_seconds",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Use a readiness observation window from 0 to 60 "
+                        "seconds; project launch continues in the background."
+                    ),
+                },
+            )
+        return None
+
+    @staticmethod
+    def _launch_control_result(
+        error: LaunchControlError,
+    ) -> RuntimeResult:
+        payload = dict(error.payload)
+        message = str(payload.pop("error", str(error)))
+        payload.pop("ok", None)
+        return RuntimeResult(ok=False, error=message, data=payload)
+
+    def _project_launch_worker(
+        self,
+        context: LaunchContext,
+        request: ProjectLaunchRequest,
+    ) -> None:
+        attempt_directory = self._project_pipeline.create_attempt_directory(
+            context.attempt_id
+        )
+        with self._project_state_lock:
+            self._project_attempt_directories[
+                context.attempt_id
+            ] = attempt_directory
+        process = None
+        runtime_active = False
+        try:
+            prepared = self._project_pipeline.prepare(
+                context,
+                request,
+                attempt_directory=attempt_directory,
+            )
+            with self._project_state_lock:
+                self._project_warnings[context.attempt_id] = (
+                    prepared.warnings
+                )
+            context.transition(LaunchPhase.STARTING_JVM)
+            context.check_cancelled()
+            self._reset_debug_state()
+            self._host = "127.0.0.1"
+            log_file = self._log.create(context.attempt_id)
+            jvm_plan = prepared.jvm_plan
+            process = self._proc.start(
+                classpath=os.pathsep.join(
+                    str(path) for path in jvm_plan.classpath
+                ),
+                main_class=jvm_plan.main_class,
+                app_args=list(jvm_plan.program_args),
+                jdwp_port=request.jdwp_port,
+                vm_args=list(jvm_plan.jvm_args),
+                log_file=log_file,
+                ready_port=request.ready_port,
+                startup_wait_timeout_seconds=(
+                    request.startup_wait_timeout_seconds
+                ),
+                readiness_config_source=(
+                    "explicit"
+                    if request.ready_port
+                    else "not_configured"
+                ),
+                java_executable=str(jvm_plan.java_executable),
+                working_directory=jvm_plan.working_directory,
+                environment_overrides=(
+                    jvm_plan.environment_overrides
+                ),
+                should_stop=lambda: context.cancel_event.is_set(),
+                on_published=lambda item: self._publish_project_process(
+                    context,
+                    item,
+                ),
+                command_argv=prepared.command.argv,
+                retained_files=prepared.command.retained_files,
+            )
+            context.check_cancelled()
+            readiness = self._proc.observe_readiness(process)
+            context.set_process_observation(
+                process_state=RuntimeProcessState.RUNNING,
+                startup_state=str(readiness["startup_state"]),
+            )
+            if request.ready_port <= 0:
+                context.transition(LaunchPhase.RUNTIME_ACTIVE)
+                runtime_active = True
+                return
+
+            context.transition(LaunchPhase.WAITING_READINESS)
+            observation_deadline = time.monotonic() + (
+                request.startup_wait_timeout_seconds
+            )
+            timeout_marked = False
+            while True:
+                context.check_cancelled()
+                readiness = self._proc.observe_readiness(process)
+                startup_state = str(readiness["startup_state"])
+                process_state = str(
+                    readiness.get("process_state", "running")
+                )
+                context.set_process_observation(
+                    process_state=(
+                        RuntimeProcessState.RUNNING
+                        if process_state == "running"
+                        else RuntimeProcessState.EXITED
+                    ),
+                    startup_state=startup_state,
+                )
+                if startup_state == "ready":
+                    context.transition(LaunchPhase.RUNTIME_ACTIVE)
+                    runtime_active = True
+                    return
+                if startup_state == "failed" or process_state == "exited":
+                    raise LaunchPipelineFailure(
+                        LaunchErrorCode.JVM_START_FAILED,
+                        "The application exited before readiness was observed.",
+                        retryable=True,
+                        suggested_next_step=(
+                            "Inspect Runtime logs, correct the startup failure, "
+                            "and retry run."
+                        ),
+                    )
+                if (
+                    not timeout_marked
+                    and time.monotonic() >= observation_deadline
+                ):
+                    process.mark_startup_wait_timed_out()
+                    timeout_marked = True
+                context.cancel_event.wait(0.2)
+        except ProcessStartCancelledError as error:
+            raise LaunchCancelled(str(error)) from error
+        except ProcessStartupError as error:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.JVM_START_FAILED,
+                str(error),
+                retryable=True,
+                suggested_next_step=(
+                    "Inspect Runtime logs, correct the JVM startup failure, "
+                    "then retry run. If cleanup is unsettled, call stop first."
+                ),
+                context={
+                    "failure_type": error.failure_type,
+                    "cleanup_settled": error.cleanup_settled,
+                    **(
+                        {"exit_code": error.exit_code}
+                        if error.exit_code is not None
+                        else {}
+                    ),
+                },
+            ) from error
+        except ReadyPortAlreadyInUseError as error:
+            raise LaunchPipelineFailure(
+                "READY_PORT_ALREADY_IN_USE",
+                "The configured application readiness port is already in use.",
+                retryable=True,
+                suggested_next_step=(
+                    "Stop the process already using ready_port or choose the "
+                    "correct application port, then retry run."
+                ),
+                context={"ready_port": request.ready_port},
+            ) from error
+        except RuntimeAlreadyRunningError as error:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.RUNTIME_ALREADY_RUNNING,
+                "Another Runtime target appeared during project launch.",
+                retryable=True,
+                suggested_next_step=(
+                    "Call status, then use restart to replace the target "
+                    "explicitly."
+                ),
+            ) from error
+        finally:
+            if process is None:
+                # ProcessManager publishes before waiting for JDWP stability.
+                # If that wait fails, assignment above never completes, but
+                # the exact ProcessInfo still belongs to this attempt.
+                with self._project_state_lock:
+                    process = self._project_processes.get(
+                        context.attempt_id
+                    )
+            if not runtime_active and process is not None:
+                stop_result = self._proc.stop_target(process)
+                process_settled = (
+                    not process.is_alive()
+                    and stop_result.get("status")
+                    in {"stopped", "not_running"}
+                )
+                if process_settled and not context.cancel_event.is_set():
+                    try:
+                        context.set_process_observation(
+                            process_state=RuntimeProcessState.ABSENT,
+                            startup_state=None,
+                        )
+                    except LaunchCancelled:
+                        pass
+                if process_settled:
+                    with self._project_state_lock:
+                        if (
+                            self._project_processes.get(context.attempt_id)
+                            is process
+                        ):
+                            self._project_processes.pop(
+                                context.attempt_id,
+                                None,
+                            )
+
+    def _publish_project_process(
+        self,
+        context: LaunchContext,
+        process: Any,
+    ) -> None:
+        """Bind a spawned JVM to its attempt before cancellation can race it."""
+        with self._project_state_lock:
+            self._project_processes[context.attempt_id] = process
+        readiness = self._proc.observe_readiness(process, refresh=False)
+        context.set_process_observation(
+            process_state=RuntimeProcessState.RUNNING,
+            startup_state=str(readiness["startup_state"]),
+        )
+
+    def _release_project_runtime(
+        self,
+        attempt,
+        _deadline: float,
+        force: bool,
+    ) -> bool:
+        with self._project_state_lock:
+            process = self._project_processes.get(attempt.attempt_id)
+            directory = self._project_attempt_directories.get(
+                attempt.attempt_id
+            )
+        if process is None:
+            current = self._proc.current
+            if current is not None and current.is_alive():
+                process = current
+            else:
+                with self._project_state_lock:
+                    self._project_warnings.pop(attempt.attempt_id, None)
+                    self._project_attempt_directories.pop(
+                        attempt.attempt_id,
+                        None,
+                    )
+                self._project_pipeline.cleanup_attempt_directory(directory)
+                return True
+        try:
+            self._disconnect()
+            self._breakpoints.clear()
+            self._exceptions.clear()
+            self._armed_breakpoint_requests.clear()
+            self._armed_exception_requests.clear()
+            self._invalidate_suspension()
+            ownership = "launched" if process.owned else "attached"
+            settled = self._release_target_for_shutdown(
+                process,
+                ownership,
+                forced=force,
+                deadline=_deadline,
+            )
+        finally:
+            if "settled" in locals() and settled:
+                with self._project_state_lock:
+                    if (
+                        self._project_processes.get(attempt.attempt_id)
+                        is process
+                    ):
+                        self._project_processes.pop(attempt.attempt_id, None)
+                    self._project_warnings.pop(attempt.attempt_id, None)
+                    self._project_attempt_directories.pop(
+                        attempt.attempt_id,
+                        None,
+                    )
+                self._project_pipeline.cleanup_attempt_directory(directory)
+        return settled
+
+    def _discard_terminal_project_attempt(self) -> None:
+        snapshot = self._launch_controller.snapshot()
+        attempt_id = snapshot.get("attempt_id")
+        if isinstance(attempt_id, str):
+            with self._project_state_lock:
+                process = self._project_processes.get(attempt_id)
+            if process is not None and process.is_alive():
+                return
+        if not self._launch_controller.discard_terminal():
+            return
+        if not isinstance(attempt_id, str):
+            return
+        with self._project_state_lock:
+            directory = self._project_attempt_directories.pop(
+                attempt_id,
+                None,
+            )
+            self._project_warnings.pop(attempt_id, None)
+            self._project_processes.pop(attempt_id, None)
+        self._project_pipeline.cleanup_attempt_directory(directory)
+
+    def _reconcile_project_process_exit(self) -> dict[str, Any]:
+        snapshot = self._launch_controller.snapshot()
+        if snapshot.get("launch_phase") != LaunchPhase.RUNTIME_ACTIVE.value:
+            return snapshot
+        attempt_id = snapshot.get("attempt_id")
+        if not isinstance(attempt_id, str):
+            return snapshot
+        with self._project_state_lock:
+            process = self._project_processes.get(attempt_id)
+        if process is None or process.is_alive():
+            return snapshot
+        exit_code = process.exit_code
+        release = self._proc.stop_target(process)
+        if release.get("status") == "stop_failed":
+            return snapshot
+        self._reset_debug_state()
+        with self._project_state_lock:
+            if self._project_processes.get(attempt_id) is process:
+                self._project_processes.pop(attempt_id, None)
+        self._launch_controller.mark_runtime_exited(
+            attempt_id=attempt_id,
+            exit_code=exit_code,
+        )
+        return self._launch_controller.snapshot()
+
+    def _active_project_launch_rejection(
+        self,
+        *,
+        operation: str,
+    ) -> RuntimeResult | None:
+        snapshot = self._reconcile_project_process_exit()
+        phase = str(snapshot.get("launch_phase", LaunchPhase.IDLE.value))
+        if phase == LaunchPhase.IDLE.value:
+            return None
+        if phase in {
+            LaunchPhase.CANCELLED.value,
+            LaunchPhase.FAILED.value,
+            LaunchPhase.STOPPED.value,
+        }:
+            self._discard_terminal_project_attempt()
+            return None
+        error_code = (
+            "RUNTIME_ALREADY_RUNNING"
+            if phase == LaunchPhase.RUNTIME_ACTIVE.value
+            else "LAUNCH_ALREADY_IN_PROGRESS"
+        )
+        return RuntimeResult(
+            ok=False,
+            error=(
+                "A managed Runtime is already running."
+                if error_code == "RUNTIME_ALREADY_RUNNING"
+                else "A project launch is already in progress."
+            ),
+            data={
+                "error_code": error_code,
+                "operation": operation,
+                **snapshot,
+                "retryable": True,
+                "suggested_next_step": (
+                    "Call status to inspect the current attempt, or call "
+                    "restart to replace it explicitly."
+                ),
+            },
         )
 
     def run(self, action: RuntimeAction) -> RuntimeResult:
+        if self._closing_requested:
+            return self._closing_result(action.action)
         launch_mode = "jar" if action.jar_path else "class"
         logger.info(
             "java_runtime.jvm.run.request launch_mode=%s main_class=%s jar_path=%s "
@@ -602,6 +1234,28 @@ class JavaRuntime(Runtime):
                     ),
                 },
             )
+        current = self._proc.current
+        if current is not None and current.is_alive():
+            return RuntimeResult(
+                ok=False,
+                error="A managed Runtime is already running.",
+                data={
+                    "error_code": "RUNTIME_ALREADY_RUNNING",
+                    "process_state": "running",
+                    "pid": current.pid,
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Call status to inspect the current Runtime, or call "
+                        "restart to replace it explicitly."
+                    ),
+                },
+            )
+        launch_rejection = self._active_project_launch_rejection(
+            operation="run"
+        )
+        if launch_rejection is not None:
+            return launch_rejection
+        info = None
         try:
             self._reset_debug_state()
             self._host = "127.0.0.1"
@@ -626,6 +1280,7 @@ class JavaRuntime(Runtime):
                     action.readiness_config_source
                     or ("explicit" if action.ready_port else "not_configured")
                 ),
+                should_stop=lambda: self._closing_requested,
             )
             closing = self._release_late_published_target(
                 info,
@@ -636,7 +1291,7 @@ class JavaRuntime(Runtime):
             readiness = self._proc.wait_for_readiness(
                 info,
                 action.startup_wait_timeout_seconds,
-                should_stop=lambda: self._closed or self._force_closed,
+                should_stop=lambda: self._closing_requested,
             )
             closing = self._release_late_published_target(
                 info,
@@ -717,6 +1372,8 @@ class JavaRuntime(Runtime):
             )
             if closing is not None:
                 return closing
+            self._last_direct_action = replace(action)
+            self._last_project_request = None
             return result
         except Exception as e:
             logger.error(
@@ -725,6 +1382,29 @@ class JavaRuntime(Runtime):
                 launch_mode, action.jar_path or action.main_class or "-", action.jdwp_port,
                 type(e).__name__, _error_summary(e),
             )
+            if self._closing_requested:
+                return self._closing_result(action.action)
+            if isinstance(e, ProcessStartupError):
+                return RuntimeResult(
+                    ok=False,
+                    error=str(e),
+                    data={
+                        "error_code": "JVM_START_FAILED",
+                        "failure_type": e.failure_type,
+                        "cleanup_settled": e.cleanup_settled,
+                        **(
+                            {"exit_code": e.exit_code}
+                            if e.exit_code is not None
+                            else {}
+                        ),
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Inspect Runtime logs, correct the JVM startup "
+                            "failure, then retry run. If cleanup_settled is "
+                            "false, call stop first."
+                        ),
+                    },
+                )
             if isinstance(e, ReadyPortAlreadyInUseError):
                 return RuntimeResult(
                     ok=False,
@@ -739,9 +1419,57 @@ class JavaRuntime(Runtime):
                         ),
                     },
                 )
+            if isinstance(e, RuntimeAlreadyRunningError):
+                return RuntimeResult(
+                    ok=False,
+                    error="A managed Runtime is already running.",
+                    data={
+                        "error_code": "RUNTIME_ALREADY_RUNNING",
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Call status to inspect the current Runtime, or "
+                            "call restart to replace it explicitly."
+                        ),
+                    },
+                )
             return RuntimeResult(ok=False, error=str(e))
 
     def stop(self, action: RuntimeAction) -> RuntimeResult:
+        launch_snapshot = self._launch_controller.snapshot()
+        launch_phase = str(
+            launch_snapshot.get("launch_phase", LaunchPhase.IDLE.value)
+        )
+        try:
+            settlement = self._launch_controller.cancel_current(
+                deadline=time.monotonic() + 5.0,
+            )
+        except Exception as error:
+            logger.exception("java_runtime.project_launch.stop_failed")
+            return RuntimeResult(
+                ok=False,
+                error="The project launch could not be stopped safely.",
+                data={
+                    "error_code": "LAUNCH_CANCELLATION_FAILED",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Retry stop. If it remains unsettled, restart the "
+                        "Runtime MCP server."
+                    ),
+                },
+            )
+        if not bool(settlement.get("settled", False)):
+            return RuntimeResult(
+                ok=False,
+                error="The project launch did not settle before the deadline.",
+                data={
+                    "error_code": "LAUNCH_CANCELLATION_TIMEOUT",
+                    **settlement,
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Retry stop or restart the Runtime MCP server."
+                    ),
+                },
+            )
         current = self._proc.current
         logger.info(
             "java_runtime.jvm.stop.request pid=%s ownership=%s suspended=%s",
@@ -760,6 +1488,27 @@ class JavaRuntime(Runtime):
         self._armed_exception_requests.clear()
         self._invalidate_suspension()
         data = self._proc.stop()
+        if data.get("status") == "stop_failed":
+            if launch_phase != LaunchPhase.IDLE.value:
+                data.update(self._launch_controller.snapshot())
+            data.update(
+                {
+                    "error_code": "PROCESS_STOP_FAILED",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Retry stop. joLink retained ownership of the live "
+                        "process and will not start a replacement."
+                    ),
+                }
+            )
+            return RuntimeResult(
+                ok=False,
+                error="The managed Runtime process could not be stopped.",
+                data=data,
+            )
+        if launch_phase != LaunchPhase.IDLE.value:
+            data.update(self._launch_controller.snapshot())
+            data["status"] = "stopped"
         logger.info(
             "java_runtime.jvm.stop.finish status=%s pid=%s",
             data.get("status", "-"), data.get("pid", "-"),
@@ -767,6 +1516,50 @@ class JavaRuntime(Runtime):
         return RuntimeResult(ok=True, data=data)
 
     def restart(self, action: RuntimeAction) -> RuntimeResult:
+        if self._closing_requested:
+            return self._closing_result(action.action)
+        if (
+            not action.jar_path
+            and not action.main_class
+            and self._last_project_request is not None
+        ):
+            return self.restart_project(action, self._last_project_request)
+        if (
+            not action.jar_path
+            and not action.main_class
+            and self._last_direct_action is not None
+        ):
+            replacement = replace(self._last_direct_action)
+            replacement.action = "restart"
+            if action.ready_port > 0:
+                replacement.configure_startup_readiness(
+                    ready_port=action.ready_port,
+                    wait_timeout_seconds=(
+                        action.startup_wait_timeout_seconds
+                    ),
+                    wait_timeout_provided=(
+                        action.startup_wait_timeout_provided
+                    ),
+                    config_source="explicit",
+                )
+            action = replacement
+        if (
+            not action.jar_path
+            and not action.main_class
+            and self._last_project_request is None
+            and self._last_direct_action is None
+        ):
+            return RuntimeResult(
+                ok=False,
+                error="No prior launch can be restarted.",
+                data={
+                    "error_code": "NO_RESTARTABLE_LAUNCH",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Call run with project_path, jar_path, or main_class."
+                    ),
+                },
+            )
         previous = self._proc.current
         if (
             action.ready_port <= 0
@@ -806,11 +1599,15 @@ class JavaRuntime(Runtime):
             action.ready_port or "-",
             action.readiness_config_source or "not_configured",
         )
-        self.stop(action)
+        stopped = self.stop(action)
+        if not stopped.ok or stopped.error:
+            return stopped
         time.sleep(1)
         return self.run(action)
 
     def attach(self, action: RuntimeAction) -> RuntimeResult:
+        if self._closing_requested:
+            return self._closing_result(action.action)
         logger.info(
             "java_runtime.jvm.attach.request pid=%s endpoint=%s:%s main_class=%s",
             action.pid, action.host, action.jdwp_port, action.main_class or "-",
@@ -824,6 +1621,12 @@ class JavaRuntime(Runtime):
                     "stop or detach it before attaching another process"
                 ),
             )
+        launch_rejection = self._active_project_launch_rejection(
+            operation="attach"
+        )
+        if launch_rejection is not None:
+            return launch_rejection
+        info = None
         try:
             self._reset_debug_state()
             self._host = action.host or "127.0.0.1"
@@ -870,7 +1673,12 @@ class JavaRuntime(Runtime):
                 type(e).__name__, _error_summary(e),
             )
             self._disconnect()
-            self._proc.detach()
+            if info is not None:
+                detach_target = getattr(self._proc, "detach_target", None)
+                if callable(detach_target):
+                    detach_target(info)
+                else:
+                    self._proc.detach()
             return RuntimeResult(ok=False, error=str(e))
 
     def detach(self, action: RuntimeAction) -> RuntimeResult:
@@ -911,19 +1719,136 @@ class JavaRuntime(Runtime):
 
     # ── Observation ────────────────────────────────────
 
+    @staticmethod
+    def _redact_build_log_line(line: str) -> str:
+        clean = _ANSI_ESCAPE.sub("", line)
+        clean = _BUILD_SECRET_HEADER.sub(r"\1<redacted>", clean)
+        clean = _BUILD_SECRET_ASSIGNMENT.sub(
+            r"\1\2<redacted>",
+            clean,
+        )
+        clean = _BUILD_SECRET_FLAG.sub(r"\1\2<redacted>", clean)
+        return _URL_USERINFO.sub(r"\1<redacted>@", clean)
+
+    def _project_launch_snapshot(self) -> dict[str, Any] | None:
+        snapshot = self._reconcile_project_process_exit()
+        if snapshot.get("launch_phase") == LaunchPhase.IDLE.value:
+            return None
+        attempt_id = snapshot.get("attempt_id")
+        if isinstance(attempt_id, str):
+            with self._project_state_lock:
+                directory = self._project_attempt_directories.get(attempt_id)
+                warnings = self._project_warnings.get(attempt_id, ())
+            if warnings:
+                snapshot["warnings"] = list(warnings)
+            build_log = (
+                directory / "build.log"
+                if directory is not None
+                else None
+            )
+            if build_log is not None and build_log.is_file():
+                try:
+                    tail = read_log_tail_snapshot(
+                        str(build_log),
+                        50,
+                        max_scan_bytes=512 * 1024,
+                        max_return_bytes=32 * 1024,
+                    )
+                    tail["lines"] = [
+                        self._redact_build_log_line(line)
+                        for line in tail["lines"]
+                    ]
+                    tail["returned_bytes"] = sum(
+                        len(line.encode("utf-8"))
+                        for line in tail["lines"]
+                    )
+                    snapshot.setdefault("build", {})["log_tail"] = tail
+                    if snapshot.get("launch_error") is not None:
+                        snapshot["build_log_tail"] = tail
+                except OSError as error:
+                    logger.warning(
+                        "java_runtime.project_launch.log_tail_failed "
+                        "attempt_id=%s error_type=%s",
+                        attempt_id,
+                        type(error).__name__,
+                    )
+        return snapshot
+
     def status(self, action: RuntimeAction) -> RuntimeResult:
+        project = self._project_launch_snapshot()
+        project_phase = (
+            str(project.get("launch_phase"))
+            if project is not None
+            else LaunchPhase.IDLE.value
+        )
+        if project is not None and project_phase != LaunchPhase.RUNTIME_ACTIVE.value:
+            info: dict[str, Any] = {
+                **project,
+                "debug_state": "detached",
+                "running": project.get("process_state") == "running",
+            }
+            proc = self._proc.current
+            if (
+                project_phase == LaunchPhase.WAITING_READINESS.value
+                and proc is not None
+                and proc.is_alive()
+            ):
+                readiness = self._proc.observe_readiness(proc)
+                info.update(readiness)
+                info["pid"] = proc.pid
+                info["process_state"] = "running"
+                info["running"] = True
+                info["next_action"] = "status"
+                if readiness["startup_state"] == "ready":
+                    info["suggested_next_step"] = (
+                        "TCP readiness was just observed. Call status again "
+                        "until launch_phase is runtime_active before debugging."
+                    )
+                else:
+                    info["suggested_next_step"] = (
+                        "The project JVM is running but the application is not "
+                        "ready yet. Keep it running and call status again."
+                    )
+            elif project_phase in {
+                LaunchPhase.IMPORTING_LAUNCH.value,
+                LaunchPhase.RESOLVING_BUILD.value,
+                LaunchPhase.COMPILING.value,
+                LaunchPhase.RESOLVING_RUNTIME.value,
+                LaunchPhase.STARTING_JVM.value,
+            }:
+                info["suggested_next_step"] = (
+                    "The project launch is still in progress. Call status "
+                    "again; do not set breakpoints or trigger requests yet."
+                )
+            elif project_phase == LaunchPhase.FAILED.value:
+                proc = self._proc.current
+                if proc is None or not proc.is_alive():
+                    info["process_state"] = "absent"
+                    info["running"] = False
+                    info.pop("startup_state", None)
+                info["suggested_next_step"] = (
+                    project.get("launch_error", {}).get(
+                        "suggested_next_step",
+                        "Inspect build.log_tail and retry run.",
+                    )
+                )
+            return RuntimeResult(ok=True, data=info)
+
         proc = self._proc.current
         if proc is None:
-            return RuntimeResult(ok=True, data={
+            data: dict[str, Any] = {
                 "process_state": "absent",
                 "debug_state": "detached",
                 "running": False,
                 "message": "No application is managed by this runtime",
-            })
+            }
+            if project is not None:
+                data.update(project)
+            return RuntimeResult(ok=True, data=data)
         if not proc.is_alive():
             self._invalidate_suspension()
             readiness = self._proc.observe_readiness(proc, refresh=False)
-            return RuntimeResult(ok=True, data={
+            data = {
                 "process_state": "exited",
                 "debug_state": "detached",
                 "running": False,
@@ -931,7 +1856,12 @@ class JavaRuntime(Runtime):
                 "exit_code": proc.exit_code,
                 "message": "Managed application has exited",
                 **readiness,
-            })
+            }
+            if project is not None:
+                data.update(project)
+                data["process_state"] = "exited"
+                data["running"] = False
+            return RuntimeResult(ok=True, data=data)
 
         readiness = self._proc.observe_readiness(proc)
         info: dict[str, Any] = {
@@ -982,6 +1912,11 @@ class JavaRuntime(Runtime):
             info["jar_path"] = proc.jar_path
         else:
             info["main_class"] = proc.main_class
+        if project is not None:
+            info.update(project)
+            info["process_state"] = "running"
+            info["running"] = True
+            info["startup_state"] = readiness["startup_state"]
 
         # Try JDWP for extra info. A queued event without an owning waiter is
         # stale by definition and must be resumed, never promoted to a new
@@ -1047,11 +1982,35 @@ class JavaRuntime(Runtime):
 
     def startup_observation(self) -> dict[str, Any]:
         """Return application readiness without connecting to JDWP."""
+        project = self._reconcile_project_process_exit()
+        project_phase = (
+            project.get("launch_phase")
+            if project is not None
+            else None
+        )
+        if (
+            project is not None
+            and project_phase
+            not in {
+                LaunchPhase.IDLE.value,
+                LaunchPhase.RUNTIME_ACTIVE.value,
+            }
+        ):
+            observation: dict[str, Any] = {
+                "process_state": project.get("process_state", "absent"),
+                "launch_phase": project["launch_phase"],
+            }
+            if "startup_state" in project:
+                observation["startup_state"] = project["startup_state"]
+            if observation["process_state"] == "running":
+                proc = self._proc.current
+                if proc is not None and proc.is_alive():
+                    observation.update(self._proc.observe_readiness(proc))
+            return observation
         proc = self._proc.current
         if proc is None:
             return {
                 "process_state": "absent",
-                "startup_state": "unverified",
                 "readiness_configured": False,
             }
         readiness = self._proc.observe_readiness(proc)

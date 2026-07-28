@@ -58,6 +58,11 @@ from .java_command import (
     JavaCommandMaterializer,
     MaterializedJavaCommand,
 )
+from .project_launcher import (
+    PreparedProjectLaunch,
+    ProjectLaunchPipeline,
+    ProjectLaunchRequest,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -96,6 +101,9 @@ __all__ = [
     "MavenWorkspace",
     "MaterializedJavaCommand",
     "ProcessSupervisor",
+    "PreparedProjectLaunch",
+    "ProjectLaunchPipeline",
+    "ProjectLaunchRequest",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

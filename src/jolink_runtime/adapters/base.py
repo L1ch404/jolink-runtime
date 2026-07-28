@@ -94,7 +94,7 @@ class Runtime(ABC):
         return True
 
     @abstractmethod
-    def close(self) -> None:
+    def close(self) -> bool | None:
         """Release this Runtime's target and debugger resources.
 
         This is an internal ownership-aware lifecycle hook for transport or
@@ -104,7 +104,7 @@ class Runtime(ABC):
         ...
 
     @abstractmethod
-    def force_close(self) -> None:
+    def force_close(self) -> bool | None:
         """Release target ownership without waiting for debugger cleanup."""
         ...
 

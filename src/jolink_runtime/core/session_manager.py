@@ -105,8 +105,14 @@ class SessionManager:
             self._closing_done[key] = close_done
         closed = False
         try:
-            runtime.close()
-            closed = True
+            outcome = runtime.close()
+            closed = outcome is not False
+            if not closed:
+                logger.warning(
+                    "java_runtime.session.close_unsettled context=%s",
+                    key,
+                )
+                return False
         except Exception:
             # Runtime.close is specified as best-effort, but isolate a broken
             # adapter so one session cannot block server shutdown.
@@ -143,18 +149,33 @@ class SessionManager:
         key = session_key or "default"
         with self._lock:
             runtime = self._runtimes.pop(key, None)
-            if runtime is None:
+            if runtime is not None:
+                self._closing_runtimes[key] = runtime
+                close_done = self._closing_done.setdefault(
+                    key,
+                    threading.Event(),
+                )
+            else:
                 runtime = self._closing_runtimes.get(key)
+                close_done = self._closing_done.get(key)
             if runtime is None:
                 return True
         try:
-            runtime.force_close()
+            outcome = runtime.force_close()
+            if outcome is False:
+                logger.warning(
+                    "java_runtime.session.force_close_unsettled context=%s",
+                    key,
+                )
+                return False
         except Exception:
             logger.exception(
                 "java_runtime.session.force_close_failed context=%s",
                 key,
             )
             return False
+        if close_done is not None:
+            close_done.set()
         with self._lock:
             if self._closing_runtimes.get(key) is runtime:
                 self._closing_runtimes.pop(key, None)

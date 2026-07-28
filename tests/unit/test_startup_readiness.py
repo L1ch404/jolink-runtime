@@ -9,7 +9,9 @@ from jolink_runtime.adapters.java.jdwp_adapter import JavaRuntime
 from jolink_runtime.adapters.java.process_manager import (
     ProcessInfo,
     ProcessManager,
+    ProcessStartupError,
     ReadyPortAlreadyInUseError,
+    RuntimeAlreadyRunningError,
 )
 from jolink_runtime.core.dispatcher import parse_runtime_action
 from jolink_runtime.core.models import RuntimeAction, RuntimeResult
@@ -32,6 +34,20 @@ def test_unconfigured_readiness_is_never_reported_as_ready() -> None:
     assert observed["startup_state"] == "unverified"
     assert observed["readiness_configured"] is False
     assert "readiness" not in observed
+
+
+def test_direct_runtime_readiness_is_not_hidden_by_idle_project_controller() -> None:
+    runtime = JavaRuntime()
+    process = ProcessInfo(_FakeProcess(), 5005, "Example")
+    runtime._proc._process = process
+
+    observed = runtime.startup_observation()
+
+    assert observed["pid"] == process.pid
+    assert observed["process_state"] == "running"
+    assert observed["startup_state"] == "unverified"
+    assert observed["readiness_configured"] is False
+    assert "launch_phase" not in observed
 
 
 def test_readiness_timeout_keeps_process_alive_then_status_reaches_ready(
@@ -124,7 +140,7 @@ def test_ready_port_preflight_rejects_existing_listener_before_spawn(
     assert manager.current is None
 
 
-def test_ready_port_preflight_runs_after_previous_target_is_stopped(
+def test_run_never_replaces_previous_target_or_probes_its_ready_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = ProcessManager()
@@ -132,58 +148,36 @@ def test_ready_port_preflight_runs_after_previous_target_is_stopped(
     previous = manager._publish(
         ProcessInfo(previous_target, 5005, "Previous")
     )
-    replacement_target = _FakeProcess(pid=4103)
-    probe_saw_previous_stopped = False
+    probed = False
+    spawned = False
 
-    def stop_previous(target: _FakeProcess) -> None:
-        target.returncode = -15
-
-    def probe_ready_port(
-        _host: str,
-        _port: int,
-        _timeout: float = 0.2,
-    ) -> bool:
-        nonlocal probe_saw_previous_stopped
-        probe_saw_previous_stopped = (
-            not previous.is_alive() and manager.current is None
-        )
+    def unexpected_probe(*_args: Any, **_kwargs: Any) -> bool:
+        nonlocal probed
+        probed = True
         return False
 
-    monkeypatch.setattr(
-        ProcessManager,
-        "_stop_posix",
-        staticmethod(stop_previous),
-    )
-    monkeypatch.setattr(
-        ProcessManager,
-        "_stop_windows",
-        staticmethod(stop_previous),
-    )
-    monkeypatch.setattr(manager, "_check_tcp_port", probe_ready_port)
-    monkeypatch.setattr(
-        manager,
-        "_check_jdwp_port",
-        lambda *_args, **_kwargs: True,
-    )
+    def unexpected_spawn(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal spawned
+        spawned = True
+
+    monkeypatch.setattr(manager, "_check_tcp_port", unexpected_probe)
     monkeypatch.setattr(
         "jolink_runtime.adapters.java.process_manager.subprocess.Popen",
-        lambda *_args, **_kwargs: replacement_target,
-    )
-    monkeypatch.setattr(
-        "jolink_runtime.adapters.java.process_manager.time.sleep",
-        lambda _seconds: None,
+        unexpected_spawn,
     )
 
-    started = manager.start(
-        classpath=".",
-        main_class="Replacement",
-        jdwp_port=5006,
-        ready_port=8080,
-    )
+    with pytest.raises(RuntimeAlreadyRunningError):
+        manager.start(
+            classpath=".",
+            main_class="Replacement",
+            jdwp_port=5006,
+            ready_port=8080,
+        )
 
-    assert probe_saw_previous_stopped is True
-    assert started.pid == 4103
-    assert manager.current is started
+    assert probed is False
+    assert spawned is False
+    assert previous.is_alive() is True
+    assert manager.current is previous
 
 
 def test_run_timeout_returns_starting_and_directs_status(
@@ -236,6 +230,34 @@ def test_run_timeout_returns_starting_and_directs_status(
     assert result.data["next_action"] == "status"
     assert captured["ready_port"] == 8080
     assert captured["startup_wait_timeout_seconds"] == 0
+
+
+def test_direct_jvm_start_failure_is_structured_without_log_contents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = JavaRuntime()
+
+    def fail_start(**_kwargs: Any) -> ProcessInfo:
+        raise ProcessStartupError(
+            "Process exited with code 7 before JDWP became ready.",
+            failure_type="process_exited_before_jdwp",
+            exit_code=7,
+            cleanup_settled=True,
+        )
+
+    monkeypatch.setattr(runtime._proc, "start", fail_start)
+
+    result = runtime.run(RuntimeAction(
+        action="run",
+        main_class="Example",
+    ))
+
+    assert result.ok is False
+    assert result.data["error_code"] == "JVM_START_FAILED"
+    assert result.data["failure_type"] == "process_exited_before_jdwp"
+    assert result.data["exit_code"] == 7
+    assert result.data["cleanup_settled"] is True
+    assert "Last log lines" not in result.error
 
 
 def test_restart_reuses_previous_readiness_unless_overridden(

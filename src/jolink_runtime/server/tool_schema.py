@@ -30,7 +30,8 @@ PUBLIC_RUNTIME_ACTIONS = (
 
 JAVA_RUNTIME_DESCRIPTION = (
     "Run, observe, and debug a local Java application. "
-    "Launch or restart the target, inspect status and logs, and verify code "
+    "Launch directly or from an IntelliJ IDEA Maven project, restart the "
+    "target, inspect status and logs, and verify code "
     "changes against actual runtime behavior before making further assumptions. "
     "When repeated edits fail or a fix needs verification, obtain runtime "
     "evidence before applying another patch. "
@@ -59,16 +60,41 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         },
         "classpath": {
             "type": "string",
-            "default": ".",
-            "description": "Classpath for run/restart with main_class.",
+            "description": (
+                "Classpath for direct run/restart with main_class; omit with "
+                "project_path."
+            ),
         },
         "main_class": {
             "type": "string",
-            "description": "Fully qualified main class for classpath launch.",
+            "description": (
+                "Fully qualified main class for direct classpath launch; "
+                "omit with project_path."
+            ),
         },
         "jar_path": {
             "type": "string",
-            "description": "Executable JAR for run/restart; overrides classpath mode.",
+            "description": (
+                "Executable JAR for direct run/restart; omit with project_path."
+            ),
+        },
+        "project_path": {
+            "type": "string",
+            "description": (
+                "Local Maven project root for run/restart. joLink imports an "
+                "IntelliJ IDEA Application or Spring Boot launch, uses the "
+                "project's Maven/JDK settings, compiles in the background, "
+                "then starts the resolved classpath. Do not combine with "
+                "classpath, main_class, jar_path, app_args, or vm_args."
+            ),
+        },
+        "launch_name": {
+            "type": "string",
+            "description": (
+                "Exact case-sensitive IntelliJ IDEA launch configuration "
+                "name. Required only when multiple supported launches match; "
+                "requires project_path."
+            ),
         },
         "app_args": {
             "type": "array",
@@ -113,8 +139,9 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "maximum": 60,
             "default": 30,
             "description": (
-                "Maximum synchronous readiness wait for run/restart. Timeout "
-                "leaves the process running with startup_state=starting."
+                "Direct launch readiness wait, or the first project-launch "
+                "readiness observation window. Timeout leaves the project JVM "
+                "running in waiting_readiness until later status observes ready."
             ),
         },
         "tail": {

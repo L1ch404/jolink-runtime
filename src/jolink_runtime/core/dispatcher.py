@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from ..adapters.java.jdwp_adapter import JavaRuntime
 from ..adapters.java.process_discovery import discover_java_processes
+from ..launch import ProjectLaunchRequest
 from .models import RuntimeAction, RuntimeResult
 from .session_manager import SessionManager
 from .wait_state import WaitControl
@@ -81,6 +83,94 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
     return action
 
 
+class ProjectLaunchArgumentError(ValueError):
+    """A structured MCP-only project-launch argument rejection."""
+
+    def __init__(self, *, argument: str, message: str) -> None:
+        super().__init__(message)
+        self.payload = {
+            "ok": False,
+            "error": message,
+            "error_code": "INVALID_ARGUMENT",
+            "argument": argument,
+            "retryable": True,
+            "suggested_next_step": (
+                "Correct the project launch arguments and retry run/restart."
+            ),
+        }
+
+
+def parse_project_launch_request(
+    arguments: dict[str, Any],
+) -> ProjectLaunchRequest | None:
+    """Parse the small MCP-only IDEA/Maven launch surface."""
+    has_project_path = "project_path" in arguments
+    has_launch_name = "launch_name" in arguments
+    if not has_project_path:
+        if has_launch_name:
+            raise ProjectLaunchArgumentError(
+                argument="launch_name",
+                message="launch_name requires project_path.",
+            )
+        return None
+
+    action = str(arguments.get("action", "status"))
+    if action not in {"run", "restart"}:
+        raise ProjectLaunchArgumentError(
+            argument="project_path",
+            message="project_path is only valid for run or restart.",
+        )
+    raw_project_path = arguments.get("project_path")
+    if not isinstance(raw_project_path, str) or not raw_project_path.strip():
+        raise ProjectLaunchArgumentError(
+            argument="project_path",
+            message="project_path must be a non-empty local path.",
+        )
+    raw_launch_name = arguments.get("launch_name")
+    if raw_launch_name is not None and (
+        not isinstance(raw_launch_name, str)
+        or not raw_launch_name.strip()
+    ):
+        raise ProjectLaunchArgumentError(
+            argument="launch_name",
+            message="launch_name must be a non-empty string when supplied.",
+        )
+
+    direct_fields = tuple(
+        field
+        for field in (
+            "classpath",
+            "main_class",
+            "jar_path",
+            "app_args",
+            "vm_args",
+        )
+        if field in arguments
+    )
+    if direct_fields:
+        raise ProjectLaunchArgumentError(
+            argument=direct_fields[0],
+            message=(
+                "project_path cannot be combined with direct JVM launch "
+                f"arguments: {', '.join(direct_fields)}."
+            ),
+        )
+
+    return ProjectLaunchRequest(
+        project_path=Path(raw_project_path).expanduser(),
+        launch_name=(
+            raw_launch_name
+            if isinstance(raw_launch_name, str)
+            else None
+        ),
+        jdwp_port=int(arguments.get("jdwp_port", 5005)),
+        ready_port=int(arguments.get("ready_port", 0)),
+        startup_wait_timeout_seconds=float(
+            arguments.get("startup_wait_timeout_seconds", 30)
+        ),
+    )
+
+
 def _runtime_result_payload(result: RuntimeResult) -> dict[str, Any]:
     """Return the exact JSON object represented by ``RuntimeResult.to_json``."""
     return json.loads(result.to_json())
@@ -125,6 +215,10 @@ class Dispatcher:
         """Run one Java Runtime action with the established handler semantics."""
         started_at = time.monotonic()
         action = parse_runtime_action(arguments)
+        try:
+            project_request = parse_project_launch_request(arguments)
+        except ProjectLaunchArgumentError as error:
+            return dict(error.payload)
         context_key = str(session_key or "default")
         runtime = self.sessions.get_runtime(context_key)
         logger.info(
@@ -183,7 +277,14 @@ class Dispatcher:
             return {"ok": False, "error": error}
 
         try:
-            if action.action == "wait_event" and wait_control is not None:
+            if project_request is not None:
+                project_handler = (
+                    runtime.run_project
+                    if action.action == "run"
+                    else runtime.restart_project
+                )
+                result = project_handler(action, project_request)
+            elif action.action == "wait_event" and wait_control is not None:
                 result = runtime.wait_event(action, wait_control=wait_control)
             else:
                 result = handler(action)
@@ -250,7 +351,6 @@ class Dispatcher:
         if runtime is None:
             return {
                 "process_state": "absent",
-                "startup_state": "unverified",
                 "readiness_configured": False,
             }
         observer = getattr(runtime, "startup_observation", None)
@@ -282,4 +382,9 @@ class Dispatcher:
         self.sessions.close_all()
 
 
-__all__ = ["Dispatcher", "parse_runtime_action"]
+__all__ = [
+    "Dispatcher",
+    "ProjectLaunchArgumentError",
+    "parse_project_launch_request",
+    "parse_runtime_action",
+]

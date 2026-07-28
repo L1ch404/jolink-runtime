@@ -33,6 +33,7 @@ from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
     SuspensionSnapshot,
 )
+from jolink_runtime.launch.process_tree import TerminationReport
 
 
 def _assert_two_phase_wait_next_step(
@@ -85,21 +86,31 @@ def test_process_manager_releases_expected_target_without_clearing_replacement(
     class FakeProc:
         def __init__(self, pid: int) -> None:
             self.pid = pid
+            self.returncode = None
 
-        @staticmethod
-        def poll():
-            return None
+        def poll(self):
+            return self.returncode
 
     stopped: list[int] = []
     monkeypatch.setattr(
         ProcessManager,
         "_stop_posix",
-        staticmethod(lambda proc: stopped.append(proc.pid)),
+        staticmethod(
+            lambda proc: (
+                stopped.append(proc.pid),
+                setattr(proc, "returncode", -15),
+            )
+        ),
     )
     monkeypatch.setattr(
         ProcessManager,
         "_stop_windows",
-        staticmethod(lambda proc: stopped.append(proc.pid)),
+        staticmethod(
+            lambda proc: (
+                stopped.append(proc.pid),
+                setattr(proc, "returncode", -15),
+            )
+        ),
     )
 
     manager = ProcessManager()
@@ -177,7 +188,19 @@ def test_force_close_sees_owned_process_while_start_waits_for_jdwp(
 
     monkeypatch.setattr(ProcessManager, "_stop_posix", staticmethod(stop_posix))
 
+    class Terminator:
+        @staticmethod
+        def terminate(handle, **_kwargs):
+            stopped.append(handle.pid)
+            handle.process.returncode = -15
+            return TerminationReport(
+                pid=handle.pid,
+                terminated=True,
+                forced=True,
+            )
+
     runtime = JavaRuntime()
+    runtime._proc._terminator = Terminator()
 
     def start_process() -> None:
         try:
@@ -203,7 +226,10 @@ def test_force_close_sees_owned_process_while_start_waits_for_jdwp(
     starter.join(timeout=3)
 
     assert not starter.is_alive()
-    assert stopped == [303]
+    # Both the shutdown owner and the unblocked startup waiter may request
+    # release of the same exact handle. Production termination is idempotent.
+    assert stopped
+    assert set(stopped) == {303}
     assert runtime._proc.current is None
     assert len(start_errors) == 1
     assert "Process exited with code -15" in str(start_errors[0])

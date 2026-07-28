@@ -2,11 +2,11 @@
 
 Contract-Version: `0.1`
 
-Implementation-Status: `planned`
+Implementation-Status: `implemented for Alpha dogfood`
 
-The P0 contract is frozen but not implemented. It is intentionally not
-advertised in the MCP Tool Schema until the complete IDEA → Maven → JVM
-vertical path is implemented and tested.
+The P0 contract is implemented and advertised through the existing
+`java_runtime` Tool. The first Alpha path is IDEA → Maven → JVM; Eclipse,
+Gradle, HotSwap, and persisted launch-plan caching remain outside this scope.
 
 This extension lets joLink import an existing IDE launch configuration,
 compile the corresponding Maven project, resolve a runtime classpath, and
@@ -60,9 +60,12 @@ The importer reads, in deterministic order:
 
 It accepts only IDEA `Application` and Spring Boot application
 configurations. Default templates are ignored. Duplicate configurations with
-the same effective intent are collapsed; conflicting configurations are
-never selected by fuzzy matching. With multiple candidates the caller must
-provide the exact case-sensitive `launch_name`.
+the same effective runtime intent are collapsed even when IDEA stores one as
+`Application` and another as `Spring Boot`. Conflicting configurations are
+never selected by fuzzy matching. With multiple differently named candidates
+the caller must provide the exact case-sensitive `launch_name`. If
+non-equivalent configurations share one name, the caller must rename, remove,
+or align them in IDEA because the name alone cannot disambiguate them.
 
 The importer:
 
@@ -171,6 +174,11 @@ Build progress may include a small, bounded, redacted
 `build.log_tail`. It must never make `status` wait for the complete build or
 return an unbounded log.
 
+The IDEA `Make` intent is implemented by invoking the project's Maven
+`compile` lifecycle. Maven and the configured compiler plugins decide whether
+that build recompiles individual files or the complete module; joLink does not
+claim a separate file-level incremental compiler.
+
 ### `logs`
 
 `logs` retains its current meaning: a bounded snapshot of stdout/stderr from
@@ -181,6 +189,10 @@ Build output is exposed only through:
 
 - bounded `status.build.log_tail`;
 - bounded `build_log_tail` on a build failure.
+
+Both paths use the same redaction boundary for common password, secret, token,
+API/access/private-key, credential, cookie, authorization, CLI-property, and
+URL-userinfo forms.
 
 ## State machine
 
@@ -274,9 +286,12 @@ Adapters create inert operation specifications; they must not privately spawn
 subprocesses. Long work occurs outside the Runtime state lock. Only generation
 checks and state publication use short critical sections.
 
-Cancellation terminates the process tree on Windows and the process group on
-POSIX. Server shutdown requests cancellation, waits a bounded grace period,
-then performs an ownership-safe forced release.
+Cancellation terminates the POSIX process group plus any previously observed
+identity-bound descendants that escaped that group. On Windows, the Alpha
+uses `taskkill /T` plus identity-bound `psutil` fallback; strict no-escape
+containment through a Windows Job Object remains a pre-stable follow-up.
+Server shutdown requests cancellation, waits a bounded grace period, then
+performs an ownership-safe forced release.
 
 ## Secrets and persistence
 
@@ -301,14 +316,26 @@ Only the current generation can publish a cache entry. The cache contains no
 environment values, credentials, cookies, HTTP headers, or active attempt
 state.
 
-## Implementation order
+## Implementation status
 
-1. Freeze this contract and its executable state vocabulary.
-2. Add the safe, read-only IDEA importer.
-3. Add `ProcessSupervisor` and generation-safe `LaunchAttempt` ownership.
-4. Add the Maven vertical path and Java command materialization.
-5. Integrate the path into existing Runtime actions.
-6. Dogfood single-module, reactor, Windows/JDK 8, cancellation, restart, and
-   slow-readiness cases.
-7. Add last-successful-plan persistence only after the uncached path is
-   stable.
+Implemented:
+
+1. Frozen contract and executable state vocabulary.
+2. Safe, read-only IDEA importer.
+3. Process-tree supervision and generation-safe `LaunchAttempt` ownership.
+4. Maven compile/runtime-classpath resolution and Java command
+   materialization.
+5. Integration into `run`, `status`, `stop`, `restart`, and shutdown.
+6. Unit/contract coverage plus real stdio MCP E2E for a single module and a
+   `shared → app` reactor dependency using the current workspace classes.
+
+Still requires broader Alpha dogfood:
+
+- real Windows/JDK 8 project launch and cancellation;
+- Windows Job Object containment for wrapper processes that can exit before
+  their descendants are observed;
+- slow corporate Maven builds and readiness transitions;
+- varied IDEA/Maven multi-module layouts.
+
+Last-successful-plan persistence remains deferred until the uncached path is
+stable.

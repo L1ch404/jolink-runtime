@@ -316,25 +316,40 @@ def _trigger_failed_payload(
 def _application_not_ready_payload(
     observation: dict[str, Any],
 ) -> dict[str, Any]:
-    state = str(observation.get("startup_state", "starting"))
+    state = observation.get("startup_state")
+    process_state = str(observation.get("process_state", "absent"))
+    launch_phase = observation.get("launch_phase")
+    has_process = process_state == "running"
     payload: dict[str, Any] = {
         "ok": False,
         "error": (
-            "The configured local application readiness check has not "
-            "reached ready state."
+            "No runnable application is available yet."
+            if not has_process
+            else (
+                "The configured local application readiness check has not "
+                "reached ready state."
+            )
         ),
         "error_code": "APPLICATION_NOT_READY",
         "status": "application_not_ready",
         "retryable": True,
-        "process_state": observation.get("process_state", "running"),
-        "startup_state": state,
+        "process_state": process_state,
         "http_trigger_sent": False,
         "next_action": "status",
         "suggested_next_step": (
-            "Keep the application running and call status until startup_state "
-            "is ready, then retry the wait_event observation."
+            "Call status until the project launch has produced a running "
+            "application, then retry the wait_event observation."
+            if not has_process
+            else (
+                "Keep the application running and call status until "
+                "startup_state is ready, then retry the wait_event observation."
+            )
         ),
     }
+    if state is not None:
+        payload["startup_state"] = str(state)
+    if launch_phase is not None:
+        payload["launch_phase"] = launch_phase
     for key in (
         "pid",
         "startup_elapsed_ms",
@@ -1219,8 +1234,8 @@ class RuntimeMCPBoundary:
                         observation.get("process_state", "")
                     )
                     if (
-                        startup_state in {"starting", "failed"}
-                        or process_state == "exited"
+                        process_state != "running"
+                        or startup_state in {"starting", "failed"}
                     ):
                         return _call_tool_result(
                             _application_not_ready_payload(observation)
@@ -1628,17 +1643,50 @@ class RuntimeMCPBoundary:
                     lock_acquired,
                 )
                 try:
+                    force_completed = False
                     with anyio.move_on_after(
                         self._cancellation_grace_seconds
                     ) as force_scope:
-                        await anyio.to_thread.run_sync(
-                            self.dispatcher.force_close_session,
-                            self.session_key,
-                            abandon_on_cancel=True,
+                        force_completed = bool(
+                            await anyio.to_thread.run_sync(
+                                self.dispatcher.force_close_session,
+                                self.session_key,
+                                abandon_on_cancel=True,
+                            )
                         )
+                    if (
+                        not force_scope.cancel_called
+                        and not force_completed
+                    ):
+                        logger.warning(
+                            "mcp.runtime.shutdown.force_unsettled_retry "
+                            "context=%s",
+                            self.session_key,
+                        )
+                        with anyio.move_on_after(
+                            self._cancellation_grace_seconds
+                        ) as retry_scope:
+                            force_completed = bool(
+                                await anyio.to_thread.run_sync(
+                                    self.dispatcher.force_close_session,
+                                    self.session_key,
+                                    abandon_on_cancel=True,
+                                )
+                            )
+                        if retry_scope.cancel_called:
+                            logger.critical(
+                                "mcp.runtime.shutdown.force_retry_timeout "
+                                "context=%s",
+                                self.session_key,
+                            )
                     if force_scope.cancel_called:
                         logger.critical(
                             "mcp.runtime.shutdown.force_timeout context=%s",
+                            self.session_key,
+                        )
+                    elif not force_completed:
+                        logger.critical(
+                            "mcp.runtime.shutdown.force_unsettled context=%s",
                             self.session_key,
                         )
                 except Exception:

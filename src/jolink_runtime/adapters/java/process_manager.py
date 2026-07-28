@@ -13,10 +13,13 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Mapping
 from typing import Optional
 
 import psutil
 
+from ...launch.process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .log_manager import read_log_tail_snapshot
 
 
@@ -27,6 +30,31 @@ _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00
 
 class ReadyPortAlreadyInUseError(RuntimeError):
     """Raised when readiness would observe a listener that predates launch."""
+
+
+class RuntimeAlreadyRunningError(RuntimeError):
+    """Raised when run would implicitly replace an existing target."""
+
+
+class ProcessStartCancelledError(RuntimeError):
+    """Raised when an asynchronous launch owner cancels JVM startup."""
+
+
+class ProcessStartupError(RuntimeError):
+    """Safe, structured failure before a launched JVM becomes usable."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_type: str,
+        exit_code: int | None = None,
+        cleanup_settled: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.failure_type = failure_type
+        self.exit_code = exit_code
+        self.cleanup_settled = bool(cleanup_settled)
 
 
 def _iso_timestamp(epoch_seconds: float) -> str:
@@ -48,6 +76,8 @@ class ProcessInfo:
         ready_port: int = 0,
         startup_wait_timeout_seconds: float = 30.0,
         readiness_config_source: str = "not_configured",
+        retained_files: tuple[Path, ...] = (),
+        process_tree: ProcessTreeHandle | None = None,
     ):
         self.proc = proc
         self._pid = proc.pid if proc is not None else int(pid or 0)
@@ -75,6 +105,8 @@ class ProcessInfo:
         self._failed_monotonic: float | None = None
         self._failure_type = ""
         self._startup_wait_timed_out = False
+        self.retained_files = tuple(retained_files)
+        self.process_tree = process_tree
 
     @property
     def pid(self) -> int:
@@ -181,12 +213,19 @@ class ProcessManager:
 
     JDWP_HANDSHAKE = b"JDWP-Handshake"
 
-    def __init__(self, host: str = "localhost"):
+    def __init__(
+        self,
+        host: str = "localhost",
+        *,
+        terminator: ProcessTreeTerminator | None = None,
+    ):
         self._host = host
         self._process: Optional[ProcessInfo] = None
         self._generation = 0
         self._state_lock = threading.RLock()
+        self._spawn_lock = threading.Lock()
         self._accept_new_targets = True
+        self._terminator = terminator or ProcessTreeTerminator()
 
     def _publish(self, process: ProcessInfo) -> ProcessInfo:
         """Publish a new target with a manager-local monotonic generation."""
@@ -196,16 +235,11 @@ class ProcessManager:
             self._process = process
         return process
 
-    def _forget_target(self, process: ProcessInfo) -> None:
-        """Forget a failed target without clearing a newer replacement."""
-        with self._state_lock:
-            if self._process is process:
-                self._process = None
-
     def prevent_new_targets(self) -> None:
         """Close the spawn/attach gate before Runtime shutdown inspects state."""
-        with self._state_lock:
-            self._accept_new_targets = False
+        with self._spawn_lock:
+            with self._state_lock:
+                self._accept_new_targets = False
 
     # -- helpers --
 
@@ -266,6 +300,13 @@ class ProcessManager:
         ready_port: int = 0,
         startup_wait_timeout_seconds: float = 30.0,
         readiness_config_source: str = "not_configured",
+        java_executable: str | os.PathLike[str] = "java",
+        working_directory: str | os.PathLike[str] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        on_published: Callable[[ProcessInfo], None] | None = None,
+        command_argv: tuple[str, ...] | None = None,
+        retained_files: tuple[Path, ...] = (),
     ) -> ProcessInfo:
         """Launch a Java process with JDWP enabled, return ProcessInfo.
 
@@ -285,25 +326,24 @@ class ProcessManager:
 
         logger.info(
             "java_runtime.process.start.request launch_mode=%s main_class=%s "
-            "jar_path=%s classpath=%s "
+            "jar_path=%s classpath_chars=%s "
             "jdwp_port=%s ready_port=%s app_args_count=%s vm_args_count=%s "
             "jdwp_startup_timeout=%s readiness_wait_timeout=%s",
-            launch_mode, main_class or "-", jar_path or "-", classpath, jdwp_port,
+            launch_mode, main_class or "-", jar_path or "-", len(classpath), jdwp_port,
             ready_port or "-", len(app_args or []), len(vm_args or []),
             startup_timeout, startup_wait_timeout_seconds,
         )
-        # Auto-restart: stop old process first
         with self._state_lock:
             previous = self._process
         if previous and previous.is_alive():
-            logger.info(
-                "java_runtime.process.start.replacing pid=%s",
-                previous.pid,
+            raise RuntimeAlreadyRunningError(
+                f"Runtime already manages process {previous.pid}"
             )
-            self.stop_target(previous)
-        elif previous is not None:
-            self._forget_target(previous)
 
+        if should_stop is not None and should_stop():
+            raise ProcessStartCancelledError(
+                "Java process startup was cancelled before spawn"
+            )
         if ready_port and self._check_tcp_port("127.0.0.1", ready_port):
             logger.warning(
                 "java_runtime.process.readiness.port_in_use port=%s",
@@ -322,38 +362,69 @@ class ProcessManager:
                 # Binary mode avoids applying the host's Windows text encoding.
                 log_fp = open(log_file, "wb")
 
-            cmd = [
-                "java",
-                f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,"
-                f"address=127.0.0.1:{jdwp_port}",
-            ]
-            if vm_args:
-                cmd.extend(vm_args)
-            if jar_path:
-                cmd.extend(["-jar", jar_path])
+            if command_argv is not None:
+                cmd = list(command_argv)
             else:
-                cmd.extend(["-cp", classpath, main_class])
-            if app_args:
-                cmd.extend(app_args)
+                cmd = [
+                    str(java_executable),
+                    f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,"
+                    f"address=127.0.0.1:{jdwp_port}",
+                ]
+                if vm_args:
+                    cmd.extend(vm_args)
+                if jar_path:
+                    cmd.extend(["-jar", jar_path])
+                else:
+                    cmd.extend(["-cp", classpath, main_class])
+                if app_args:
+                    cmd.extend(app_args)
 
             popen_kwargs = {
                 "stdout": log_fp or subprocess.DEVNULL,
                 "stderr": subprocess.STDOUT,
             }
+            if working_directory is not None:
+                popen_kwargs["cwd"] = str(working_directory)
+            if environment_overrides:
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        str(key): str(value)
+                        for key, value in environment_overrides.items()
+                    }
+                )
+                popen_kwargs["env"] = environment
             if _IS_WINDOWS:
                 popen_kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP
             else:
                 popen_kwargs["start_new_session"] = True
-            # Spawn and publish under the same lock. Shutdown must never
-            # observe an empty manager after the OS process exists, even while
-            # this method is still waiting for JDWP readiness.
-            with self._state_lock:
-                if not self._accept_new_targets:
-                    raise RuntimeError("Process manager is shutting down")
+            # The dedicated gate prevents shutdown from observing an empty
+            # manager after Popen while the state lock remains short-lived.
+            with self._spawn_lock:
+                with self._state_lock:
+                    if not self._accept_new_targets:
+                        raise RuntimeError("Process manager is shutting down")
+                    current = self._process
+                    if current is not None and current.is_alive():
+                        raise RuntimeAlreadyRunningError(
+                            "Runtime already manages process "
+                            f"{current.pid}"
+                        )
+                if current is not None:
+                    stale = self.stop_target(
+                        current,
+                        deadline=time.monotonic() + 2.0,
+                        force=True,
+                    )
+                    if stale.get("status") == "stop_failed":
+                        raise RuntimeAlreadyRunningError(
+                            "The previous managed process tree is still alive"
+                        )
                 proc = subprocess.Popen(
                     cmd,
                     **popen_kwargs,
                 )
+                process_tree = ProcessTreeHandle.from_process(proc)
                 process = ProcessInfo(
                     proc,
                     jdwp_port,
@@ -364,8 +435,19 @@ class ProcessManager:
                         startup_wait_timeout_seconds
                     ),
                     readiness_config_source=readiness_config_source,
+                    retained_files=retained_files,
+                    process_tree=process_tree,
                 )
-                self._publish(process)
+                with self._state_lock:
+                    if not self._accept_new_targets:
+                        raise RuntimeError("Process manager is shutting down")
+                    self._publish(process)
+                if on_published is not None:
+                    on_published(process)
+                if should_stop is not None and should_stop():
+                    raise ProcessStartCancelledError(
+                        "Java process startup was cancelled during spawn"
+                    )
             logger.info(
                 "java_runtime.process.spawned pid=%s launch_mode=%s target=%s jdwp_port=%s",
                 proc.pid, launch_mode, jar_path or main_class, jdwp_port,
@@ -386,6 +468,8 @@ class ProcessManager:
                     proc.kill()
                 except Exception:
                     pass
+            if process is None:
+                self._cleanup_paths(retained_files)
             logger.error(
                 "java_runtime.process.spawn.failed launch_mode=%s target=%s jdwp_port=%s "
                 "error_type=%s error=%s",
@@ -399,8 +483,19 @@ class ProcessManager:
         assert proc is not None
         deadline = time.time() + startup_timeout
         while time.time() < deadline:
+            if should_stop is not None and should_stop():
+                self.stop_target(process)
+                if log_fp:
+                    log_fp.close()
+                raise ProcessStartCancelledError(
+                    "Java process startup was cancelled"
+                )
             if proc.poll() is not None:
-                self._forget_target(process)
+                settlement = self.stop_target(
+                    process,
+                    deadline=time.monotonic() + 2.0,
+                    force=True,
+                )
                 if log_fp:
                     log_fp.close()
                 log_tail = self._read_log_tail(log_file)
@@ -410,16 +505,49 @@ class ProcessManager:
                     proc.pid, proc.returncode,
                     (time.monotonic() - started_at) * 1000, len(log_tail),
                 )
-                raise RuntimeError(
-                    f"Process exited with code {proc.returncode}. "
-                    f"Last log lines:\n{log_tail}"
+                if settlement.get("status") == "stop_failed":
+                    logger.warning(
+                        "java_runtime.process.start.exit_tree_unsettled "
+                        "pid=%s remaining_pids=%s",
+                        proc.pid,
+                        settlement.get("remaining_pids", []),
+                    )
+                raise ProcessStartupError(
+                    f"Process exited with code {proc.returncode} before JDWP "
+                    "became ready.",
+                    failure_type="process_exited_before_jdwp",
+                    exit_code=proc.returncode,
+                    cleanup_settled=(
+                        settlement.get("status") != "stop_failed"
+                    ),
                 )
 
             if self._check_jdwp_port("127.0.0.1", jdwp_port):
-                # JDWP handshake verified — wait 2s and confirm process stayed alive
-                time.sleep(2.0)
+                # JDWP handshake verified — confirm the process remains alive,
+                # while preserving cooperative cancellation.
+                stability_deadline = time.monotonic() + 2.0
+                while time.monotonic() < stability_deadline:
+                    if should_stop is not None and should_stop():
+                        self.stop_target(process)
+                        if log_fp:
+                            log_fp.close()
+                        raise ProcessStartCancelledError(
+                            "Java process startup was cancelled"
+                        )
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(
+                        min(
+                            0.05,
+                            max(0.0, stability_deadline - time.monotonic()),
+                        )
+                    )
                 if proc.poll() is not None:
-                    self._forget_target(process)
+                    settlement = self.stop_target(
+                        process,
+                        deadline=time.monotonic() + 2.0,
+                        force=True,
+                    )
                     if log_fp:
                         log_fp.close()
                     log_tail = self._read_log_tail(log_file)
@@ -429,9 +557,21 @@ class ProcessManager:
                         proc.pid, proc.returncode,
                         (time.monotonic() - started_at) * 1000, len(log_tail),
                     )
-                    raise RuntimeError(
-                        f"Process exited with code {proc.returncode} shortly after startup. "
-                        f"Last log lines:\n{log_tail}"
+                    if settlement.get("status") == "stop_failed":
+                        logger.warning(
+                            "java_runtime.process.start.unstable_tree_unsettled "
+                            "pid=%s remaining_pids=%s",
+                            proc.pid,
+                            settlement.get("remaining_pids", []),
+                        )
+                    raise ProcessStartupError(
+                        f"Process exited with code {proc.returncode} shortly "
+                        "after JDWP became ready.",
+                        failure_type="process_exited_during_jdwp_stability",
+                        exit_code=proc.returncode,
+                        cleanup_settled=(
+                            settlement.get("status") != "stop_failed"
+                        ),
                     )
                 break
 
@@ -441,19 +581,18 @@ class ProcessManager:
             if log_fp:
                 log_fp.close()
             log_tail = self._read_log_tail(log_file)
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            self._forget_target(process)
+            settlement = self.stop_target(process)
             logger.warning(
                 "java_runtime.process.start.timeout pid=%s jdwp_port=%s "
                 "timeout_seconds=%s captured_log_chars=%s",
                 proc.pid, jdwp_port, startup_timeout, len(log_tail),
             )
-            raise RuntimeError(
-                f"Startup timed out after {startup_timeout}s. "
-                f"Last log lines:\n{log_tail}"
+            raise ProcessStartupError(
+                f"JDWP startup timed out after {startup_timeout}s.",
+                failure_type="jdwp_startup_timeout",
+                cleanup_settled=(
+                    settlement.get("status") != "stop_failed"
+                ),
             )
 
         if log_fp:
@@ -556,17 +695,34 @@ class ProcessManager:
             raise RuntimeError("attach requires a positive pid")
         if not psutil.pid_exists(pid):
             raise RuntimeError(f"Java process {pid} is not running")
-        with self._state_lock:
-            if not self._accept_new_targets:
-                raise RuntimeError("Process manager is shutting down")
-            process = ProcessInfo(
-                None,
-                jdwp_port,
-                main_class,
-                pid=pid,
-                owned=False,
-            )
-            self._publish(process)
+        with self._spawn_lock:
+            with self._state_lock:
+                if not self._accept_new_targets:
+                    raise RuntimeError("Process manager is shutting down")
+                current = self._process
+                if current is not None and current.is_alive():
+                    raise RuntimeAlreadyRunningError(
+                        f"Runtime already manages process {current.pid}"
+                    )
+            if current is not None:
+                stale = self.stop_target(
+                    current,
+                    deadline=time.monotonic() + 2.0,
+                    force=True,
+                )
+                if stale.get("status") == "stop_failed":
+                    raise RuntimeAlreadyRunningError(
+                        "The previous managed process tree is still alive"
+                    )
+            with self._state_lock:
+                process = ProcessInfo(
+                    None,
+                    jdwp_port,
+                    main_class,
+                    pid=pid,
+                    owned=False,
+                )
+                self._publish(process)
         logger.info(
             "java_runtime.process.attach.ready pid=%s jdwp=%s:%s main_class=%s",
             pid, target_host, jdwp_port, main_class or "-",
@@ -603,7 +759,13 @@ class ProcessManager:
             process = self._process
         return self.stop_target(process)
 
-    def stop_target(self, process: ProcessInfo | None) -> dict:
+    def stop_target(
+        self,
+        process: ProcessInfo | None,
+        *,
+        deadline: float | None = None,
+        force: bool = False,
+    ) -> dict:
         """Stop exactly ``process`` without clearing a newer target.
 
         Shutdown can race a slow ``run``/``restart``.  Operating on an
@@ -614,7 +776,10 @@ class ProcessManager:
             logger.info("java_runtime.process.stop.skipped reason=not_running")
             return {"status": "not_running"}
 
-        if not process.is_alive():
+        if (
+            not process.is_alive()
+            and (not process.owned or process.process_tree is None)
+        ):
             with self._state_lock:
                 if self._process is process:
                     self._process = None
@@ -622,6 +787,7 @@ class ProcessManager:
                 "java_runtime.process.stop.skipped reason=not_running pid=%s",
                 process.pid,
             )
+            self._cleanup_retained_files(process)
             return {"status": "not_running", "pid": process.pid}
 
         if not process.owned:
@@ -631,19 +797,76 @@ class ProcessManager:
         proc = process.proc
         if proc is None:
             return self.detach_target(process)
-        if _IS_WINDOWS:
-            self._stop_windows(proc)
+        handle = process.process_tree
+        if handle is None:
+            # Compatibility for externally constructed ProcessInfo objects.
+            # Every process spawned by start() has an identity-bound handle.
+            if _IS_WINDOWS:
+                self._stop_windows(proc)
+            else:
+                self._stop_posix(proc)
+            settled = not process.is_alive()
+            forced = force
+            remaining_pids = () if settled else (pid,)
+            error_types: tuple[str, ...] = ()
         else:
-            self._stop_posix(proc)
+            stop_deadline = (
+                float(deadline)
+                if deadline is not None
+                else time.monotonic() + 6.0
+            )
+            report = self._terminator.terminate(
+                handle,
+                deadline=stop_deadline,
+                force=force,
+            )
+            settled = report.terminated and not process.is_alive()
+            forced = report.forced
+            remaining_pids = report.remaining_pids
+            error_types = report.error_types
+        if not settled:
+            logger.warning(
+                "java_runtime.process.stop.unsettled pid=%s forced=%s "
+                "remaining_pids=%s errors=%s",
+                pid,
+                forced,
+                list(remaining_pids),
+                list(error_types),
+            )
+            return {
+                "status": "stop_failed",
+                "pid": pid,
+                "settled": False,
+                "forced": forced,
+                "remaining_pids": list(remaining_pids),
+                "error_types": list(error_types),
+            }
 
         with self._state_lock:
             if self._process is process:
                 self._process = None
+        self._cleanup_retained_files(process)
         logger.info(
             "java_runtime.process.stop.finish pid=%s exit_code=%s",
             pid, proc.poll(),
         )
         return {"status": "stopped", "pid": pid}
+
+    @staticmethod
+    def _cleanup_retained_files(process: ProcessInfo) -> None:
+        ProcessManager._cleanup_paths(process.retained_files)
+
+    @staticmethod
+    def _cleanup_paths(paths: tuple[Path, ...]) -> None:
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "java_runtime.process.retained_file_cleanup_failed "
+                    "file_name=%s",
+                    path.name,
+                )
 
     @staticmethod
     def _stop_posix(proc: subprocess.Popen) -> None:

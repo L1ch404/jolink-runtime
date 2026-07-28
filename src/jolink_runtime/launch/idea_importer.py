@@ -744,24 +744,72 @@ class IdeaLaunchImporter:
         unique: list[ImportedIdeaLaunch] = []
         seen: set[tuple[Any, ...]] = set()
         for candidate in candidates:
-            intent = candidate.intent
-            key = (
-                intent.launch_name,
-                intent.launch_type,
-                intent.ide_module_name,
-                intent.main_class,
-                str(intent.working_directory),
-                intent.jvm_args,
-                intent.program_args,
-                tuple(sorted(intent.environment.items())),
-                intent.build_before_run,
-                intent.runtime_jdk_reference,
+            key = IdeaLaunchImporter._runtime_intent_key(
+                candidate.intent
             )
             if key in seen:
                 continue
             seen.add(key)
             unique.append(candidate)
         return unique
+
+    @staticmethod
+    def _runtime_intent_key(intent: LaunchIntent) -> tuple[Any, ...]:
+        """Return fields that can change the JVM joLink actually launches.
+
+        IDEA may persist the same Spring Boot main class once as a generic
+        Application and once as a Spring Boot configuration.  joLink executes
+        both through the same classpath JVM path, so ``launch_type`` and XML
+        provenance are metadata rather than selection semantics.
+        """
+        return (
+            intent.launch_name,
+            intent.ide_module_name,
+            intent.main_class,
+            str(intent.working_directory),
+            intent.jvm_args,
+            intent.program_args,
+            tuple(sorted(intent.environment.items())),
+            intent.build_before_run,
+            intent.runtime_jdk_reference,
+        )
+
+    @staticmethod
+    def _conflicting_runtime_fields(
+        candidates: list[ImportedIdeaLaunch],
+    ) -> list[str]:
+        """Name differing runtime fields without exposing their values."""
+        extractors = (
+            ("ide_module_name", lambda intent: intent.ide_module_name),
+            ("main_class", lambda intent: intent.main_class),
+            (
+                "working_directory",
+                lambda intent: str(intent.working_directory),
+            ),
+            ("jvm_args", lambda intent: intent.jvm_args),
+            ("program_args", lambda intent: intent.program_args),
+            (
+                "environment",
+                lambda intent: tuple(sorted(intent.environment.items())),
+            ),
+            (
+                "build_before_run",
+                lambda intent: intent.build_before_run,
+            ),
+            (
+                "runtime_jdk_reference",
+                lambda intent: intent.runtime_jdk_reference,
+            ),
+        )
+        conflicts: list[str] = []
+        for field_name, extractor in extractors:
+            values = {
+                extractor(candidate.intent)
+                for candidate in candidates
+            }
+            if len(values) > 1:
+                conflicts.append(field_name)
+        return conflicts
 
     @staticmethod
     def _project_root(project_path: str | os.PathLike[str]) -> Path:
@@ -800,20 +848,53 @@ class IdeaLaunchImporter:
     ) -> ImportedIdeaLaunch:
         if len(candidates) == 1:
             return candidates[0]
+        candidate_names = {
+            candidate.intent.launch_name
+            for candidate in candidates
+        }
+        same_name_conflict = len(candidate_names) == 1
+        exact_name_conflict = (
+            requested_name is not None or same_name_conflict
+        )
+        selected_name = (
+            requested_name
+            if requested_name is not None
+            else next(iter(candidate_names))
+            if same_name_conflict
+            else None
+        )
+        context: dict[str, Any] = {
+            "project_path": str(root),
+            "launch_name": selected_name,
+            "candidates": [
+                candidate.redacted_summary()
+                for candidate in candidates
+            ],
+            "suggested_next_step": (
+                (
+                    "Rename or remove the conflicting same-name IDEA "
+                    "configurations, or make their runtime settings "
+                    "equivalent, then retry run."
+                )
+                if exact_name_conflict
+                else (
+                    "Retry run with the exact launch_name of one candidate."
+                )
+            ),
+        }
+        if exact_name_conflict:
+            context["conflicting_fields"] = (
+                IdeaLaunchImporter._conflicting_runtime_fields(candidates)
+            )
         raise IdeaLaunchImportError(
             LaunchErrorCode.AMBIGUOUS_LAUNCH_CONFIGURATION,
-            "Multiple supported IDEA launch configurations match.",
-            context={
-                "project_path": str(root),
-                "launch_name": requested_name,
-                "candidates": [
-                    candidate.redacted_summary()
-                    for candidate in candidates
-                ],
-                "suggested_next_step": (
-                    "Retry run with the exact launch_name of one candidate."
-                ),
-            },
+            (
+                "Multiple non-equivalent IDEA launch configurations share "
+                "the same name."
+                if exact_name_conflict
+                else "Multiple supported IDEA launch configurations match."
+            ),
+            context=context,
         )
 
     @staticmethod

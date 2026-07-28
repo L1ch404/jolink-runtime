@@ -106,11 +106,19 @@ class _RoutingRuntime:
     def run(self, action: Any) -> RuntimeResult:
         return self._call("run", action)
 
+    def run_project(self, action: Any, request: Any) -> RuntimeResult:
+        self.calls.append(("run_project", (action, request)))
+        return RuntimeResult(data={"status": "run_project"})
+
     def stop(self, action: Any) -> RuntimeResult:
         return self._call("stop", action)
 
     def restart(self, action: Any) -> RuntimeResult:
         return self._call("restart", action)
+
+    def restart_project(self, action: Any, request: Any) -> RuntimeResult:
+        self.calls.append(("restart_project", (action, request)))
+        return RuntimeResult(data={"status": "restart_project"})
 
     def attach(self, action: Any) -> RuntimeResult:
         return self._call("attach", action)
@@ -266,6 +274,71 @@ def test_numeric_conversion_failure_stays_before_runtime_dispatch() -> None:
             {"action": "status", "max_value_depth": "not-an-integer"},
         )
 
+    assert sessions.session_keys == ()
+
+
+def test_project_launch_routes_without_changing_runtime_action(
+    tmp_path: Path,
+) -> None:
+    runtime = _RoutingRuntime()
+    dispatcher = Dispatcher(SessionManager(lambda: runtime))
+
+    result = dispatcher.dispatch(
+        "java_runtime",
+        {
+            "action": "run",
+            "project_path": str(tmp_path),
+            "launch_name": " Application ",
+            "jdwp_port": 6006,
+            "ready_port": 8080,
+            "startup_wait_timeout_seconds": 12,
+        },
+    )
+
+    assert result == {"ok": True, "status": "run_project"}
+    method, values = runtime.calls[-1]
+    action, request = values
+    assert method == "run_project"
+    assert action.action == "run"
+    assert not hasattr(action, "project_path")
+    assert request.project_path == tmp_path
+    assert request.launch_name == " Application "
+    assert request.jdwp_port == 6006
+    assert request.ready_port == 8080
+    assert request.startup_wait_timeout_seconds == 12
+
+
+@pytest.mark.parametrize(
+    ("arguments", "argument"),
+    [
+        (
+            {"action": "run", "launch_name": "Application"},
+            "launch_name",
+        ),
+        (
+            {"action": "status", "project_path": "/tmp/project"},
+            "project_path",
+        ),
+        (
+            {
+                "action": "run",
+                "project_path": "/tmp/project",
+                "main_class": "Example",
+            },
+            "main_class",
+        ),
+    ],
+)
+def test_invalid_project_arguments_fail_before_runtime_allocation(
+    arguments: dict[str, Any],
+    argument: str,
+) -> None:
+    sessions = SessionManager(lambda: _RoutingRuntime())
+    result = Dispatcher(sessions).dispatch("java_runtime", arguments)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+    assert result["argument"] == argument
     assert sessions.session_keys == ()
 
 

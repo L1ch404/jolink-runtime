@@ -19,11 +19,11 @@ from jolink_runtime.launch import (
 from jolink_runtime.server.tool_schema import get_mcp_tools
 
 
-def test_planned_project_launch_is_not_advertised_before_integration() -> None:
+def test_project_launch_is_advertised_only_in_the_mcp_contract() -> None:
     properties = get_mcp_tools()[0].inputSchema["properties"]
 
-    assert "project_path" not in properties
-    assert "launch_name" not in properties
+    assert "project_path" in properties
+    assert "launch_name" in properties
 
 
 def test_launch_attempt_uses_existing_process_states_and_omits_premature_readiness() -> None:

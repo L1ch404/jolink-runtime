@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -881,5 +883,382 @@ def test_run_status_tracks_delayed_tcp_readiness(tmp_path: Path) -> None:
                     ))
                     assert absent["process_state"] == "absent"
                     assert "startup_state" not in absent
+
+    anyio.run(scenario)
+
+
+def test_project_path_launch_compiles_maven_and_reaches_tcp_readiness(
+    tmp_path: Path,
+) -> None:
+    """The public MCP path imports IDEA, builds Maven, and launches classes."""
+    require_real_mcp_java_e2e()
+    if shutil.which("mvn") is None:
+        pytest.skip("Maven is required for the project-launch E2E")
+
+    project = tmp_path / "project"
+    source = (
+        project
+        / "src"
+        / "main"
+        / "java"
+        / "example"
+        / "ProjectMcpFixture.java"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """\
+package example;
+
+import java.net.ServerSocket;
+
+public class ProjectMcpFixture {
+    public static void main(String[] args) throws Exception {
+        int port = Integer.parseInt(args[0]);
+        try (ServerSocket server = new ServerSocket(port)) {
+            while (true) {
+                Thread.sleep(100);
+            }
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    (project / "pom.xml").write_text(
+        """\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId>
+  <artifactId>project-mcp-fixture</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+</project>
+""",
+        encoding="utf-8",
+    )
+    ready_port = reserve_local_port()
+    jdwp_port = reserve_local_port()
+    while jdwp_port == ready_port:
+        jdwp_port = reserve_local_port()
+    run_config = project / ".run" / "ProjectMcpFixture.xml"
+    run_config.parent.mkdir()
+    run_config.write_text(
+        f"""\
+<component name="ProjectRunConfigurationManager">
+  <configuration name="ProjectMcpFixture" type="Application"
+                 factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="example.ProjectMcpFixture" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="PROGRAM_PARAMETERS" value="{ready_port}" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
+""",
+        encoding="utf-8",
+    )
+
+    async def scenario() -> None:
+        with temporary_stderr() as stderr:
+            with anyio.fail_after(90):
+                async with open_mcp_session(stderr) as session:
+                    started = assert_ok(await call_payload(session, {
+                        "action": "run",
+                        "project_path": str(project),
+                        "launch_name": "ProjectMcpFixture",
+                        "jdwp_port": jdwp_port,
+                        "ready_port": ready_port,
+                        "startup_wait_timeout_seconds": 10,
+                    }))
+                    assert started["status"] == "project_launch_started"
+                    assert started["process_state"] == "absent"
+
+                    active: dict[str, Any] | None = None
+                    while active is None:
+                        status = assert_ok(await call_payload(session, {
+                            "action": "status",
+                        }))
+                        if status["launch_phase"] == "failed":
+                            raise AssertionError(status)
+                        if status["launch_phase"] == "runtime_active":
+                            active = status
+                            break
+                        await anyio.sleep(0.1)
+
+                    assert active["process_state"] == "running"
+                    assert active["startup_state"] == "ready"
+                    pid = int(active["pid"])
+                    assert pid_is_alive(pid)
+
+                    stopped = assert_ok(await call_payload(session, {
+                        "action": "stop",
+                    }))
+                    assert stopped["status"] == "stopped"
+                    await wait_until_async(lambda: not pid_is_alive(pid))
+
+    anyio.run(scenario)
+
+
+def test_project_path_reactor_launch_uses_fresh_workspace_dependency(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Fresh reactor classes win over an older local-repository artifact."""
+    require_real_mcp_java_e2e()
+    maven = shutil.which("mvn")
+    if maven is None:
+        pytest.skip("Maven is required for the project-launch E2E")
+
+    project = tmp_path / "reactor"
+    group_id = f"example.jolink.e2e.r{uuid.uuid4().hex}"
+    repository_result = subprocess.run(
+        [
+            maven,
+            "--batch-mode",
+            "-q",
+            "help:evaluate",
+            "-Dexpression=settings.localRepository",
+            "-DforceStdout",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    repository_text = next(
+        (
+            line.strip()
+            for line in reversed(repository_result.stdout.splitlines())
+            if line.strip() and not line.lstrip().startswith("[")
+        ),
+        "",
+    )
+    if not repository_text:
+        pytest.skip("Maven local repository could not be resolved")
+    local_repository = Path(repository_text).expanduser().resolve(
+        strict=False
+    )
+    installed_group = local_repository.joinpath(*group_id.split("."))
+    request.addfinalizer(
+        lambda: shutil.rmtree(installed_group, ignore_errors=True)
+    )
+    shared_source = (
+        project
+        / "shared"
+        / "src"
+        / "main"
+        / "java"
+        / "example"
+        / "SharedMessage.java"
+    )
+    shared_source.parent.mkdir(parents=True)
+    shared_source.write_text(
+        """\
+package example;
+
+    public final class SharedMessage {
+    private SharedMessage() {}
+
+    public static String value() {
+        return "stale-installed-value";
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    app_source = (
+        project
+        / "app"
+        / "src"
+        / "main"
+        / "java"
+        / "example"
+        / "ReactorMcpFixture.java"
+    )
+    app_source.parent.mkdir(parents=True)
+    app_source.write_text(
+        """\
+package example;
+
+import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+
+public class ReactorMcpFixture {
+    public static void main(String[] args) throws Exception {
+        int port = Integer.parseInt(args[0]);
+        Files.write(
+            Paths.get(args[1]),
+            SharedMessage.value().getBytes(StandardCharsets.UTF_8)
+        );
+        try (ServerSocket server = new ServerSocket(port)) {
+            while (true) {
+                Thread.sleep(100);
+            }
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    (project / "pom.xml").write_text(
+        f"""\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>{group_id}</groupId>
+  <artifactId>reactor-root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <modules>
+    <module>shared</module>
+    <module>app</module>
+  </modules>
+  <properties>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+</project>
+""",
+        encoding="utf-8",
+    )
+    (project / "shared" / "pom.xml").write_text(
+        f"""\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>{group_id}</groupId>
+    <artifactId>reactor-root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>shared</artifactId>
+</project>
+""",
+        encoding="utf-8",
+    )
+    (project / "app" / "pom.xml").write_text(
+        f"""\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>{group_id}</groupId>
+    <artifactId>reactor-root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>{group_id}</groupId>
+      <artifactId>shared</artifactId>
+      <version>${{project.version}}</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+        encoding="utf-8",
+    )
+    # Seed an older sibling artifact in the exact local repository joLink
+    # will use.  The later joLink build intentionally stops at ``compile``;
+    # observing the fresh value therefore proves Maven's reactor workspace
+    # output took precedence over this installed JAR.
+    subprocess.run(
+        [
+            maven,
+            "--batch-mode",
+            "--fail-fast",
+            "-T",
+            "1",
+            "-DskipTests",
+            "-f",
+            str(project / "pom.xml"),
+            "install",
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    shared_source.write_text(
+        """\
+package example;
+
+public final class SharedMessage {
+    private SharedMessage() {}
+
+    public static String value() {
+        return "fresh-workspace-value";
+    }
+}
+""",
+        encoding="utf-8",
+    )
+
+    ready_port = reserve_local_port()
+    jdwp_port = reserve_local_port()
+    while jdwp_port == ready_port:
+        jdwp_port = reserve_local_port()
+    marker = tmp_path / "reactor-workspace-value"
+    run_config = project / ".run" / "ReactorMcpFixture.xml"
+    run_config.parent.mkdir()
+    run_config.write_text(
+        f"""\
+<component name="ProjectRunConfigurationManager">
+  <configuration name="ReactorMcpFixture" type="Application"
+                 factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="example.ReactorMcpFixture" />
+    <module name="app" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="PROGRAM_PARAMETERS"
+            value="{ready_port} &quot;{marker}&quot;" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
+""",
+        encoding="utf-8",
+    )
+
+    async def scenario() -> None:
+        with temporary_stderr() as stderr:
+            with anyio.fail_after(120):
+                async with open_mcp_session(stderr) as session:
+                    started = assert_ok(await call_payload(session, {
+                        "action": "run",
+                        "project_path": str(project),
+                        "launch_name": "ReactorMcpFixture",
+                        "jdwp_port": jdwp_port,
+                        "ready_port": ready_port,
+                        "startup_wait_timeout_seconds": 10,
+                    }))
+                    assert started["status"] == "project_launch_started"
+
+                    active: dict[str, Any] | None = None
+                    while active is None:
+                        status = assert_ok(await call_payload(session, {
+                            "action": "status",
+                        }))
+                        if status["launch_phase"] == "failed":
+                            raise AssertionError(status)
+                        if status["launch_phase"] == "runtime_active":
+                            active = status
+                            break
+                        await anyio.sleep(0.1)
+
+                    assert active["startup_state"] == "ready"
+                    await wait_until_async(marker.exists)
+                    assert marker.read_text(encoding="utf-8") == (
+                        "fresh-workspace-value"
+                    )
+                    assert_ok(await call_payload(session, {
+                        "action": "stop",
+                    }))
 
     anyio.run(scenario)

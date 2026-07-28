@@ -49,12 +49,25 @@ is not advertised or accepted as a public MCP action.
 `run` and `restart` distinguish JVM launch from optional application TCP
 readiness.
 
+They support two launch forms:
+
+- direct JVM launch with `jar_path`, or `main_class` plus `classpath`;
+- IDEA/Maven project launch with `project_path` and an optional exact
+  `launch_name`.
+
+Project launch imports a supported IntelliJ IDEA Application or Spring Boot
+configuration, uses the selected Maven/JDK environment, compiles in the
+background, resolves the runtime classpath, and starts the managed JVM.
+`project_path` is mutually exclusive with direct JVM launch arguments.
+Before the JVM exists, `status` reports `process_state=absent` plus the
+current `launch_phase` and omits `startup_state`.
+
 - `ready_port` is an optional loopback application port. It must differ from
   `jdwp_port`.
-- `startup_wait_timeout_seconds` limits only the synchronous readiness wait in
-  the current lifecycle call, defaults to 30 seconds, and is capped at 60
-  seconds so cancellation and shutdown remain bounded. A wait timeout never
-  terminates a live process.
+- `startup_wait_timeout_seconds` limits the direct-launch readiness wait or
+  the first project-launch readiness observation window, defaults to 30
+  seconds, and is capped at 60 seconds. A wait timeout never terminates a live
+  process; a project worker continues observing readiness in the background.
 - Readiness configuration is stored with the launched process. `status`
   rechecks the same port without reading or interpreting application logs.
 - `restart` reuses the prior launched process's readiness configuration when

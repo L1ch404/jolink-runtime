@@ -173,6 +173,30 @@ def test_session_helpers_report_runtime_failures() -> None:
     assert close_sessions.wait_for_close_session(timeout=0) is False
 
 
+def test_force_close_retains_unsettled_runtime_for_retry() -> None:
+    class RetryRuntime(_SessionRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.outcomes = iter((False, True))
+
+        def force_close(self) -> bool:
+            self.force_close_count += 1
+            return next(self.outcomes)
+
+    runtime = RetryRuntime()
+    sessions = SessionManager(lambda: runtime)
+    sessions.get_runtime("dogfood")
+
+    assert sessions.force_close_session("dogfood") is False
+    assert sessions.get_existing_runtime("dogfood") is None
+    assert sessions._closing_runtimes["dogfood"] is runtime
+    assert sessions.wait_for_close_session("dogfood", timeout=0) is False
+
+    assert sessions.force_close_session("dogfood") is True
+    assert "dogfood" not in sessions._closing_runtimes
+    assert runtime.force_close_count == 2
+
+
 def test_session_manager_waits_for_in_progress_close() -> None:
     class BlockingRuntime(_SessionRuntime):
         def __init__(self) -> None:
@@ -461,6 +485,61 @@ def test_force_close_releases_each_late_target_by_identity() -> None:
     assert closing is not None
     assert closing.data["error_code"] == "SERVER_SHUTTING_DOWN"
     assert [target.pid for target in process.released] == [101, 202]
+    assert process.current is None
+
+
+def test_unsettled_force_close_still_rejects_late_target_publication() -> None:
+    @dataclass
+    class Info:
+        pid: int
+        generation: int
+        owned: bool = True
+        alive: bool = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    class ProcessManager:
+        def __init__(self, current: Info) -> None:
+            self.current = current
+            self.released: list[Info] = []
+
+        def stop_target(
+            self,
+            expected: Info,
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            self.released.append(expected)
+            if len(self.released) == 1:
+                return {
+                    "status": "stop_failed",
+                    "pid": expected.pid,
+                    "settled": False,
+                }
+            expected.alive = False
+            if self.current is expected:
+                self.current = None
+            return {"status": "stopped", "pid": expected.pid}
+
+    first = Info(pid=211, generation=1)
+    second = Info(pid=212, generation=2)
+    process = ProcessManager(first)
+    runtime = JavaRuntime()
+    runtime._proc = process
+
+    assert runtime.force_close() is False
+    assert runtime._closing_requested is True
+    assert runtime._force_closed is False
+
+    process.current = second
+    closing = runtime._release_late_published_target(
+        second,
+        operation="run",
+    )
+
+    assert closing is not None
+    assert closing.data["error_code"] == "SERVER_SHUTTING_DOWN"
+    assert [target.pid for target in process.released] == [211, 212]
     assert process.current is None
 
 

@@ -108,8 +108,7 @@ class ProcessTreeHandle:
         with self._termination_lock:
             if self._termination_claimed:
                 if (
-                    force
-                    and self._termination_done.is_set()
+                    self._termination_done.is_set()
                     and self._termination_report is not None
                     and not self._termination_report.terminated
                 ):
@@ -213,11 +212,26 @@ class ProcessTreeTerminator:
 
         self._reap_root(handle.process, deadline)
         members = self._posix_group_members(pgid)
+        escaped = self._known_identity_live_pids(handle)
+        if escaped and time.monotonic() < deadline:
+            # A child can deliberately or indirectly leave the launch PGID
+            # (for example through setsid()). The identity snapshot remains
+            # bound to PID+create_time, so use it as a safe final fallback.
+            forced = True
+            fallback = self._terminate_with_psutil(
+                handle,
+                deadline,
+                force=True,
+            )
+            errors.extend(fallback.error_types)
+            members = self._posix_group_members(pgid)
+            escaped = self._known_identity_live_pids(handle)
+        remaining = tuple(sorted(set((*members, *escaped))))
         return TerminationReport(
             pid=handle.pid,
-            terminated=not members,
+            terminated=not remaining,
             forced=forced,
-            remaining_pids=members,
+            remaining_pids=remaining,
             error_types=tuple(errors),
         )
 
@@ -335,6 +349,23 @@ class ProcessTreeTerminator:
                 if process.is_running()
             )
         )
+
+    @classmethod
+    def _known_identity_live_pids(
+        cls,
+        handle: ProcessTreeHandle,
+    ) -> tuple[int, ...]:
+        live: list[int] = []
+        for process in cls._identity_bound_tree(handle):
+            try:
+                if (
+                    process.is_running()
+                    and process.status() != psutil.STATUS_ZOMBIE
+                ):
+                    live.append(process.pid)
+            except (psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                continue
+        return tuple(sorted(live))
 
     @staticmethod
     def _posix_group_members(process_group_id: int) -> tuple[int, ...]:

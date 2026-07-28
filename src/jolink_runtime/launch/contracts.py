@@ -68,6 +68,7 @@ class LaunchErrorCode(StrEnum):
     BUILD_TIMEOUT = "BUILD_TIMEOUT"
     RUNTIME_RESOLUTION_FAILED = "RUNTIME_RESOLUTION_FAILED"
     JVM_START_FAILED = "JVM_START_FAILED"
+    JVM_EXITED = "JVM_EXITED"
 
 
 IN_PROGRESS_LAUNCH_PHASES = frozenset(
@@ -293,6 +294,7 @@ class LaunchAttempt:
     error_message: str | None = None
     retryable: bool | None = None
     suggested_next_step: str | None = None
+    error_context: dict[str, Any] = field(default_factory=dict, repr=False)
     created_at: datetime = field(default_factory=_utc_now)
     updated_at: datetime = field(default_factory=_utc_now)
 
@@ -311,7 +313,10 @@ class LaunchAttempt:
             }
         ):
             allowed.add(LaunchPhase.FAILED)
-            if self.phase is LaunchPhase.RUNTIME_ACTIVE:
+            if (
+                self.phase is LaunchPhase.RUNTIME_ACTIVE
+                or self.process_state is RuntimeProcessState.RUNNING
+            ):
                 allowed.add(LaunchPhase.STOPPING)
             else:
                 allowed.add(LaunchPhase.CANCELLING)
@@ -329,7 +334,10 @@ class LaunchAttempt:
         self.cancel_requested = True
         if self.phase in TERMINAL_LAUNCH_PHASES:
             return
-        if self.phase is LaunchPhase.RUNTIME_ACTIVE:
+        if (
+            self.phase is LaunchPhase.RUNTIME_ACTIVE
+            or self.process_state is RuntimeProcessState.RUNNING
+        ):
             self.transition(LaunchPhase.STOPPING)
         elif self.phase not in {
             LaunchPhase.CANCELLING,
@@ -360,6 +368,21 @@ class LaunchAttempt:
                 "retryable": bool(self.retryable),
                 "suggested_next_step": self.suggested_next_step or "",
             }
+            snapshot["launch_error"].update(
+                {
+                    key: value
+                    for key, value in self.error_context.items()
+                    if key
+                    not in {
+                        "error",
+                        "error_code",
+                        "message",
+                        "retryable",
+                        "suggested_next_step",
+                        "code",
+                    }
+                }
+            )
         return snapshot
 
 

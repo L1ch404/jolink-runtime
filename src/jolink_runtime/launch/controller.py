@@ -37,11 +37,13 @@ class LaunchPipelineFailure(RuntimeError):
         *,
         retryable: bool,
         suggested_next_step: str,
+        context: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = str(error_code)
         self.retryable = bool(retryable)
         self.suggested_next_step = suggested_next_step
+        self.context = context or {}
 
 
 class LaunchControlError(RuntimeError):
@@ -139,6 +141,29 @@ class LaunchContext:
         )
         if result.cancelled:
             raise LaunchCancelled("Project launch was cancelled.")
+        if (
+            result.termination is not None
+            and not result.termination.terminated
+        ):
+            raise LaunchPipelineFailure(
+                (
+                    LaunchErrorCode.BUILD_TIMEOUT
+                    if result.timed_out
+                    else LaunchErrorCode.BUILD_FAILED
+                ),
+                "The supervised build process tree did not settle.",
+                retryable=True,
+                suggested_next_step=(
+                    "Call stop to retry exact process-tree cleanup. Retry "
+                    "run only after status no longer reports a running build."
+                ),
+                context={
+                    "operation_name": result.operation_name,
+                    "remaining_process_count": len(
+                        result.termination.remaining_pids
+                    ),
+                },
+            )
         self.check_cancelled()
         return result
 
@@ -174,11 +199,22 @@ class LaunchController:
                     )
                 )
             current = self._current
+            current_build_running = bool(
+                current is not None
+                and self.supervisor.snapshot(
+                    current.token
+                ).get("running", False)
+            )
             if current is not None and (
                 current.attempt.phase not in TERMINAL_LAUNCH_PHASES
                 or (
                     current.thread is not None
                     and current.thread.is_alive()
+                )
+                or current_build_running
+                or (
+                    current.attempt.process_state
+                    is RuntimeProcessState.RUNNING
                 )
             ):
                 if (
@@ -276,18 +312,12 @@ class LaunchController:
                     "launch_phase": LaunchPhase.IDLE.value,
                 }
             attempt = record.attempt
-            if attempt.phase in TERMINAL_LAUNCH_PHASES:
-                thread = record.thread
-                settled = thread is None or not thread.is_alive()
-                return {
-                    "requested": False,
-                    "settled": settled,
-                    **attempt.public_snapshot(),
-                }
-            was_runtime_active = (
-                attempt.phase is LaunchPhase.RUNTIME_ACTIVE
+            was_terminal = attempt.phase in TERMINAL_LAUNCH_PHASES
+            runtime_was_published = (
+                attempt.process_state is RuntimeProcessState.RUNNING
             )
-            attempt.request_cancel()
+            if not was_terminal:
+                attempt.request_cancel()
             record.cancel_event.set()
             thread = record.thread
 
@@ -296,7 +326,7 @@ class LaunchController:
             deadline=deadline,
         )
         runtime_released = True
-        if was_runtime_active:
+        if runtime_was_published:
             runtime_released = self._release_runtime(
                 attempt,
                 deadline,
@@ -304,6 +334,27 @@ class LaunchController:
             )
         if thread is not None and thread.is_alive():
             thread.join(max(0.0, deadline - time.monotonic()))
+        # A subprocess can be published after the first cancellation snapshot.
+        # Retry the exact owner after the worker exits before declaring the
+        # attempt settled.
+        if thread is None or not thread.is_alive():
+            cancellation = self.supervisor.cancel(
+                record.token,
+                deadline=deadline,
+            )
+        # A JVM may be published while cancellation races STARTING_JVM.
+        # Reconcile once more after worker exit so a late target cannot be
+        # mistaken for an absent Runtime and replaced by a new generation.
+        if (
+            (thread is None or not thread.is_alive())
+            and self._runtime_releaser is not None
+            and (not runtime_was_published or not runtime_released)
+        ):
+            runtime_released = self._release_runtime(
+                attempt,
+                deadline,
+                force=False,
+            )
 
         settled = bool(
             (thread is None or not thread.is_alive())
@@ -313,12 +364,25 @@ class LaunchController:
         if settled:
             with self._lock:
                 if self._current is record:
+                    if (
+                        runtime_released
+                        and attempt.process_state
+                        is RuntimeProcessState.RUNNING
+                    ):
+                        attempt.process_state = RuntimeProcessState.ABSENT
+                        attempt.startup_state = None
                     if attempt.phase is LaunchPhase.CANCELLING:
                         attempt.transition(LaunchPhase.CANCELLED)
                     elif attempt.phase is LaunchPhase.STOPPING:
+                        attempt.process_state = RuntimeProcessState.ABSENT
+                        attempt.startup_state = None
                         attempt.transition(LaunchPhase.STOPPED)
         return {
-            "requested": True,
+            "requested": bool(
+                not was_terminal
+                or cancellation.requested
+                or runtime_was_published
+            ),
             "settled": settled,
             **self.snapshot(),
         }
@@ -343,11 +407,13 @@ class LaunchController:
                 if record.attempt.phase not in TERMINAL_LAUNCH_PHASES:
                     record.attempt.request_cancel()
         supervisor = self.supervisor.force_close(deadline=deadline)
-        runtime_released = True
-        if (
+        runtime_was_published = bool(
             record is not None
-            and record.attempt.phase is LaunchPhase.STOPPING
-        ):
+            and record.attempt.process_state
+            is RuntimeProcessState.RUNNING
+        )
+        runtime_released = True
+        if record is not None and runtime_was_published:
             runtime_released = self._release_runtime(
                 record.attempt,
                 deadline,
@@ -358,10 +424,39 @@ class LaunchController:
             if record.thread.is_alive():
                 record.thread.join(max(0.0, deadline - time.monotonic()))
             worker_settled = not record.thread.is_alive()
+        if worker_settled:
+            # Reconcile a process-tree handle published after the first close
+            # snapshot, then retry a JVM that appeared during STARTING_JVM.
+            supervisor = self.supervisor.force_close(deadline=deadline)
+            if (
+                record is not None
+                and self._runtime_releaser is not None
+                and (
+                    not runtime_was_published
+                    or not runtime_released
+                )
+            ):
+                runtime_released = self._release_runtime(
+                    record.attempt,
+                    deadline,
+                    force=True,
+                )
         if record is not None and runtime_released and worker_settled:
             with self._lock:
                 if self._current is record:
+                    if (
+                        record.attempt.process_state
+                        is RuntimeProcessState.RUNNING
+                    ):
+                        record.attempt.process_state = (
+                            RuntimeProcessState.ABSENT
+                        )
+                        record.attempt.startup_state = None
                     if record.attempt.phase is LaunchPhase.STOPPING:
+                        record.attempt.process_state = (
+                            RuntimeProcessState.ABSENT
+                        )
+                        record.attempt.startup_state = None
                         record.attempt.transition(LaunchPhase.STOPPED)
                     elif record.attempt.phase is LaunchPhase.CANCELLING:
                         record.attempt.transition(LaunchPhase.CANCELLED)
@@ -387,6 +482,65 @@ class LaunchController:
             token = record.token
         snapshot["build"] = self.supervisor.snapshot(token)
         return snapshot
+
+    def discard_terminal(self) -> bool:
+        """Drop a fully settled terminal attempt before a direct launch."""
+        with self._lock:
+            record = self._current
+            if record is None:
+                return True
+            thread = record.thread
+            if (
+                record.attempt.phase not in TERMINAL_LAUNCH_PHASES
+                or (thread is not None and thread.is_alive())
+                or (
+                    record.attempt.process_state
+                    is RuntimeProcessState.RUNNING
+                )
+                or bool(
+                    self.supervisor.snapshot(
+                        record.token
+                    ).get("running", False)
+                )
+            ):
+                return False
+            if not self.supervisor.release_owner(record.token):
+                return False
+            self._current = None
+            return True
+
+    def mark_runtime_exited(
+        self,
+        *,
+        attempt_id: str,
+        exit_code: int | None,
+    ) -> bool:
+        """Publish natural JVM exit for the exact active attempt."""
+        with self._lock:
+            record = self._current
+            if (
+                record is None
+                or record.attempt.attempt_id != attempt_id
+                or record.attempt.phase is not LaunchPhase.RUNTIME_ACTIVE
+            ):
+                return False
+            attempt = record.attempt
+            attempt.process_state = RuntimeProcessState.EXITED
+            attempt.transition(LaunchPhase.FAILED)
+            attempt.error_code = LaunchErrorCode.JVM_EXITED.value
+            attempt.error_message = (
+                "The managed project JVM exited."
+                if exit_code is None
+                else f"The managed project JVM exited with code {exit_code}."
+            )
+            attempt.retryable = True
+            attempt.suggested_next_step = (
+                "Inspect Runtime logs, correct the application failure, then "
+                "call run or restart."
+            )
+            if exit_code is not None:
+                attempt.error_context = {"exit_code": exit_code}
+            return True
 
     def _run_worker(
         self,
@@ -442,6 +596,7 @@ class LaunchController:
                         ),
                     )
         finally:
+            self.supervisor.release_owner(record.token)
             record.done_event.set()
 
     def _transition_current(
@@ -497,12 +652,10 @@ class LaunchController:
 
     @staticmethod
     def _finish_cancelled_locked(record: _WorkerRecord) -> None:
-        attempt = record.attempt
-        if attempt.phase is LaunchPhase.CANCELLING:
-            attempt.transition(LaunchPhase.CANCELLED)
-        elif attempt.phase is LaunchPhase.STOPPING:
-            # The runtime releaser owns the final STOPPED transition.
-            return
+        # The worker exiting is not enough to prove that its build process
+        # tree or a late-published JVM settled. cancel_current()/force_close()
+        # owns the terminal transition after both exact owners are released.
+        return
 
     @staticmethod
     def _fail_locked(
@@ -519,6 +672,7 @@ class LaunchController:
         attempt.error_message = str(error)
         attempt.retryable = error.retryable
         attempt.suggested_next_step = error.suggested_next_step
+        attempt.error_context = dict(error.context)
 
     def _release_runtime(
         self,

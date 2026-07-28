@@ -155,6 +155,134 @@ def test_select_requires_exact_candidate_when_multiple_exist(
     )
 
 
+def test_equivalent_same_name_application_and_spring_boot_are_collapsed(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(
+        project / ".idea" / "workspace.xml",
+        """
+        <project>
+          <component name="RunManager">
+            <configuration name="WorkbenchApplication"
+                 type="Application" factoryName="Application">
+              <option name="MAIN_CLASS_NAME"
+                      value="com.example.WorkbenchApplication" />
+              <module name="workbench" />
+              <option name="WORKING_DIRECTORY"
+                      value="$PROJECT_DIR$" />
+              <method v="2">
+                <option name="Make" enabled="true" />
+              </method>
+            </configuration>
+            <configuration name="WorkbenchApplication"
+                 type="SpringBootApplicationConfigurationType"
+                 factoryName="Spring Boot">
+              <option name="SPRING_BOOT_MAIN_CLASS"
+                      value="com.example.WorkbenchApplication" />
+              <module name="workbench" />
+              <option name="WORKING_DIRECTORY"
+                      value="$PROJECT_DIR$" />
+              <method v="2">
+                <option name="Make" enabled="true" />
+              </method>
+            </configuration>
+          </component>
+        </project>
+        """,
+    )
+
+    importer = IdeaLaunchImporter()
+    discovered = importer.discover(project)
+    selected = importer.select(project, "WorkbenchApplication")
+    selected_without_name = importer.select(project)
+
+    assert len(discovered) == 1
+    assert selected.intent.main_class == (
+        "com.example.WorkbenchApplication"
+    )
+    assert selected_without_name.intent == selected.intent
+    assert selected.intent.build_before_run is True
+
+
+def test_conflicting_same_name_configurations_return_actionable_safe_error(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(
+        project / ".idea" / "workspace.xml",
+        """
+        <project>
+          <component name="RunManager">
+            <configuration name="Application" type="Application">
+              <option name="MAIN_CLASS_NAME" value="com.example.Application" />
+              <option name="VM_PARAMETERS" value="-Dmode=first-secret" />
+              <envs>
+                <env name="ACCESS_TOKEN" value="first-secret" />
+              </envs>
+            </configuration>
+            <configuration name="Application"
+                 type="SpringBootApplicationConfigurationType">
+              <option name="SPRING_BOOT_MAIN_CLASS"
+                      value="com.example.Application" />
+              <option name="VM_PARAMETERS" value="-Dmode=second-secret" />
+              <envs>
+                <env name="ACCESS_TOKEN" value="second-secret" />
+              </envs>
+            </configuration>
+          </component>
+        </project>
+        """,
+    )
+
+    with pytest.raises(IdeaLaunchImportError) as captured:
+        IdeaLaunchImporter().select(project, "Application")
+
+    payload = captured.value.to_payload()
+    payload_text = str(payload)
+    assert payload["error_code"] == "AMBIGUOUS_LAUNCH_CONFIGURATION"
+    assert payload["launch_name"] == "Application"
+    assert payload["conflicting_fields"] == ["jvm_args", "environment"]
+    assert "Rename or remove" in payload["suggested_next_step"]
+    assert "first-secret" not in payload_text
+    assert "second-secret" not in payload_text
+
+
+def test_implicit_selection_of_conflicting_same_name_configs_is_not_dead_end(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(
+        project / ".idea" / "workspace.xml",
+        """
+        <project>
+          <component name="RunManager">
+            <configuration name="Application" type="Application">
+              <option name="MAIN_CLASS_NAME" value="com.example.First" />
+            </configuration>
+            <configuration name="Application"
+                 type="SpringBootApplicationConfigurationType">
+              <option name="SPRING_BOOT_MAIN_CLASS"
+                      value="com.example.Second" />
+            </configuration>
+          </component>
+        </project>
+        """,
+    )
+
+    with pytest.raises(IdeaLaunchImportError) as captured:
+        IdeaLaunchImporter().select(project)
+
+    payload = captured.value.to_payload()
+    assert payload["launch_name"] == "Application"
+    assert payload["conflicting_fields"] == ["main_class"]
+    assert "Rename or remove" in payload["suggested_next_step"]
+    assert "exact launch_name" not in payload["suggested_next_step"]
+
+
 def test_explicit_unsupported_configuration_returns_safe_error(
     tmp_path: Path,
 ) -> None:
