@@ -126,14 +126,17 @@ def test_compile_uses_private_staging_and_preserves_formal_output(
         assert "-proc:none" in arguments
         assert "-implicit:none" in arguments
         assert "-parameters" in arguments
-        assert str(result.classes_directory) in arguments
+        assert (
+            str(result.classes_directory).replace("\\", "\\\\")
+            in arguments
+        )
         staged_source = (
             result.staging_directory
             / "sources"
             / "example"
             / "FastExample.java"
         )
-        assert str(staged_source) in arguments
+        assert str(staged_source).replace("\\", "\\\\") in arguments
         assert result.sources_unchanged() is True
         source.write_text(
             source.read_text(encoding="utf-8") + "\n",
