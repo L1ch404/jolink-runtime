@@ -71,7 +71,7 @@ joLink currently exposes two MCP tools:
 - `java_processes` — discover an already-running local JVM when attach is
   needed.
 
-The Java Runtime currently provides 15 public actions:
+The Java Runtime currently provides 16 public actions:
 
 ```text
 run
@@ -89,6 +89,7 @@ stack
 variables
 resume
 cleanup_debug_state
+update
 ```
 
 These actions support:
@@ -98,6 +99,9 @@ These actions support:
   project, compiling it, resolving its runtime classpath, and launching it
   without first packaging a fat JAR;
 - stopping or restarting an application after code changes;
+- compiling explicit method-body edits into private staging and HotSwapping
+  them into a JVM started through `project_path`, without writing
+  `target/classes`;
 - inspecting application status and logs;
 - attaching to an already-running local JVM;
 - setting semantic breakpoints and exception watches;
@@ -239,6 +243,24 @@ then resume or clean up the suspended JVM.
 
 joLink starts and observes the Java application. The coding agent may use its
 normal HTTP, terminal, browser, or testing tools to trigger the scenario.
+
+For a method-body edit in an application launched with `project_path`, the
+agent can avoid a full Maven rebuild/restart:
+
+```text
+status (confirm runtime_active and fast_update.available=true)
+-> update(source_files=[the explicit edited Java files])
+-> trigger a fresh request
+-> verify the new runtime behavior
+```
+
+`update` compiles only to private staging and applies a runtime-only HotSwap.
+It rejects class-structure and metadata changes and never silently falls back
+to a full Maven build. A successful HotSwap is not proof of business
+correctness, so the fresh verification request is required. P0 deliberately
+disables annotation processing and supports a conservative standard `javac`
+model; `fast_update.available=true` means the launch is eligible to try this
+bounded path, not that every Maven compiler plugin or source edit is supported.
 
 ## Typical workflow
 

@@ -26,6 +26,7 @@ PUBLIC_RUNTIME_ACTIONS = (
     "variables",
     "resume",
     "cleanup_debug_state",
+    "update",
 )
 
 JAVA_RUNTIME_DESCRIPTION = (
@@ -41,6 +42,9 @@ JAVA_RUNTIME_DESCRIPTION = (
     "For an HTTP application launched by run/restart, provide ready_port; "
     "if startup_state is starting, call status until TCP readiness is observed "
     "before arming an HTTP trigger. "
+    "After editing existing Java method bodies in a project_path launch, "
+    "update can compile explicit source_files into private staging and HotSwap "
+    "them without a full Maven restart; then verify with a fresh request. "
     "Treat runtime outputs as bounded observations; separate observed facts from "
     "interpretations and unverified conclusions. "
     "wait_event blocking can arm JDWP event requests, start an optional local "
@@ -335,6 +339,22 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "Active suspension id returned by wait_event/status. Pass it to "
                 "stack, variables, and resume so stale observations are rejected; "
                 "stack/variables use its event-hit thread when thread_name is omitted."
+            ),
+        },
+        "source_files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "description": (
+                "Required for update: explicit Java source paths in the selected "
+                "Maven module. joLink compiles them to private staging and "
+                "HotSwaps compatible method-body changes into the current "
+                "JVM. The update is runtime-only and is lost on restart."
             ),
         },
     },

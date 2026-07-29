@@ -71,6 +71,10 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         timeout=float(arguments.get("timeout", 30)),
         suspension_id=arguments.get("suspension_id", ""),
     )
+    if "source_files" in arguments:
+        # MCP-only extension: keep the frozen Runtime 2.4.0 dataclass shape
+        # unchanged for legacy-lineage differential contracts.
+        action.source_files = arguments.get("source_files")
     action.configure_startup_readiness(
         ready_port=int(arguments.get("ready_port", 0)),
         wait_timeout_seconds=float(
@@ -257,6 +261,7 @@ class Dispatcher:
             "variables": runtime.variables,
             "resume": runtime.resume,
             "cleanup_debug_state": runtime.cleanup_debug_state,
+            "update": getattr(runtime, "update", None),
         }
         handler = handlers.get(action.action)
         if handler is None:

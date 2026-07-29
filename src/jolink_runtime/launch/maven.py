@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import locale
+import hashlib
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -18,6 +19,7 @@ from .contracts import (
     LaunchIntent,
 )
 from .idea_environment import IdeaBuildPreferences
+from .fast_compile import FastCompilePlan, fast_compile_fingerprint
 from .toolchain import (
     JavaToolchainCandidate,
     JavaToolchainResolver,
@@ -92,6 +94,7 @@ class MavenExecutionPlan:
     preferences: IdeaBuildPreferences
     build_log: Path
     classpath_file: Path
+    compile_classpath_file: Path
 
 
 class MavenBuildSystemAdapter:
@@ -278,6 +281,13 @@ class MavenBuildSystemAdapter:
                 attempt_directory
                 / f"{module.group_id}-{module.artifact_id}.classpath"
             ),
+            compile_classpath_file=(
+                attempt_directory
+                / (
+                    f"{module.group_id}-{module.artifact_id}"
+                    ".compile-classpath"
+                )
+            ),
         )
 
     def create_build_operation(
@@ -338,6 +348,251 @@ class MavenBuildSystemAdapter:
             output_capture=execution.build_log,
             operation_name="maven_compile_and_classpath",
         )
+
+    def create_compile_classpath_operation(
+        self,
+        execution: MavenExecutionPlan,
+    ) -> BuildOperationSpec:
+        """Resolve compile scope separately without changing launch behavior."""
+        arguments = self._base_maven_arguments(execution)
+        if execution.module.relative_path != ".":
+            arguments.extend(
+                ["-pl", execution.module.relative_path, "-am"]
+            )
+        arguments.extend(
+            [
+                _DEPENDENCY_PLUGIN_GOAL,
+                "-DincludeScope=compile",
+                (
+                    "-Dmdep.outputFile="
+                    f"{execution.compile_classpath_file.parent}"
+                    "/${project.groupId}-${project.artifactId}"
+                    ".compile-classpath"
+                ),
+                f"-Dmdep.pathSeparator={os.pathsep}",
+                "-Dmdep.regenerateFile=true",
+                "-DoutputEncoding=UTF-8",
+            ]
+        )
+        return BuildOperationSpec(
+            argv=tuple(arguments),
+            cwd=execution.workspace.build_root,
+            environment=JavaToolchainResolver.maven_environment(
+                execution.build_jdk
+            ),
+            timeout_seconds=60.0,
+            output_capture=execution.build_log,
+            operation_name="maven_compile_classpath",
+        )
+
+    def consume_fast_compile_plan(
+        self,
+        *,
+        execution: MavenExecutionPlan,
+        runtime_plan: JvmLaunchPlan,
+    ) -> FastCompilePlan:
+        """Create the optional, strict source-update plan.
+
+        Failure here must be handled as a capability warning by the project
+        launcher; it must never invalidate an otherwise valid JVM launch plan.
+        """
+        source_root = execution.module.directory / "src" / "main" / "java"
+        if not source_root.is_dir():
+            raise MavenResolutionError(
+                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                "The selected Maven module has no standard src/main/java root.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build for this project layout."
+                ),
+            )
+        if execution.module.packaging != "jar":
+            raise MavenResolutionError(
+                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                "Fast source update supports standard Maven jar modules only.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build for this packaging type."
+                ),
+            )
+        if not execution.compile_classpath_file.is_file():
+            raise MavenResolutionError(
+                LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
+                "Maven did not produce the optional compile classpath.",
+                retryable=True,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart for this change."
+                ),
+            )
+
+        classpath_text = self._read_classpath_file(
+            execution.compile_classpath_file
+        )
+        entries: list[Path] = []
+        # Workspace outputs precede repository artifacts, matching the current
+        # project-launch behavior for reactor builds. P0 update still accepts
+        # sources from the selected module only.
+        entries.extend(
+            module.output_directory
+            for module in execution.workspace.modules
+            if module.output_directory.is_dir()
+        )
+        entries.extend(runtime_plan.classpath)
+        entries.extend(
+            (
+                Path(raw_entry)
+                if Path(raw_entry).is_absolute()
+                else execution.module.directory / raw_entry
+            )
+            for raw_entry in classpath_text.split(os.pathsep)
+            if raw_entry.strip()
+        )
+        normalized: list[Path] = []
+        seen: set[str] = set()
+        for entry in entries:
+            resolved = entry.expanduser().resolve(strict=False)
+            key = os.path.normcase(str(resolved))
+            if key in seen or not resolved.exists():
+                continue
+            seen.add(key)
+            normalized.append(resolved)
+        if not normalized:
+            raise MavenResolutionError(
+                LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
+                "The optional compile classpath is empty.",
+                retryable=True,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart for this change."
+                ),
+            )
+
+        configuration_inputs: list[Path] = [
+            module.pom_file
+            for module in execution.workspace.modules
+        ]
+        if execution.preferences.user_settings_file is not None:
+            configuration_inputs.append(
+                execution.preferences.user_settings_file
+            )
+        encoding = self._source_encoding(execution)
+        fingerprint = fast_compile_fingerprint(
+            configuration_inputs=configuration_inputs,
+            javac_executable=execution.build_jdk.javac_executable,
+            compile_classpath=normalized,
+        )
+        baseline_class_hashes: dict[str, str] = {}
+        class_files = sorted(
+            execution.module.output_directory.rglob("*.class")
+        )
+        if len(class_files) > 50_000:
+            raise MavenResolutionError(
+                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                "The module class output exceeds the fast-update file limit.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart for this module."
+                ),
+            )
+        for class_file in class_files:
+            try:
+                relative = class_file.relative_to(
+                    execution.module.output_directory
+                ).as_posix()
+                baseline_class_hashes[relative] = hashlib.sha256(
+                    class_file.read_bytes()
+                ).hexdigest()
+            except OSError as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
+                    "The compiled class output changed while it was inspected.",
+                    retryable=True,
+                    suggested_next_step=(
+                        "Wait for external builds to finish, then restart the "
+                        "project before using update."
+                    ),
+                ) from error
+        return FastCompilePlan(
+            project_root=execution.workspace.project_root,
+            module_root=execution.module.directory,
+            source_root=source_root.resolve(strict=True),
+            output_root=execution.module.output_directory.resolve(
+                strict=False
+            ),
+            javac_executable=execution.build_jdk.javac_executable,
+            compile_classpath=tuple(normalized),
+            encoding=encoding,
+            configuration_inputs=tuple(configuration_inputs),
+            configuration_fingerprint=fingerprint,
+            baseline_class_hashes=baseline_class_hashes,
+            target_module=execution.module.relative_path,
+        )
+
+    def _base_maven_arguments(
+        self,
+        execution: MavenExecutionPlan,
+    ) -> list[str]:
+        arguments: list[str] = [
+            *execution.maven.argv_prefix,
+            "--batch-mode",
+            "--fail-fast",
+            "-T",
+            "1",
+            "-Dstyle.color=never",
+            "-f",
+            str(execution.workspace.root_pom),
+        ]
+        preferences = execution.preferences
+        if preferences.user_settings_file is not None:
+            arguments.extend(
+                ["-s", str(preferences.user_settings_file)]
+            )
+        if preferences.local_repository is not None:
+            arguments.append(
+                f"-Dmaven.repo.local={preferences.local_repository}"
+            )
+        if preferences.active_profiles:
+            arguments.extend(
+                ["-P", ",".join(preferences.active_profiles)]
+            )
+        return arguments
+
+    def _source_encoding(self, execution: MavenExecutionPlan) -> str:
+        """Use a visible Maven encoding, else fail-safe toward modern UTF-8."""
+        property_names = (
+            "project.build.sourceEncoding",
+            "maven.compiler.encoding",
+        )
+        value = ""
+        for module in execution.workspace.modules:
+            if module.directory not in {
+                execution.workspace.build_root,
+                execution.module.directory,
+            }:
+                continue
+            root = self._read_pom(module.pom_file)
+            for name in property_names:
+                element = root.find(f"./{{*}}properties/{{*}}{name}")
+                if element is not None and (element.text or "").strip():
+                    value = (element.text or "").strip()
+        if value and "${" not in value:
+            try:
+                "".encode(value)
+            except LookupError as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                    "The Maven source encoding is not supported by this host.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build for this compiler setup."
+                    ),
+                ) from error
+            return value
+        # An inherited corporate parent may define UTF-8 outside this bounded
+        # workspace model. Using a Windows locale such as GBK in that case can
+        # silently compile different string literals. UTF-8 makes the common
+        # inherited configuration work and causes non-UTF-8 sources to fail
+        # compilation rather than guessing their contents.
+        return "UTF-8"
 
     def consume_jvm_launch_plan(
         self,

@@ -26,8 +26,9 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
 
     assert runtime.inputSchema["additionalProperties"] is False
     assert actions == list(PUBLIC_RUNTIME_ACTIONS)
-    assert len(actions) == 15
+    assert len(actions) == 16
     assert "wait_event" in actions
+    assert "update" in actions
     assert "wait_breakpoint" not in actions
     assert "skill_view" not in runtime.inputSchema["properties"]
     assert wait_mode["enum"] == ["blocking", "arm", "await"]
@@ -56,6 +57,10 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
         "DELETE",
     ]
     assert "json_body" in http_trigger["properties"]
+    source_files = runtime.inputSchema["properties"]["source_files"]
+    assert source_files["minItems"] == 1
+    assert source_files["maxItems"] == 16
+    assert source_files["uniqueItems"] is True
 
 
 def test_mcp_v01_schemas_reject_unknown_fields_and_remote_hosts() -> None:
@@ -92,6 +97,9 @@ def test_java_runtime_description_contains_required_selection_and_safety_signals
         "ready_port",
         "startup_state",
         "tcp readiness",
+        "source_files",
+        "hotswap",
+        "fresh request",
         "jdwp",
         "resume",
         "cleanup_debug_state",

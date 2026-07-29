@@ -2083,6 +2083,8 @@ def test_status_auto_resumes_pending_event_without_creating_suspension() -> None
     assert result.data["debug_state"] == "attached"
     assert result.data["orphan_events_resumed"] == 1
     assert result.data["suspension_id"] is None
+    assert "runtime_overlay_state" not in result.data
+    assert "code_revision" not in result.data
     assert runtime._active_suspension is None
     assert client.commands[0] == (Cmd.THREAD, 3, (10).to_bytes(8, "big"))
     _assert_two_phase_wait_next_step(result.data["suggested_next_step"])

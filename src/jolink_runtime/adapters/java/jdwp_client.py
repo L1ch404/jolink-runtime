@@ -21,7 +21,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,49 @@ class JDWPError(Exception):
         self.code = code
         self.message = message
         super().__init__(f"JDWP error {code}: {message}")
+
+
+class JDWPCommandRejected(JDWPError):
+    """The target VM replied with an explicit non-zero JDWP error code."""
+
+    def __init__(
+        self,
+        code: int,
+        *,
+        command_set: int,
+        command: int,
+        operation: str,
+    ):
+        self.command_set = command_set
+        self.command = command
+        self.operation = operation
+        super().__init__(code, f"{operation} was rejected by the target VM")
+
+
+class JDWPCommandOutcomeUnknown(JDWPError):
+    """A state-changing command lost its transport before a reply was observed."""
+
+    def __init__(
+        self,
+        *,
+        packet_id: int,
+        command_set: int,
+        command: int,
+        operation: str,
+        cause: BaseException,
+    ):
+        self.packet_id = packet_id
+        self.command_set = command_set
+        self.command = command
+        self.operation = operation
+        self.cause_type = type(cause).__name__
+        super().__init__(
+            -1,
+            (
+                f"{operation} outcome is unknown because the transport failed "
+                "after command transmission began"
+            ),
+        )
 
 
 # ---- Packet helpers ----------------------------------------------------
@@ -67,6 +110,42 @@ class IDSizes:
 
     def pack_frame(self, fid: int) -> bytes:
         return fid.to_bytes(self.frame_id_size, "big")
+
+
+@dataclass(frozen=True)
+class JDWPCapabilities:
+    """Named fields returned by VirtualMachine/CapabilitiesNew."""
+
+    can_watch_field_modification: bool
+    can_watch_field_access: bool
+    can_get_bytecodes: bool
+    can_get_synthetic_attribute: bool
+    can_get_owned_monitor_info: bool
+    can_get_current_contended_monitor: bool
+    can_get_monitor_info: bool
+    can_redefine_classes: bool
+    can_add_method: bool
+    can_unrestrictedly_redefine_classes: bool
+    can_pop_frames: bool
+    can_use_instance_filters: bool
+    can_get_source_debug_extension: bool
+    can_request_vm_death_event: bool
+    can_set_default_stratum: bool
+    can_get_instance_info: bool
+    can_request_monitor_events: bool
+    can_get_monitor_frame_info: bool
+    can_use_source_name_filters: bool
+    can_get_constant_pool: bool
+    can_force_early_return: bool
+
+
+@dataclass(frozen=True)
+class JDWPReferenceType:
+    """One loaded type returned by VirtualMachine/ClassesBySignature."""
+
+    type_tag: int
+    reference_type_id: int
+    status: int
 
 
 # ---- Command set constants ---------------------------------------------
@@ -588,6 +667,24 @@ class JDWPClient:
 
     def command(self, cmd_set: int, cmd: int, data: bytes = b"") -> tuple[int, bytes]:
         """Send a command and return (error_code, reply_data)."""
+        return self._command(cmd_set, cmd, data)
+
+    def _command(
+        self,
+        cmd_set: int,
+        cmd: int,
+        data: bytes = b"",
+        *,
+        outcome_unknown_operation: str | None = None,
+    ) -> tuple[int, bytes]:
+        """Send a command, optionally preserving an unknown mutation outcome.
+
+        Ordinary read-only commands keep the historical exception behavior.
+        State-changing commands such as RedefineClasses opt in to an
+        ``JDWPCommandOutcomeUnknown`` when transport or packet processing fails
+        after transmission begins: the caller must not claim that the target
+        VM still contains the old definition.
+        """
         with self._reader_lock:
             with self._connection_state_lock:
                 sock = self._sock
@@ -604,13 +701,32 @@ class JDWPClient:
             )
             try:
                 sock.sendall(raw)
-            except OSError:
+            except OSError as exc:
                 with self._connection_state_lock:
                     if self._sock is sock:
                         self._recv_buffer.clear()
+                if outcome_unknown_operation is not None:
+                    raise JDWPCommandOutcomeUnknown(
+                        packet_id=packet_id,
+                        command_set=cmd_set,
+                        command=cmd,
+                        operation=outcome_unknown_operation,
+                        cause=exc,
+                    ) from exc
                 raise
-            while packet_id not in self._pending_replies:
-                self._route_packet(self._read_packet())
+            try:
+                while packet_id not in self._pending_replies:
+                    self._route_packet(self._read_packet())
+            except Exception as exc:
+                if outcome_unknown_operation is not None:
+                    raise JDWPCommandOutcomeUnknown(
+                        packet_id=packet_id,
+                        command_set=cmd_set,
+                        command=cmd,
+                        operation=outcome_unknown_operation,
+                        cause=exc,
+                    ) from exc
+                raise
             error, reply = self._pending_replies.pop(packet_id)
             logger.debug(
                 "java_runtime.jdwp.command.reply packet_id=%s command_set=%s command=%s "
@@ -619,3 +735,176 @@ class JDWPClient:
                 (time.monotonic() - started_at) * 1000,
             )
             return error, reply
+
+    @staticmethod
+    def _raise_rejected(
+        error: int,
+        *,
+        command_set: int,
+        command: int,
+        operation: str,
+    ) -> None:
+        if error:
+            raise JDWPCommandRejected(
+                error,
+                command_set=command_set,
+                command=command,
+                operation=operation,
+            )
+
+    def capabilities_new(self) -> JDWPCapabilities:
+        """Return the target VM's extended JDWP capabilities."""
+        command = 17  # VirtualMachine/CapabilitiesNew
+        operation = "VirtualMachine/CapabilitiesNew"
+        error, data = self.command(Cmd.VM, command)
+        self._raise_rejected(
+            error,
+            command_set=Cmd.VM,
+            command=command,
+            operation=operation,
+        )
+        if len(data) != 32:
+            raise JDWPError(
+                -1,
+                f"{operation} returned {len(data)} bytes; expected 32",
+            )
+        values = [bool(value) for value in data[:21]]
+        return JDWPCapabilities(*values)
+
+    def classes_by_signature(self, signature: str) -> list[JDWPReferenceType]:
+        """Return all loaded reference types matching one JVM signature."""
+        if not signature:
+            raise ValueError("signature must not be empty")
+        encoded_signature = signature.encode("utf-8")
+        if len(encoded_signature) > 0x7FFFFFFF:
+            raise ValueError("signature is too large for a JDWP string")
+
+        command = 2  # VirtualMachine/ClassesBySignature
+        operation = "VirtualMachine/ClassesBySignature"
+        payload = struct.pack(">I", len(encoded_signature)) + encoded_signature
+        error, data = self.command(Cmd.VM, command, payload)
+        self._raise_rejected(
+            error,
+            command_set=Cmd.VM,
+            command=command,
+            operation=operation,
+        )
+
+        ids = self.ids
+        if ids is None or ids.reference_type_id_size <= 0:
+            raise JDWPError(-1, "ID sizes have not been negotiated")
+        if len(data) < 4:
+            raise JDWPError(-1, f"{operation} reply is truncated")
+        count = struct.unpack_from(">I", data, 0)[0]
+        entry_size = 1 + ids.reference_type_id_size + 4
+        expected_size = 4 + count * entry_size
+        if len(data) != expected_size:
+            raise JDWPError(
+                -1,
+                (
+                    f"{operation} returned {len(data)} bytes; "
+                    f"expected {expected_size} for {count} classes"
+                ),
+            )
+
+        result: list[JDWPReferenceType] = []
+        offset = 4
+        for _ in range(count):
+            type_tag = data[offset]
+            offset += 1
+            reference_type_id = int.from_bytes(
+                data[offset:offset + ids.reference_type_id_size],
+                "big",
+            )
+            offset += ids.reference_type_id_size
+            status = struct.unpack_from(">I", data, offset)[0]
+            offset += 4
+            result.append(
+                JDWPReferenceType(
+                    type_tag=type_tag,
+                    reference_type_id=reference_type_id,
+                    status=status,
+                )
+            )
+        return result
+
+    def reference_type_class_loader(self, reference_type_id: int) -> int:
+        """Return the defining class loader object id, or 0 for bootstrap."""
+        if reference_type_id <= 0:
+            raise ValueError("reference_type_id must be positive")
+        ids = self.ids
+        if ids is None or ids.reference_type_id_size <= 0 or ids.object_id_size <= 0:
+            raise JDWPError(-1, "ID sizes have not been negotiated")
+
+        command = 2  # ReferenceType/ClassLoader
+        operation = "ReferenceType/ClassLoader"
+        try:
+            payload = ids.pack_ref(reference_type_id)
+        except OverflowError as exc:
+            raise ValueError("reference_type_id does not fit the negotiated size") from exc
+        error, data = self.command(Cmd.REF_TYPE, command, payload)
+        self._raise_rejected(
+            error,
+            command_set=Cmd.REF_TYPE,
+            command=command,
+            operation=operation,
+        )
+        if len(data) != ids.object_id_size:
+            raise JDWPError(
+                -1,
+                (
+                    f"{operation} returned {len(data)} bytes; "
+                    f"expected {ids.object_id_size}"
+                ),
+            )
+        return int.from_bytes(data, "big")
+
+    def redefine_classes(self, definitions: Mapping[int, bytes]) -> None:
+        """Atomically submit a batch to VirtualMachine/RedefineClasses.
+
+        A non-zero JDWP reply raises ``JDWPCommandRejected`` and proves that
+        the VM rejected the batch.  A transport or packet-processing failure
+        after transmission begins raises ``JDWPCommandOutcomeUnknown`` because
+        the VM may already have applied the definitions.
+        """
+        if not definitions:
+            raise ValueError("at least one class definition is required")
+        if len(definitions) > 0x7FFFFFFF:
+            raise ValueError("too many class definitions")
+        ids = self.ids
+        if ids is None or ids.reference_type_id_size <= 0:
+            raise JDWPError(-1, "ID sizes have not been negotiated")
+
+        payload = bytearray(struct.pack(">I", len(definitions)))
+        for reference_type_id, classfile in definitions.items():
+            if reference_type_id <= 0:
+                raise ValueError("reference_type_id must be positive")
+            if not isinstance(classfile, bytes):
+                raise TypeError("class definitions must be bytes")
+            if not classfile:
+                raise ValueError("class definition must not be empty")
+            if len(classfile) > 0x7FFFFFFF:
+                raise ValueError("class definition is too large")
+            try:
+                payload.extend(ids.pack_ref(reference_type_id))
+            except OverflowError as exc:
+                raise ValueError(
+                    "reference_type_id does not fit the negotiated size"
+                ) from exc
+            payload.extend(struct.pack(">I", len(classfile)))
+            payload.extend(classfile)
+
+        command = 18  # VirtualMachine/RedefineClasses
+        operation = "VirtualMachine/RedefineClasses"
+        error, _reply = self._command(
+            Cmd.VM,
+            command,
+            bytes(payload),
+            outcome_unknown_operation=operation,
+        )
+        self._raise_rejected(
+            error,
+            command_set=Cmd.VM,
+            command=command,
+            operation=operation,
+        )

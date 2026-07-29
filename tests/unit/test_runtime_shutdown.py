@@ -778,3 +778,37 @@ def test_stale_connection_invalidates_requests_before_reconnect() -> None:
     assert runtime._armed_breakpoint_requests == {}
     assert runtime._armed_exception_requests == {}
     assert runtime._debug_connection_dirty is True
+
+
+def test_close_cancels_fast_compile_before_releasing_runtime() -> None:
+    class FastCompiler:
+        calls: list[bool] = []
+
+        def close(self, *, deadline: float, force: bool = False) -> bool:
+            assert deadline > 0
+            self.calls.append(force)
+            return True
+
+    runtime = JavaRuntime()
+    compiler = FastCompiler()
+    runtime._fast_compiler = compiler
+
+    assert runtime.close() is True
+    assert compiler.calls == [False]
+
+
+def test_force_close_force_cancels_fast_compile() -> None:
+    class FastCompiler:
+        calls: list[bool] = []
+
+        def close(self, *, deadline: float, force: bool = False) -> bool:
+            assert deadline > 0
+            self.calls.append(force)
+            return True
+
+    runtime = JavaRuntime()
+    compiler = FastCompiler()
+    runtime._fast_compiler = compiler
+
+    assert runtime.force_close() is True
+    assert compiler.calls == [True]

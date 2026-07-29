@@ -85,6 +85,11 @@ class Runtime(ABC):
         ...
 
     @abstractmethod
+    def update(self, action: RuntimeAction) -> RuntimeResult:
+        """Compile explicit sources and update the current runtime only."""
+        ...
+
+    @abstractmethod
     def interrupt_wait(self) -> None:
         """Wake a currently blocked debug-event reader without target cleanup."""
         ...

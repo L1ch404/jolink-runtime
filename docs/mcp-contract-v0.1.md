@@ -40,6 +40,7 @@ and adapters instead of adding a `language` union to `java_runtime`.
 - `variables`
 - `resume`
 - `cleanup_debug_state`
+- `update`
 
 `wait_breakpoint` remains an internal Runtime-lineage compatibility alias. It
 is not advertised or accepted as a public MCP action.
@@ -61,6 +62,22 @@ background, resolves the runtime classpath, and starts the managed JVM.
 `project_path` is mutually exclusive with direct JVM launch arguments.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
+
+`update(source_files)` is available only for the active JVM produced by a
+supported `project_path` launch. It compiles explicit Java sources from the
+selected Maven module into joLink-owned private staging, accepts only a stable
+generated-class set and method-body-compatible class shape, and applies the
+changed loaded classes as one JDWP `RedefineClasses` operation. It never
+writes Maven output or silently falls back to Maven/restart. Success is
+runtime-only evidence and returns `verification_state=not_verified`; a fresh
+business request is still required.
+
+P0 uses the resolved build JDK, compile classpath, launch bytecode target,
+source encoding, debug metadata, and existing `MethodParameters` convention.
+It deliberately disables annotation processing and does not claim to replay
+arbitrary Maven compiler-plugin executions. `fast_update.available=true`
+means the launch is eligible for the bounded fast path; compilation can still
+fail safely and direct the caller to a formal Maven build.
 
 - `ready_port` is an optional loopback application port. It must differ from
   `jdwp_port`.

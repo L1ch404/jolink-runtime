@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -1003,6 +1004,224 @@ public class ProjectMcpFixture {
     anyio.run(scenario)
 
 
+def test_project_update_hotswaps_method_body_without_writing_maven_output(
+    tmp_path: Path,
+) -> None:
+    """One update changes live behavior while target/classes stays untouched."""
+    require_real_mcp_java_e2e()
+    if shutil.which("mvn") is None:
+        pytest.skip("Maven is required for the project-update E2E")
+
+    project = tmp_path / "update-project"
+    source = (
+        project
+        / "src"
+        / "main"
+        / "java"
+        / "example"
+        / "UpdateMcpFixture.java"
+    )
+    source.parent.mkdir(parents=True)
+
+    def source_text(value: str) -> str:
+        return f"""\
+package example;
+
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
+public class UpdateMcpFixture {{
+    public static void main(String[] args) throws Exception {{
+        int port = Integer.parseInt(args[0]);
+        try (ServerSocket server = new ServerSocket(
+            port, 16, InetAddress.getByName("127.0.0.1")
+        )) {{
+            while (true) {{
+                try (Socket socket = server.accept()) {{
+                    socket.getInputStream().read();
+                    socket.getOutputStream().write(
+                        message().getBytes(StandardCharsets.UTF_8)
+                    );
+                }}
+            }}
+        }}
+    }}
+
+    private static String message() {{
+        return "{value}";
+    }}
+}}
+"""
+
+    source.write_text(source_text("before-update"), encoding="utf-8")
+    (project / "pom.xml").write_text(
+        """\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId>
+  <artifactId>update-mcp-fixture</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+</project>
+""",
+        encoding="utf-8",
+    )
+    ready_port = reserve_local_port()
+    jdwp_port = reserve_local_port()
+    while jdwp_port == ready_port:
+        jdwp_port = reserve_local_port()
+    run_config = project / ".run" / "UpdateMcpFixture.xml"
+    run_config.parent.mkdir()
+    run_config.write_text(
+        f"""\
+<component name="ProjectRunConfigurationManager">
+  <configuration name="UpdateMcpFixture" type="Application"
+                 factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="example.UpdateMcpFixture" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="PROGRAM_PARAMETERS" value="{ready_port}" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
+""",
+        encoding="utf-8",
+    )
+
+    def request_value() -> str:
+        with socket.create_connection(
+            ("127.0.0.1", ready_port),
+            timeout=3,
+        ) as client:
+            client.sendall(b"?")
+            return client.recv(256).decode("utf-8")
+
+    async def scenario() -> None:
+        with temporary_stderr() as stderr:
+            with anyio.fail_after(120):
+                async with open_mcp_session(stderr) as session:
+                    assert_ok(await call_payload(session, {
+                        "action": "run",
+                        "project_path": str(project),
+                        "launch_name": "UpdateMcpFixture",
+                        "jdwp_port": jdwp_port,
+                        "ready_port": ready_port,
+                        "startup_wait_timeout_seconds": 10,
+                    }))
+
+                    active: dict[str, Any] | None = None
+                    while active is None:
+                        status = assert_ok(await call_payload(session, {
+                            "action": "status",
+                        }))
+                        if status["launch_phase"] == "failed":
+                            raise AssertionError(status)
+                        if status["launch_phase"] == "runtime_active":
+                            active = status
+                            break
+                        await anyio.sleep(0.1)
+
+                    assert active["fast_update"]["available"] is True
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "before-update"
+                    )
+                    formal_class = (
+                        project
+                        / "target"
+                        / "classes"
+                        / "example"
+                        / "UpdateMcpFixture.class"
+                    )
+                    formal_bytes = formal_class.read_bytes()
+
+                    source.write_text(
+                        source_text("after-update"),
+                        encoding="utf-8",
+                    )
+                    updated = assert_ok(await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    }))
+                    assert updated["status"] == "updated"
+                    assert updated["update_strategy"] == (
+                        "fast_compile_hotswap"
+                    )
+                    assert updated["selection_coverage"] == "caller_provided"
+                    assert updated["persistence"] == "runtime_only"
+                    assert updated["runtime_overlay_active"] is True
+                    assert updated["runtime_overlay_state"] == "active"
+                    assert updated["verification_state"] == "not_verified"
+                    assert updated["restart_will_discard_overlay"] is True
+                    assert updated["redefined_classes"] == [
+                        "example.UpdateMcpFixture"
+                    ]
+
+                    assert formal_class.read_bytes() == formal_bytes
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "after-update"
+                    )
+                    observed = assert_ok(await call_payload(session, {
+                        "action": "status",
+                    }))
+                    assert observed["runtime_overlay_active"] is True
+                    assert observed["code_revision"] == 1
+
+                    source.write_text(
+                        source_text("after-update").replace(
+                            "public class UpdateMcpFixture {",
+                            (
+                                "public class UpdateMcpFixture {\n"
+                                "    private static int unsupportedField = 1;"
+                            ),
+                        ),
+                        encoding="utf-8",
+                    )
+                    rejected = await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    })
+                    assert rejected["ok"] is False
+                    assert rejected["error_code"] == "CLASS_SCHEMA_CHANGED"
+                    assert rejected["runtime_code_state"] == "unchanged"
+                    assert rejected["runtime_overlay_active"] is True
+                    assert rejected["code_revision"] == 1
+                    assert formal_class.read_bytes() == formal_bytes
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "after-update"
+                    )
+
+                    source.write_text(
+                        source_text("before-update"),
+                        encoding="utf-8",
+                    )
+                    reverted = assert_ok(await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    }))
+                    assert reverted["status"] == "updated"
+                    assert reverted["code_revision"] == 2
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "before-update"
+                    )
+
+                    assert_ok(await call_payload(session, {"action": "stop"}))
+
+    anyio.run(scenario)
+
+
 def test_project_path_reactor_launch_uses_fresh_workspace_dependency(
     tmp_path: Path,
     request: pytest.FixtureRequest,
@@ -1253,6 +1472,7 @@ public final class SharedMessage {
                         await anyio.sleep(0.1)
 
                     assert active["startup_state"] == "ready"
+                    assert active["fast_update"]["available"] is True
                     await wait_until_async(marker.exists)
                     assert marker.read_text(encoding="utf-8") == (
                         "fresh-workspace-value"

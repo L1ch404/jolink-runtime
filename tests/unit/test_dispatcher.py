@@ -159,6 +159,9 @@ class _RoutingRuntime:
     def cleanup_debug_state(self, action: Any) -> RuntimeResult:
         return self._call("cleanup_debug_state", action)
 
+    def update(self, action: Any) -> RuntimeResult:
+        return self._call("update", action)
+
 
 def test_runtime_action_defaults_and_boolean_coercions_are_preserved() -> None:
     defaults = parse_runtime_action({})
@@ -223,6 +226,7 @@ def test_all_migrated_runtime_actions_route_to_matching_method() -> None:
         "variables",
         "resume",
         "cleanup_debug_state",
+        "update",
     ]
     runtime = _RoutingRuntime()
     dispatcher = Dispatcher(SessionManager(lambda: runtime))

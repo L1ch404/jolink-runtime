@@ -63,6 +63,13 @@ from .project_launcher import (
     ProjectLaunchPipeline,
     ProjectLaunchRequest,
 )
+from .fast_compile import (
+    CompileAttemptResult,
+    FastCompileError,
+    FastCompilePlan,
+    FastCompiler,
+    fast_compile_fingerprint,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -104,6 +111,11 @@ __all__ = [
     "PreparedProjectLaunch",
     "ProjectLaunchPipeline",
     "ProjectLaunchRequest",
+    "CompileAttemptResult",
+    "FastCompileError",
+    "FastCompilePlan",
+    "FastCompiler",
+    "fast_compile_fingerprint",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

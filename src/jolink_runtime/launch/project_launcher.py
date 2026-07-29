@@ -20,6 +20,7 @@ from .idea_importer import (
     IdeaLaunchImportError,
     IdeaLaunchImporter,
 )
+from .fast_compile import FastCompilePlan
 from .java_command import (
     JavaCommandMaterializer,
     MaterializedJavaCommand,
@@ -56,6 +57,8 @@ class PreparedProjectLaunch:
     command: MaterializedJavaCommand
     warnings: tuple[str, ...]
     attempt_directory: Path
+    fast_compile_plan: FastCompilePlan | None = None
+    fast_compile_unavailable_reason: str | None = None
 
 
 class ProjectLaunchPipeline:
@@ -189,6 +192,9 @@ class ProjectLaunchPipeline:
                 ),
                 context={"return_code": build_result.return_code},
             )
+        compile_classpath_result = context.run_operation(
+            self._maven.create_compile_classpath_operation(execution)
+        )
         if imported.intent.build_before_run:
             context.transition(LaunchPhase.RESOLVING_RUNTIME)
         try:
@@ -213,6 +219,24 @@ class ProjectLaunchPipeline:
             command_materialization=command.materialization,
         )
         context.set_jvm_launch_plan(plan)
+        fast_compile_plan: FastCompilePlan | None = None
+        fast_compile_unavailable_reason: str | None = None
+        if compile_classpath_result.succeeded:
+            try:
+                fast_compile_plan = self._maven.consume_fast_compile_plan(
+                    execution=execution,
+                    runtime_plan=plan,
+                )
+            except MavenResolutionError as error:
+                fast_compile_unavailable_reason = error.error_code.value
+        else:
+            fast_compile_unavailable_reason = "COMPILE_CLASSPATH_UNAVAILABLE"
+        capability_warnings: tuple[str, ...] = ()
+        if fast_compile_plan is None:
+            capability_warnings = (
+                "Fast runtime-only source update is unavailable for this "
+                "launch; formal Maven build and restart remain available.",
+            )
         return PreparedProjectLaunch(
             execution=execution,
             runtime_jdk=runtime_jdk,
@@ -223,10 +247,15 @@ class ProjectLaunchPipeline:
                     (
                         *imported.warnings,
                         *preferences.warnings,
+                        *capability_warnings,
                     )
                 )
             ),
             attempt_directory=attempt_directory,
+            fast_compile_plan=fast_compile_plan,
+            fast_compile_unavailable_reason=(
+                fast_compile_unavailable_reason
+            ),
         )
 
     @staticmethod

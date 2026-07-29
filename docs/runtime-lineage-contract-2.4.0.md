@@ -97,6 +97,16 @@ This is a correctness and safety repair, not a new Runtime action or a change
 to JDWP behavior. The frozen schema fingerprints and golden lineage fixtures
 remain unchanged.
 
+### Project runtime update state
+
+The standalone Runtime adds the reviewed MCP-era `update` action for managed
+`project_path` launches. Its persistent runtime-only overlay fields are added
+to `status` only while a project launch exists. Historical direct classpath,
+JAR, and attached-JVM status payloads do not receive these fields.
+
+This is an explicit standalone Runtime capability, not a change to the frozen
+Hermes schemas or `RuntimeAction` dataclass.
+
 ### Cancellable wait ownership
 
 The standalone MCP boundary adds internal `WaitControl` ownership to
