@@ -257,10 +257,13 @@ status (confirm runtime_active and fast_update.available=true)
 `update` compiles only to private staging and applies a runtime-only HotSwap.
 It rejects class-structure and metadata changes and never silently falls back
 to a full Maven build. A successful HotSwap is not proof of business
-correctness, so the fresh verification request is required. P0 deliberately
-disables annotation processing and supports a conservative standard `javac`
-model; `fast_update.available=true` means the launch is eligible to try this
-bounded path, not that every Maven compiler plugin or source edit is supported.
+correctness, so the fresh verification request is required. P0 uses the
+selected module's Maven compile classpath and a verified Java target model; it
+fails closed when annotation processing or bytecode transformation may affect
+the selected build. Breakpoints in redefined classes become stale and must be
+set again against the current source. `fast_update.available=true` means the
+launch is eligible to try this bounded path, not that every Maven compiler
+plugin or source edit is supported.
 
 ## Typical workflow
 

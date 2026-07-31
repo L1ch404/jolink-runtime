@@ -72,12 +72,24 @@ writes Maven output or silently falls back to Maven/restart. Success is
 runtime-only evidence and returns `verification_state=not_verified`; a fresh
 business request is still required.
 
-P0 uses the resolved build JDK, compile classpath, launch bytecode target,
-source encoding, debug metadata, and existing `MethodParameters` convention.
-It deliberately disables annotation processing and does not claim to replay
-arbitrary Maven compiler-plugin executions. `fast_update.available=true`
-means the launch is eligible for the bounded fast path; compilation can still
-fail safely and direct the caller to a formal Maven build.
+P0 uses the resolved build JDK, the selected module's Maven compile classpath,
+the effective Maven Java target, formal class-file headers, source encoding,
+debug metadata, and the existing `MethodParameters` convention. On JDK 9 or
+newer it uses `--release`; JDK 8 fast compilation is accepted only when the
+build JDK, runtime JDK, and target are all Java 8. It fails closed when
+annotation processing or bytecode transformation may affect the formal build
+and does not claim to replay arbitrary Maven compiler-plugin executions.
+`fast_update.available=true` means the launch is eligible for the bounded fast
+path; compilation can still fail safely and direct the caller to a formal
+Maven build.
+
+After a class is redefined, every logical breakpoint belonging to that class
+is retained for inspection but marked stale. joLink does not rebind the old
+numeric line to potentially different code. The caller must remove and set
+those breakpoint definitions again against the current source before arming a
+new breakpoint wait. To avoid silently partial evidence, any remaining stale
+definition blocks breakpoint arming; the error returns all
+`stale_breakpoint_ids` that must be removed or reset.
 
 - `ready_port` is an optional loopback application port. It must differ from
   `jdwp_port`.

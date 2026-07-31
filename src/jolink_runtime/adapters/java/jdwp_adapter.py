@@ -97,6 +97,9 @@ _URL_USERINFO = re.compile(r"(://)([^/@\s]+)@")
 _MAX_UPDATE_PACKAGE_CLASS_FILES = 4096
 _MAX_UPDATE_CLASSES = 256
 _MAX_UPDATE_CLASS_BYTES = 32 * 1024 * 1024
+_BREAKPOINT_STALE_AFTER_REDEFINE = (
+    "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+)
 
 _TWO_PHASE_WAIT_NEXT_STEP = (
     "Call wait_event with wait_mode='arm'. After it returns status='armed', "
@@ -2249,24 +2252,25 @@ class JavaRuntime(Runtime):
                 }
             except FastCompileError as error:
                 return self._fast_compile_error_result(error, plan)
-            if len(releases) != 1:
+            if releases != {plan.target_level}:
                 return RuntimeResult(
                     ok=False,
                     error=(
-                        "The selected sources do not share one bytecode target."
+                        "The formal class output does not match the cached "
+                        "Maven compiler target."
                     ),
                     data={
-                        "error_code": "FAST_COMPILE_UNSUPPORTED",
+                        "error_code": "FAST_COMPILE_MODEL_UNVERIFIED",
                         "runtime_code_state": "unchanged",
                         **self._runtime_overlay_snapshot(),
+                        "expected_target": plan.target_level,
                         "retryable": False,
                         "suggested_next_step": (
-                            "Use the formal Maven build for mixed bytecode "
-                            "targets."
+                            "Use the formal Maven build and restart so joLink "
+                            "can resolve one consistent compiler model."
                         ),
                     },
                 )
-            source_release = next(iter(releases))
             include_parameters = any(
                 any(
                     name == "MethodParameters"
@@ -2281,7 +2285,6 @@ class JavaRuntime(Runtime):
                     plan,
                     source_files,
                     attempt_directory=prepared.attempt_directory,
-                    source_release=source_release,
                     include_parameters=include_parameters,
                 )
             except FastCompileError as error:
@@ -2359,6 +2362,28 @@ class JavaRuntime(Runtime):
                 )
 
             if not updates:
+                stale_breakpoint_ids = [
+                    breakpoint_id
+                    for breakpoint_id, definition in self._breakpoints.items()
+                    if definition.get("stale")
+                ]
+                if stale_breakpoint_ids:
+                    warnings = [
+                        "Stale logical breakpoints remain; remove and set the "
+                        "listed breakpoint ids again before arming another "
+                        "breakpoint wait."
+                    ]
+                    next_step = (
+                        "No runtime bytecode change was required. Remove and "
+                        "set the listed stale breakpoint ids again against "
+                        "the current source before triggering a fresh request."
+                    )
+                else:
+                    warnings = []
+                    next_step = (
+                        "No runtime bytecode change was required. Continue "
+                        "with a fresh request only if other evidence is needed."
+                    )
                 return RuntimeResult(
                     ok=True,
                     data={
@@ -2367,12 +2392,26 @@ class JavaRuntime(Runtime):
                         "compiled_sources": sorted(all_source_classes),
                         "redefined_classes": [],
                         "selection_coverage": "caller_provided",
-                        **self._runtime_overlay_snapshot(),
-                        "suggested_next_step": (
-                            "No runtime bytecode change was required. Continue "
-                            "with a fresh request only if other evidence is "
-                            "needed."
+                        "breakpoint_refresh_state": (
+                            "partial"
+                            if stale_breakpoint_ids
+                            else "complete"
                         ),
+                        "refreshed_breakpoint_ids": [],
+                        "stale_breakpoint_ids": stale_breakpoint_ids,
+                        "newly_stale_breakpoint_ids": [],
+                        **(
+                            {
+                                "breakpoint_stale_reason": (
+                                    _BREAKPOINT_STALE_AFTER_REDEFINE
+                                )
+                            }
+                            if stale_breakpoint_ids
+                            else {}
+                        ),
+                        "warnings": warnings,
+                        **self._runtime_overlay_snapshot(),
+                        "suggested_next_step": next_step,
                     },
                 )
 
@@ -2570,6 +2609,22 @@ class JavaRuntime(Runtime):
                 else "none"
             )
             warnings = list(breakpoint_refresh["warnings"])
+            if breakpoint_refresh["stale"]:
+                next_step = (
+                    "Remove and set the listed stale breakpoint ids again "
+                    "against the current source, then trigger a new request "
+                    "and verify the expected runtime behavior. Treat HotSwap "
+                    "acceptance as code-loading evidence, not proof that "
+                    "Spring metadata, existing objects, or business "
+                    "semantics were refreshed."
+                )
+            else:
+                next_step = (
+                    "Trigger a new request and verify the expected runtime "
+                    "behavior. Treat HotSwap acceptance as code-loading "
+                    "evidence, not proof that Spring metadata, existing "
+                    "objects, or business semantics were refreshed."
+                )
             return RuntimeResult(
                 ok=True,
                 data={
@@ -2591,14 +2646,21 @@ class JavaRuntime(Runtime):
                         "refreshed"
                     ],
                     "stale_breakpoint_ids": breakpoint_refresh["stale"],
+                    "newly_stale_breakpoint_ids": breakpoint_refresh[
+                        "newly_stale"
+                    ],
+                    **(
+                        {
+                            "breakpoint_stale_reason": (
+                                breakpoint_refresh["reason"]
+                            )
+                        }
+                        if breakpoint_refresh["reason"]
+                        else {}
+                    ),
                     "warnings": warnings,
                     **self._runtime_overlay_snapshot(),
-                    "suggested_next_step": (
-                        "Trigger a new request and verify the expected runtime "
-                        "behavior. Treat HotSwap acceptance as code-loading "
-                        "evidence, not proof that Spring metadata, existing "
-                        "objects, or business semantics were refreshed."
-                    ),
+                    "suggested_next_step": next_step,
                 },
             )
         finally:
@@ -3119,89 +3181,45 @@ class JavaRuntime(Runtime):
 
     def _refresh_updated_breakpoints(
         self,
-        jdwp: JDWPClient,
+        _jdwp: JDWPClient,
         signatures: set[str],
     ) -> dict[str, Any]:
-        refreshed: list[str] = []
-        stale: list[str] = []
-        warnings: list[str] = []
-        for breakpoint_id, definition in self._breakpoints.items():
-            if definition.get("class") not in signatures:
-                continue
-            action = RuntimeAction(
-                action="breakpoint",
-                bp_action="set",
-                class_pattern=str(definition.get("matched_class", "")),
-                line=int(definition.get("line", 0)),
-                include_proxy=bool(definition.get("include_proxy", False)),
-                include_generated=bool(
-                    definition.get("include_generated", False)
-                ),
+        newly_stale = [
+            breakpoint_id
+            for breakpoint_id, definition in self._breakpoints.items()
+            if definition.get("class") in signatures
+            and not definition.get("stale")
+        ]
+        for breakpoint_id in newly_stale:
+            definition = self._breakpoints[breakpoint_id]
+            definition["stale"] = True
+            definition["stale_reason"] = _BREAKPOINT_STALE_AFTER_REDEFINE
+            definition["refresh_error"] = (
+                "Breakpoint location must be set again after its class was "
+                "redefined."
             )
-            try:
-                candidate, resolution_error, _ignored = (
-                    self._resolve_breakpoint_class(jdwp, action)
-                )
-                if resolution_error is not None or candidate is None:
-                    stale.append(breakpoint_id)
-                    continue
-                locations, _nearby, location_error = (
-                    self._line_locations_for_class(
-                        jdwp,
-                        candidate,
-                        action.line,
-                    )
-                )
-                if location_error is not None or not locations:
-                    stale.append(breakpoint_id)
-                    continue
-                expected_method = str(
-                    definition.get("method_signature", "")
-                )
-                location = next(
-                    (
-                        item
-                        for item in locations
-                        if item.method_signature == expected_method
-                    ),
-                    locations[0],
-                )
-                definition.update(
-                    {
-                        "class": candidate.signature,
-                        "matched_class": candidate.name,
-                        "source_file": candidate.source_file,
-                        "method": location.method,
-                        "method_signature": location.method_signature,
-                        "code_index": location.code_index,
-                    }
-                )
-                definition.pop("refresh_error", None)
-                refreshed.append(breakpoint_id)
-            except Exception as error:
-                logger.warning(
-                    "java_runtime.update.breakpoint_refresh_failed "
-                    "breakpoint_id=%s error_type=%s",
-                    breakpoint_id,
-                    type(error).__name__,
-                )
-                stale.append(breakpoint_id)
-        for breakpoint_id in stale:
-            definition = self._breakpoints.get(breakpoint_id)
-            if definition is not None:
-                definition["refresh_error"] = (
-                    "Breakpoint location must be set again against updated "
-                    "bytecode."
-                )
-        if stale:
-            warnings.append(
-                "Some logical breakpoints no longer resolve on the updated "
-                "bytecode; remove and set the listed breakpoint ids again."
-            )
+        stale = [
+            breakpoint_id
+            for breakpoint_id, definition in self._breakpoints.items()
+            if definition.get("stale")
+        ]
+        warnings = (
+            [
+                "Stale logical breakpoints remain after class redefinition; "
+                "remove and set the listed breakpoint ids again against the "
+                "current source before arming another breakpoint wait."
+            ]
+            if stale
+            else []
+        )
         return {
             "state": "partial" if stale else "complete",
-            "refreshed": refreshed,
+            "refreshed": [],
             "stale": stale,
+            "newly_stale": newly_stale,
+            "reason": (
+                _BREAKPOINT_STALE_AFTER_REDEFINE if stale else None
+            ),
             "warnings": warnings,
         }
 
@@ -3613,6 +3631,47 @@ class JavaRuntime(Runtime):
             )
 
         if EventKind.BREAKPOINT in accepted_kinds:
+            if self._wait_cancelled(wait_control):
+                return self._cancelled_wait_result(
+                    "debug_event",
+                    wait_control,
+                )
+            stale_breakpoints = [
+                (breakpoint_id, definition)
+                for breakpoint_id, definition in self._breakpoints.items()
+                if definition.get("stale")
+            ]
+            if stale_breakpoints:
+                breakpoint_id, definition = stale_breakpoints[0]
+                stale_breakpoint_ids = [
+                    item_id for item_id, _item in stale_breakpoints
+                ]
+                return RuntimeResult(
+                    ok=False,
+                    error="BREAKPOINT_DEFINITION_STALE",
+                    data={
+                        "error_code": "BREAKPOINT_DEFINITION_STALE",
+                        "breakpoint_id": breakpoint_id,
+                        "stale_breakpoint_ids": stale_breakpoint_ids,
+                        "matched_class": definition.get(
+                            "matched_class",
+                            "",
+                        ),
+                        "line": definition.get("line", 0),
+                        "stale_reason": definition.get(
+                            "stale_reason",
+                            _BREAKPOINT_STALE_AFTER_REDEFINE,
+                        ),
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Remove every listed stale breakpoint, set the "
+                            "needed locations again against the current "
+                            "source and bytecode, then call wait_event with "
+                            "wait_mode='arm'. joLink refuses partial "
+                            "breakpoint arming while stale definitions remain."
+                        ),
+                    },
+                )
             for breakpoint_id, definition in self._breakpoints.items():
                 if self._wait_cancelled(wait_control):
                     return self._cancelled_wait_result("debug_event", wait_control)
@@ -5218,7 +5277,7 @@ class JavaRuntime(Runtime):
         breakpoint_id: str,
         breakpoint: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
+        observation = {
             "breakpoint_id": breakpoint.get("breakpoint_id", breakpoint_id),
             "class": breakpoint.get("class", ""),
             "matched_class": breakpoint.get("matched_class", breakpoint.get("class", "")),
@@ -5233,6 +5292,13 @@ class JavaRuntime(Runtime):
                 "armed": False,
             },
         }
+        if breakpoint.get("stale"):
+            observation["stale"] = True
+            observation["stale_reason"] = breakpoint.get(
+                "stale_reason",
+                _BREAKPOINT_STALE_AFTER_REDEFINE,
+            )
+        return observation
 
     def _breakpoint_selector(self, action: RuntimeAction) -> dict[str, Any]:
         selector: dict[str, Any] = {}

@@ -49,8 +49,8 @@ P0 supports:
 
 P0 does not implement Eclipse, Gradle, arbitrary IDEA before-launch tasks,
 project-local `.jolink` files, parallel launch attempts, cross-module fast
-compilation, resource updates, annotation processing, or structural class
-HotSwap.
+compilation, JPMS/module-path fast compilation, resource updates, annotation
+processing, or structural class HotSwap.
 
 ## IDEA import boundary
 
@@ -209,7 +209,7 @@ explicit Java sources in the selected Maven module
 → conservative class-shape comparison
 → resolve every generated class in one application ClassLoader
 → atomic JDWP RedefineClasses for changed classes
-→ refresh affected logical breakpoint locations
+→ mark affected logical breakpoints stale
 ```
 
 It is supported only while the matching `project_path` launch is
@@ -232,11 +232,40 @@ selected sources must already be loaded and map uniquely to one class loader.
 The JVM remains the final standard-HotSwap compatibility authority.
 
 P0 restores a conservative compiler model from the launch: the resolved build
-JDK, compile classpath, existing bytecode target, source encoding, debug
-metadata, and existing `MethodParameters` convention. Annotation processing
-is disabled, and arbitrary Maven compiler-plugin executions are not replayed.
-Accordingly, `fast_update.available=true` means the project is eligible to try
-the bounded path, not that every source edit is guaranteed to compile.
+JDK, the selected module's Maven compile-scope classpath, effective Maven Java
+level, formal class-file target, source encoding, debug metadata, and existing
+`MethodParameters` convention. It does not widen that classpath with
+runtime-only dependencies or unrelated Reactor module outputs.
+
+On JDK 9 or newer, bounded compilation uses `--release` for the verified
+target so newer host-JDK APIs are not accidentally admitted. JDK 8 bounded
+compilation is accepted only when build JDK, runtime JDK, and target are all
+Java 8. The formal output target must agree with the effective Maven model.
+
+Fast update fails closed when the effective compiler configuration,
+compile-scope dependencies, or build plugins indicate annotation processing
+or bytecode transformation that joLink cannot reproduce. The private `javac`
+invocation disables processing after that eligibility check; arbitrary Maven
+compiler-plugin executions are not replayed. Accordingly,
+`fast_update.available=true` means the project is eligible to try the bounded
+path, not that every source edit is guaranteed to compile.
+
+For Reactor launches, Maven's compile-classpath metadata is authoritative.
+Entries that identify an actual unclassified Reactor dependency are replaced
+with that module's current workspace `target/classes`; unrelated modules are
+never added. If Maven cannot resolve the optional metadata invocation (for
+example, a sibling artifact has never been installed and Maven does not expose
+it to that invocation), the JVM launch still succeeds but
+`fast_update.available=false`.
+
+JDWP redefinition invalidates source-line assumptions. joLink therefore never
+rebinds an existing logical breakpoint by its old numeric line after one of
+its classes is redefined. Such definitions remain visible with
+`stale=true`, are rejected during the next breakpoint arm, and must be removed
+and set again against the current source. To avoid silently collecting partial
+evidence, joLink refuses to arm any breakpoint wait while a stale definition
+remains. Breakpoints in unaffected classes remain valid and do not need to be
+reset after the stale definitions are removed.
 
 joLink does not silently run Maven or restart the application when this fast
 path is unavailable. Successful results include:
@@ -249,7 +278,10 @@ path is unavailable. Successful results include:
   "persistence": "runtime_only",
   "runtime_overlay_active": true,
   "restart_will_discard_overlay": true,
-  "verification_state": "not_verified"
+  "verification_state": "not_verified",
+  "stale_breakpoint_ids": ["bp_001"],
+  "newly_stale_breakpoint_ids": ["bp_001"],
+  "breakpoint_stale_reason": "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
 }
 ```
 

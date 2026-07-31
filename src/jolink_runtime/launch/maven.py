@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,11 +29,104 @@ from .toolchain import (
 
 
 _MAX_POM_BYTES = 2 * 1024 * 1024
+_MAX_EFFECTIVE_POM_BYTES = 32 * 1024 * 1024
 _MAX_MODULES = 128
 _SAFE_COORDINATE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DEPENDENCY_PLUGIN_GOAL = (
     "org.apache.maven.plugins:"
     "maven-dependency-plugin:3.6.1:build-classpath"
+)
+_HELP_PLUGIN_GOAL = (
+    "org.apache.maven.plugins:"
+    "maven-help-plugin:3.2.0:effective-pom"
+)
+_PROCESSOR_SERVICE = (
+    "META-INF/services/javax.annotation.processing.Processor"
+)
+_BYTECODE_TRANSFORM_PLUGINS = frozenset(
+    {
+        "aspectj-maven-plugin",
+        "apt-maven-plugin",
+        "byte-buddy-maven-plugin",
+        "eclipselink-staticweave-maven-plugin",
+        "hibernate-enhance-maven-plugin",
+        "lombok-maven-plugin",
+        "maven-processor-plugin",
+        "openjpa-maven-plugin",
+    }
+)
+_BYTECODE_TRANSFORM_GOAL_TOKENS = (
+    "aspect",
+    "enhance",
+    "instrument",
+    "redefine",
+    "rewrite",
+    "transform",
+    "weave",
+)
+_CLASS_OUTPUT_PHASES = frozenset({"compile", "process-classes"})
+_SAFE_IMPLICIT_PHASE_PLUGIN_GOALS = {
+    "build-helper-maven-plugin": frozenset(
+        {
+            "add-resource",
+            "add-source",
+            "add-test-resource",
+            "add-test-source",
+            "attach-artifact",
+            "local-ip",
+            "parse-version",
+            "regex-property",
+            "reserve-network-port",
+        }
+    ),
+    "maven-clean-plugin": frozenset({"clean"}),
+    "maven-compiler-plugin": frozenset({"compile", "testcompile"}),
+    "maven-dependency-plugin": frozenset(
+        {
+            "analyze",
+            "analyze-only",
+            "build-classpath",
+            "go-offline",
+            "list",
+            "properties",
+            "resolve",
+            "resolve-plugins",
+            "tree",
+        }
+    ),
+    "maven-deploy-plugin": frozenset({"deploy"}),
+    "maven-enforcer-plugin": frozenset({"enforce"}),
+    "maven-failsafe-plugin": frozenset(
+        {"integration-test", "verify"}
+    ),
+    "maven-install-plugin": frozenset({"install"}),
+    "maven-jar-plugin": frozenset({"jar", "test-jar"}),
+    "maven-resources-plugin": frozenset(
+        {"copy-resources", "resources", "testresources"}
+    ),
+    "maven-site-plugin": frozenset({"deploy", "site"}),
+    "maven-surefire-plugin": frozenset({"test"}),
+    "spring-boot-maven-plugin": frozenset(
+        {"build-info", "repackage", "start", "stop"}
+    ),
+}
+_SAFE_COMPILER_CONFIGURATION = frozenset(
+    {
+        "compilerId",
+        "debug",
+        "encoding",
+        "failOnWarning",
+        "parameters",
+        "proc",
+        "release",
+        "showDeprecation",
+        "showWarnings",
+        "source",
+        "staleMillis",
+        "target",
+        "useIncrementalCompilation",
+        "verbose",
+    }
 )
 
 
@@ -95,6 +189,7 @@ class MavenExecutionPlan:
     build_log: Path
     classpath_file: Path
     compile_classpath_file: Path
+    effective_pom_file: Path
 
 
 class MavenBuildSystemAdapter:
@@ -288,6 +383,9 @@ class MavenBuildSystemAdapter:
                     ".compile-classpath"
                 )
             ),
+            effective_pom_file=(
+                attempt_directory / "effective-reactor-pom.xml"
+            ),
         )
 
     def create_build_operation(
@@ -372,6 +470,8 @@ class MavenBuildSystemAdapter:
                 f"-Dmdep.pathSeparator={os.pathsep}",
                 "-Dmdep.regenerateFile=true",
                 "-DoutputEncoding=UTF-8",
+                _HELP_PLUGIN_GOAL,
+                f"-Doutput={execution.effective_pom_file}",
             ]
         )
         return BuildOperationSpec(
@@ -389,7 +489,7 @@ class MavenBuildSystemAdapter:
         self,
         *,
         execution: MavenExecutionPlan,
-        runtime_plan: JvmLaunchPlan,
+        runtime_jdk: JavaToolchainCandidate,
     ) -> FastCompilePlan:
         """Create the optional, strict source-update plan.
 
@@ -415,6 +515,15 @@ class MavenBuildSystemAdapter:
                     "Use the formal Maven build for this packaging type."
                 ),
             )
+        if (source_root / "module-info.java").is_file():
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "Fast source update does not model the Java module path.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart this JPMS module."
+                ),
+            )
         if not execution.compile_classpath_file.is_file():
             raise MavenResolutionError(
                 LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
@@ -424,38 +533,83 @@ class MavenBuildSystemAdapter:
                     "Use the formal Maven build and restart for this change."
                 ),
             )
+        if not execution.effective_pom_file.is_file():
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "Maven did not produce the effective compiler model.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+
+        effective_root = self._read_effective_pom(
+            execution.effective_pom_file
+        )
+        effective_project = self._select_effective_project(
+            effective_root,
+            execution.module,
+        )
+        reactor_artifacts = self._reactor_artifacts(
+            effective_root,
+            execution.workspace,
+        )
 
         classpath_text = self._read_classpath_file(
             execution.compile_classpath_file
         )
-        entries: list[Path] = []
-        # Workspace outputs precede repository artifacts, matching the current
-        # project-launch behavior for reactor builds. P0 update still accepts
-        # sources from the selected module only.
-        entries.extend(
-            module.output_directory
-            for module in execution.workspace.modules
-            if module.output_directory.is_dir()
-        )
-        entries.extend(runtime_plan.classpath)
-        entries.extend(
-            (
+        entries: list[Path] = [execution.module.output_directory]
+        for raw_entry in classpath_text.split(os.pathsep):
+            if not raw_entry.strip():
+                continue
+            raw_path = (
                 Path(raw_entry)
                 if Path(raw_entry).is_absolute()
                 else execution.module.directory / raw_entry
             )
-            for raw_entry in classpath_text.split(os.pathsep)
-            if raw_entry.strip()
-        )
+            resolved_raw = raw_path.resolve(strict=False)
+            replacement = self._reactor_output_for_path(
+                resolved_raw,
+                reactor_artifacts,
+            )
+            if replacement is None and self._looks_like_workspace_artifact(
+                resolved_raw,
+                execution.workspace,
+            ):
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "A Reactor classpath artifact has no effective mapping.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the "
+                        "application."
+                    ),
+                )
+            entries.append(replacement or raw_path)
         normalized: list[Path] = []
         seen: set[str] = set()
+        missing: list[Path] = []
         for entry in entries:
             resolved = entry.expanduser().resolve(strict=False)
             key = os.path.normcase(str(resolved))
-            if key in seen or not resolved.exists():
+            if key in seen:
+                continue
+            if not resolved.exists():
+                missing.append(resolved)
                 continue
             seen.add(key)
             normalized.append(resolved)
+        if missing:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The Maven compile classpath contains missing entries.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart after dependency "
+                    "resolution is complete."
+                ),
+                context={"missing_path_count": len(missing)},
+            )
         if not normalized:
             raise MavenResolutionError(
                 LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
@@ -466,21 +620,38 @@ class MavenBuildSystemAdapter:
                 ),
             )
 
+        self._ensure_no_unverified_build_transforms(
+            effective_project,
+            tuple(normalized),
+        )
+        compiler_model = self._compiler_model(
+            effective_project,
+            build_jdk=execution.build_jdk,
+            runtime_jdk=runtime_jdk,
+        )
+
         configuration_inputs: list[Path] = [
             module.pom_file
             for module in execution.workspace.modules
         ]
+        configuration_inputs.extend(
+            (
+                execution.compile_classpath_file,
+                execution.effective_pom_file,
+            )
+        )
         if execution.preferences.user_settings_file is not None:
             configuration_inputs.append(
                 execution.preferences.user_settings_file
             )
-        encoding = self._source_encoding(execution)
+        encoding = self._source_encoding(effective_project)
         fingerprint = fast_compile_fingerprint(
             configuration_inputs=configuration_inputs,
             javac_executable=execution.build_jdk.javac_executable,
             compile_classpath=normalized,
         )
         baseline_class_hashes: dict[str, str] = {}
+        output_targets: set[int] = set()
         class_files = sorted(
             execution.module.output_directory.rglob("*.class")
         )
@@ -498,9 +669,13 @@ class MavenBuildSystemAdapter:
                 relative = class_file.relative_to(
                     execution.module.output_directory
                 ).as_posix()
+                class_bytes = class_file.read_bytes()
                 baseline_class_hashes[relative] = hashlib.sha256(
-                    class_file.read_bytes()
+                    class_bytes
                 ).hexdigest()
+                output_targets.add(
+                    self._class_file_java_release(class_bytes)
+                )
             except OSError as error:
                 raise MavenResolutionError(
                     LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
@@ -511,6 +686,29 @@ class MavenBuildSystemAdapter:
                         "project before using update."
                     ),
                 ) from error
+            except ValueError as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "A formal class output has an invalid bytecode header.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the application."
+                    ),
+                ) from error
+        if output_targets != {compiler_model["target_level"]}:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven target does not match formal class output.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart with one verified "
+                    "compiler target."
+                ),
+                context={
+                    "effective_target": compiler_model["target_level"],
+                    "output_target_count": len(output_targets),
+                },
+            )
         return FastCompilePlan(
             project_root=execution.workspace.project_root,
             module_root=execution.module.directory,
@@ -520,11 +718,654 @@ class MavenBuildSystemAdapter:
             ),
             javac_executable=execution.build_jdk.javac_executable,
             compile_classpath=tuple(normalized),
+            build_jdk_major=compiler_model["build_jdk_major"],
+            runtime_jdk_major=compiler_model["runtime_jdk_major"],
+            source_level=compiler_model["source_level"],
+            target_level=compiler_model["target_level"],
+            release_level=compiler_model["release_level"],
+            javac_platform_args=compiler_model["javac_platform_args"],
             encoding=encoding,
             configuration_inputs=tuple(configuration_inputs),
             configuration_fingerprint=fingerprint,
             baseline_class_hashes=baseline_class_hashes,
             target_module=execution.module.relative_path,
+        )
+
+    def _read_effective_pom(self, source: Path) -> ET.Element:
+        try:
+            metadata = source.stat()
+            raw = source.read_bytes()
+        except OSError as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven model could not be read.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            ) from error
+        if metadata.st_size > _MAX_EFFECTIVE_POM_BYTES or b"\x00" in raw:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven model exceeds safety limits.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven model is not UTF-8 XML.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            ) from error
+        lowered = text.casefold()
+        if "<!doctype" in lowered or "<!entity" in lowered:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven model contains unsupported declarations.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven model is invalid XML.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            ) from error
+        node_count = 0
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            node_count += 1
+            if node_count > 250_000:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "The effective Maven model exceeds structural limits.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the application."
+                    ),
+                )
+            stack.extend(node)
+        return root
+
+    def _select_effective_project(
+        self,
+        root: ET.Element,
+        module: MavenModule,
+    ) -> ET.Element:
+        projects = (
+            [root]
+            if self._local_name(root.tag) == "project"
+            else list(root.findall("./{*}project"))
+        )
+        matches = [
+            project
+            for project in projects
+            if self._child_text(project, "groupId") == module.group_id
+            and self._child_text(project, "artifactId") == module.artifact_id
+        ]
+        if len(matches) != 1:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The selected module has no unique effective Maven model.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+                context={"matching_model_count": len(matches)},
+            )
+        return matches[0]
+
+    def _reactor_artifacts(
+        self,
+        root: ET.Element,
+        workspace: MavenWorkspace,
+    ) -> tuple[tuple[MavenModule, tuple[str, str, str]], ...]:
+        """Map Reactor artifact paths without widening Maven's classpath."""
+        projects = (
+            [root]
+            if self._local_name(root.tag) == "project"
+            else list(root.findall("./{*}project"))
+        )
+        effective_by_ga: dict[
+            tuple[str, str],
+            list[tuple[str, str, str]],
+        ] = {}
+        for project in projects:
+            coordinate = self._effective_coordinate(project)
+            if coordinate is not None:
+                effective_by_ga.setdefault(coordinate[:2], []).append(
+                    coordinate
+                )
+        workspace_ga = {
+            (module.group_id, module.artifact_id)
+            for module in workspace.modules
+            if module.packaging != "pom"
+        }
+        for project in projects:
+            for dependency in project.findall(
+                "./{*}dependencies/{*}dependency"
+            ):
+                dependency_ga = (
+                    self._child_text(dependency, "groupId"),
+                    self._child_text(dependency, "artifactId"),
+                )
+                dependency_type = (
+                    self._child_text(dependency, "type") or "jar"
+                )
+                classifier = self._child_text(
+                    dependency,
+                    "classifier",
+                )
+                if (
+                    dependency_ga in workspace_ga
+                    and (
+                        dependency_type != "jar"
+                        or bool(classifier)
+                    )
+                ):
+                    raise MavenResolutionError(
+                        LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                        "A Reactor dependency uses an unsupported artifact "
+                        "type or classifier.",
+                        retryable=False,
+                        suggested_next_step=(
+                            "Use the formal Maven build and restart the "
+                            "application."
+                        ),
+                    )
+
+        artifacts: list[
+            tuple[MavenModule, tuple[str, str, str]]
+        ] = []
+        for module in workspace.modules:
+            if module.packaging == "pom":
+                continue
+            coordinates = effective_by_ga.get(
+                (module.group_id, module.artifact_id),
+                [],
+            )
+            if len(coordinates) > 1:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "A Reactor module has ambiguous effective coordinates.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the "
+                        "application."
+                    ),
+                    context={
+                        "matching_coordinate_count": len(coordinates),
+                    },
+                )
+            if not coordinates:
+                continue
+            artifacts.append((module, coordinates[0]))
+        return tuple(artifacts)
+
+    @classmethod
+    def _effective_coordinate(
+        cls,
+        element: ET.Element,
+    ) -> tuple[str, str, str] | None:
+        group_id = cls._child_text(element, "groupId")
+        artifact_id = cls._child_text(element, "artifactId")
+        version = cls._child_text(element, "version")
+        if (
+            not group_id
+            or not artifact_id
+            or not version
+            or "${" in group_id
+            or "${" in artifact_id
+            or "${" in version
+        ):
+            return None
+        return group_id, artifact_id, version
+
+    @staticmethod
+    def _reactor_output_for_path(
+        path: Path,
+        artifacts: tuple[
+            tuple[MavenModule, tuple[str, str, str]],
+            ...,
+        ],
+    ) -> Path | None:
+        for module, coordinate in artifacts:
+            output = module.output_directory.resolve(strict=False)
+            if path == output:
+                return output
+            group_id, artifact_id, version = coordinate
+            group_parts = tuple(group_id.split("."))
+            expected_tail = (*group_parts, artifact_id, version)
+            parent_parts = path.parent.parts
+            if (
+                len(parent_parts) >= len(expected_tail)
+                and tuple(parent_parts[-len(expected_tail) :])
+                == expected_tail
+            ):
+                return output
+        return None
+
+    @staticmethod
+    def _looks_like_workspace_artifact(
+        path: Path,
+        workspace: MavenWorkspace,
+    ) -> bool:
+        parent_parts = path.parent.parts
+        for module in workspace.modules:
+            if module.packaging == "pom":
+                continue
+            expected = (*module.group_id.split("."), module.artifact_id)
+            # Maven repository layout ends in group/artifact/version/file.
+            if (
+                len(parent_parts) >= len(expected) + 1
+                and tuple(
+                    parent_parts[
+                        -(len(expected) + 1) : -1
+                    ]
+                )
+                == expected
+            ):
+                return True
+        return False
+
+    def _ensure_no_unverified_build_transforms(
+        self,
+        project: ET.Element,
+        compile_classpath: tuple[Path, ...],
+    ) -> None:
+        compiler_matches = [
+            plugin
+            for plugin in project.findall(
+                "./{*}build/{*}plugins/{*}plugin"
+            )
+            if self._child_text(plugin, "artifactId")
+            == "maven-compiler-plugin"
+        ]
+        if len(compiler_matches) > 1:
+            self._raise_unverified_transform()
+        compiler = compiler_matches[0] if compiler_matches else None
+        if compiler is not None:
+            compiler_group = (
+                self._child_text(compiler, "groupId")
+                or "org.apache.maven.plugins"
+            )
+            compile_execution_count = sum(
+                1
+                for execution in compiler.findall(
+                    "./{*}executions/{*}execution"
+                )
+                if "compile"
+                in {
+                    (goal.text or "").strip()
+                    for goal in execution.findall("./{*}goals/{*}goal")
+                }
+            )
+            if (
+                compiler_group != "org.apache.maven.plugins"
+                or compile_execution_count > 1
+            ):
+                self._raise_unverified_transform()
+        configurations = self._compiler_configurations(compiler)
+        proc = (
+            self._compiler_value(
+                project,
+                configurations,
+                config_name="proc",
+                property_name="maven.compiler.proc",
+            )
+            .strip()
+            .casefold()
+        )
+        if proc not in {"", "none", "full"}:
+            self._raise_unverified_transform()
+        for configuration in configurations:
+            for child in configuration:
+                if self._local_name(child.tag) not in (
+                    _SAFE_COMPILER_CONFIGURATION
+                ):
+                    self._raise_unverified_transform()
+            if (
+                configuration.find("./{*}annotationProcessorPaths")
+                is not None
+                or configuration.find("./{*}annotationProcessors")
+                is not None
+                or configuration.find("./{*}compilerArgs") is not None
+                or configuration.find("./{*}compilerArguments") is not None
+                or self._config_text(configuration, "compilerArgument")
+                or self._config_text(configuration, "executable")
+            ):
+                self._raise_unverified_transform()
+            compiler_id = self._config_text(
+                configuration,
+                "compilerId",
+            )
+            if compiler_id and compiler_id.casefold() != "javac":
+                self._raise_unverified_transform()
+            debug = self._config_text(configuration, "debug").casefold()
+            if debug and debug != "true":
+                self._raise_unverified_transform()
+
+        for plugin in project.findall("./{*}build/{*}plugins/{*}plugin"):
+            artifact_id = self._child_text(plugin, "artifactId").casefold()
+            if artifact_id in _BYTECODE_TRANSFORM_PLUGINS:
+                self._raise_unverified_transform()
+            for execution in plugin.findall(
+                "./{*}executions/{*}execution"
+            ):
+                phase = self._child_text(execution, "phase").casefold()
+                goals = [
+                    (goal.text or "").strip().casefold()
+                    for goal in execution.findall("./{*}goals/{*}goal")
+                ]
+                if any(
+                    token in goal_name
+                    for goal_name in goals
+                    for token in _BYTECODE_TRANSFORM_GOAL_TOKENS
+                ):
+                    self._raise_unverified_transform()
+                if (
+                    artifact_id != "maven-compiler-plugin"
+                    and phase in _CLASS_OUTPUT_PHASES
+                ):
+                    self._raise_unverified_transform()
+                if (
+                    goals
+                    and not phase
+                    and not set(goals).issubset(
+                        _SAFE_IMPLICIT_PHASE_PLUGIN_GOALS.get(
+                            artifact_id,
+                            frozenset(),
+                        )
+                    )
+                ):
+                    self._raise_unverified_transform()
+
+        if proc != "none":
+            try:
+                processor_present = any(
+                    self._contains_annotation_processor(path)
+                    for path in compile_classpath
+                )
+            except (OSError, zipfile.BadZipFile) as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "A compile dependency could not be inspected safely.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the application."
+                    ),
+                ) from error
+            if processor_present:
+                self._raise_unverified_transform()
+
+    def _compiler_model(
+        self,
+        project: ET.Element,
+        *,
+        build_jdk: JavaToolchainCandidate,
+        runtime_jdk: JavaToolchainCandidate,
+    ) -> dict[str, Any]:
+        compiler = self._find_build_plugin(
+            project,
+            "maven-compiler-plugin",
+        )
+        configurations = self._compiler_configurations(compiler)
+        release_text = self._compiler_value(
+            project,
+            configurations,
+            config_name="release",
+            property_name="maven.compiler.release",
+        )
+        source_text = self._compiler_value(
+            project,
+            configurations,
+            config_name="source",
+            property_name="maven.compiler.source",
+        )
+        target_text = self._compiler_value(
+            project,
+            configurations,
+            config_name="target",
+            property_name="maven.compiler.target",
+        )
+        if release_text:
+            release_level = self._java_level(release_text)
+            source_level = release_level
+            target_level = release_level
+        else:
+            release_level = None
+            source_level = self._java_level(source_text)
+            target_level = self._java_level(target_text)
+        if source_level > target_level:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven source level exceeds its target level.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+
+        build_major = build_jdk.compiler_major_version
+        runtime_major = runtime_jdk.major_version
+        if build_major is None or runtime_major is None:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_JDK_INCOMPATIBLE,
+                "The build and runtime JDK platform versions are unverified.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use JDK installations with readable JAVA_HOME/release "
+                    "metadata, or use the formal Maven build and restart."
+                ),
+            )
+        if target_level > build_major or target_level > runtime_major:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_JDK_INCOMPATIBLE,
+                "The compiler target is incompatible with the selected JDKs.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use compatible build/runtime JDKs or the formal Maven "
+                    "build and restart."
+                ),
+            )
+        if build_major >= 9:
+            if release_level is None and source_level != target_level:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "Different source and target levels cannot be reproduced "
+                    "with a bounded --release compilation.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the application."
+                    ),
+                )
+            platform_args = ("--release", str(target_level))
+        else:
+            if not (
+                build_major == runtime_major == target_level == 8
+                and source_level <= 8
+            ):
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_JDK_INCOMPATIBLE,
+                    "JDK 8 fast compilation requires build, runtime, and "
+                    "target platform 8.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the application."
+                    ),
+                )
+            platform_args = (
+                "-source",
+                str(source_level),
+                "-target",
+                str(target_level),
+            )
+        return {
+            "build_jdk_major": build_major,
+            "runtime_jdk_major": runtime_major,
+            "source_level": source_level,
+            "target_level": target_level,
+            "release_level": release_level,
+            "javac_platform_args": platform_args,
+        }
+
+    @classmethod
+    def _compiler_configurations(
+        cls,
+        compiler: ET.Element | None,
+    ) -> tuple[ET.Element, ...]:
+        if compiler is None:
+            return ()
+        configurations: list[ET.Element] = []
+        for execution in compiler.findall(
+            "./{*}executions/{*}execution"
+        ):
+            goals = {
+                (goal.text or "").strip()
+                for goal in execution.findall("./{*}goals/{*}goal")
+            }
+            if "compile" not in goals:
+                continue
+            configuration = execution.find("./{*}configuration")
+            if configuration is not None:
+                configurations.append(configuration)
+        configuration = compiler.find("./{*}configuration")
+        if configuration is not None:
+            configurations.append(configuration)
+        return tuple(configurations)
+
+    @classmethod
+    def _compiler_value(
+        cls,
+        project: ET.Element,
+        configurations: tuple[ET.Element, ...],
+        *,
+        config_name: str,
+        property_name: str,
+    ) -> str:
+        for configuration in configurations:
+            value = cls._config_text(configuration, config_name)
+            if value:
+                return value
+        property_element = project.find(
+            f"./{{*}}properties/{{*}}{property_name}"
+        )
+        if property_element is not None:
+            return (property_element.text or "").strip()
+        return ""
+
+    @staticmethod
+    def _config_text(configuration: ET.Element, name: str) -> str:
+        element = configuration.find(f"./{{*}}{name}")
+        return (element.text or "").strip() if element is not None else ""
+
+    @classmethod
+    def _find_build_plugin(
+        cls,
+        project: ET.Element,
+        artifact_id: str,
+    ) -> ET.Element | None:
+        matches = [
+            plugin
+            for plugin in project.findall(
+                "./{*}build/{*}plugins/{*}plugin"
+            )
+            if cls._child_text(plugin, "artifactId") == artifact_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _contains_annotation_processor(path: Path) -> bool:
+        if path.is_dir():
+            return (path / _PROCESSOR_SERVICE).is_file()
+        if not path.is_file() or not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path) as archive:
+            try:
+                service = archive.read(_PROCESSOR_SERVICE)
+            except KeyError:
+                return False
+        return bool(
+            any(
+                line.strip() and not line.lstrip().startswith(b"#")
+                for line in service.splitlines()
+            )
+        )
+
+    @staticmethod
+    def _java_level(raw: str) -> int:
+        value = raw.strip()
+        if not value or "${" in value:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven Java level is unavailable.",
+                retryable=False,
+                suggested_next_step=(
+                    "Configure a static maven.compiler.release or matching "
+                    "maven.compiler.source/target, then restart the project."
+                ),
+            )
+        match = re.fullmatch(r"(?:1\.)?(\d+)", value)
+        if match is None:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven Java level is unsupported.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+        level = int(match.group(1))
+        if level < 8:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "Fast source update supports Java 8 or newer targets.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+        return level
+
+    @staticmethod
+    def _class_file_java_release(class_bytes: bytes) -> int:
+        if len(class_bytes) < 8 or class_bytes[:4] != b"\xca\xfe\xba\xbe":
+            raise ValueError("invalid class file")
+        major = int.from_bytes(class_bytes[6:8], byteorder="big")
+        release = major - 44
+        if release < 8:
+            raise ValueError("unsupported class file target")
+        return release
+
+    @staticmethod
+    def _local_name(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    @staticmethod
+    def _raise_unverified_transform() -> None:
+        raise MavenResolutionError(
+            LaunchErrorCode.ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED,
+            "The Maven build uses unverified annotation processing or "
+            "bytecode transformation.",
+            retryable=False,
+            suggested_next_step=(
+                "Use the formal Maven build and restart the application."
+            ),
         )
 
     def _base_maven_arguments(
@@ -556,24 +1397,25 @@ class MavenBuildSystemAdapter:
             )
         return arguments
 
-    def _source_encoding(self, execution: MavenExecutionPlan) -> str:
-        """Use a visible Maven encoding, else fail-safe toward modern UTF-8."""
-        property_names = (
-            "project.build.sourceEncoding",
-            "maven.compiler.encoding",
+    def _source_encoding(self, project: ET.Element) -> str:
+        """Use the effective compiler encoding, else fail-safe to UTF-8."""
+        compiler = self._find_build_plugin(
+            project,
+            "maven-compiler-plugin",
         )
-        value = ""
-        for module in execution.workspace.modules:
-            if module.directory not in {
-                execution.workspace.build_root,
-                execution.module.directory,
-            }:
-                continue
-            root = self._read_pom(module.pom_file)
-            for name in property_names:
-                element = root.find(f"./{{*}}properties/{{*}}{name}")
-                if element is not None and (element.text or "").strip():
-                    value = (element.text or "").strip()
+        configurations = self._compiler_configurations(compiler)
+        value = self._compiler_value(
+            project,
+            configurations,
+            config_name="encoding",
+            property_name="maven.compiler.encoding",
+        )
+        if not value:
+            element = project.find(
+                "./{*}properties/{*}project.build.sourceEncoding"
+            )
+            if element is not None:
+                value = (element.text or "").strip()
         if value and "${" not in value:
             try:
                 "".encode(value)
@@ -587,11 +1429,9 @@ class MavenBuildSystemAdapter:
                     ),
                 ) from error
             return value
-        # An inherited corporate parent may define UTF-8 outside this bounded
-        # workspace model. Using a Windows locale such as GBK in that case can
-        # silently compile different string literals. UTF-8 makes the common
-        # inherited configuration work and causes non-UTF-8 sources to fail
-        # compilation rather than guessing their contents.
+        # Help effective-pom should resolve inherited compiler configuration.
+        # UTF-8 remains the bounded fallback and causes non-UTF-8 sources to
+        # fail compilation instead of guessing from the host locale.
         return "UTF-8"
 
     def consume_jvm_launch_plan(

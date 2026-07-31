@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,8 @@ class JavaToolchainCandidate:
     java_executable: Path
     javac_executable: Path
     source: str
+    detected_major_version: int | None = None
+    detected_compiler_major_version: int | None = None
 
     @property
     def has_runtime(self) -> bool:
@@ -29,6 +32,96 @@ class JavaToolchainCandidate:
     @property
     def has_compiler(self) -> bool:
         return self.javac_executable.is_file()
+
+    @property
+    def major_version(self) -> int | None:
+        """Return the probed or static JDK/JRE major.
+
+        PATH can resolve through a platform launcher such as macOS
+        ``/usr/bin/java`` whose parent is not a real JAVA_HOME.  Project launch
+        therefore records the supervised ``java -version`` result when
+        available and falls back to JAVA_HOME/release for ordinary layouts.
+        Fast compilation fails closed when neither source can prove the
+        platform version.
+        """
+        if self.detected_major_version is not None:
+            return self.detected_major_version
+        release_file = self.home / "release"
+        try:
+            text = release_file.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeError):
+            return None
+        match = re.search(
+            r'(?m)^JAVA_VERSION\s*=\s*"([^"]+)"\s*$',
+            text,
+        )
+        if match is None:
+            return None
+        version = match.group(1).strip()
+        if version.startswith("1."):
+            match = re.match(r"1\.(\d+)", version)
+        else:
+            match = re.match(r"(\d+)", version)
+        if match is None:
+            return None
+        try:
+            major = int(match.group(1))
+        except ValueError:
+            return None
+        return major if major > 0 else None
+
+    @staticmethod
+    def parse_major_version_output(output: str) -> int | None:
+        """Parse common Oracle/OpenJDK ``java -version`` output."""
+        match = re.search(
+            r'(?im)(?:java|openjdk)\s+version\s+"([^"]+)"',
+            output,
+        )
+        if match is None:
+            match = re.search(
+                r"(?im)^openjdk\s+([0-9][^\s]*)",
+                output,
+            )
+        if match is None:
+            return None
+        version = match.group(1).strip()
+        if version.startswith("1."):
+            major_match = re.match(r"1\.(\d+)", version)
+        else:
+            major_match = re.match(r"(\d+)", version)
+        if major_match is None:
+            return None
+        try:
+            major = int(major_match.group(1))
+        except ValueError:
+            return None
+        return major if major > 0 else None
+
+    @property
+    def compiler_major_version(self) -> int | None:
+        """Return the probed javac major, then static JDK metadata."""
+        if self.detected_compiler_major_version is not None:
+            return self.detected_compiler_major_version
+        return self.major_version
+
+    @staticmethod
+    def parse_compiler_major_version_output(output: str) -> int | None:
+        """Parse common ``javac -version`` output."""
+        match = re.search(r"(?im)^javac\s+([0-9][^\s]*)", output)
+        if match is None:
+            return None
+        version = match.group(1).strip()
+        if version.startswith("1."):
+            major_match = re.match(r"1\.(\d+)", version)
+        else:
+            major_match = re.match(r"(\d+)", version)
+        if major_match is None:
+            return None
+        try:
+            major = int(major_match.group(1))
+        except ValueError:
+            return None
+        return major if major > 0 else None
 
 
 @dataclass(frozen=True)
@@ -164,6 +257,22 @@ class JavaToolchainResolver:
     ) -> BuildOperationSpec:
         return BuildOperationSpec(
             argv=(str(candidate.java_executable), "-version"),
+            cwd=cwd,
+            timeout_seconds=15.0,
+            output_capture=output_capture,
+            operation_name=operation_name,
+        )
+
+    @staticmethod
+    def compiler_probe_spec(
+        candidate: JavaToolchainCandidate,
+        *,
+        cwd: Path,
+        output_capture: Path,
+        operation_name: str,
+    ) -> BuildOperationSpec:
+        return BuildOperationSpec(
+            argv=(str(candidate.javac_executable), "-version"),
             cwd=cwd,
             timeout_seconds=15.0,
             output_capture=output_capture,

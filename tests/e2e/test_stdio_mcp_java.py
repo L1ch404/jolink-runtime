@@ -1055,7 +1055,23 @@ public class UpdateMcpFixture {{
 }}
 """
 
-    source.write_text(source_text("before-update"), encoding="utf-8")
+    initial_source = source_text("before-update")
+    source.write_text(initial_source, encoding="utf-8")
+    breakpoint_line = next(
+        index
+        for index, line in enumerate(initial_source.splitlines(), start=1)
+        if 'return "before-update";' in line
+    )
+    updated_source = source_text("after-update").replace(
+        'return "after-update";',
+        'String value = "after-update";\n        return value;',
+    )
+    updated_breakpoint_line = next(
+        index
+        for index, line in enumerate(updated_source.splitlines(), start=1)
+        if "return value;" in line
+    )
+    assert updated_breakpoint_line != breakpoint_line
     (project / "pom.xml").write_text(
         """\
 <project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -1128,7 +1144,20 @@ public class UpdateMcpFixture {{
                             break
                         await anyio.sleep(0.1)
 
-                    assert active["fast_update"]["available"] is True
+                    assert active["fast_update"]["available"] is True, (
+                        active["fast_update"]
+                    )
+                    original_breakpoint = assert_ok(
+                        await call_payload(session, {
+                            "action": "breakpoint",
+                            "bp_action": "set",
+                            "class_pattern": "example.UpdateMcpFixture",
+                            "line": breakpoint_line,
+                        })
+                    )
+                    original_breakpoint_id = original_breakpoint[
+                        "breakpoint_id"
+                    ]
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "before-update"
                     )
@@ -1142,7 +1171,7 @@ public class UpdateMcpFixture {{
                     formal_bytes = formal_class.read_bytes()
 
                     source.write_text(
-                        source_text("after-update"),
+                        updated_source,
                         encoding="utf-8",
                     )
                     updated = assert_ok(await call_payload(session, {
@@ -1164,6 +1193,77 @@ public class UpdateMcpFixture {{
                     assert updated["redefined_classes"] == [
                         "example.UpdateMcpFixture"
                     ]
+                    assert updated["stale_breakpoint_ids"] == [
+                        original_breakpoint_id
+                    ]
+                    assert updated["newly_stale_breakpoint_ids"] == [
+                        original_breakpoint_id
+                    ]
+                    assert updated["breakpoint_refresh_state"] == "partial"
+                    assert updated["breakpoint_stale_reason"] == (
+                        "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+                    )
+                    unchanged = assert_ok(await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    }))
+                    assert unchanged["status"] == "no_changes"
+                    assert unchanged["stale_breakpoint_ids"] == [
+                        original_breakpoint_id
+                    ]
+                    assert unchanged["newly_stale_breakpoint_ids"] == []
+                    assert unchanged["breakpoint_refresh_state"] == "partial"
+                    assert "Remove and set" in unchanged[
+                        "suggested_next_step"
+                    ]
+
+                    listed = assert_ok(await call_payload(session, {
+                        "action": "breakpoint",
+                        "bp_action": "list",
+                    }))
+                    assert len(listed["breakpoints"]) == 1
+                    stale_definition = listed["breakpoints"][0]
+                    assert stale_definition["breakpoint_id"] == (
+                        original_breakpoint_id
+                    )
+                    assert stale_definition["stale"] is True
+                    assert stale_definition["stale_reason"] == (
+                        "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+                    )
+                    stale_wait = await call_payload(session, {
+                        "action": "wait_event",
+                        "timeout": 1,
+                    })
+                    assert stale_wait["ok"] is False
+                    assert stale_wait["error_code"] == (
+                        "BREAKPOINT_DEFINITION_STALE"
+                    )
+
+                    assert_ok(await call_payload(session, {
+                        "action": "breakpoint",
+                        "bp_action": "remove",
+                        "breakpoint_id": original_breakpoint_id,
+                    }))
+                    replacement_breakpoint = assert_ok(
+                        await call_payload(session, {
+                            "action": "breakpoint",
+                            "bp_action": "set",
+                            "class_pattern": "example.UpdateMcpFixture",
+                            "line": updated_breakpoint_line,
+                        })
+                    )
+                    assert replacement_breakpoint["breakpoint_id"] != (
+                        original_breakpoint_id
+                    )
+                    assert_ok(await call_payload(session, {
+                        "action": "breakpoint",
+                        "bp_action": "remove",
+                        "breakpoint_id": replacement_breakpoint[
+                            "breakpoint_id"
+                        ],
+                    }))
 
                     assert formal_class.read_bytes() == formal_bytes
                     assert await anyio.to_thread.run_sync(request_value) == (
@@ -1176,7 +1276,7 @@ public class UpdateMcpFixture {{
                     assert observed["code_revision"] == 1
 
                     source.write_text(
-                        source_text("after-update").replace(
+                        updated_source.replace(
                             "public class UpdateMcpFixture {",
                             (
                                 "public class UpdateMcpFixture {\n"
@@ -1300,8 +1400,7 @@ package example;
         / "ReactorMcpFixture.java"
     )
     app_source.parent.mkdir(parents=True)
-    app_source.write_text(
-        """\
+    installed_app_source = """\
 package example;
 
 import java.net.ServerSocket;
@@ -1314,7 +1413,7 @@ public class ReactorMcpFixture {
         int port = Integer.parseInt(args[0]);
         Files.write(
             Paths.get(args[1]),
-            SharedMessage.value().getBytes(StandardCharsets.UTF_8)
+            message().getBytes(StandardCharsets.UTF_8)
         );
         try (ServerSocket server = new ServerSocket(port)) {
             while (true) {
@@ -1322,10 +1421,13 @@ public class ReactorMcpFixture {
             }
         }
     }
+
+    private static String message() {
+        return SharedMessage.value();
+    }
 }
-""",
-        encoding="utf-8",
-    )
+"""
+    app_source.write_text(installed_app_source, encoding="utf-8")
     (project / "pom.xml").write_text(
         f"""\
 <project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -1414,10 +1516,19 @@ public final class SharedMessage {
     public static String value() {
         return "fresh-workspace-value";
     }
+
+    public static String freshOnly() {
+        return "fresh-workspace-value";
+    }
 }
 """,
         encoding="utf-8",
     )
+    fresh_app_source = installed_app_source.replace(
+        "return SharedMessage.value();",
+        "return SharedMessage.freshOnly();",
+    )
+    app_source.write_text(fresh_app_source, encoding="utf-8")
 
     ready_port = reserve_local_port()
     jdwp_port = reserve_local_port()
@@ -1477,6 +1588,29 @@ public final class SharedMessage {
                     assert marker.read_text(encoding="utf-8") == (
                         "fresh-workspace-value"
                     )
+                    app_source.write_text(
+                        fresh_app_source.replace(
+                            "return SharedMessage.freshOnly();",
+                            (
+                                'return SharedMessage.freshOnly() '
+                                '+ "-updated";'
+                            ),
+                        ),
+                        encoding="utf-8",
+                    )
+                    updated = assert_ok(await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            (
+                                "app/src/main/java/example/"
+                                "ReactorMcpFixture.java"
+                            ),
+                        ],
+                    }))
+                    assert updated["status"] == "updated"
+                    assert updated["redefined_classes"] == [
+                        "example.ReactorMcpFixture"
+                    ]
                     assert_ok(await call_payload(session, {
                         "action": "stop",
                     }))

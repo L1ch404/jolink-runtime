@@ -9,6 +9,7 @@ from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
     SuspensionSnapshot,
 )
+from jolink_runtime.adapters.java.jdwp_client import EventKind
 from jolink_runtime.core.models import RuntimeAction
 from jolink_runtime.launch.fast_compile import (
     FastCompilePlan,
@@ -42,6 +43,12 @@ def _plan(tmp_path: Path) -> tuple[FastCompilePlan, Path, Path]:
             output_root=output_root,
             javac_executable=javac_identity,
             compile_classpath=(output_root,),
+            build_jdk_major=8,
+            runtime_jdk_major=8,
+            source_level=8,
+            target_level=8,
+            release_level=None,
+            javac_platform_args=("-source", "8", "-target", "8"),
             configuration_inputs=(config,),
             configuration_fingerprint=fingerprint,
         ),
@@ -220,3 +227,219 @@ def test_formal_output_guard_checks_unselected_classes_and_class_set(
     dependency.write_bytes(b"dependency-launch-bytes")
     (plan.output_root / "example" / "Added.class").write_bytes(b"added")
     assert runtime._formal_outputs_match_launch(plan) is False
+
+
+def test_redefined_class_breakpoints_become_stale_without_line_refresh() -> None:
+    runtime = JavaRuntime()
+    updated = {
+        "breakpoint_id": "bp_001",
+        "class": "Lexample/Updated;",
+        "matched_class": "example.Updated",
+        "source_file": "Updated.java",
+        "method": "run",
+        "method_signature": "()V",
+        "line": 10,
+        "code_index": 4,
+    }
+    untouched = {
+        "breakpoint_id": "bp_002",
+        "class": "Lexample/Untouched;",
+        "matched_class": "example.Untouched",
+        "source_file": "Untouched.java",
+        "method": "run",
+        "method_signature": "()V",
+        "line": 20,
+        "code_index": 8,
+    }
+    runtime._breakpoints = {
+        "bp_001": updated,
+        "bp_002": untouched,
+    }
+
+    result = runtime._refresh_updated_breakpoints(
+        object(),
+        {"Lexample/Updated;"},
+    )
+
+    assert result == {
+        "state": "partial",
+        "refreshed": [],
+        "stale": ["bp_001"],
+        "newly_stale": ["bp_001"],
+        "reason": "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET",
+        "warnings": [
+            "Stale logical breakpoints remain after class redefinition; "
+            "remove and set the listed breakpoint ids again against the "
+            "current source before arming another breakpoint wait."
+        ],
+    }
+    assert updated["stale"] is True
+    assert (
+        updated["stale_reason"]
+        == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+    )
+    assert "redefined" in updated["refresh_error"]
+    assert untouched == {
+        "breakpoint_id": "bp_002",
+        "class": "Lexample/Untouched;",
+        "matched_class": "example.Untouched",
+        "source_file": "Untouched.java",
+        "method": "run",
+        "method_signature": "()V",
+        "line": 20,
+        "code_index": 8,
+    }
+
+
+def test_stale_redefined_breakpoint_is_listed_and_cannot_be_armed() -> None:
+    runtime = JavaRuntime()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "Lexample/Untouched;",
+            "matched_class": "example.Untouched",
+            "source_file": "Untouched.java",
+            "method": "run",
+            "method_signature": "()V",
+            "line": 5,
+            "code_index": 2,
+        },
+        "bp_002": {
+            "breakpoint_id": "bp_002",
+            "class": "Lexample/Updated;",
+            "matched_class": "example.Updated",
+            "source_file": "Updated.java",
+            "method": "run",
+            "method_signature": "()V",
+            "line": 10,
+            "code_index": 4,
+            "stale": True,
+            "stale_reason": (
+                "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+            ),
+        },
+    }
+    runtime._resolve_breakpoint_class = lambda *_args, **_kwargs: (
+        (_ for _ in ()).throw(
+            AssertionError("stale preflight must happen before JDWP resolution")
+        )
+    )
+
+    observation = runtime._breakpoint_observations()[1]
+    result = runtime._arm_debug_requests(
+        object(),
+        {EventKind.BREAKPOINT},
+        None,
+    )
+
+    assert observation["stale"] is True
+    assert (
+        observation["stale_reason"]
+        == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+    )
+    assert result is not None
+    assert result.ok is False
+    assert result.data["error_code"] == "BREAKPOINT_DEFINITION_STALE"
+    assert result.data["breakpoint_id"] == "bp_002"
+    assert result.data["stale_breakpoint_ids"] == ["bp_002"]
+    assert (
+        result.data["stale_reason"]
+        == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
+    )
+    assert runtime._armed_breakpoint_requests == {}
+
+
+def test_breakpoint_observation_omits_stale_fields_for_active_definition() -> None:
+    runtime = JavaRuntime()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "Lexample/Active;",
+            "matched_class": "example.Active",
+            "source_file": "Active.java",
+            "method": "run",
+            "method_signature": "()V",
+            "line": 10,
+            "code_index": 4,
+        }
+    }
+
+    observation = runtime._breakpoint_observations()[0]
+
+    assert "stale" not in observation
+    assert "stale_reason" not in observation
+
+
+def test_later_update_keeps_prior_stale_breakpoint_visible() -> None:
+    runtime = JavaRuntime()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "Lexample/First;",
+            "matched_class": "example.First",
+            "line": 10,
+        },
+        "bp_002": {
+            "breakpoint_id": "bp_002",
+            "class": "Lexample/Second;",
+            "matched_class": "example.Second",
+            "line": 20,
+        },
+    }
+
+    first = runtime._refresh_updated_breakpoints(
+        object(),
+        {"Lexample/First;"},
+    )
+    second = runtime._refresh_updated_breakpoints(
+        object(),
+        {"Lexample/Unrelated;"},
+    )
+
+    assert first["stale"] == ["bp_001"]
+    assert first["newly_stale"] == ["bp_001"]
+    assert second["state"] == "partial"
+    assert second["stale"] == ["bp_001"]
+    assert second["newly_stale"] == []
+
+
+def test_stale_arm_error_reports_every_stale_breakpoint() -> None:
+    runtime = JavaRuntime()
+    runtime._breakpoints = {
+        "bp_001": {
+            "breakpoint_id": "bp_001",
+            "class": "Lexample/First;",
+            "matched_class": "example.First",
+            "line": 10,
+            "stale": True,
+        },
+        "bp_002": {
+            "breakpoint_id": "bp_002",
+            "class": "Lexample/Active;",
+            "matched_class": "example.Active",
+            "line": 20,
+        },
+        "bp_003": {
+            "breakpoint_id": "bp_003",
+            "class": "Lexample/Third;",
+            "matched_class": "example.Third",
+            "line": 30,
+            "stale": True,
+        },
+    }
+
+    result = runtime._arm_debug_requests(
+        object(),
+        {EventKind.BREAKPOINT},
+        None,
+    )
+
+    assert result is not None
+    assert result.ok is False
+    assert result.data["stale_breakpoint_ids"] == [
+        "bp_001",
+        "bp_003",
+    ]
+    assert "partial breakpoint arming" in result.data[
+        "suggested_next_step"
+    ]

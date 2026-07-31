@@ -225,7 +225,7 @@ class ProjectLaunchPipeline:
             try:
                 fast_compile_plan = self._maven.consume_fast_compile_plan(
                     execution=execution,
-                    runtime_plan=plan,
+                    runtime_jdk=runtime_jdk,
                 )
             except MavenResolutionError as error:
                 fast_compile_unavailable_reason = error.error_code.value
@@ -298,6 +298,7 @@ class ProjectLaunchPipeline:
                 continue
             if for_build and not candidate.has_compiler:
                 continue
+            log_offset = self._file_size(build_log)
             result = context.run_operation(
                 self._java.probe_spec(
                     candidate,
@@ -311,7 +312,37 @@ class ProjectLaunchPipeline:
                 )
             )
             if result.succeeded:
-                return candidate
+                detected_major = self._read_probed_java_major(
+                    build_log,
+                    offset=log_offset,
+                ) or candidate.major_version
+                detected_compiler_major: int | None = None
+                if for_build:
+                    compiler_log_offset = self._file_size(build_log)
+                    compiler_result = context.run_operation(
+                        self._java.compiler_probe_spec(
+                            candidate,
+                            cwd=cwd,
+                            output_capture=build_log,
+                            operation_name="build_javac_probe",
+                        )
+                    )
+                    if not compiler_result.succeeded:
+                        continue
+                    detected_compiler_major = (
+                        self._read_probed_javac_major(
+                            build_log,
+                            offset=compiler_log_offset,
+                        )
+                        or candidate.compiler_major_version
+                    )
+                return replace(
+                    candidate,
+                    detected_major_version=detected_major,
+                    detected_compiler_major_version=(
+                        detected_compiler_major
+                    ),
+                )
         role = "build" if for_build else "runtime"
         raise LaunchPipelineFailure(
             LaunchErrorCode.JAVA_TOOLCHAIN_NOT_FOUND,
@@ -332,6 +363,49 @@ class ProjectLaunchPipeline:
                     )
                 ),
             },
+        )
+
+    @staticmethod
+    def _file_size(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    @staticmethod
+    def _read_probed_java_major(
+        path: Path,
+        *,
+        offset: int,
+    ) -> int | None:
+        try:
+            with path.open("rb") as stream:
+                stream.seek(max(0, offset))
+                output = stream.read(64 * 1024).decode(
+                    "utf-8",
+                    errors="replace",
+                )
+        except OSError:
+            return None
+        return JavaToolchainCandidate.parse_major_version_output(output)
+
+    @staticmethod
+    def _read_probed_javac_major(
+        path: Path,
+        *,
+        offset: int,
+    ) -> int | None:
+        try:
+            with path.open("rb") as stream:
+                stream.seek(max(0, offset))
+                output = stream.read(64 * 1024).decode(
+                    "utf-8",
+                    errors="replace",
+                )
+        except OSError:
+            return None
+        return JavaToolchainCandidate.parse_compiler_major_version_output(
+            output
         )
 
     def _select_maven(

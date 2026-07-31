@@ -55,6 +55,12 @@ class FastCompilePlan:
     output_root: Path
     javac_executable: Path
     compile_classpath: tuple[Path, ...] = field(repr=False)
+    build_jdk_major: int
+    runtime_jdk_major: int
+    source_level: int
+    target_level: int
+    release_level: int | None
+    javac_platform_args: tuple[str, ...] = field(repr=False)
     encoding: str = "UTF-8"
     configuration_inputs: tuple[Path, ...] = field(
         default_factory=tuple,
@@ -76,6 +82,16 @@ class FastCompilePlan:
             "output_root": str(self.output_root),
             "javac": str(self.javac_executable),
             "compile_classpath_entry_count": len(self.compile_classpath),
+            "build_jdk_major": self.build_jdk_major,
+            "runtime_jdk_major": self.runtime_jdk_major,
+            "source_level": self.source_level,
+            "target_level": self.target_level,
+            "release_level": self.release_level,
+            "compiler_platform_mode": (
+                "release"
+                if self.javac_platform_args[:1] == ("--release",)
+                else "source_target"
+            ),
             "encoding": self.encoding,
         }
 
@@ -286,10 +302,18 @@ class FastCompiler:
         source_files: tuple[Path, ...],
         *,
         attempt_directory: Path,
-        source_release: int,
         include_parameters: bool,
         timeout_seconds: float = 60.0,
     ) -> CompileAttemptResult:
+        if not plan.javac_platform_args:
+            raise FastCompileError(
+                "FAST_COMPILE_MODEL_UNVERIFIED",
+                "The Java platform compilation mode is unavailable.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
         try:
             staging = Path(
                 tempfile.mkdtemp(
@@ -344,10 +368,7 @@ class FastCompiler:
                 os.pathsep.join(str(path) for path in plan.compile_classpath),
                 "-d",
                 str(classes),
-                "-source",
-                str(source_release),
-                "-target",
-                str(source_release),
+                *plan.javac_platform_args,
             ]
             if include_parameters:
                 arguments.append("-parameters")

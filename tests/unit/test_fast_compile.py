@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import threading
 import time
 from dataclasses import replace
@@ -46,6 +47,25 @@ public class FastExample {
     config = project / "pom.xml"
     config.write_text("<project/>\n", encoding="utf-8")
     javac_path = Path(javac).resolve()
+    version = subprocess.run(
+        [str(javac_path), "-version"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    version_text = (version.stdout or version.stderr).strip().split()[-1]
+    major = int(
+        version_text.split(".", 2)[1]
+        if version_text.startswith("1.")
+        else version_text.split(".", 1)[0]
+    )
+    platform_args = (
+        ("--release", "8")
+        if major >= 9
+        else ("-source", "8", "-target", "8")
+    )
     fingerprint = fast_compile_fingerprint(
         configuration_inputs=(config,),
         javac_executable=javac_path,
@@ -59,6 +79,12 @@ public class FastExample {
             output_root=output_root,
             javac_executable=javac_path,
             compile_classpath=(output_root,),
+            build_jdk_major=major,
+            runtime_jdk_major=major,
+            source_level=8,
+            target_level=8,
+            release_level=8 if major >= 9 else None,
+            javac_platform_args=platform_args,
             encoding="UTF-8",
             configuration_inputs=(config,),
             configuration_fingerprint=fingerprint,
@@ -103,7 +129,6 @@ def test_compile_uses_private_staging_and_preserves_formal_output(
         plan,
         (source.resolve(),),
         attempt_directory=attempt_root,
-        source_release=8,
         include_parameters=True,
     )
     try:
@@ -126,6 +151,13 @@ def test_compile_uses_private_staging_and_preserves_formal_output(
         assert "-proc:none" in arguments
         assert "-implicit:none" in arguments
         assert "-parameters" in arguments
+        if plan.build_jdk_major >= 9:
+            assert "--release" in arguments
+            assert '"-source"' not in arguments
+            assert '"-target"' not in arguments
+        else:
+            assert '"-source"' in arguments
+            assert '"-target"' in arguments
         assert (
             str(result.classes_directory).replace("\\", "\\\\")
             in arguments
@@ -197,7 +229,6 @@ def test_failed_compile_discards_private_staging(
             plan,
             (source.resolve(),),
             attempt_directory=attempt_root,
-            source_release=8,
             include_parameters=False,
         )
 
@@ -257,7 +288,6 @@ def test_close_cancels_in_flight_compile_and_discards_staging(
                 plan,
                 (source.resolve(),),
                 attempt_directory=attempt_root,
-                source_release=8,
                 include_parameters=False,
             )
         except BaseException as error:
@@ -289,3 +319,36 @@ def test_source_file_limit_is_structured(tmp_path: Path) -> None:
 
     assert rejected.value.error_code == "FAST_COMPILE_LIMIT_EXCEEDED"
     assert rejected.value.context["source_file_limit"] == 16
+
+
+def test_release_8_rejects_java9_platform_api(tmp_path: Path) -> None:
+    plan, source, _config = _plan(tmp_path)
+    if plan.build_jdk_major < 9:
+        pytest.skip("--release is unavailable on JDK 8")
+    source.write_text(
+        """\
+package example;
+
+public class FastExample {
+    public static String value() {
+        return java.util.List.of("newer-api").toString();
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    attempt_root = tmp_path / "release-attempt"
+    attempt_root.mkdir()
+    compiler = FastCompiler()
+
+    with pytest.raises(FastCompileError) as rejected:
+        compiler.compile(
+            plan,
+            (source.resolve(),),
+            attempt_directory=attempt_root,
+            include_parameters=False,
+        )
+
+    assert rejected.value.error_code == "FAST_COMPILE_FAILED"
+    assert rejected.value.context["compile_log_tail"]
+    assert list(attempt_root.iterdir()) == []
