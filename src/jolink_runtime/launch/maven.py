@@ -30,6 +30,7 @@ from .toolchain import (
 
 _MAX_POM_BYTES = 2 * 1024 * 1024
 _MAX_EFFECTIVE_POM_BYTES = 32 * 1024 * 1024
+_MAX_MAVEN_PROJECT_CONFIG_BYTES = 1024 * 1024
 _MAX_MODULES = 128
 _SAFE_COORDINATE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DEPENDENCY_PLUGIN_GOAL = (
@@ -64,49 +65,67 @@ _BYTECODE_TRANSFORM_GOAL_TOKENS = (
     "transform",
     "weave",
 )
-_CLASS_OUTPUT_PHASES = frozenset({"compile", "process-classes"})
+_FAST_COMPILE_AFFECTING_PHASES = frozenset(
+    {
+        "validate",
+        "initialize",
+        "generate-sources",
+        "process-sources",
+        "generate-resources",
+        "process-resources",
+        "compile",
+        "process-classes",
+    }
+)
+_SAFE_AFFECTING_PHASE_PLUGIN_GOALS = {
+    (
+        "org.apache.maven.plugins",
+        "maven-compiler-plugin",
+        "compile",
+    ): frozenset({"compile"}),
+    (
+        "org.apache.maven.plugins",
+        "maven-enforcer-plugin",
+        "validate",
+    ): frozenset({"enforce"}),
+    (
+        "org.apache.maven.plugins",
+        "maven-resources-plugin",
+        "process-resources",
+    ): frozenset({"resources"}),
+}
 _SAFE_IMPLICIT_PHASE_PLUGIN_GOALS = {
-    "build-helper-maven-plugin": frozenset(
-        {
-            "add-resource",
-            "add-source",
-            "add-test-resource",
-            "add-test-source",
-            "attach-artifact",
-            "local-ip",
-            "parse-version",
-            "regex-property",
-            "reserve-network-port",
-        }
+    ("org.apache.maven.plugins", "maven-clean-plugin"): frozenset(
+        {"clean"}
     ),
-    "maven-clean-plugin": frozenset({"clean"}),
-    "maven-compiler-plugin": frozenset({"compile", "testcompile"}),
-    "maven-dependency-plugin": frozenset(
-        {
-            "analyze",
-            "analyze-only",
-            "build-classpath",
-            "go-offline",
-            "list",
-            "properties",
-            "resolve",
-            "resolve-plugins",
-            "tree",
-        }
+    ("org.apache.maven.plugins", "maven-compiler-plugin"): frozenset(
+        {"compile", "testcompile"}
     ),
-    "maven-deploy-plugin": frozenset({"deploy"}),
-    "maven-enforcer-plugin": frozenset({"enforce"}),
-    "maven-failsafe-plugin": frozenset(
+    ("org.apache.maven.plugins", "maven-deploy-plugin"): frozenset(
+        {"deploy"}
+    ),
+    ("org.apache.maven.plugins", "maven-enforcer-plugin"): frozenset(
+        {"enforce"}
+    ),
+    ("org.apache.maven.plugins", "maven-failsafe-plugin"): frozenset(
         {"integration-test", "verify"}
     ),
-    "maven-install-plugin": frozenset({"install"}),
-    "maven-jar-plugin": frozenset({"jar", "test-jar"}),
-    "maven-resources-plugin": frozenset(
+    ("org.apache.maven.plugins", "maven-install-plugin"): frozenset(
+        {"install"}
+    ),
+    ("org.apache.maven.plugins", "maven-jar-plugin"): frozenset(
+        {"jar", "test-jar"}
+    ),
+    ("org.apache.maven.plugins", "maven-resources-plugin"): frozenset(
         {"copy-resources", "resources", "testresources"}
     ),
-    "maven-site-plugin": frozenset({"deploy", "site"}),
-    "maven-surefire-plugin": frozenset({"test"}),
-    "spring-boot-maven-plugin": frozenset(
+    ("org.apache.maven.plugins", "maven-site-plugin"): frozenset(
+        {"deploy", "site"}
+    ),
+    ("org.apache.maven.plugins", "maven-surefire-plugin"): frozenset(
+        {"test"}
+    ),
+    ("org.springframework.boot", "spring-boot-maven-plugin"): frozenset(
         {"build-info", "repackage", "start", "stop"}
     ),
 }
@@ -114,8 +133,14 @@ _SAFE_COMPILER_CONFIGURATION = frozenset(
     {
         "compilerId",
         "debug",
+        "debuglevel",
         "encoding",
+        "enablePreview",
+        "executable",
         "failOnWarning",
+        "forceJavacCompilerUse",
+        "forceLegacyJavacApi",
+        "fork",
         "parameters",
         "proc",
         "release",
@@ -127,6 +152,17 @@ _SAFE_COMPILER_CONFIGURATION = frozenset(
         "useIncrementalCompilation",
         "verbose",
     }
+)
+_MAVEN_ENVIRONMENT_INPUTS = ("MAVEN_ARGS", "MAVEN_OPTS")
+_MAVEN_PROJECT_CONFIG_NAMES = (
+    "maven.config",
+    "jvm.config",
+    "extensions.xml",
+)
+_UNMODELED_MAVEN_ARGUMENT_PATTERN = re.compile(
+    r"(?i)(?:maven\.compiler\.|maven\.ext\.class\.path|"
+    r"project\.build\.sourceencoding|(?:^|[\s'\"])-dencoding(?:=|\s)|"
+    r"-javaagent:|-xbootclasspath(?:/a|/p)?:|--patch-module)"
 )
 
 
@@ -620,6 +656,14 @@ class MavenBuildSystemAdapter:
                 ),
             )
 
+        maven_project_inputs = tuple(
+            execution.workspace.build_root / ".mvn" / name
+            for name in _MAVEN_PROJECT_CONFIG_NAMES
+        )
+        self._ensure_no_unverified_maven_extensions(
+            effective_project,
+            maven_project_inputs=maven_project_inputs,
+        )
         self._ensure_no_unverified_build_transforms(
             effective_project,
             tuple(normalized),
@@ -638,6 +682,7 @@ class MavenBuildSystemAdapter:
             (
                 execution.compile_classpath_file,
                 execution.effective_pom_file,
+                *maven_project_inputs,
             )
         )
         if execution.preferences.user_settings_file is not None:
@@ -647,6 +692,7 @@ class MavenBuildSystemAdapter:
         encoding = self._source_encoding(effective_project)
         fingerprint = fast_compile_fingerprint(
             configuration_inputs=configuration_inputs,
+            configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
             javac_executable=execution.build_jdk.javac_executable,
             compile_classpath=normalized,
         )
@@ -726,6 +772,7 @@ class MavenBuildSystemAdapter:
             javac_platform_args=compiler_model["javac_platform_args"],
             encoding=encoding,
             configuration_inputs=tuple(configuration_inputs),
+            configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
             configuration_fingerprint=fingerprint,
             baseline_class_hashes=baseline_class_hashes,
             target_module=execution.module.relative_path,
@@ -983,6 +1030,82 @@ class MavenBuildSystemAdapter:
                 return True
         return False
 
+    def _ensure_no_unverified_maven_extensions(
+        self,
+        project: ET.Element,
+        *,
+        maven_project_inputs: tuple[Path, ...],
+    ) -> None:
+        """Reject Maven extension/compiler inputs outside the frozen model."""
+
+        if project.findall("./{*}build/{*}extensions/{*}extension"):
+            self._raise_unverified_compiler_model(
+                "Maven build extensions are not modeled by fast update."
+            )
+        for plugin in project.findall("./{*}build/{*}plugins/{*}plugin"):
+            extension_flag = plugin.find("./{*}extensions")
+            if extension_flag is not None and (
+                (extension_flag.text or "").strip().casefold() != "false"
+            ):
+                self._raise_unverified_compiler_model(
+                    "A Maven plugin enables an unmodeled build extension."
+                )
+
+        extension_property = project.find(
+            "./{*}properties/{*}maven.ext.class.path"
+        )
+        if extension_property is not None and (
+            extension_property.text or ""
+        ).strip():
+            self._raise_unverified_compiler_model(
+                "The Maven core extension path is not modeled by fast update."
+            )
+
+        for path in maven_project_inputs:
+            if path.name == "extensions.xml" and path.exists():
+                self._raise_unverified_compiler_model(
+                    "Project-level Maven core extensions are not supported."
+                )
+            if not path.exists():
+                continue
+            if path.is_symlink() or not path.is_file():
+                self._raise_unverified_compiler_model(
+                    "A Maven project configuration input is not a regular file."
+                )
+            try:
+                metadata = path.stat()
+                raw = path.read_bytes()
+            except OSError as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "A Maven project configuration input is unreadable.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build and restart the application."
+                    ),
+                ) from error
+            if (
+                metadata.st_size > _MAX_MAVEN_PROJECT_CONFIG_BYTES
+                or len(raw) > _MAX_MAVEN_PROJECT_CONFIG_BYTES
+                or b"\x00" in raw
+            ):
+                self._raise_unverified_compiler_model(
+                    "A Maven project configuration input exceeds safety limits."
+                )
+            text = raw.decode("utf-8", errors="surrogateescape")
+            if _UNMODELED_MAVEN_ARGUMENT_PATTERN.search(text):
+                self._raise_unverified_compiler_model(
+                    "Maven project arguments override the compiler or extension model."
+                )
+
+        for name in _MAVEN_ENVIRONMENT_INPUTS:
+            value = os.environ.get(name, "")
+            if value and _UNMODELED_MAVEN_ARGUMENT_PATTERN.search(value):
+                self._raise_unverified_compiler_model(
+                    "Maven environment arguments override the compiler or "
+                    "extension model."
+                )
+
     def _ensure_no_unverified_build_transforms(
         self,
         project: ET.Element,
@@ -1021,18 +1144,44 @@ class MavenBuildSystemAdapter:
             ):
                 self._raise_unverified_transform()
         configurations = self._compiler_configurations(compiler)
-        proc = (
-            self._compiler_value(
-                project,
-                configurations,
-                config_name="proc",
-                property_name="maven.compiler.proc",
-            )
-            .strip()
-            .casefold()
+        proc_values = self._compiler_declared_values(
+            project,
+            configurations,
+            config_name="proc",
+            property_name="maven.compiler.proc",
         )
-        if proc not in {"", "none", "full"}:
+        if any(value.casefold() not in {"none", "full"} for value in proc_values):
             self._raise_unverified_transform()
+        proc = (
+            "none"
+            if proc_values and all(
+                value.casefold() == "none" for value in proc_values
+            )
+            else "full"
+        )
+        fail_on_warning_values = self._compiler_declared_values(
+            project,
+            configurations,
+            config_name="failOnWarning",
+            property_name="maven.compiler.failOnWarning",
+        )
+        if any(
+            value.casefold() != "false"
+            for value in fail_on_warning_values
+        ):
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The Maven fail-on-warning policy cannot be reproduced "
+                "safely.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build and restart the application."
+                ),
+            )
+        self._ensure_reproducible_compiler_identity(
+            project,
+            configurations,
+        )
         for configuration in configurations:
             for child in configuration:
                 if self._local_name(child.tag) not in (
@@ -1050,17 +1199,11 @@ class MavenBuildSystemAdapter:
                 or self._config_text(configuration, "executable")
             ):
                 self._raise_unverified_transform()
-            compiler_id = self._config_text(
-                configuration,
-                "compilerId",
-            )
-            if compiler_id and compiler_id.casefold() != "javac":
-                self._raise_unverified_transform()
-            debug = self._config_text(configuration, "debug").casefold()
-            if debug and debug != "true":
-                self._raise_unverified_transform()
-
         for plugin in project.findall("./{*}build/{*}plugins/{*}plugin"):
+            group_id = (
+                self._child_text(plugin, "groupId")
+                or "org.apache.maven.plugins"
+            ).casefold()
             artifact_id = self._child_text(plugin, "artifactId").casefold()
             if artifact_id in _BYTECODE_TRANSFORM_PLUGINS:
                 self._raise_unverified_transform()
@@ -1078,17 +1221,21 @@ class MavenBuildSystemAdapter:
                     for token in _BYTECODE_TRANSFORM_GOAL_TOKENS
                 ):
                     self._raise_unverified_transform()
-                if (
-                    artifact_id != "maven-compiler-plugin"
-                    and phase in _CLASS_OUTPUT_PHASES
-                ):
+                if "${" in phase:
                     self._raise_unverified_transform()
+                if goals and phase in _FAST_COMPILE_AFFECTING_PHASES:
+                    safe_goals = _SAFE_AFFECTING_PHASE_PLUGIN_GOALS.get(
+                        (group_id, artifact_id, phase),
+                        frozenset(),
+                    )
+                    if not set(goals).issubset(safe_goals):
+                        self._raise_unverified_transform()
                 if (
                     goals
                     and not phase
                     and not set(goals).issubset(
                         _SAFE_IMPLICIT_PHASE_PLUGIN_GOALS.get(
-                            artifact_id,
+                            (group_id, artifact_id),
                             frozenset(),
                         )
                     )
@@ -1269,6 +1416,100 @@ class MavenBuildSystemAdapter:
             return (property_element.text or "").strip()
         return ""
 
+    @classmethod
+    def _compiler_declared_values(
+        cls,
+        project: ET.Element,
+        configurations: tuple[ET.Element, ...],
+        *,
+        config_name: str,
+        property_name: str,
+    ) -> tuple[str, ...]:
+        """Return every non-empty declaration, without assuming precedence."""
+
+        values = [
+            value
+            for configuration in configurations
+            if (value := cls._config_text(configuration, config_name))
+        ]
+        property_element = project.find(
+            f"./{{*}}properties/{{*}}{property_name}"
+        )
+        if property_element is not None:
+            property_value = (property_element.text or "").strip()
+            if property_value:
+                values.append(property_value)
+        return tuple(values)
+
+    def _ensure_reproducible_compiler_identity(
+        self,
+        project: ET.Element,
+        configurations: tuple[ET.Element, ...],
+    ) -> None:
+        policies = (
+            ("compilerId", "maven.compiler.compilerId", {"javac"}),
+            ("fork", "maven.compiler.fork", {"false"}),
+            ("debug", "maven.compiler.debug", {"true"}),
+            (
+                "enablePreview",
+                "maven.compiler.enablePreview",
+                {"false"},
+            ),
+            (
+                "forceJavacCompilerUse",
+                "maven.compiler.forceJavacCompilerUse",
+                {"false"},
+            ),
+            (
+                "forceLegacyJavacApi",
+                "maven.compiler.forceLegacyJavacApi",
+                {"false"},
+            ),
+        )
+        for config_name, property_name, allowed in policies:
+            values = self._compiler_declared_values(
+                project,
+                configurations,
+                config_name=config_name,
+                property_name=property_name,
+            )
+            if any(value.casefold() not in allowed for value in values):
+                self._raise_unverified_compiler_model(
+                    "The Maven compiler identity or mode cannot be reproduced."
+                )
+
+        executable_values = self._compiler_declared_values(
+            project,
+            configurations,
+            config_name="executable",
+            property_name="maven.compiler.executable",
+        )
+        if executable_values:
+            self._raise_unverified_compiler_model(
+                "A custom Maven compiler executable cannot be reproduced."
+            )
+
+        debug_levels = self._compiler_declared_values(
+            project,
+            configurations,
+            config_name="debuglevel",
+            property_name="maven.compiler.debuglevel",
+        )
+        for value in debug_levels:
+            parts = tuple(
+                item.strip().casefold()
+                for item in value.split(",")
+                if item.strip()
+            )
+            if len(parts) != 3 or set(parts) != {
+                "lines",
+                "source",
+                "vars",
+            }:
+                self._raise_unverified_compiler_model(
+                    "The Maven debug metadata policy cannot be reproduced."
+                )
+
     @staticmethod
     def _config_text(configuration: ET.Element, name: str) -> str:
         element = configuration.find(f"./{{*}}{name}")
@@ -1368,6 +1609,17 @@ class MavenBuildSystemAdapter:
             ),
         )
 
+    @staticmethod
+    def _raise_unverified_compiler_model(message: str) -> None:
+        raise MavenResolutionError(
+            LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+            message,
+            retryable=False,
+            suggested_next_step=(
+                "Use the formal Maven build and restart the application."
+            ),
+        )
+
     def _base_maven_arguments(
         self,
         execution: MavenExecutionPlan,
@@ -1398,7 +1650,7 @@ class MavenBuildSystemAdapter:
         return arguments
 
     def _source_encoding(self, project: ET.Element) -> str:
-        """Use the effective compiler encoding, else fail-safe to UTF-8."""
+        """Return an explicit effective compiler encoding or fail closed."""
         compiler = self._find_build_plugin(
             project,
             "maven-compiler-plugin",
@@ -1408,7 +1660,7 @@ class MavenBuildSystemAdapter:
             project,
             configurations,
             config_name="encoding",
-            property_name="maven.compiler.encoding",
+            property_name="encoding",
         )
         if not value:
             element = project.find(
@@ -1416,23 +1668,29 @@ class MavenBuildSystemAdapter:
             )
             if element is not None:
                 value = (element.text or "").strip()
-        if value and "${" not in value:
-            try:
-                "".encode(value)
-            except LookupError as error:
-                raise MavenResolutionError(
-                    LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
-                    "The Maven source encoding is not supported by this host.",
-                    retryable=False,
-                    suggested_next_step=(
-                        "Use the formal Maven build for this compiler setup."
-                    ),
-                ) from error
-            return value
-        # Help effective-pom should resolve inherited compiler configuration.
-        # UTF-8 remains the bounded fallback and causes non-UTF-8 sources to
-        # fail compilation instead of guessing from the host locale.
-        return "UTF-8"
+        if not value or "${" in value:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The effective Maven source encoding is not explicit.",
+                retryable=False,
+                suggested_next_step=(
+                    "Configure project.build.sourceEncoding or the compiler "
+                    "plugin encoding, then relaunch the project; otherwise "
+                    "use the formal Maven build and restart."
+                ),
+            )
+        try:
+            "".encode(value)
+        except LookupError as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                "The Maven source encoding is not supported by this host.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build for this compiler setup."
+                ),
+            ) from error
+        return value
 
     def consume_jvm_launch_plan(
         self,

@@ -933,6 +933,7 @@ public class ProjectMcpFixture {
   <artifactId>project-mcp-fixture</artifactId>
   <version>1.0.0</version>
   <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
   </properties>
@@ -1033,6 +1034,8 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
 public class UpdateMcpFixture {{
+    private static String STATIC_VALUE = "stable";
+
     public static void main(String[] args) throws Exception {{
         int port = Integer.parseInt(args[0]);
         try (ServerSocket server = new ServerSocket(
@@ -1280,7 +1283,7 @@ public class UpdateMcpFixture {{
                             "public class UpdateMcpFixture {",
                             (
                                 "public class UpdateMcpFixture {\n"
-                                "    private static int unsupportedField = 1;"
+                                "    private int unsupportedField;"
                             ),
                         ),
                         encoding="utf-8",
@@ -1296,6 +1299,31 @@ public class UpdateMcpFixture {{
                     assert rejected["runtime_code_state"] == "unchanged"
                     assert rejected["runtime_overlay_active"] is True
                     assert rejected["code_revision"] == 1
+                    assert formal_class.read_bytes() == formal_bytes
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "after-update"
+                    )
+
+                    source.write_text(
+                        updated_source.replace(
+                            'STATIC_VALUE = "stable"',
+                            'STATIC_VALUE = "changed"',
+                        ),
+                        encoding="utf-8",
+                    )
+                    static_rejected = await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    })
+                    assert static_rejected["ok"] is False
+                    assert static_rejected["error_code"] == (
+                        "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART"
+                    )
+                    assert static_rejected["runtime_code_state"] == "unchanged"
+                    assert static_rejected["restart_required"] is True
+                    assert static_rejected["code_revision"] == 1
                     assert formal_class.read_bytes() == formal_bytes
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "after-update"
@@ -1441,6 +1469,7 @@ public class ReactorMcpFixture {
     <module>app</module>
   </modules>
   <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
   </properties>

@@ -77,6 +77,84 @@ public class Example {
     assert comparison.reasons == ()
 
 
+def test_method_body_change_with_unchanged_static_initializer_is_accepted(
+    tmp_path: Path,
+) -> None:
+    baseline = _compile(
+        tmp_path,
+        "before",
+        """\
+public class Example {
+    public static String VALUE = "stable";
+    public String value() { return "before"; }
+}
+""",
+    )
+    staged = _compile(
+        tmp_path,
+        "after",
+        """\
+public class Example {
+    public static String VALUE = "stable";
+    public String value() { return "after"; }
+}
+""",
+    )
+
+    comparison = compare_class_file_bytes(baseline, staged)
+
+    assert comparison.kind is ClassFileChangeKind.METHOD_BODY_ONLY
+    assert comparison.reasons == ()
+
+
+def test_static_initializer_change_is_rejected(tmp_path: Path) -> None:
+    baseline = _compile(
+        tmp_path,
+        "before",
+        "public class Example { public static String VALUE = \"old\"; }",
+    )
+    staged = _compile(
+        tmp_path,
+        "after",
+        "public class Example { public static String VALUE = \"new\"; }",
+    )
+
+    comparison = compare_class_file_bytes(baseline, staged)
+
+    assert comparison.kind is ClassFileChangeKind.UNSUPPORTED
+    assert "static_initializer_changed" in comparison.reasons
+
+
+def test_static_initializer_invokedynamic_change_is_rejected(
+    tmp_path: Path,
+) -> None:
+    baseline = _compile(
+        tmp_path,
+        "before",
+        """\
+public class Example {
+    public static String VALUE =
+        "prefix-old-" + System.getProperty("example.value");
+}
+""",
+    )
+    staged = _compile(
+        tmp_path,
+        "after",
+        """\
+public class Example {
+    public static String VALUE =
+        "prefix-new-" + System.getProperty("example.value");
+}
+""",
+    )
+
+    comparison = compare_class_file_bytes(baseline, staged)
+
+    assert comparison.kind is ClassFileChangeKind.UNSUPPORTED
+    assert "static_initializer_changed" in comparison.reasons
+
+
 @pytest.mark.parametrize(
     ("before", "after", "expected_reason"),
     [

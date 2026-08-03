@@ -260,10 +260,16 @@ to a full Maven build. A successful HotSwap is not proof of business
 correctness, so the fresh verification request is required. P0 uses the
 selected module's Maven compile classpath and a verified Java target model; it
 fails closed when annotation processing or bytecode transformation may affect
-the selected build. Breakpoints in redefined classes become stale and must be
-set again against the current source. `fast_update.available=true` means the
-launch is eligible to try this bounded path, not that every Maven compiler
-plugin or source edit is supported.
+the selected build. It also requires an explicit source encoding and rejects
+unmodeled early-lifecycle Maven executions, toolchain selection, and
+`failOnWarning` policies that its private `javac` call cannot reproduce.
+Compiler user properties, Maven project/environment configuration, and build
+extensions are part of the same fail-closed model. Static-initializer changes
+require a formal rebuild and restart because HotSwap does not rerun `<clinit>`.
+Breakpoints in redefined classes become stale and must be set again against
+the current source. `fast_update.available=true` means the launch is eligible
+to try this bounded path, not that every Maven compiler plugin or source edit
+is supported.
 
 ## Typical workflow
 

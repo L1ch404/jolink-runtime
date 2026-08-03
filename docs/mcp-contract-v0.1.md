@@ -78,10 +78,26 @@ debug metadata, and the existing `MethodParameters` convention. On JDK 9 or
 newer it uses `--release`; JDK 8 fast compilation is accepted only when the
 build JDK, runtime JDK, and target are all Java 8. It fails closed when
 annotation processing or bytecode transformation may affect the formal build
-and does not claim to replay arbitrary Maven compiler-plugin executions.
+and does not claim to replay arbitrary Maven compiler-plugin executions. The
+source encoding must be explicit in the effective compiler model; joLink does
+not guess UTF-8. Unmodeled Maven executions from `validate` through `compile`,
+post-compile class processing, unresolved lifecycle phases, selected Maven
+toolchains, and an enabled or unresolved `failOnWarning` policy make fast
+update unavailable rather than producing bytecode with different semantics.
+Compiler identity/mode checks cover both plugin configuration and Maven user
+properties. Maven core/build extensions, compiler overrides in `.mvn` project
+configuration or Maven environment arguments, and later changes to those
+fingerprinted inputs also disable or stale the fast path without failing the
+managed project launch.
 `fast_update.available=true` means the launch is eligible for the bounded fast
 path; compilation can still fail safely and direct the caller to a formal
 Maven build.
+
+Because JDWP redefinition never reruns static initialization, a changed,
+added, or removed `<clinit>` is not a supported method-body update. It returns
+`STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART` before class transmission and
+keeps `runtime_code_state=unchanged`. Constructor changes remain runtime-only
+for objects created after the update; existing objects are not reinitialized.
 
 After a class is redefined, every logical breakpoint belonging to that class
 is retained for inspection but marked stale. joLink does not rebind the old

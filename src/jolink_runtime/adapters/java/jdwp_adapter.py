@@ -3015,6 +3015,27 @@ class JavaRuntime(Runtime):
                 ]
                 comparison = compare_class_files(baseline, staged)
                 if comparison.kind is ClassFileChangeKind.UNSUPPORTED:
+                    if "static_initializer_changed" in comparison.reasons:
+                        raise FastCompileError(
+                            "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART",
+                            (
+                                "The source change modifies static "
+                                "initialization, which HotSwap does not run "
+                                "again."
+                            ),
+                            retryable=False,
+                            suggested_next_step=(
+                                "Use the formal Maven build and restart the "
+                                "application so static state is initialized "
+                                "from the new code."
+                            ),
+                            context={
+                                "class": binary_name,
+                                "change_reasons": list(comparison.reasons),
+                                "runtime_code_state": "unchanged",
+                                "restart_required": True,
+                            },
+                        )
                     raise FastCompileError(
                         "CLASS_SCHEMA_CHANGED",
                         (

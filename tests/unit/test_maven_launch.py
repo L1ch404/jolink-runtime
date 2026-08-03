@@ -94,9 +94,18 @@ def _effective_pom(
     *,
     source: str = "1.8",
     target: str = "1.8",
+    source_encoding: str | None = "UTF-8",
+    compiler_properties: str = "",
     compiler_configuration: str = "",
     extra_plugins: str = "",
 ) -> str:
+    encoding_property = (
+        "<project.build.sourceEncoding>"
+        f"{source_encoding}"
+        "</project.build.sourceEncoding>"
+        if source_encoding is not None
+        else ""
+    )
     return f"""\
 <project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>
@@ -106,6 +115,8 @@ def _effective_pom(
   <properties>
     <maven.compiler.source>{source}</maven.compiler.source>
     <maven.compiler.target>{target}</maven.compiler.target>
+    {encoding_property}
+    {compiler_properties}
   </properties>
   <build>
     <plugins>
@@ -505,6 +516,7 @@ def test_fast_compile_plan_does_not_widen_maven_compile_classpath(
     <properties>
       <maven.compiler.source>1.8</maven.compiler.source>
       <maven.compiler.target>1.8</maven.compiler.target>
+      <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <dependencies>
       <dependency>
@@ -646,6 +658,224 @@ def test_fast_compile_rejects_unknown_compile_phase_transformer(
     )
 
 
+@pytest.mark.parametrize(
+    "phase",
+    (
+        "validate",
+        "initialize",
+        "generate-sources",
+        "process-sources",
+        "generate-resources",
+        "process-resources",
+        "compile",
+        "process-classes",
+    ),
+)
+def test_fast_compile_rejects_unmodeled_early_lifecycle_execution(
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins=f"""\
+<plugin>
+  <groupId>com.example.build</groupId>
+  <artifactId>acme-source-weaver</artifactId>
+  <executions>
+    <execution>
+      <phase>{phase}</phase>
+      <goals><goal>run</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode
+        .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    ("group_id", "artifact_id", "phase", "goals"),
+    (
+        (
+            "org.apache.maven.plugins",
+            "maven-toolchains-plugin",
+            "validate",
+            "<goal>toolchain</goal>",
+        ),
+        (
+            "org.apache.maven.plugins",
+            "maven-toolchains-plugin",
+            "",
+            "<goal>toolchain</goal>",
+        ),
+        (
+            "com.evil",
+            "maven-enforcer-plugin",
+            "validate",
+            "<goal>enforce</goal>",
+        ),
+        (
+            "org.apache.maven.plugins",
+            "maven-enforcer-plugin",
+            "validate",
+            "<goal>enforce</goal><goal>mutate</goal>",
+        ),
+    ),
+)
+def test_fast_compile_rejects_unmodeled_early_lifecycle_identity(
+    tmp_path: Path,
+    group_id: str,
+    artifact_id: str,
+    phase: str,
+    goals: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins=f"""\
+<plugin>
+  <groupId>{group_id}</groupId>
+  <artifactId>{artifact_id}</artifactId>
+  <executions>
+    <execution>
+      <phase>{phase}</phase>
+      <goals>{goals}</goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode
+        .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_unresolved_lifecycle_phase(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins="""\
+<plugin>
+  <groupId>com.example.build</groupId>
+  <artifactId>acme-hook</artifactId>
+  <executions>
+    <execution>
+      <phase>${custom.phase}</phase>
+      <goals><goal>run</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode
+        .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
+def test_fast_compile_allows_modeled_early_lifecycle_executions(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins="""\
+<plugin>
+  <artifactId>maven-enforcer-plugin</artifactId>
+  <executions>
+    <execution>
+      <phase>validate</phase>
+      <goals><goal>enforce</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-resources-plugin</artifactId>
+  <executions>
+    <execution>
+      <phase>process-resources</phase>
+      <goals><goal>resources</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "UTF-8"
+
+
+def test_fast_compile_ignores_unknown_execution_after_class_processing(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins="""\
+<plugin>
+  <groupId>com.example.build</groupId>
+  <artifactId>acme-test-reporter</artifactId>
+  <executions>
+    <execution>
+      <phase>test</phase>
+      <goals><goal>report</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "UTF-8"
+
+
 def test_fast_compile_rejects_unknown_plugin_with_implicit_phase(
     tmp_path: Path,
 ) -> None:
@@ -660,6 +890,78 @@ def test_fast_compile_rejects_unknown_plugin_with_implicit_phase(
   <executions>
     <execution>
       <goals><goal>apply</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode
+        .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    "phase_xml",
+    ("", "<phase>generate-sources</phase>"),
+)
+def test_fast_compile_rejects_unmodeled_source_root_change(
+    tmp_path: Path,
+    phase_xml: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins="""\
+<plugin>
+  <groupId>org.codehaus.mojo</groupId>
+  <artifactId>build-helper-maven-plugin</artifactId>
+  <executions>
+    <execution>
+      {phase_xml}
+      <goals><goal>add-source</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode
+        .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_implicit_property_mutation(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins="""\
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-dependency-plugin</artifactId>
+  <executions>
+    <execution>
+      <goals><goal>properties</goal></goals>
     </execution>
   </executions>
 </plugin>
@@ -769,6 +1071,7 @@ def test_fast_compile_rejects_classifier_reactor_dependency(
     <properties>
       <maven.compiler.source>1.8</maven.compiler.source>
       <maven.compiler.target>1.8</maven.compiler.target>
+      <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <dependencies>
       <dependency>
@@ -802,7 +1105,6 @@ def test_fast_compile_rejects_classifier_reactor_dependency(
         "<includes><include>**/Application.java</include></includes>",
         "<jdkToolchain><version>17</version></jdkToolchain>",
         "<sourcepath>generated-sources</sourcepath>",
-        "<enablePreview>true</enablePreview>",
     ],
 )
 def test_fast_compile_rejects_unmodeled_compiler_configuration(
@@ -826,6 +1128,318 @@ def test_fast_compile_rejects_unmodeled_compiler_configuration(
     assert captured.value.error_code is (
         LaunchErrorCode
         .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    ("property_name", "property_value"),
+    (
+        ("maven.compiler.compilerId", "eclipse"),
+        ("maven.compiler.fork", "true"),
+        ("maven.compiler.executable", "/custom/javac"),
+        ("maven.compiler.debug", "false"),
+        ("maven.compiler.debuglevel", "lines,vars"),
+        ("maven.compiler.enablePreview", "true"),
+        ("maven.compiler.forceJavacCompilerUse", "true"),
+        ("maven.compiler.forceLegacyJavacApi", "true"),
+    ),
+)
+def test_fast_compile_rejects_unreproduced_compiler_user_property(
+    tmp_path: Path,
+    property_name: str,
+    property_value: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            compiler_properties=(
+                f"<{property_name}>{property_value}</{property_name}>"
+            ),
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    "compiler_configuration",
+    (
+        "<compilerId>eclipse</compilerId>",
+        "<fork>true</fork>",
+        "<executable>/custom/javac</executable>",
+        "<debug>false</debug>",
+        "<debuglevel>lines,vars</debuglevel>",
+        "<enablePreview>true</enablePreview>",
+        "<forceJavacCompilerUse>true</forceJavacCompilerUse>",
+        "<forceLegacyJavacApi>true</forceLegacyJavacApi>",
+    ),
+)
+def test_fast_compile_rejects_unreproduced_compiler_configuration(
+    tmp_path: Path,
+    compiler_configuration: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            compiler_configuration=compiler_configuration,
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_allows_reproducible_debuglevel(tmp_path: Path) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            compiler_properties=(
+                "<maven.compiler.debuglevel>source,lines,vars"
+                "</maven.compiler.debuglevel>"
+            ),
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "UTF-8"
+
+
+@pytest.mark.parametrize(
+    "extension_xml",
+    (
+        """\
+<plugin>
+  <groupId>com.example</groupId>
+  <artifactId>custom-extension</artifactId>
+  <extensions>true</extensions>
+</plugin>
+""",
+        """\
+<plugin>
+  <groupId>com.example</groupId>
+  <artifactId>custom-extension</artifactId>
+  <extensions>${extension.enabled}</extensions>
+</plugin>
+""",
+    ),
+)
+def test_fast_compile_rejects_plugin_build_extension(
+    tmp_path: Path,
+    extension_xml: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins=extension_xml,
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_project_build_extension(tmp_path: Path) -> None:
+    effective_pom = _effective_pom("app").replace(
+        "<build>",
+        """\
+<build>
+  <extensions>
+    <extension>
+      <groupId>com.example</groupId>
+      <artifactId>custom-extension</artifactId>
+      <version>1.0</version>
+    </extension>
+  </extensions>
+""",
+        1,
+    )
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=effective_pom,
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_maven_extensions_xml(tmp_path: Path) -> None:
+    adapter, execution = _fast_compile_execution(tmp_path)
+    _write(
+        execution.workspace.build_root / ".mvn/extensions.xml",
+        """\
+<extensions>
+  <extension>
+    <groupId>com.example</groupId>
+    <artifactId>custom-extension</artifactId>
+    <version>1.0</version>
+  </extension>
+</extensions>
+""",
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_effective_core_extension_property(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            compiler_properties=(
+                "<maven.ext.class.path>extension.jar"
+                "</maven.ext.class.path>"
+            ),
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+@pytest.mark.parametrize(
+    ("config_name", "content"),
+    (
+        ("maven.config", "-Dmaven.compiler.compilerId=eclipse\n"),
+        ("maven.config", "-Dmaven.ext.class.path=extension.jar\n"),
+        ("jvm.config", "-Dmaven.compiler.enablePreview=true\n"),
+        ("jvm.config", "-javaagent:compiler-agent.jar\n"),
+    ),
+)
+def test_fast_compile_rejects_unmodeled_maven_project_argument(
+    tmp_path: Path,
+    config_name: str,
+    content: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(tmp_path)
+    _write(
+        execution.workspace.build_root / ".mvn" / config_name,
+        content,
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_maven_project_configuration_creation_makes_plan_stale(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(tmp_path)
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.is_fresh() is True
+    _write(
+        execution.workspace.build_root / ".mvn/maven.config",
+        "-T 2\n",
+    )
+    assert plan.is_fresh() is False
+
+
+def test_maven_environment_change_makes_plan_stale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MAVEN_ARGS", raising=False)
+    monkeypatch.delenv("MAVEN_OPTS", raising=False)
+    adapter, execution = _fast_compile_execution(tmp_path)
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.is_fresh() is True
+    monkeypatch.setenv("MAVEN_OPTS", "-Xmx2g")
+    assert plan.is_fresh() is False
+
+
+@pytest.mark.parametrize("name", ("MAVEN_ARGS", "MAVEN_OPTS"))
+def test_fast_compile_rejects_unmodeled_maven_environment_argument(
+    tmp_path: Path,
+    monkeypatch,
+    name: str,
+) -> None:
+    monkeypatch.setenv(name, "-Dmaven.compiler.compilerId=eclipse")
+    adapter, execution = _fast_compile_execution(tmp_path)
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
     )
 
 
@@ -868,7 +1482,7 @@ def test_fast_compile_uses_effective_compiler_encoding(
         tmp_path,
         effective_pom=_effective_pom(
             "app",
-            compiler_configuration="<encoding>ISO-8859-1</encoding>",
+            compiler_configuration="<encoding>GBK</encoding>",
         ),
     )
 
@@ -877,7 +1491,190 @@ def test_fast_compile_uses_effective_compiler_encoding(
         runtime_jdk=_jdk(tmp_path),
     )
 
-    assert plan.encoding == "ISO-8859-1"
+    assert plan.encoding == "GBK"
+
+
+def test_fast_compile_uses_canonical_encoding_property(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            source_encoding=None,
+            compiler_properties="<encoding>GBK</encoding>",
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "GBK"
+
+
+def test_fast_compile_does_not_treat_noncanonical_encoding_as_override(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            source_encoding="UTF-8",
+            compiler_properties=(
+                "<maven.compiler.encoding>GBK</maven.compiler.encoding>"
+            ),
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "UTF-8"
+
+
+@pytest.mark.parametrize("source_encoding", (None, "${legacy.encoding}"))
+def test_fast_compile_rejects_unverified_source_encoding(
+    tmp_path: Path,
+    source_encoding: str | None,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            source_encoding=source_encoding,
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_unresolved_compiler_encoding_override(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            source_encoding="UTF-8",
+            compiler_configuration=(
+                "<encoding>${legacy.encoding}</encoding>"
+            ),
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_rejects_host_unsupported_source_encoding(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            source_encoding="jolink-not-a-real-encoding",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.UNSUPPORTED_BUILD_MODEL
+    )
+
+
+@pytest.mark.parametrize(
+    ("compiler_properties", "compiler_configuration"),
+    (
+        ("", "<failOnWarning>true</failOnWarning>"),
+        (
+            "<maven.compiler.failOnWarning>true"
+            "</maven.compiler.failOnWarning>",
+            "",
+        ),
+        ("", "<failOnWarning>${warnings.fail}</failOnWarning>"),
+        (
+            "<maven.compiler.failOnWarning>${warnings.fail}"
+            "</maven.compiler.failOnWarning>",
+            "",
+        ),
+        (
+            "<maven.compiler.failOnWarning>yes"
+            "</maven.compiler.failOnWarning>",
+            "",
+        ),
+    ),
+)
+def test_fast_compile_rejects_unreproduced_fail_on_warning(
+    tmp_path: Path,
+    compiler_properties: str,
+    compiler_configuration: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            compiler_properties=compiler_properties,
+            compiler_configuration=compiler_configuration,
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert (
+        captured.value.error_code
+        is LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
+def test_fast_compile_allows_explicit_fail_on_warning_false(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            compiler_configuration="<failOnWarning>false</failOnWarning>",
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "UTF-8"
 
 
 def test_fast_compile_rejects_jpms_module(

@@ -66,6 +66,10 @@ class FastCompilePlan:
         default_factory=tuple,
         repr=False,
     )
+    configuration_environment_names: tuple[str, ...] = field(
+        default_factory=tuple,
+        repr=False,
+    )
     configuration_fingerprint: str = field(default="", repr=False)
     baseline_class_hashes: Mapping[str, str] = field(
         default_factory=dict,
@@ -98,6 +102,9 @@ class FastCompilePlan:
     def current_fingerprint(self) -> str:
         return fast_compile_fingerprint(
             configuration_inputs=self.configuration_inputs,
+            configuration_environment_names=(
+                self.configuration_environment_names
+            ),
             javac_executable=self.javac_executable,
             compile_classpath=self.compile_classpath,
         )
@@ -478,6 +485,7 @@ class FastCompiler:
 def fast_compile_fingerprint(
     *,
     configuration_inputs: Iterable[Path],
+    configuration_environment_names: Iterable[str] = (),
     javac_executable: Path,
     compile_classpath: Iterable[Path],
 ) -> str:
@@ -493,6 +501,17 @@ def fast_compile_fingerprint(
             digest.update(path.read_bytes())
         except OSError:
             digest.update(b"<unreadable>")
+    for name in sorted(set(configuration_environment_names)):
+        digest.update(b"environment\0")
+        digest.update(name.encode("utf-8", errors="surrogateescape"))
+        value = os.environ.get(name)
+        if value is None:
+            digest.update(b"<unset>")
+        else:
+            # Environment values can contain credentials. They participate in
+            # the in-memory digest but are never retained in the plan or
+            # exposed through Runtime results.
+            digest.update(value.encode("utf-8", errors="surrogateescape"))
     javac = javac_executable.resolve(strict=False)
     digest.update(b"javac\0")
     digest.update(str(javac).encode("utf-8", errors="surrogateescape"))

@@ -1,10 +1,11 @@
 """Small, side-effect-free Java class-file parser for HotSwap preflight.
 
 The parser deliberately models linkage structure and metadata rather than
-bytecode instructions.  A changed ``Code`` attribute (including its nested
-line-number, local-variable, and stack-map attributes) is therefore accepted
-as a method-body change, while changes that can alter linkage or reflective
-framework behaviour are rejected before JDWP ``RedefineClasses`` is attempted.
+general method bytecode. Ordinary ``Code`` changes are accepted as method-body
+changes. The static initializer is the exception: its executable semantics are
+fingerprinted because JDWP class redefinition does not run ``<clinit>`` again.
+Changes that can alter linkage, reflective framework behaviour, or initialized
+static state are rejected before ``RedefineClasses`` is attempted.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import stat
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,12 @@ class ClassMember:
     descriptor: str
     access_flags: int
     metadata: tuple[tuple[str, Any], ...]
+    code_fingerprint: str | None = None
+    code_payload: bytes | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def layout(self) -> tuple[str, str, int]:
@@ -190,6 +197,89 @@ class _ConstantPool:
             f"Constant-pool entry {index} is not a supported constant value."
         )
 
+    def semantic(
+        self,
+        index: int,
+        bootstrap_methods: tuple[tuple[int, tuple[int, ...]], ...],
+        *,
+        seen: frozenset[tuple[str, int]] = frozenset(),
+    ) -> Any:
+        """Resolve one constant-pool entry without retaining its table index."""
+
+        token = ("constant", index)
+        if token in seen:
+            return ("recursive_constant",)
+        nested_seen = seen | {token}
+        tag, value = self._entry(index)
+        if tag in {1, 3, 4, 5, 6, 7, 8}:
+            return self.constant(index)
+        if tag in {9, 10, 11}:
+            class_index, name_type_index = value
+            kind = {
+                9: "field_ref",
+                10: "method_ref",
+                11: "interface_method_ref",
+            }[tag]
+            return (
+                kind,
+                self.class_internal_name(class_index),
+                self.name_and_type(name_type_index),
+            )
+        if tag == 12:
+            return ("name_and_type", *self.name_and_type(index))
+        if tag == 15:
+            reference_kind, reference_index = value
+            return (
+                "method_handle",
+                reference_kind,
+                self.semantic(
+                    reference_index,
+                    bootstrap_methods,
+                    seen=nested_seen,
+                ),
+            )
+        if tag == 16:
+            return ("method_type", self.utf8(value))
+        if tag in {17, 18}:
+            bootstrap_index, name_type_index = value
+            bootstrap_token = ("bootstrap", bootstrap_index)
+            if bootstrap_token in nested_seen:
+                bootstrap: Any = ("recursive_bootstrap",)
+            else:
+                if bootstrap_index >= len(bootstrap_methods):
+                    raise ClassFileFormatError(
+                        "A dynamic constant references a missing bootstrap method."
+                    )
+                method_ref, arguments = bootstrap_methods[bootstrap_index]
+                bootstrap_seen = nested_seen | {bootstrap_token}
+                bootstrap = (
+                    self.semantic(
+                        method_ref,
+                        bootstrap_methods,
+                        seen=bootstrap_seen,
+                    ),
+                    tuple(
+                        self.semantic(
+                            argument,
+                            bootstrap_methods,
+                            seen=bootstrap_seen,
+                        )
+                        for argument in arguments
+                    ),
+                )
+            return (
+                "dynamic" if tag == 17 else "invoke_dynamic",
+                self.name_and_type(name_type_index),
+                bootstrap,
+            )
+        if tag == 19:
+            return ("module", self.utf8(value))
+        if tag == 20:
+            return ("package", self.utf8(value))
+        raise ClassFileFormatError(
+            f"Unsupported semantic constant-pool tag {tag}."
+        )
+
 
 def _parse_constant_pool(reader: _Reader) -> _ConstantPool:
     count = reader.u2()
@@ -224,6 +314,219 @@ def _parse_constant_pool(reader: _Reader) -> _ConstantPool:
             )
         index += 1
     return _ConstantPool(tuple(entries))
+
+
+_FIXED_OPERAND_LENGTHS = {
+    0x10: 1,
+    0x11: 2,
+    0x12: 1,
+    0x13: 2,
+    0x14: 2,
+    **{opcode: 1 for opcode in range(0x15, 0x1A)},
+    **{opcode: 1 for opcode in range(0x36, 0x3B)},
+    0x84: 2,
+    **{opcode: 2 for opcode in range(0x99, 0xA9)},
+    0xA9: 1,
+    **{opcode: 2 for opcode in range(0xB2, 0xB9)},
+    0xB9: 4,
+    0xBA: 4,
+    0xBB: 2,
+    0xBC: 1,
+    0xBD: 2,
+    0xC0: 2,
+    0xC1: 2,
+    0xC5: 3,
+    0xC6: 2,
+    0xC7: 2,
+    0xC8: 4,
+    0xC9: 4,
+}
+_NO_OPERAND_OPCODE_RANGES = (
+    range(0x00, 0x10),
+    range(0x1A, 0x36),
+    range(0x3B, 0x84),
+    range(0x85, 0x99),
+    range(0xAC, 0xB2),
+    range(0xBE, 0xC0),
+    range(0xC2, 0xC4),
+)
+_CONSTANT_POOL_U1_OPCODES = frozenset({0x12})
+_CONSTANT_POOL_U2_OPCODES = frozenset(
+    {
+        0x13,
+        0x14,
+        *range(0xB2, 0xBA),
+        0xBA,
+        0xBB,
+        0xBD,
+        0xC0,
+        0xC1,
+        0xC5,
+    }
+)
+
+
+def _is_no_operand_opcode(opcode: int) -> bool:
+    return any(opcode in values for values in _NO_OPERAND_OPCODE_RANGES)
+
+
+def _signed_int(raw: bytes) -> int:
+    return int.from_bytes(raw, byteorder="big", signed=True)
+
+
+def _normalize_bytecode(
+    code: bytes,
+    pool: _ConstantPool,
+    bootstrap_methods: tuple[tuple[int, tuple[int, ...]], ...],
+) -> tuple[Any, ...]:
+    instructions: list[Any] = []
+    offset = 0
+    while offset < len(code):
+        start = offset
+        opcode = code[offset]
+        offset += 1
+        if opcode == 0xAA:  # tableswitch
+            padding = (4 - (offset % 4)) % 4
+            if offset + padding + 12 > len(code):
+                raise ClassFileFormatError("Truncated tableswitch instruction.")
+            offset += padding
+            default = _signed_int(code[offset : offset + 4])
+            low = _signed_int(code[offset + 4 : offset + 8])
+            high = _signed_int(code[offset + 8 : offset + 12])
+            offset += 12
+            if high < low or high - low > len(code) // 4:
+                raise ClassFileFormatError("Invalid tableswitch bounds.")
+            count = high - low + 1
+            end = offset + count * 4
+            if end > len(code):
+                raise ClassFileFormatError("Truncated tableswitch targets.")
+            targets = tuple(
+                _signed_int(code[index : index + 4])
+                for index in range(offset, end, 4)
+            )
+            offset = end
+            instructions.append((opcode, default, low, high, targets))
+            continue
+        if opcode == 0xAB:  # lookupswitch
+            padding = (4 - (offset % 4)) % 4
+            if offset + padding + 8 > len(code):
+                raise ClassFileFormatError("Truncated lookupswitch instruction.")
+            offset += padding
+            default = _signed_int(code[offset : offset + 4])
+            pair_count = _signed_int(code[offset + 4 : offset + 8])
+            offset += 8
+            if pair_count < 0 or pair_count > len(code) // 8:
+                raise ClassFileFormatError("Invalid lookupswitch pair count.")
+            end = offset + pair_count * 8
+            if end > len(code):
+                raise ClassFileFormatError("Truncated lookupswitch pairs.")
+            pairs = tuple(
+                (
+                    _signed_int(code[index : index + 4]),
+                    _signed_int(code[index + 4 : index + 8]),
+                )
+                for index in range(offset, end, 8)
+            )
+            offset = end
+            instructions.append((opcode, default, pairs))
+            continue
+        if opcode == 0xC4:  # wide
+            if offset >= len(code):
+                raise ClassFileFormatError("Truncated wide instruction.")
+            widened_opcode = code[offset]
+            if widened_opcode not in {
+                *range(0x15, 0x1A),
+                *range(0x36, 0x3B),
+                0x84,
+                0xA9,
+            }:
+                raise ClassFileFormatError("Invalid widened opcode.")
+            operand_length = 5 if widened_opcode == 0x84 else 3
+            end = offset + operand_length
+            if end > len(code):
+                raise ClassFileFormatError("Truncated wide operands.")
+            instructions.append((opcode, bytes(code[offset:end])))
+            offset = end
+            continue
+
+        operand_length = _FIXED_OPERAND_LENGTHS.get(opcode)
+        if operand_length is None:
+            if not _is_no_operand_opcode(opcode):
+                raise ClassFileFormatError(
+                    f"Unsupported bytecode opcode 0x{opcode:02x}."
+                )
+            operand_length = 0
+        end = offset + operand_length
+        if end > len(code):
+            raise ClassFileFormatError(
+                f"Truncated bytecode instruction at offset {start}."
+            )
+        operands = code[offset:end]
+        offset = end
+        if opcode in _CONSTANT_POOL_U1_OPCODES:
+            instructions.append(
+                (opcode, pool.semantic(operands[0], bootstrap_methods))
+            )
+        elif opcode in _CONSTANT_POOL_U2_OPCODES:
+            constant_index = int.from_bytes(operands[:2], "big")
+            instructions.append(
+                (
+                    opcode,
+                    pool.semantic(constant_index, bootstrap_methods),
+                    bytes(operands[2:]),
+                )
+            )
+        else:
+            instructions.append((opcode, bytes(operands)))
+    return tuple(instructions)
+
+
+def _parse_bootstrap_methods(
+    payload: bytes,
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    reader = _Reader(payload, context="BootstrapMethods attribute")
+    methods = tuple(
+        (
+            reader.u2(),
+            tuple(reader.u2() for _ in range(reader.u2())),
+        )
+        for _ in range(reader.u2())
+    )
+    reader.finish()
+    return methods
+
+
+def _code_fingerprint(
+    payload: bytes,
+    pool: _ConstantPool,
+    bootstrap_methods: tuple[tuple[int, tuple[int, ...]], ...],
+) -> str:
+    reader = _Reader(payload, context="Code attribute")
+    max_stack = reader.u2()
+    max_locals = reader.u2()
+    code = reader.take(reader.u4())
+    instructions = _normalize_bytecode(code, pool, bootstrap_methods)
+    exceptions = tuple(
+        (
+            reader.u2(),
+            reader.u2(),
+            reader.u2(),
+            (
+                pool.semantic(catch_type, bootstrap_methods)
+                if (catch_type := reader.u2())
+                else None
+            ),
+        )
+        for _ in range(reader.u2())
+    )
+    # Nested Code attributes contain verifier/debug metadata. They do not
+    # execute and are intentionally excluded from the static-state fingerprint.
+    for _ in range(reader.u2()):
+        reader.u2()
+        reader.take(reader.u4())
+    reader.finish()
+    model = (max_stack, max_locals, instructions, exceptions)
+    return hashlib.sha256(repr(model).encode("utf-8")).hexdigest()
 
 
 def _annotation_value(reader: _Reader, pool: _ConstantPool) -> Any:
@@ -393,17 +696,22 @@ def _parse_attributes(
     pool: _ConstantPool,
     *,
     owner: str,
+    code_payload_sink: list[bytes] | None = None,
+    bootstrap_payload_sink: list[bytes] | None = None,
 ) -> tuple[tuple[str, Any], ...]:
     attributes: list[tuple[str, Any]] = []
     for _ in range(reader.u2()):
         name = pool.utf8(reader.u2())
         payload = reader.take(reader.u4())
         if owner == "method" and name == "Code":
+            if code_payload_sink is not None:
+                code_payload_sink.append(payload)
             continue
-        if owner == "class" and name in {
-            "BootstrapMethods",
-            "SourceDebugExtension",
-        }:
+        if owner == "class" and name == "BootstrapMethods":
+            if bootstrap_payload_sink is not None:
+                bootstrap_payload_sink.append(payload)
+            continue
+        if owner == "class" and name == "SourceDebugExtension":
             # Both describe executable/debug details rather than class schema.
             continue
         attributes.append(
@@ -426,12 +734,26 @@ def _parse_members(
         access_flags = reader.u2()
         name = pool.utf8(reader.u2())
         descriptor = pool.utf8(reader.u2())
+        code_payloads: list[bytes] = []
+        metadata = _parse_attributes(
+            reader,
+            pool,
+            owner=owner,
+            code_payload_sink=(
+                code_payloads if owner == "method" else None
+            ),
+        )
+        if len(code_payloads) > 1:
+            raise ClassFileFormatError(
+                "A method contains more than one Code attribute."
+            )
         members.append(
             ClassMember(
                 name=name,
                 descriptor=descriptor,
                 access_flags=access_flags,
-                metadata=_parse_attributes(reader, pool, owner=owner),
+                metadata=metadata,
+                code_payload=(code_payloads[0] if code_payloads else None),
             )
         )
     return tuple(members)
@@ -459,7 +781,39 @@ def parse_class_file(data: bytes) -> ParsedClassFile:
     )
     fields = _parse_members(reader, pool, owner="field")
     methods = _parse_members(reader, pool, owner="method")
-    metadata = _parse_attributes(reader, pool, owner="class")
+    bootstrap_payloads: list[bytes] = []
+    metadata = _parse_attributes(
+        reader,
+        pool,
+        owner="class",
+        bootstrap_payload_sink=bootstrap_payloads,
+    )
+    if len(bootstrap_payloads) > 1:
+        raise ClassFileFormatError(
+            "A class contains more than one BootstrapMethods attribute."
+        )
+    bootstrap_methods = (
+        _parse_bootstrap_methods(bootstrap_payloads[0])
+        if bootstrap_payloads
+        else ()
+    )
+    methods = tuple(
+        replace(
+            method,
+            code_fingerprint=(
+                _code_fingerprint(
+                    method.code_payload,
+                    pool,
+                    bootstrap_methods,
+                )
+                if method.name == "<clinit>"
+                and method.code_payload is not None
+                else None
+            ),
+            code_payload=None,
+        )
+        for method in methods
+    )
     reader.finish()
     return ParsedClassFile(
         binary_name=internal_name.replace("/", "."),
@@ -538,6 +892,25 @@ def compare_class_files(
             item.metadata for item in staged.fields
         ):
             detected.append("field_metadata_changed")
+
+        baseline_clinit = next(
+            (
+                item.code_fingerprint
+                for item in baseline.methods
+                if item.name == "<clinit>"
+            ),
+            None,
+        )
+        staged_clinit = next(
+            (
+                item.code_fingerprint
+                for item in staged.methods
+                if item.name == "<clinit>"
+            ),
+            None,
+        )
+        if baseline_clinit != staged_clinit:
+            detected.append("static_initializer_changed")
 
         baseline_method_layout = tuple(item.layout for item in baseline.methods)
         staged_method_layout = tuple(item.layout for item in staged.methods)

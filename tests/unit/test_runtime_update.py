@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from jolink_runtime.adapters.java.classfile import parse_class_file
 from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
     SuspensionSnapshot,
@@ -12,9 +17,35 @@ from jolink_runtime.adapters.java.jdwp_adapter import (
 from jolink_runtime.adapters.java.jdwp_client import EventKind
 from jolink_runtime.core.models import RuntimeAction
 from jolink_runtime.launch.fast_compile import (
+    FastCompileError,
     FastCompilePlan,
     fast_compile_fingerprint,
 )
+
+
+def _compile_class(tmp_path: Path, variant: str, source: str) -> bytes:
+    javac = shutil.which("javac")
+    if javac is None:
+        pytest.skip("javac is required for runtime update comparison tests")
+    root = tmp_path / variant
+    output = root / "classes"
+    output.mkdir(parents=True)
+    source_file = root / "Example.java"
+    source_file.write_text(source, encoding="utf-8")
+    subprocess.run(
+        [
+            javac,
+            "-encoding",
+            "UTF-8",
+            "-g",
+            "-d",
+            str(output),
+            str(source_file),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return (output / "Example.class").read_bytes()
 
 
 def _plan(tmp_path: Path) -> tuple[FastCompilePlan, Path, Path]:
@@ -227,6 +258,52 @@ def test_formal_output_guard_checks_unselected_classes_and_class_set(
     dependency.write_bytes(b"dependency-launch-bytes")
     (plan.output_root / "example" / "Added.class").write_bytes(b"added")
     assert runtime._formal_outputs_match_launch(plan) is False
+
+
+def test_static_initializer_change_requires_restart(tmp_path: Path) -> None:
+    baseline_raw = _compile_class(
+        tmp_path,
+        "before-static",
+        'public class Example { public static String VALUE = "old"; }',
+    )
+    staged_raw = _compile_class(
+        tmp_path,
+        "after-static",
+        'public class Example { public static String VALUE = "new"; }',
+    )
+    baseline = parse_class_file(baseline_raw)
+    staged = parse_class_file(staged_raw)
+    source_key = "src/main/java/Example.java"
+    runtime = JavaRuntime()
+
+    with pytest.raises(FastCompileError) as captured:
+        runtime._prepare_class_updates(
+            {
+                source_key: {
+                    "Example": (
+                        baseline,
+                        baseline_raw,
+                        "Example.class",
+                    )
+                }
+            },
+            {
+                source_key: {
+                    "Example": (
+                        staged,
+                        staged_raw,
+                        "Example.class",
+                    )
+                }
+            },
+        )
+
+    assert (
+        captured.value.error_code
+        == "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART"
+    )
+    assert captured.value.context["runtime_code_state"] == "unchanged"
+    assert captured.value.context["restart_required"] is True
 
 
 def test_redefined_class_breakpoints_become_stale_without_line_refresh() -> None:
