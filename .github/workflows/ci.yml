@@ -55,6 +55,17 @@ jobs:
         run: uv run pytest -q tests/contract/test_runtime_lineage_golden.py
       - name: Run portable test suite
         run: uv run pytest -m "not mcp_java_e2e"
+      - name: Run real Lombok compiler-model experiment
+        if: >-
+          matrix.python == '3.11' &&
+          (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') &&
+          (matrix.java == '8' || matrix.java == '17')
+        env:
+          JOLINK_RUN_LOMBOK_COMPILE_E2E: "1"
+          JOLINK_LOMBOK_TEST_JAVA_HOME: ${{ env.JAVA_HOME }}
+        run: >-
+          uv run pytest -m lombok_compile_e2e
+          tests/e2e/test_lombok_compile_experiment.py
       - name: Run real MCP/JVM safety E2E
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11' && matrix.java == '17'
         env:

@@ -1110,7 +1110,18 @@ class MavenBuildSystemAdapter:
         self,
         project: ET.Element,
         compile_classpath: tuple[Path, ...],
+        *,
+        allow_lombok_processor: bool = False,
     ) -> None:
+        """Validate build-time transformations for private javac execution.
+
+        Production Fast Update keeps ``allow_lombok_processor`` disabled and
+        therefore preserves its existing fail-closed behavior.  The internal
+        Lombok experiment enables it only after a separate planner has proved
+        that the effective processor model is Lombok-only; this method still
+        rejects every unrelated compiler argument, lifecycle transform, or
+        bytecode plugin.
+        """
         compiler_matches = [
             plugin
             for plugin in project.findall(
@@ -1183,17 +1194,39 @@ class MavenBuildSystemAdapter:
             configurations,
         )
         for configuration in configurations:
+            experiment_only_names = (
+                {
+                    "annotationProcessorPaths",
+                    "annotationProcessors",
+                    "compilerArgs",
+                }
+                if allow_lombok_processor
+                else set()
+            )
             for child in configuration:
-                if self._local_name(child.tag) not in (
-                    _SAFE_COMPILER_CONFIGURATION
+                if (
+                    self._local_name(child.tag)
+                    not in _SAFE_COMPILER_CONFIGURATION
+                    and self._local_name(child.tag)
+                    not in experiment_only_names
                 ):
                     self._raise_unverified_transform()
             if (
-                configuration.find("./{*}annotationProcessorPaths")
-                is not None
-                or configuration.find("./{*}annotationProcessors")
-                is not None
-                or configuration.find("./{*}compilerArgs") is not None
+                (
+                    not allow_lombok_processor
+                    and (
+                        configuration.find(
+                            "./{*}annotationProcessorPaths"
+                        )
+                        is not None
+                        or configuration.find(
+                            "./{*}annotationProcessors"
+                        )
+                        is not None
+                        or configuration.find("./{*}compilerArgs")
+                        is not None
+                    )
+                )
                 or configuration.find("./{*}compilerArguments") is not None
                 or self._config_text(configuration, "compilerArgument")
                 or self._config_text(configuration, "executable")
@@ -1257,7 +1290,7 @@ class MavenBuildSystemAdapter:
                         "Use the formal Maven build and restart the application."
                     ),
                 ) from error
-            if processor_present:
+            if processor_present and not allow_lombok_processor:
                 self._raise_unverified_transform()
 
     def _compiler_model(

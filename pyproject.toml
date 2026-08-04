@@ -34,4 +34,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
   "mcp_java_e2e: real stdio MCP and JVM safety tests (canonical CI environment only)",
+  "lombok_compile_e2e: real Maven and javac Lombok fidelity experiment",
 ]

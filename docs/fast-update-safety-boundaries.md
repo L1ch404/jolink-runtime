@@ -64,3 +64,12 @@ not fail an otherwise valid managed project launch. When joLink cannot prove
 that private compilation and HotSwap preserve the formal build/runtime
 semantics, it must direct the caller to the formal build and restart path
 instead of reporting an ambiguous or false `updated` result.
+
+## Experimental compiler-model work
+
+The private Lombok and direct-javac experiments do not relax the production
+annotation-processing rejection above. Their shared model, evidence ladder,
+future `explicit_sources`/`module_full_javac` split, and Fast Restart output
+semantics are recorded in [java-compile-strategy-roadmap.md](java-compile-strategy-roadmap.md).
+Only evidence that satisfies that roadmap's promotion gates may later change
+the public project-launch contract.
