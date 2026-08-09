@@ -22,6 +22,7 @@ import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Mapping, Sequence
 
@@ -67,6 +68,10 @@ _STOP_BUBBLING = re.compile(
     r"^\s*config\.stopBubbling\s*=\s*(true|false)\s*$",
     re.IGNORECASE,
 )
+_CLEAR_STOP_BUBBLING = re.compile(
+    r"^\s*clear\s+config\.stopBubbling\s*$",
+    re.IGNORECASE,
+)
 _COMPILER_ENVIRONMENT_INPUTS = (
     "JDK_JAVAC_OPTIONS",
     "JAVA_TOOL_OPTIONS",
@@ -74,6 +79,15 @@ _COMPILER_ENVIRONMENT_INPUTS = (
     "MAVEN_ARGS",
     "MAVEN_OPTS",
 )
+
+
+class _StopBubblingState(Enum):
+    """One ordered operation affecting Lombok's bubbling decision."""
+
+    ABSENT = "absent"
+    CLEAR = "clear"
+    FALSE = "false"
+    TRUE = "true"
 
 
 class LombokExperimentError(RuntimeError):
@@ -272,13 +286,16 @@ class LombokExperimentPlan:
     javac_executable: Path = field(repr=False)
     dependency_classpath: tuple[Path, ...] = field(repr=False)
     dependency_input_paths: tuple[Path, ...] = field(repr=False)
+    dependency_artifact_fingerprints: tuple[str, ...] = field(repr=False)
     compiler_model: ExperimentCompilerModel
     processor_model: AnnotationProcessorModel
     processor_input_paths: tuple[Path, ...] = field(repr=False)
+    processor_artifact_fingerprints: tuple[str, ...] = field(repr=False)
     config_snapshot: LombokConfigSnapshot
     source_files: tuple[Path, ...] = field(repr=False)
     source_hashes: Mapping[Path, str] = field(repr=False)
     configuration_inputs: tuple[Path, ...] = field(repr=False)
+    configuration_input_fingerprints: tuple[str, ...] = field(repr=False)
     environment_fingerprint: str = field(repr=False)
     module: str
     plan_fingerprint: str = field(repr=False)
@@ -481,11 +498,13 @@ class LombokExperimentPlanner:
             execution.workspace.project_root,
             source_files,
         )
+        # Track authoritative configuration, not generated metadata files.
+        # Maven Help embeds a generation timestamp in effective-pom output;
+        # the parsed compiler/dependency/Processor models below are the stable
+        # semantic representation of those generated files.
         configuration_inputs = tuple(
             [
                 *(module.pom_file for module in execution.workspace.modules),
-                execution.compile_classpath_file,
-                execution.effective_pom_file,
                 *maven_project_inputs,
             ]
             + (
@@ -505,21 +524,33 @@ class LombokExperimentPlanner:
             javac_executable=execution.build_jdk.javac_executable,
             dependency_classpath=dependency_classpath,
             dependency_input_paths=dependency_classpath,
+            dependency_artifact_fingerprints=tuple(
+                _path_fingerprint(path) for path in dependency_classpath
+            ),
             compiler_model=compiler_model,
             processor_model=processor_model,
             processor_input_paths=processor_model.processor_path,
+            processor_artifact_fingerprints=tuple(
+                _path_fingerprint(path)
+                for path in processor_model.processor_path
+            ),
             config_snapshot=config_snapshot,
             source_files=source_files,
             source_hashes=source_hashes,
             configuration_inputs=configuration_inputs,
+            configuration_input_fingerprints=tuple(
+                _path_fingerprint(path) for path in configuration_inputs
+            ),
             environment_fingerprint=environment_fingerprint,
             module=execution.module.relative_path,
             plan_fingerprint="",
         )
-        return replace(
+        completed = replace(
             plan,
             plan_fingerprint=_current_plan_fingerprint(plan),
         )
+        _assert_artifact_snapshots(completed)
+        return completed
 
     def validate_before_baseline(
         self,
@@ -742,6 +773,7 @@ class LombokExperimentPlanner:
             if key in seen:
                 continue
             _require_regular_compiler_input(candidate)
+            _reject_dependency_manifest_class_path(candidate)
             seen.add(key)
             normalized.append(candidate)
         return tuple(normalized)
@@ -776,11 +808,49 @@ class LombokExperimentPlanner:
             config_name="target",
             property_name="maven.compiler.target",
         )
+        plugin_version = (
+            self._maven._child_text(compiler, "version")  # noqa: SLF001
+            if compiler is not None
+            else None
+        ) or None
+        build_major = execution.build_jdk.compiler_major_version
+        if build_major is None:
+            raise LombokExperimentError(
+                "COMPILE_JDK_INCOMPATIBLE",
+                "The Build JDK compiler version is unavailable.",
+                suggested_next_step=(
+                    "Use the same supported Build JDK as the formal Maven "
+                    "compile."
+                ),
+            )
         try:
             if release_text:
                 release = self._maven._java_level(release_text)  # noqa: SLF001
                 source = target = release
-                platform_args = ("--release", str(release))
+                if build_major >= 9:
+                    platform_args = ("--release", str(release))
+                elif build_major == 8 and _maven_version_at_least(
+                    plugin_version,
+                    (3, 13, 0),
+                ):
+                    # Maven Compiler Plugin 3.13+ translates <release> to
+                    # source/target when running on JDK 8, whose javac has no
+                    # --release option.
+                    platform_args = (
+                        "-source",
+                        str(release),
+                        "-target",
+                        str(release),
+                    )
+                else:
+                    raise LombokExperimentError(
+                        "COMPILE_MODEL_UNAVAILABLE",
+                        "The Maven release policy cannot be reproduced on JDK 8.",
+                        suggested_next_step=(
+                            "Use Maven or Maven Compiler Plugin 3.13+ for "
+                            "JDK 8 release compatibility."
+                        ),
+                    )
             else:
                 release = None
                 source = self._maven._java_level(source_text)  # noqa: SLF001
@@ -793,8 +863,7 @@ class LombokExperimentPlanner:
                 )
         except MavenResolutionError as error:
             raise _from_maven_error(error) from error
-        build_major = execution.build_jdk.compiler_major_version
-        if build_major is None or target > build_major:
+        if target > build_major:
             raise LombokExperimentError(
                 "COMPILE_JDK_INCOMPATIBLE",
                 "The Maven target is incompatible with the Build JDK.",
@@ -832,11 +901,6 @@ class LombokExperimentPlanner:
             )
         else:
             debug_args = ("-g:none",)
-        plugin_version = (
-            self._maven._child_text(compiler, "version")  # noqa: SLF001
-            if compiler is not None
-            else None
-        ) or None
         return ExperimentCompilerModel(
             build_jdk_major=build_major,
             source_level=source,
@@ -1233,6 +1297,7 @@ def discover_lombok_configuration(
     )
     for source_directory in source_directories:
         current = source_directory
+        stop_bubbling_visited: set[Path] = set()
         while True:
             config = current / "lombok.config"
             if config.exists() or _path_is_link_or_reparse(config):
@@ -1250,6 +1315,7 @@ def discover_lombok_configuration(
                     project=project,
                     active=[],
                     depth=0,
+                    visited=stop_bubbling_visited,
                 ):
                     break
             else:
@@ -1370,6 +1436,8 @@ def freeze_plan_artifacts(
         )
     )
     copied: dict[Path, Path] = {}
+    for dependency in plan.dependency_classpath:
+        _reject_dependency_manifest_class_path(dependency)
     for index, source in enumerate(ordered):
         _require_regular_compiler_input(source)
         before = _sha256_file(source)
@@ -1625,11 +1693,38 @@ def _assert_plan_fresh(plan: LombokExperimentPlan) -> None:
             suggested_next_step="Recreate the experiment plan and retry.",
             retryable=True,
         )
+    _assert_artifact_snapshots(plan)
     if plan.plan_fingerprint != _current_plan_fingerprint(plan):
         raise LombokExperimentError(
             "COMPILE_MODEL_STALE",
             "Compiler inputs changed after the experiment plan was frozen.",
             suggested_next_step="Recreate the experiment plan and retry.",
+            retryable=True,
+        )
+
+
+def _assert_artifact_snapshots(plan: LombokExperimentPlan) -> None:
+    current = (
+        tuple(_path_fingerprint(path) for path in plan.dependency_classpath),
+        tuple(
+            _path_fingerprint(path)
+            for path in plan.processor_model.processor_path
+        ),
+        tuple(_path_fingerprint(path) for path in plan.configuration_inputs),
+    )
+    expected = (
+        plan.dependency_artifact_fingerprints,
+        plan.processor_artifact_fingerprints,
+        plan.configuration_input_fingerprints,
+    )
+    if current != expected:
+        raise LombokExperimentError(
+            "COMPILE_MODEL_STALE",
+            "A compiler input changed while its generation was captured.",
+            suggested_next_step=(
+                "Wait for dependency and Maven metadata writes to settle, "
+                "then retry."
+            ),
             retryable=True,
         )
 
@@ -1849,11 +1944,7 @@ def _inspect_processor_path_entry(
 
 
 def _reject_manifest_class_path(data: bytes) -> None:
-    if not data:
-        return
-    text = data.decode("iso-8859-1", errors="strict")
-    unfolded = re.sub(r"\r?\n[ \t]+", "", text)
-    if re.search(r"(?im)^Class-Path\s*:", unfolded):
+    if _manifest_declares_class_path(data):
         raise LombokExperimentError(
             "PROCESSOR_PATH_UNRESOLVED",
             "A Processor-path manifest expands the effective class path.",
@@ -1861,6 +1952,55 @@ def _reject_manifest_class_path(data: bytes) -> None:
                 "Remove the manifest Class-Path or use the formal Maven build."
             ),
         )
+
+
+def _reject_dependency_manifest_class_path(path: Path) -> None:
+    """Reject JAR-relative classpath expansion before private relocation.
+
+    The experiment copies and content-addresses dependencies into a private
+    directory.  A manifest ``Class-Path`` is resolved relative to the original
+    JAR location, so preserving only the declaring JAR would change javac's
+    effective classpath.
+    """
+
+    if not path.is_file() or not zipfile.is_zipfile(path):
+        return
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifests = [
+                info
+                for info in archive.infolist()
+                if info.filename.casefold() == "meta-inf/manifest.mf"
+            ]
+            if len(manifests) > 1:
+                raise LombokExperimentError(
+                    "COMPILE_MODEL_UNAVAILABLE",
+                    "A compile dependency has duplicate manifests.",
+                    suggested_next_step="Use the formal Maven build.",
+                )
+            data = archive.read(manifests[0]) if manifests else b""
+    except (OSError, zipfile.BadZipFile, RuntimeError) as error:
+        raise LombokExperimentError(
+            "COMPILE_MODEL_UNAVAILABLE",
+            "A compile dependency manifest could not be inspected safely.",
+            suggested_next_step="Use the formal Maven build.",
+        ) from error
+    if _manifest_declares_class_path(data):
+        raise LombokExperimentError(
+            "COMPILE_MODEL_UNAVAILABLE",
+            "A compile dependency manifest expands the effective class path.",
+            suggested_next_step=(
+                "Use Maven until manifest Class-Path dependencies are modeled."
+            ),
+        )
+
+
+def _manifest_declares_class_path(data: bytes) -> bool:
+    if not data:
+        return False
+    text = data.decode("iso-8859-1", errors="strict")
+    unfolded = re.sub(r"\r?\n[ \t]+", "", text)
+    return bool(re.search(r"(?im)^Class-Path\s*:", unfolded))
 
 
 def _parse_processor_service(data: bytes) -> tuple[str, ...]:
@@ -1898,6 +2038,11 @@ def _collect_config_imports(
             "A Lombok configuration import cycle is unsupported.",
             suggested_next_step="Remove the cycle or use Maven.",
         )
+    existing = found.get(path)
+    if existing is not None:
+        if path in imported and not existing.imported:
+            found[path] = replace(existing, imported=True)
+        return
     data = path.read_bytes()
     budget.observe(path, len(data), len(active))
     try:
@@ -1909,12 +2054,11 @@ def _collect_config_imports(
             suggested_next_step="Use the formal Maven build.",
         ) from error
     relative = path.relative_to(project).as_posix()
-    existing = found.get(path)
     found[path] = LombokConfigInput(
         path=path,
         relative_path=relative,
         sha256=hashlib.sha256(data).hexdigest(),
-        imported=(path in imported or bool(existing and existing.imported)),
+        imported=path in imported,
     )
     active.append(path)
     try:
@@ -1943,32 +2087,41 @@ def _config_stops_bubbling(
     project: Path,
     active: list[Path],
     depth: int,
+    visited: set[Path] | None = None,
 ) -> bool:
-    return bool(
-        _config_stop_bubbling_value(
-            path,
-            project=project,
-            active=active,
-            depth=depth,
-        )
+    resolution_visited = visited if visited is not None else set()
+    return _config_graph_stops_bubbling(
+        path,
+        project=project,
+        active=active,
+        depth=depth,
+        visited=resolution_visited,
     )
 
 
-def _config_stop_bubbling_value(
+def _config_graph_stops_bubbling(
     path: Path,
     *,
     project: Path,
     active: list[Path],
     depth: int,
-) -> bool | None:
+    visited: set[Path],
+) -> bool:
+    """Match Lombok's per-resolution visited and stop-bubbling OR rules."""
     if depth > _MAX_LOMBOK_CONFIG_DEPTH or path in active:
         raise LombokExperimentError(
             "LOMBOK_CONFIG_IMPORT_UNVERIFIED",
             "The Lombok import graph is cyclic or too deep.",
             suggested_next_step="Use the formal Maven build.",
         )
+    if path in visited:
+        return False
+    visited.add(path)
     text = path.read_text(encoding="utf-8-sig")
-    value: bool | None = None
+    stops_bubbling = (
+        _local_config_stop_bubbling_state(text)
+        is _StopBubblingState.TRUE
+    )
     active.append(path)
     try:
         for raw in _config_imports(text):
@@ -1977,21 +2130,35 @@ def _config_stop_bubbling_value(
                 importing=path,
                 project=project,
             )
-            imported_value = _config_stop_bubbling_value(
+            imported_stops = _config_graph_stops_bubbling(
                 imported,
                 project=project,
                 active=active,
                 depth=depth + 1,
+                visited=visited,
             )
-            if imported_value is not None:
-                value = imported_value
-        for line in text.splitlines():
-            match = _STOP_BUBBLING.match(line.strip())
-            if match is not None:
-                value = match.group(1).casefold() == "true"
+            if imported_stops:
+                stops_bubbling = True
     finally:
         active.pop()
-    return value
+    return stops_bubbling
+
+
+def _local_config_stop_bubbling_state(text: str) -> _StopBubblingState:
+    """Resolve last-wins operations declared by one config file only."""
+    state = _StopBubblingState.ABSENT
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = _STOP_BUBBLING.match(stripped)
+        if match is not None:
+            state = (
+                _StopBubblingState.TRUE
+                if match.group(1).casefold() == "true"
+                else _StopBubblingState.FALSE
+            )
+        elif _CLEAR_STOP_BUBBLING.match(stripped) is not None:
+            state = _StopBubblingState.CLEAR
+    return state
 
 
 def _config_imports(text: str) -> tuple[str, ...]:
@@ -2183,6 +2350,22 @@ def _boolean_compiler_value(
             suggested_next_step="Use the formal Maven build.",
         )
     return value.casefold() == "true"
+
+
+def _maven_version_at_least(
+    value: str | None,
+    required: tuple[int, int, int],
+) -> bool:
+    if not value:
+        return False
+    match = re.fullmatch(
+        r"\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-.][0-9A-Za-z_.-]+)?\s*",
+        value,
+    )
+    if match is None:
+        return False
+    parsed = tuple(int(item or "0") for item in match.groups())
+    return parsed >= required
 
 
 def _child_text(element: ET.Element, name: str) -> str:

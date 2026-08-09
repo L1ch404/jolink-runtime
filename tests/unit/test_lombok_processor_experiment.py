@@ -30,6 +30,7 @@ def _lombok_jar(
     providers: tuple[str, ...] = tuple(experiment._LOMBOK_PROCESSORS),
     version: str = "1.18.36",
     manifest_extra: str = "",
+    payload: bytes = b"lombok-bytecode",
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as archive:
@@ -43,7 +44,7 @@ def _lombok_jar(
                     f"{provider.replace('.', '/')}.class",
                     b"processor-bytecode",
                 )
-        archive.writestr("lombok/Generated.class", b"lombok-bytecode")
+        archive.writestr("lombok/Generated.class", payload)
         archive.writestr(
             "META-INF/MANIFEST.MF",
             (
@@ -54,10 +55,27 @@ def _lombok_jar(
     return path
 
 
+def _ordinary_jar(
+    path: Path,
+    *,
+    payload: bytes = b"dependency-bytecode",
+    manifest_extra: str = "",
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("example/Dependency.class", payload)
+        archive.writestr(
+            "META-INF/MANIFEST.MF",
+            f"Manifest-Version: 1.0\n{manifest_extra}",
+        )
+    return path
+
+
 def _effective_pom(
     *,
     compiler_configuration: str = "",
     compiler_properties: str = "",
+    compiler_plugin_version: str = "3.13.0",
 ) -> str:
     return f"""\
 <project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -76,7 +94,7 @@ def _effective_pom(
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
+        <version>{compiler_plugin_version}</version>
         <configuration>{compiler_configuration}</configuration>
       </plugin>
     </plugins>
@@ -202,6 +220,51 @@ def test_fidelity_model_uses_release_only_when_maven_declares_release(
 
     assert plan.compiler_model.platform_args == ("--release", "17")
     assert plan.compiler_model.release_level == 17
+
+
+def test_jdk8_release_uses_maven_3_13_source_target_compatibility(
+    tmp_path: Path,
+) -> None:
+    lombok = _lombok_jar(tmp_path / "lombok.jar")
+    adapter, execution = _execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            compiler_configuration="<release>8</release>",
+            compiler_plugin_version="3.13.0",
+        ),
+        compile_entries=(lombok,),
+        jdk_major=8,
+    )
+
+    plan = experiment.LombokExperimentPlanner(adapter).create_plan(execution)
+
+    assert plan.compiler_model.platform_args == (
+        "-source",
+        "8",
+        "-target",
+        "8",
+    )
+    assert plan.compiler_model.release_level == 8
+
+
+def test_jdk8_release_with_older_compiler_plugin_fails_closed(
+    tmp_path: Path,
+) -> None:
+    lombok = _lombok_jar(tmp_path / "lombok.jar")
+    adapter, execution = _execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            compiler_configuration="<release>8</release>",
+            compiler_plugin_version="3.12.1",
+        ),
+        compile_entries=(lombok,),
+        jdk_major=8,
+    )
+
+    with pytest.raises(experiment.LombokExperimentError) as captured:
+        experiment.LombokExperimentPlanner(adapter).create_plan(execution)
+
+    assert captured.value.error_code == "COMPILE_MODEL_UNAVAILABLE"
 
 
 def test_explicit_lombok_processor_is_resolved_outside_compile_classpath(
@@ -366,7 +429,102 @@ def test_processor_manifest_class_path_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(experiment.LombokExperimentError) as captured:
         experiment.LombokExperimentPlanner(adapter).create_plan(execution)
 
-    assert captured.value.error_code == "PROCESSOR_PATH_UNRESOLVED"
+    assert captured.value.error_code == "COMPILE_MODEL_UNAVAILABLE"
+
+
+def test_ordinary_dependency_manifest_class_path_is_rejected(
+    tmp_path: Path,
+) -> None:
+    dependency = _ordinary_jar(
+        tmp_path / "repository/dependency.jar",
+        manifest_extra="Class-Path: transitive-helper.jar\n",
+    )
+    processor_directory = tmp_path / "resolved-processor"
+    _lombok_jar(processor_directory / "lombok-1.18.36.jar")
+    adapter, execution = _execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            compiler_configuration=_explicit_configuration()
+        ),
+        compile_entries=(dependency,),
+    )
+
+    with pytest.raises(experiment.LombokExperimentError) as captured:
+        experiment.LombokExperimentPlanner(adapter).create_plan(
+            execution,
+            explicit_processor_directory=processor_directory,
+        )
+
+    assert captured.value.error_code == "COMPILE_MODEL_UNAVAILABLE"
+
+
+def test_baseline_gate_detects_same_path_dependency_byte_change(
+    tmp_path: Path,
+) -> None:
+    dependency = _ordinary_jar(tmp_path / "repository/dependency.jar")
+    processor_directory = tmp_path / "resolved-processor"
+    _lombok_jar(processor_directory / "lombok-1.18.36.jar")
+    adapter, execution = _execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            compiler_configuration=_explicit_configuration()
+        ),
+        compile_entries=(dependency,),
+    )
+    planner = experiment.LombokExperimentPlanner(adapter)
+    before = planner.create_plan(
+        execution,
+        explicit_processor_directory=processor_directory,
+    )
+
+    _ordinary_jar(dependency, payload=b"changed-generation")
+    after = planner.create_plan(
+        execution,
+        explicit_processor_directory=processor_directory,
+    )
+
+    assert before.dependency_classpath == after.dependency_classpath
+    assert before.dependency_artifact_fingerprints != (
+        after.dependency_artifact_fingerprints
+    )
+    assert experiment_cli._plans_semantically_equal(before, after) is False
+
+
+def test_baseline_gate_detects_explicit_processor_generation_change(
+    tmp_path: Path,
+) -> None:
+    before_directory = tmp_path / "processor-before"
+    after_directory = tmp_path / "processor-after"
+    _lombok_jar(
+        before_directory / "lombok-1.18.36.jar",
+        payload=b"processor-generation-before",
+    )
+    _lombok_jar(
+        after_directory / "lombok-1.18.36.jar",
+        payload=b"processor-generation-after",
+    )
+    adapter, execution = _execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            compiler_configuration=_explicit_configuration()
+        ),
+        compile_entries=(),
+    )
+    planner = experiment.LombokExperimentPlanner(adapter)
+
+    before = planner.create_plan(
+        execution,
+        explicit_processor_directory=before_directory,
+    )
+    after = planner.create_plan(
+        execution,
+        explicit_processor_directory=after_directory,
+    )
+
+    assert before.processor_artifact_fingerprints != (
+        after.processor_artifact_fingerprints
+    )
+    assert experiment_cli._plans_semantically_equal(before, after) is False
 
 
 def test_jdk23_default_discovery_rejected_but_explicit_name_supported(
@@ -466,7 +624,7 @@ def test_lombok_config_relative_import_and_absence_are_fingerprinted(
     assert first.fingerprint != second.fingerprint
 
 
-def test_lombok_imported_stop_bubbling_uses_last_value(
+def test_lombok_true_in_one_import_is_not_cleared_by_another_import(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -486,7 +644,195 @@ def test_lombok_imported_stop_bubbling_uses_last_value(
         project=project.resolve(),
         active=[],
         depth=0,
-    ) is False
+    ) is True
+
+
+def test_lombok_imported_true_then_local_clear_still_stops_parent(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/example/App.java"
+    _write(source, "package example; class App {}\n")
+    _write(project / "lombok.config", "lombok.log.fieldName = parent\n")
+    _write(
+        source.parent / "base.config",
+        "config.stopBubbling = true\n",
+    )
+    _write(
+        source.parent / "lombok.config",
+        "import base.config\nclear config.stopBubbling\n",
+    )
+
+    snapshot = experiment.discover_lombok_configuration(project, (source,))
+
+    assert {item.relative_path for item in snapshot.inputs} == {
+        "src/main/java/example/base.config",
+        "src/main/java/example/lombok.config",
+    }
+
+
+def test_lombok_local_true_then_clear_continues_to_parent(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/example/App.java"
+    _write(source, "package example; class App {}\n")
+    _write(project / "lombok.config", "lombok.log.fieldName = parent\n")
+    _write(
+        source.parent / "lombok.config",
+        (
+            "config.stopBubbling = true\n"
+            "clear config.stopBubbling\n"
+        ),
+    )
+
+    snapshot = experiment.discover_lombok_configuration(project, (source,))
+
+    assert {item.relative_path for item in snapshot.inputs} == {
+        "lombok.config",
+        "src/main/java/example/lombok.config",
+    }
+
+
+def test_lombok_local_true_then_false_continues_to_parent(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/example/App.java"
+    _write(source, "package example; class App {}\n")
+    _write(project / "lombok.config", "lombok.log.fieldName = parent\n")
+    _write(
+        source.parent / "lombok.config",
+        (
+            "config.stopBubbling = true\n"
+            "config.stopBubbling = false\n"
+        ),
+    )
+
+    snapshot = experiment.discover_lombok_configuration(project, (source,))
+
+    assert {item.relative_path for item in snapshot.inputs} == {
+        "lombok.config",
+        "src/main/java/example/lombok.config",
+    }
+
+
+def test_lombok_clear_in_another_import_does_not_override_true(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/example/App.java"
+    _write(source, "package example; class App {}\n")
+    _write(project / "lombok.config", "lombok.log.fieldName = parent\n")
+    _write(source.parent / "first.config", "config.stopBubbling = true\n")
+    _write(source.parent / "second.config", "clear config.stopBubbling\n")
+    _write(
+        source.parent / "lombok.config",
+        "import first.config\nimport second.config\n",
+    )
+
+    snapshot = experiment.discover_lombok_configuration(project, (source,))
+
+    assert {item.relative_path for item in snapshot.inputs} == {
+        "src/main/java/example/first.config",
+        "src/main/java/example/lombok.config",
+        "src/main/java/example/second.config",
+    }
+
+
+def test_lombok_duplicate_import_is_processed_once_per_resolution(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/example/App.java"
+    _write(source, "package example; class App {}\n")
+    _write(project / "lombok.config", "lombok.log.fieldName = parent\n")
+    _write(source.parent / "shared.config", "config.stopBubbling = true\n")
+    _write(
+        source.parent / "first.config",
+        "import shared.config\nclear config.stopBubbling\n",
+    )
+    _write(source.parent / "second.config", "import shared.config\n")
+    child = source.parent / "lombok.config"
+    _write(child, "import first.config\nimport second.config\n")
+    visited: set[Path] = set()
+
+    stops = experiment._config_stops_bubbling(
+        child.resolve(),
+        project=project.resolve(),
+        active=[],
+        depth=0,
+        visited=visited,
+    )
+    snapshot = experiment.discover_lombok_configuration(project, (source,))
+
+    assert stops is True
+    assert visited == {
+        (source.parent / "first.config").resolve(),
+        (source.parent / "lombok.config").resolve(),
+        (source.parent / "second.config").resolve(),
+        (source.parent / "shared.config").resolve(),
+    }
+    assert {item.relative_path for item in snapshot.inputs} == {
+        "src/main/java/example/first.config",
+        "src/main/java/example/lombok.config",
+        "src/main/java/example/second.config",
+        "src/main/java/example/shared.config",
+    }
+
+
+def test_lombok_config_collection_expands_duplicate_import_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    root = project / "lombok.config"
+    shared_text = "lombok.log.fieldName = shared\n"
+    _write(root, "import first.config\nimport second.config\n")
+    _write(project / "first.config", "import shared.config\n")
+    _write(project / "second.config", "import shared.config\n")
+    _write(project / "shared.config", shared_text)
+    original = experiment._config_imports
+    parse_counts: dict[str, int] = {}
+
+    def counting_imports(text: str) -> tuple[str, ...]:
+        parse_counts[text] = parse_counts.get(text, 0) + 1
+        return original(text)
+
+    monkeypatch.setattr(experiment, "_config_imports", counting_imports)
+    found: dict[Path, experiment.LombokConfigInput] = {}
+    experiment._collect_config_imports(
+        root,
+        project=project,
+        found=found,
+        imported=set(),
+        active=[],
+        budget=experiment._ConfigBudget(),
+    )
+
+    assert parse_counts[shared_text] == 1
+    assert len(found) == 4
+
+
+def test_lombok_config_collection_still_rejects_import_cycle(
+    tmp_path: Path,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    root = project / "lombok.config"
+    _write(root, "import nested.config\n")
+    _write(project / "nested.config", "import lombok.config\n")
+
+    with pytest.raises(experiment.LombokExperimentError) as captured:
+        experiment._collect_config_imports(
+            root,
+            project=project,
+            found={},
+            imported=set(),
+            active=[],
+            budget=experiment._ConfigBudget(),
+        )
+
+    assert captured.value.error_code == "LOMBOK_CONFIG_IMPORT_UNVERIFIED"
 
 
 @pytest.mark.parametrize(
@@ -732,6 +1078,65 @@ def test_static_preflight_rejects_compile_phase_project_plugin(
         experiment_cli._static_maven_preflight(adapter, workspace)
 
     assert captured.value.error_code == "COMPILE_MODEL_UNAVAILABLE"
+
+
+def test_static_preflight_ignores_unactivated_profile_transforms(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write(
+        project / "pom.xml",
+        """\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>app</artifactId><version>1</version>
+  <profiles><profile>
+    <id>inactive-codegen</id>
+    <activation><property><name>never.enable</name><value>true</value>
+    </property></activation>
+    <build><plugins><plugin>
+      <groupId>example</groupId><artifactId>source-weaver</artifactId>
+      <executions><execution><phase>generate-sources</phase>
+        <goals><goal>weave</goal></goals>
+      </execution></executions>
+    </plugin></plugins></build>
+  </profile></profiles>
+</project>
+""",
+    )
+    adapter = MavenBuildSystemAdapter()
+    workspace = adapter.resolve_workspace(project)
+
+    experiment_cli._static_maven_preflight(adapter, workspace)
+
+
+def test_effective_model_still_rejects_activated_transform(
+    tmp_path: Path,
+) -> None:
+    lombok = _lombok_jar(tmp_path / "lombok.jar")
+    effective = _effective_pom().replace(
+        "</plugins>",
+        """
+      <plugin>
+        <groupId>example</groupId><artifactId>source-weaver</artifactId>
+        <executions><execution><phase>generate-sources</phase>
+          <goals><goal>weave</goal></goals>
+        </execution></executions>
+      </plugin>
+    </plugins>""",
+    )
+    adapter, execution = _execution(
+        tmp_path,
+        effective_pom=effective,
+        compile_entries=(lombok,),
+    )
+
+    with pytest.raises(experiment.LombokExperimentError) as captured:
+        experiment.LombokExperimentPlanner(adapter).create_plan(execution)
+
+    assert captured.value.error_code == (
+        "ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED"
+    )
 
 
 def test_p0_rejects_reactor_workspace(tmp_path: Path) -> None:

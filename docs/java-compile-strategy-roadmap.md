@@ -47,8 +47,14 @@ Lombok before either source-selection strategy becomes a product feature.
   restart a JVM, or run tests.
 - POMs, classpaths, Build JDK, Processor artifacts/options, source set, source
   contents, and Lombok configuration are frozen and revalidated.
+- Baseline gates compare ordered dependency and Processor artifact bytes, not
+  only their filesystem paths. Explicit Processor artifacts are resolved both
+  before and after the Maven baseline so an in-place repository replacement
+  invalidates the evidence.
 - Dependency and Processor artifacts are copied into the private generation;
   direct javac never keeps using a mutable repository path after validation.
+- Compile dependencies with a manifest `Class-Path` are rejected because
+  content-addressed relocation would change their relative lookup semantics.
 - A successful javac exit is not correctness proof. A successful class
   redefinition would not be business-correctness proof either.
 - Processor option values, environment values, and sensitive paths stay out
@@ -157,7 +163,9 @@ interpreter. The experiment only freezes the configuration graph it can read:
 
 - search upward from every source directory;
 - record present files and missing candidate paths;
-- honor `config.stopBubbling`;
+- honor per-file last-wins `config.stopBubbling` operations (`true`, `false`,
+  and `clear`), process each imported config once per source resolution, and
+  stop parent lookup when any visited config contributes an effective `true`;
 - recursively copy workspace-relative file imports into the source mirror;
 - fingerprint existence, relative path, content, and import role;
 - recompute the source set and configuration graph before and after javac;
@@ -225,9 +233,22 @@ copy workspace without target/build output
 
 Effective compiler metadata is resolved before the lifecycle runs and again
 after it. A changed source/configuration manifest or semantic compiler model
-invalidates the evidence. Javac argfiles are written as UTF-8 and javac is
+invalidates the evidence. Generated effective-POM comments are not compared as
+raw bytes; authoritative POM/settings inputs and the parsed compiler,
+dependency, and Processor models are compared instead. Javac argfiles are
+written as UTF-8 and javac is
 started with `-J-Dfile.encoding=UTF-8`; this keeps Windows/POSIX parsing tied
 to the frozen compiler model instead of Python's locale.
+
+`--probe-only` returns immediately after the effective compiler, classpath,
+Processor, and Lombok configuration models are resolved. It does not execute
+the Maven compile baseline or direct javac, and therefore proves model support
+only—not compilation fidelity.
+
+On JDK 8, Maven Compiler Plugin 3.13+ translates `<release>` into
+`-source`/`-target`; the replay model mirrors that behavior instead of passing
+the unsupported javac `--release` flag. Older or unresolved plugin models fail
+closed.
 
 An existing `target/classes` tree, even if labeled “clean” by a caller, is
 diagnostic-only and can never authorize a product decision. Ordinary Maven
@@ -241,9 +262,11 @@ ordinary method bytecode, so it is not a semantic-equivalence oracle. A future
 `semantic_match` must compare all method code, exception tables, annotations,
 inner/nest/record/bootstrap metadata, and static initialization semantics.
 
-Measurements record workspace snapshot, Maven baseline, metadata/model,
-Processor resolution, source scan, javac, class scan, and total durations. A
-single fast result without fidelity evidence has no product value.
+Measurements use non-overlapping phase buckets for workspace snapshot,
+metadata resolution, Processor resolution, model validation, Maven baseline,
+baseline class scan, artifact freeze, direct javac/overhead, comparison, and
+total wall time. A single fast result without fidelity evidence has no product
+value.
 
 ## Internal experiment entry
 
@@ -286,6 +309,49 @@ and attempt paths, a literal `$` Processor name, and a javac argfile over
 32 KiB. CI repeats the real experiment on Ubuntu and Windows for JDK 8/17.
 JDK 23+ behavior currently has model/unit evidence only and is not claimed as
 a verified real-compiler result.
+
+## Verified debts deferred during experimentation
+
+The following findings were reproduced on 2026-08-09. They do not block
+experiments against source and Maven configuration already trusted by the
+operator, but they block promotion to an untrusted-project or product safety
+boundary.
+
+### Maven extensions declared inside profiles
+
+Raw preflight currently inspects only unconditional project build
+configuration. A profile can therefore declare either a build extension or a
+plugin with `extensions=true` and pass raw preflight. If that profile is active,
+even a metadata command such as `help:effective-pom` resolves and loads the
+extension before joLink can inspect the resulting effective model. Post-model
+validation prevents direct javac from being trusted, but it cannot undo code
+loaded during metadata resolution, and `--probe-only` is affected as well.
+
+Before promotion, raw preflight must reject extension-loading declarations in
+every declared profile without rejecting unrelated inactive-profile compiler
+or lifecycle configuration. Parent/profile sources that Maven can activate
+must be included in the same pre-execution safety model, or metadata resolution
+must run inside a security boundary that is explicit about executing build
+extensions.
+
+### Pre-release Maven Compiler Plugin versions
+
+The current numeric helper treats qualifiers such as `3.13.0-M1`,
+`3.13.0-alpha-1`, and `3.13.0-SNAPSHOT` as satisfying the final `3.13.0`
+threshold used for JDK 8 `<release>` translation. Until a Maven-compatible
+version model is justified, promotion should fail closed for every qualified
+version and accept only unqualified final versions at or above the proven
+threshold.
+
+### Compiler input snapshot ownership
+
+Compiler-input invariants currently span plan creation, fingerprints,
+freshness checks, artifact freezing, semantic comparison, and public change
+categories. The experiment keeps these synchronized today, but each new input
+has several update sites. After the two compile strategies produce stable real
+project evidence, consolidate these fields behind one immutable compiler-input
+snapshot with a single diff operation. Do not perform that refactor while the
+experimental model is still changing.
 
 ## Future Fast Restart generation
 

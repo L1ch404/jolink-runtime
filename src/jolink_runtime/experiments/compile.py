@@ -211,6 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Inspect the private Maven log and correct model resolution."
             ),
         )
+        metadata_resolution_ms = _operation_duration_ms(metadata_result)
 
         planner = LombokExperimentPlanner(adapter)
         planner.validate_before_baseline(
@@ -252,6 +253,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             execution,
             explicit_processor_directory=processor_directory,
         )
+        model_validation_ms = monotonic_ms(model_started)
+
+        if args.probe_only:
+            report = {
+                "ok": True,
+                "status": "probe_ready",
+                "experiment": "lombok_processor_model",
+                "public_api_changed": False,
+                "target_outputs_modified": False,
+                "runtime_jdwp_touched": False,
+                "subprocess_isolation": "supervised_not_security_sandbox",
+                "verification_state": "model_resolved",
+                "trusted_for_product_decision": False,
+                "maven_baseline_executed": False,
+                "direct_javac_executed": False,
+                "plan": before_baseline_plan.redacted_summary(),
+                "durations_ms": {
+                    "workspace_snapshot": snapshot_duration_ms,
+                    "metadata_resolution": metadata_resolution_ms,
+                    "processor_resolution": processor_resolution_ms,
+                    "model_validation": model_validation_ms,
+                    "total": monotonic_ms(started),
+                },
+                "private_artifacts": {
+                    "retained": True,
+                    "attempt_id": public_attempt_id,
+                    "paths_disclosed": False,
+                },
+                "warnings": list(preferences.warnings),
+            }
+            _require_supervisor_settled(supervisor)
+            _assert_original_outputs_unchanged(
+                original_output_fingerprints,
+            )
+            _emit(report)
+            return 0
+
         snapshot_exclusions = frozenset(
             _snapshot_build_directories(workspace)
         )
@@ -277,7 +315,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Inspect the private Maven log and make the formal build pass."
             ),
         )
+        maven_baseline_ms = _operation_duration_ms(baseline_result)
+        baseline_scan_started = time.monotonic()
         baseline_hashes = scan_class_hashes(module.output_directory)
+        baseline_class_scan_ms = monotonic_ms(baseline_scan_started)
 
         metadata_after_result = _run_supervised(
             supervisor,
@@ -292,15 +333,66 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Discard this evidence and inspect the private Maven log."
             ),
         )
+        metadata_resolution_ms += _operation_duration_ms(metadata_after_result)
+
+        processor_directory_after = processor_directory
+        if coordinate is not None:
+            processor_started = time.monotonic()
+            processor_directory_after = (
+                attempt_root / "processor-path-after-baseline"
+            )
+            processor_after_result = _run_supervised(
+                supervisor,
+                planner.create_processor_copy_operation(
+                    execution,
+                    coordinate=coordinate,
+                    destination=processor_directory_after,
+                    timeout_seconds=args.metadata_timeout_seconds,
+                ),
+                operation="lombok_processor_resolution_after_baseline",
+            )
+            _require_success(
+                processor_after_result,
+                error_code="PROCESSOR_PATH_UNRESOLVED",
+                message=(
+                    "Maven could not revalidate the explicit Lombok artifact."
+                ),
+                suggested_next_step=(
+                    "Discard this evidence and keep using Maven."
+                ),
+            )
+            processor_resolution_ms += monotonic_ms(processor_started)
+
+        model_started = time.monotonic()
+        planner.validate_before_baseline(
+            execution,
+            explicit_processor_directory=processor_directory_after,
+        )
         plan = planner.create_plan(
             execution,
-            explicit_processor_directory=processor_directory,
+            explicit_processor_directory=processor_directory_after,
         )
-        if (
+        model_validation_ms += monotonic_ms(model_started)
+        workspace_changed = (
             _workspace_manifest(snapshot_project, snapshot_exclusions)
             != baseline_input_manifest
-            or not _plans_semantically_equal(before_baseline_plan, plan)
-        ):
+        )
+        changed_inputs = list(
+            _plan_change_categories(before_baseline_plan, plan)
+        )
+        if workspace_changed:
+            changed_inputs.append("workspace_manifest")
+        if changed_inputs:
+            changed_configuration_indexes = [
+                index
+                for index, (before_hash, after_hash) in enumerate(
+                    zip(
+                        before_baseline_plan.configuration_input_fingerprints,
+                        plan.configuration_input_fingerprints,
+                    )
+                )
+                if before_hash != after_hash
+            ]
             raise LombokExperimentError(
                 "COMPILE_MODEL_CHANGED_DURING_BASELINE",
                 "The effective compiler model changed during Maven compile.",
@@ -308,15 +400,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "Remove file-activated build drift or use Maven directly."
                 ),
                 retryable=True,
+                context={
+                    "changed_input_categories": changed_inputs,
+                    "changed_configuration_input_indexes": (
+                        changed_configuration_indexes
+                    ),
+                },
             )
+        freeze_started = time.monotonic()
         plan = freeze_plan_artifacts(
             plan,
             destination=attempt_root / "frozen-compiler-inputs",
         )
-        model_duration_ms = monotonic_ms(model_started)
+        artifact_freeze_ms = monotonic_ms(freeze_started)
         report: dict[str, object] = {
             "ok": True,
-            "status": "probe_ready" if args.probe_only else "completed",
+            "status": "completed",
             "experiment": "lombok_processor_model",
             "public_api_changed": False,
             "target_outputs_modified": False,
@@ -327,11 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "provenance": "private_frozen_workspace_fresh_compile",
                 "generated_class_count": len(baseline_hashes),
                 "duration_ms": round(
-                    (
-                        baseline_result.finished_at
-                        - baseline_result.started_at
-                    )
-                    * 1000,
+                    maven_baseline_ms,
                     3,
                 ),
                 "trusted_input": True,
@@ -339,17 +434,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "durations_ms": {
                 "workspace_snapshot": snapshot_duration_ms,
                 "metadata_resolution": round(
-                    (
-                        metadata_result.finished_at
-                        - metadata_result.started_at
-                        + metadata_after_result.finished_at
-                        - metadata_after_result.started_at
-                    )
-                    * 1000,
+                    metadata_resolution_ms,
                     3,
                 ),
                 "processor_resolution": processor_resolution_ms,
-                "model_validation": model_duration_ms,
+                "model_validation": model_validation_ms,
+                "maven_baseline": maven_baseline_ms,
+                "baseline_class_scan": baseline_class_scan_ms,
+                "artifact_freeze": artifact_freeze_ms,
             },
             "private_artifacts": {
                 "retained": True,
@@ -358,21 +450,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "warnings": list(preferences.warnings),
         }
-        if args.probe_only:
-            report["verification_state"] = "probe_only"
-            durations = report["durations_ms"]
-            assert isinstance(durations, dict)
-            durations["total"] = monotonic_ms(started)
-            _require_supervisor_settled(supervisor)
-            _assert_original_outputs_unchanged(
-                original_output_fingerprints,
-            )
-            _emit(report)
-            return 0
-
         compiler = LombokExperimentRunner(supervisor)
         compile_root = attempt_root / "compile-attempts"
         compile_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        direct_started = time.monotonic()
         attempts = [
             compiler.compile(
                 plan,
@@ -381,9 +462,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             for _index in range(args.repeat)
         ]
+        direct_total_ms = monotonic_ms(direct_started)
+        direct_javac_ms = round(
+            sum(item.elapsed_seconds for item in attempts) * 1000,
+            3,
+        )
+        direct_overhead_ms = round(
+            max(0.0, direct_total_ms - direct_javac_ms),
+            3,
+        )
+        durations = report["durations_ms"]
+        assert isinstance(durations, dict)
+        durations["direct_javac"] = direct_javac_ms
+        durations["direct_attempt_overhead"] = direct_overhead_ms
         report["attempts"] = [
             attempt.redacted_summary() for attempt in attempts
         ]
+        comparison_started = time.monotonic()
         first = attempts[0]
         repeated = [
             compare_class_outputs(first.class_hashes, item.class_hashes)
@@ -436,7 +531,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             report["external_baseline"] = external_comparison
 
-        report["durations_ms"]["total"] = monotonic_ms(started)  # type: ignore[index]
+        durations["comparison"] = monotonic_ms(comparison_started)
+        durations["total"] = monotonic_ms(started)
         report["private_artifacts"]["compile_attempt_ids"] = [  # type: ignore[index]
             item.attempt_id for item in attempts
         ]
@@ -651,24 +747,27 @@ def _static_maven_preflight(
             )
     for module in workspace.modules:
         project = adapter._read_pom(module.pom_file)  # noqa: SLF001
-        candidates = (project, *project.findall("./{*}profiles/{*}profile"))
-        for candidate in candidates:
-            try:
-                adapter._ensure_no_unverified_maven_extensions(  # noqa: SLF001
-                    candidate,
-                    maven_project_inputs=project_inputs,
-                )
-                adapter._ensure_no_unverified_build_transforms(  # noqa: SLF001
-                    candidate,
-                    (),
-                    allow_lombok_processor=True,
-                )
-            except MavenResolutionError as error:
-                raise LombokExperimentError(
-                    "COMPILE_MODEL_UNAVAILABLE",
-                    "A raw Maven model can execute an unmodeled build step.",
-                    suggested_next_step="Use the formal Maven build.",
-                ) from error
+        # Raw preflight covers only unconditional project configuration.
+        # Active profiles are resolved by Maven and then validated strictly in
+        # the effective POM. Scanning every declared raw profile would reject
+        # inactive release/container/codegen profiles that cannot participate
+        # in this invocation.
+        try:
+            adapter._ensure_no_unverified_maven_extensions(  # noqa: SLF001
+                project,
+                maven_project_inputs=project_inputs,
+            )
+            adapter._ensure_no_unverified_build_transforms(  # noqa: SLF001
+                project,
+                (),
+                allow_lombok_processor=True,
+            )
+        except MavenResolutionError as error:
+            raise LombokExperimentError(
+                "COMPILE_MODEL_UNAVAILABLE",
+                "A raw Maven model can execute an unmodeled build step.",
+                suggested_next_step="Use the formal Maven build.",
+            ) from error
 
 
 def _validate_original_lombok_boundary(
@@ -774,10 +873,21 @@ def _require_success(
     )
 
 
+def _operation_duration_ms(result: OperationResult) -> float:
+    return round((result.finished_at - result.started_at) * 1000, 3)
+
+
 def _plans_semantically_equal(
     before: LombokExperimentPlan,
     after: LombokExperimentPlan,
 ) -> bool:
+    return not _plan_change_categories(before, after)
+
+
+def _plan_change_categories(
+    before: LombokExperimentPlan,
+    after: LombokExperimentPlan,
+) -> tuple[str, ...]:
     before_sources = {
         path.relative_to(before.project_root).as_posix(): digest
         for path, digest in before.source_hashes.items()
@@ -786,13 +896,75 @@ def _plans_semantically_equal(
         path.relative_to(after.project_root).as_posix(): digest
         for path, digest in after.source_hashes.items()
     }
-    return bool(
-        before.compiler_model == after.compiler_model
-        and before.processor_model == after.processor_model
-        and before.dependency_classpath == after.dependency_classpath
-        and before.config_snapshot.fingerprint
-        == after.config_snapshot.fingerprint
-        and before_sources == after_sources
+    checks = (
+        (
+            "compiler_model",
+            before.compiler_model == after.compiler_model,
+        ),
+        (
+            "dependency_paths",
+            before.dependency_classpath == after.dependency_classpath,
+        ),
+        (
+            "dependency_artifacts",
+            before.dependency_artifact_fingerprints
+            == after.dependency_artifact_fingerprints,
+        ),
+        (
+            "processor_model",
+            _processor_model_semantic_key(before)
+            == _processor_model_semantic_key(after),
+        ),
+        (
+            "processor_artifacts",
+            before.processor_artifact_fingerprints
+            == after.processor_artifact_fingerprints,
+        ),
+        (
+            "configuration_inputs",
+            before.configuration_input_fingerprints
+            == after.configuration_input_fingerprints,
+        ),
+        (
+            "lombok_config",
+            before.config_snapshot.fingerprint
+            == after.config_snapshot.fingerprint,
+        ),
+        (
+            "environment",
+            before.environment_fingerprint == after.environment_fingerprint,
+        ),
+        (
+            "javac",
+            before.javac_executable.resolve(strict=False)
+            == after.javac_executable.resolve(strict=False),
+        ),
+        ("sources", before_sources == after_sources),
+    )
+    return tuple(name for name, unchanged in checks if not unchanged)
+
+
+def _processor_model_semantic_key(
+    plan: LombokExperimentPlan,
+) -> tuple[object, ...]:
+    model = plan.processor_model
+    entries = tuple(
+        (
+            entry.sha256,
+            entry.providers,
+            entry.provider_implementations,
+            entry.contains_lombok_classes,
+            entry.lombok_version,
+            entry.coordinate,
+        )
+        for entry in model.path_entries
+    )
+    return (
+        model.mode,
+        model.proc,
+        model.explicit_processor_names,
+        model.processor_options,
+        entries,
     )
 
 
