@@ -279,6 +279,11 @@ python -m jolink_runtime.experiments.compile \
   --repeat 2
 ```
 
+For a guarded Windows/company-project execution procedure, use the Chinese
+[Lombok compile experiment runbook](lombok-compile-experiment-runbook.zh-CN.md).
+It defines Probe gating, full-run commands, evidence interpretation, and
+sensitive-data reporting rules for an executing Agent.
+
 It emits one compact JSON result and retains private artifacts for diagnosis.
 The JSON exposes opaque attempt IDs, not absolute paths or raw compiler log
 tails. Full logs remain local to the selected attempt directory.
