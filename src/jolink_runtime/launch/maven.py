@@ -122,6 +122,13 @@ _SAFE_IMPLICIT_PHASE_PLUGIN_GOALS = {
     ("org.apache.maven.plugins", "maven-site-plugin"): frozenset(
         {"deploy", "site"}
     ),
+    # source:jar-no-fork has declared package as its default phase since it
+    # was introduced in maven-source-plugin 2.1.  Unlike source:jar, it does
+    # not fork an earlier lifecycle, so an execution without an explicit
+    # phase cannot affect the compile/process-classes model validated here.
+    ("org.apache.maven.plugins", "maven-source-plugin"): frozenset(
+        {"jar-no-fork"}
+    ),
     ("org.apache.maven.plugins", "maven-surefire-plugin"): frozenset(
         {"test"}
     ),

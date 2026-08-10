@@ -909,6 +909,81 @@ def test_fast_compile_rejects_unknown_plugin_with_implicit_phase(
     )
 
 
+def test_fast_compile_allows_source_jar_no_fork_with_implicit_package_phase(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins="""\
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-source-plugin</artifactId>
+  <version>2.2.1</version>
+  <executions>
+    <execution>
+      <id>attach-sources</id>
+      <goals><goal>jar-no-fork</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    plan = adapter.consume_fast_compile_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.encoding == "UTF-8"
+
+
+@pytest.mark.parametrize(
+    ("goal", "phase_xml"),
+    (
+        ("jar", ""),
+        ("jar-no-fork", "<phase>generate-sources</phase>"),
+    ),
+)
+def test_fast_compile_does_not_overgeneralize_source_plugin_allowance(
+    tmp_path: Path,
+    goal: str,
+    phase_xml: str,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=_effective_pom(
+            "app",
+            extra_plugins=f"""\
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-source-plugin</artifactId>
+  <version>2.2.1</version>
+  <executions>
+    <execution>
+      {phase_xml}
+      <goals><goal>{goal}</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+""",
+        ),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode
+        .ANNOTATION_PROCESSING_OR_BYTECODE_TRANSFORM_UNVERIFIED
+    )
+
+
 @pytest.mark.parametrize(
     "phase_xml",
     ("", "<phase>generate-sources</phase>"),

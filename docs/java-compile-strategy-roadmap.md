@@ -97,6 +97,141 @@ The fidelity model is intentionally separate from the production
 `--release`; the fidelity experiment must not, because that would compare a
 different javac invocation with Maven.
 
+## Maven plugin goal classification roadmap
+
+The current Alpha implementation uses a small audited allowlist for Maven
+executions whose POM omits an explicit phase. This is a fail-closed bootstrap
+mechanism, not the intended long-term plugin architecture. A harmless goal may
+be added to that list only when its lifecycle contract is independently
+verified. For example, `maven-source-plugin:jar-no-fork` is safe for the
+compile model because its declared default phase is `package` and, unlike
+`source:jar`, it does not fork an earlier lifecycle.
+
+The Alpha allowlist is keyed by plugin coordinate and goal, not by exact plugin
+version or artifact fingerprint. It is therefore an audited compatibility
+assumption, not proof of exact executable semantics. Adding version ranges,
+property interpolation, plugin-management inheritance, or repository artifact
+resolution to this temporary table would duplicate the general resolver
+described below and is deliberately deferred.
+
+joLink must not grow into one code branch per Maven plugin. The target design
+separates three responsibilities:
+
+```text
+MavenGoalDescriptorResolver
+    resolve exact goal identity and lifecycle metadata
+
+MavenExecutionClassifier
+    determine whether the requested operation schedules the goal or its forks
+
+BuildCapabilityAdapter
+    classify and reproduce the goal's build effects
+```
+
+`MavenGoalDescriptorResolver` reads the exact resolved plugin artifact's
+`META-INF/maven/plugin.xml` without importing, instantiating, or executing
+plugin code. Resolution evidence must include:
+
+```text
+plugin group/artifact/version and artifact fingerprint
+goal name
+POM explicit phase, if any
+descriptor default phase
+descriptor executePhase / executeGoal lifecycle fork
+the lifecycle window relevant to the requested joLink operation
+```
+
+`executeGoal` references must be followed recursively within the resolved
+plugin. The resulting goal-execution graph requires cycle detection, recursive
+`executePhase` handling, and explicit `executeLifecycle` handling; an unknown
+lifecycle or unresolved graph fails closed.
+
+The execution classifier first asks whether the goal is scheduled at all. For
+example, `source:jar` has a `package` default phase and can fork
+`generate-sources` when invoked, but a `compile` operation never reaches its
+`package` binding, so neither the goal nor its fork executes. Lifecycle forks
+matter only after a goal has entered the requested operation. The ordering is:
+
+```text
+resolve explicit/default phase
+→ determine whether this operation invokes the goal
+→ if invoked, recursively follow lifecycle/goal forks
+→ classify OUTSIDE_WINDOW / INSIDE_WINDOW / FORKS_INTO_WINDOW / UNRESOLVED
+```
+
+A goal outside the requested lifecycle window may be ignored only when exact
+descriptor evidence proves that it will not be invoked. A normally harmless
+goal becomes compile-affecting when the POM explicitly binds it to an earlier
+phase. Operation context remains part of the evidence: equivalence to
+`mvn compile` and provenance of classes loaded from a packaged artifact are not
+interchangeable questions.
+
+Plugin descriptors establish reachability and lifecycle behavior; they do not
+generally describe semantic effects. An unknown goal bound to
+`generate-sources`, for example, may generate Java, mutate the classpath,
+change properties, transform resources, rewrite classes, or merely log a
+message. `BuildCapabilityAdapter` therefore classifies and reproduces effects
+by capability rather than product name:
+
+| Capability | Examples | Default policy |
+| --- | --- | --- |
+| Test/report/deploy | Surefire, Site, Deploy | Ignore when outside the relevant lifecycle window |
+| Auxiliary packaging | non-forking sources JAR | Allow when descriptor proves it cannot enter the compile window |
+| Resources | Maven resources processing | Use a shared resource model |
+| Source generation | Protobuf, OpenAPI, build-helper source roots | Require a source-generator model or reject |
+| Annotation processing | Lombok, MapStruct, custom Processor | Require a Processor model or reject |
+| Bytecode transformation | AspectJ, Hibernate enhancer | Require a transform pipeline with output parity or reject |
+| Maven/core extension | `.mvn/extensions.xml`, build extensions | Treat as a separate high-risk Maven execution boundary |
+
+Any execution inside the relevant window without an applicable capability
+adapter remains a structured rejection. Descriptor metadata alone must never
+be treated as proof that the resulting sources, resources, classpath, compiler
+behavior, or class bytes are reproducible.
+
+Plugin descriptors are untrusted input. They must be parsed with archive/XML
+size limits, canonical artifact paths, no external entity resolution, and a
+content fingerprint that is revalidated before compilation. The resolver may
+download or locate metadata through the project's actual Maven/settings/local
+repository context, but it must never execute the target goal to discover its
+behavior.
+
+The raw and effective Maven stages have different responsibilities. The first
+item below describes the target boundary; current raw preflight covers only
+unconditional project build configuration, with the active-profile extension
+gap recorded under "Verified debts deferred during experimentation":
+
+1. Raw preflight rejects visible project/core extensions and explicit early
+   lifecycle steps that can already be proven unsafe.
+2. Effective-POM validation resolves inherited versions, profiles, and plugin
+   management.
+3. Exact plugin descriptors and the execution classifier supply scheduling,
+   default-phase, and lifecycle-fork evidence.
+4. Capability adapters prove semantic reproducibility; unknown
+   compile-affecting capabilities remain structured rejections with a reason
+   category and never become partial success.
+
+Specialized code should therefore be written for a small number of build
+capabilities, not for every plugin coordinate. Hibernate runtime proxies, for
+example, are not a compile plugin concern, while Hibernate bytecode enhancement
+belongs to the shared bytecode-transform category. A future adapter may model
+that transform category; until then it remains a safe false negative.
+
+Migration from the Alpha allowlist should proceed only after the Lombok/direct
+javac experiments establish value:
+
+```text
+audited allowlist for immediate dogfood unblock
+→ exact descriptor resolver + reachability classifier + rejection diagnostics
+→ capability-level Processor/generator/transform adapters
+→ evidence cache keyed by POM/settings/profile/JDK/Maven/plugin fingerprints
+→ shrink the static allowlist to compatibility fallback only
+```
+
+The objective is not to accept every Maven project. It is to make ordinary,
+non-compile-affecting plugins classify automatically while keeping an explicit
+evidence boundary around anything that can change sources, compiler behavior,
+resources, or final class bytes.
+
 ## Phase 0: Lombok AnnotationProcessorModel
 
 The model freezes:
@@ -413,6 +548,7 @@ These are evidence debts, not declarations that support is impossible.
 
 | Current rejection | Risk | Minimum evidence before thawing |
 | --- | --- | --- |
+| Implicit plugin goal with unresolved descriptor | Hidden default phase or lifecycle fork could enter the compile window | Exact versioned plugin descriptor, artifact fingerprint, phase/fork classifier, and adversarial no-fork/fork fixtures |
 | Non-Lombok or multiple Processors | Hidden generated API/method behavior and dependency ordering | Complete transitive Processor resolver, mixed fixtures, fresh Maven exact/semantic parity |
 | `proc=none` / `proc=only` | Violating formal policy or incomplete class output | No thaw for Lombok full generation unless product semantics change explicitly |
 | JDK 23+ unrequested discovery | Direct javac could run a Processor Maven did not run, or vice versa | Versioned javac/Maven precedence tests and explicit activation model |

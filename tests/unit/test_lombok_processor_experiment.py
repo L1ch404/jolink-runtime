@@ -1080,6 +1080,34 @@ def test_static_preflight_rejects_compile_phase_project_plugin(
     assert captured.value.error_code == "COMPILE_MODEL_UNAVAILABLE"
 
 
+def test_static_preflight_allows_source_jar_no_fork_company_shape(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write(
+        project / "pom.xml",
+        """\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>app</artifactId><version>1</version>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-source-plugin</artifactId>
+    <version>2.2.1</version>
+    <executions><execution>
+      <id>attach-sources</id>
+      <goals><goal>jar-no-fork</goal></goals>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>
+""",
+    )
+    adapter = MavenBuildSystemAdapter()
+    workspace = adapter.resolve_workspace(project)
+
+    experiment_cli._static_maven_preflight(adapter, workspace)
+
+
 def test_static_preflight_ignores_unactivated_profile_transforms(
     tmp_path: Path,
 ) -> None:
