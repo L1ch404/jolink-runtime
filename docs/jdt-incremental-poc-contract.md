@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `not started`
+Implementation-Status: `Phase 1A bootstrap in progress`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 

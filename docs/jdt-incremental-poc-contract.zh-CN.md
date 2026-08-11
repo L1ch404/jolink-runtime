@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`尚未开始`
+实现状态：`Phase 1A bootstrap 进行中`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -502,4 +502,3 @@ Phase 3 contract
 没有独立兼容证据，不能在同一 runtime generation 混合 Maven/javac baseline
 class 与后续 ECJ class。MapStruct、QueryDSL、Spring metadata、resource
 fidelity、增强 HotSwap、MCP、生产 idle policy 和公开安装仍是未来决策。
-

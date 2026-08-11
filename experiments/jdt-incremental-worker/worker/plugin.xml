@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+  <extension point="org.eclipse.core.runtime.applications"
+             id="net.jolink.runtime.jdt.worker">
+    <application cardinality="singleton-global"
+                 thread="main"
+                 visible="false">
+      <run class="net.jolink.runtime.jdt.WorkerApplication"/>
+    </application>
+  </extension>
+  <extension point="org.eclipse.jdt.core.compilationParticipant">
+    <compilationParticipant
+        id="net.jolink.runtime.jdt.compilationObserver"
+        class="net.jolink.runtime.jdt.CompilationObserver"
+        modifiesEnvironment="false"
+        createsProblems="false"
+        requiredSourceLevel="1.8"/>
+  </extension>
+</plugin>

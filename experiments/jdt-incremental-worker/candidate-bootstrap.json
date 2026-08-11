@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "candidate_id": "eclipse-4.40-current",
+  "eclipse_release": "4.40",
+  "repository_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713",
+  "worker_java_minimum": 17,
+  "root_installable_units": [
+    "org.eclipse.osgi",
+    "org.eclipse.equinox.launcher",
+    "org.eclipse.equinox.app",
+    "org.eclipse.core.runtime",
+    "org.eclipse.core.resources",
+    "org.eclipse.jdt.core"
+  ],
+  "excluded_unit_patterns": [
+    ".source",
+    ".feature",
+    ".sdk"
+  ],
+  "evidence_status": "bootstrap_discovery_only"
+}

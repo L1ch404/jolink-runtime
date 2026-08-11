@@ -511,7 +511,7 @@ or correctness data because the full experiment never ran.
 
 ## Candidate architecture: Maven bootstrap plus JDT incremental build
 
-Status: `Phase 1A contract approved / implementation not started`
+Status: `Phase 1A contract approved / bootstrap implementation in progress`
 
 The Phase 1 evidence requirements and Go/No-Go boundary are defined in
 [`jdt-incremental-poc-contract.md`](jdt-incremental-poc-contract.md). Its review
