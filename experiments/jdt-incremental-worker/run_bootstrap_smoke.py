@@ -782,6 +782,8 @@ def main(argv: list[str] | None = None) -> int:
         "primary": f"generation-{uuid.uuid4().hex[:12]}",
         "instrumentation_off": f"generation-{uuid.uuid4().hex[:12]}",
         "clean_full_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a4_primary": f"generation-{uuid.uuid4().hex[:12]}",
+        "a4_clean_full_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "java9_api_negative": f"generation-{uuid.uuid4().hex[:12]}",
     }
     attempts_root = args.cache_root / "attempts"
@@ -993,6 +995,126 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             shutdown_reports["clean_full_oracle"] = oracle_client.close()
 
+        a4_attempt = attempt / "a4-upstream-method-body"
+        a4_attempt.mkdir()
+        a4_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a4_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a4_client.process.pid)
+        try:
+            a4_source = a4_attempt / "workspace" / "plain-fixture" / "src"
+            shutil.copytree(
+                root / "fixtures" / "plain-java" / "src",
+                a4_source,
+                dirs_exist_ok=True,
+            )
+            a4_baseline_full = a4_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a4_baseline_full,
+                label="A4 baseline full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a4_classes = a4_attempt / "workspace" / "plain-fixture" / "bin"
+            a4_baseline_hashes = output_hashes(a4_classes)
+            a4_api = a4_source / "example" / "Api.java"
+            a4_api_original = a4_api.read_text(encoding="utf-8")
+            a4_api_edited = a4_api_original.replace(
+                "return value * MULTIPLIER;",
+                "return value * MULTIPLIER + 3;",
+            )
+            if a4_api_edited == a4_api_original:
+                raise SmokeError("A4 source edit did not match the fixture.")
+            a4_api.write_text(a4_api_edited, encoding="utf-8")
+            a4_incremental = a4_client.command("BUILD\tINCREMENTAL")
+            require_exact_observed_build(
+                a4_incremental,
+                label="A4 upstream method-body incremental build",
+                actual_build_kind="INCREMENTAL",
+                build_outcome="COMPILED",
+                compiled_source_units=["src/example/Api.java"],
+                changed_classes=["example/Api.class"],
+            )
+            a4_incremental_hashes = output_hashes(a4_classes)
+            if a4_incremental_hashes.get(
+                "example/Api.class"
+            ) == a4_baseline_hashes.get("example/Api.class"):
+                raise SmokeError("A4 edited class output did not change.")
+            for unchanged in (
+                "example/Application.class",
+                "example/Service.class",
+            ):
+                if a4_incremental_hashes.get(unchanged) != a4_baseline_hashes.get(
+                    unchanged
+                ):
+                    raise SmokeError(f"A4 unexpectedly changed {unchanged}.")
+        finally:
+            shutdown_reports["a4_primary"] = a4_client.close()
+
+        a4_oracle_attempt = attempt / "a4-clean-full-oracle"
+        a4_oracle_attempt.mkdir()
+        a4_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a4_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a4_oracle_client.process.pid)
+        try:
+            a4_oracle_source = (
+                a4_oracle_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(a4_source, a4_oracle_source, dirs_exist_ok=True)
+            a4_oracle_full = a4_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a4_oracle_full,
+                label="A4 clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a4_oracle_hashes = output_hashes(
+                a4_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a4_oracle_equal = (
+                a4_oracle_full.get("ok") is True
+                and a4_oracle_hashes == a4_incremental_hashes
+                and a4_oracle_full.get("diagnostics")
+                == a4_incremental.get("diagnostics")
+            )
+            if not a4_oracle_equal:
+                raise SmokeError("A4 incremental output differs from clean-full oracle.")
+        finally:
+            shutdown_reports["a4_clean_full_oracle"] = a4_oracle_client.close()
+
         negative_attempt = attempt / "java9-api-negative"
         negative_attempt.mkdir()
         negative_client = start_worker(
@@ -1081,8 +1203,8 @@ def main(argv: list[str] | None = None) -> int:
             "attempt_id": attempt_id,
             "generation_id": generation_ids["primary"],
             "generation_ids": generation_ids,
-            "status": "phase_1a_a1_a2_a3_evidence_passed",
-            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3",
+            "status": "phase_1a_a1_a2_a3_a4_evidence_passed",
+            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4",
             "candidate_id": lock["candidate_id"],
             "candidate_execution_environment": lock["execution_environment"],
             "provenance": {
@@ -1107,9 +1229,10 @@ def main(argv: list[str] | None = None) -> int:
                 "fixture_inputs": {
                     "combined_sha256": combined_fixture_fingerprint,
                     "source_roots": starting_fixture_fingerprints,
-                    "edited_primary_generation_sha256": (
-                        edited_fixture_fingerprint
-                    ),
+                    "edited_generation_sha256": {
+                        "a3_primary": edited_fixture_fingerprint,
+                        "a4_primary": tree_fingerprint(a4_source),
+                    },
                 },
             },
             "worker_ready": True,
@@ -1128,6 +1251,9 @@ def main(argv: list[str] | None = None) -> int:
                 "no_op_incremental": no_op,
                 "instrumentation_off_full": instrumentation_off_full,
                 "clean_full_oracle": oracle_full,
+                "a4_baseline_full": a4_baseline_full,
+                "a4_upstream_method_body_incremental": a4_incremental,
+                "a4_clean_full_oracle": a4_oracle_full,
                 "java9_api_negative": java9_api_negative,
             },
             "output": {
@@ -1141,6 +1267,10 @@ def main(argv: list[str] | None = None) -> int:
                 "java9_api_rejected": True,
                 "instrumentation_off_on_parity": instrumentation_parity,
                 "incremental_equals_clean_full_oracle": oracle_equal,
+                "a4_baseline_class_sha256": a4_baseline_hashes,
+                "a4_incremental_class_sha256": a4_incremental_hashes,
+                "a4_clean_full_oracle_class_sha256": a4_oracle_hashes,
+                "a4_incremental_equals_clean_full_oracle": a4_oracle_equal,
             },
             "input_revalidation": input_revalidation,
             "lifecycle": {
@@ -1155,7 +1285,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "cancellation": {
                     "status": "not_run",
-                    "reason": "outside_A1_A3_scope",
+                    "reason": "outside_A1_A4_scope",
                 },
             },
             "measurements": {
@@ -1183,10 +1313,11 @@ def main(argv: list[str] | None = None) -> int:
                 "A1": "passed",
                 "A2": "passed",
                 "A3": "passed",
-                "A4_A10": "not_run",
+                "A4": "passed",
+                "A5_A10": "not_run",
             },
             "limitations": [
-                "only A1/A2/A3 ran; A4 through A10 are not implemented",
+                "only A1 through A4 ran; A5 through A10 are not implemented",
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
                 "owned process-tree verification remains an A9 lifecycle item",

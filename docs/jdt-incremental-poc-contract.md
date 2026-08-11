@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1/A2/A3 partial evidence passed; A4-A10 pending`
+Implementation-Status: `A1-A4 partial evidence passed; A5-A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 

@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1/A2/A3 partial evidence passed; complete gate remains open`
+Status: `Phase 1A A1-A4 partial evidence passed; complete gate remains open`
 
 Contract:
 
@@ -29,7 +29,8 @@ The current bootstrap can:
 9. configure exactly one real `org.eclipse.jdt.core.javabuilder`;
 10. capture target javac's complete platform view, including bootstrap
     placeholders and extension archives, from the exact target JDK 8;
-11. run full, leaf incremental, and no-op incremental builds;
+11. run full, leaf incremental, no-op incremental, and upstream method-body
+    incremental builds;
 12. reject a source that references Java 9's `List.of`;
 13. observe actual batch/incremental behavior and compiled source units through
     a read-only `CompilationParticipant`;
@@ -60,12 +61,12 @@ Extension ClassLoader cross-check. No effective endorsed archive was present.
 The latest real macOS run therefore reports:
 
 ```text
-status          = phase_1a_a1_a2_a3_evidence_passed
-evidence_status = partial_phase_1a_evidence_a1_a2_a3
+status          = phase_1a_a1_a2_a3_a4_evidence_passed
+evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4
 ```
 
-This is real evidence for A1/A2/A3, not a Phase 1A Go decision. A4 through
-A10, resource/RSS measurement, cancellation pressure, workspace restart, and
+This is real evidence for A1-A4, not a Phase 1A Go decision. A5 through A10,
+resource/RSS measurement, cancellation pressure, workspace restart, and
 the Windows run are still outstanding.
 
 ## Files
@@ -135,7 +136,7 @@ Artifacts and attempts stay outside the repository by default:
 The candidate lock is committed; downloaded Eclipse JARs and attempt workspaces
 are not.
 
-## Latest observed A1/A2/A3 evidence
+## Latest observed A1-A4 evidence
 
 On macOS a real run produced:
 
@@ -147,6 +148,8 @@ leaf incremental           Application.java only / Application.class only
 no-op incremental          requested INCREMENTAL / outcome NO_COMPILE
 no-op actual build kind    unavailable (no compilation callback observed)
 no-op participant callbacks none; project.build returned and output unchanged
+upstream method body       Api.java only / Api.class only
+A4 vs clean-full oracle    exact
 Java 9 API negative        List.of rejected with an ERROR marker
 target javac platform      20 advertised / 17 present / 3 absent placeholders
 extension libraries        11 / runtime cross-check exact
