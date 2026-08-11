@@ -450,6 +450,147 @@ and attempt paths, a literal `$` Processor name, and a javac argfile over
 JDK 23+ behavior currently has model/unit evidence only and is not claimed as
 a verified real-compiler result.
 
+## Company exploration evidence: 2026-08-11
+
+A trusted, single-module Maven project was used to continue the Windows/JDK 8
+Probe. The run did not reach `model_resolved`: it stopped with
+`MULTIPLE_ANNOTATION_PROCESSORS_UNVERIFIED` after finding Lombok plus Spring
+Boot's `ConfigurationMetadataAnnotationProcessor` through compile-classpath
+discovery. Maven baseline and direct javac were not executed, the user's Maven
+output was not modified by the Probe, and JDWP was not touched.
+
+This run is exploration evidence only. Before reaching the final Processor
+rejection, the operator temporarily removed one compiler argument from the
+project POM and locally bypassed the dependency-manifest rejection. Those
+changes were useful for discovering the next boundary, but no exact-class or
+product decision may be based on the resulting state. A trusted rerun must
+restore the real POM and remove every local joLink bypass.
+
+The run exposed three distinct compile-model gaps:
+
+| Boundary | What was observed | Current interpretation | Required direction |
+| --- | --- | --- | --- |
+| javac JVM argument | `-J-Xmx2048m` was parsed as if every `compilerArgs` entry had to be a Processor `-A` option | Small argument-classification gap; the option affects the javac process rather than Processor selection | Separate bounded `javac_jvm_args` from `processor_options`; do not ask the project to delete the real setting |
+| Dependency manifest classpath | A compile dependency declares `Class-Path` and private content-addressed relocation can change relative resolution | Real classpath-fidelity boundary; a filename/version bypass is not valid evidence | Resolve the original recursive manifest expansion and preserve or prove equivalent private layout/order |
+| Additional Processor | Spring Boot metadata generation is discovered beside Lombok | Not benign/ignored: it writes CLASS_OUTPUT metadata, can report diagnostics, and has ordering/input relationships with Lombok | Model it as a known `METADATA_GENERATOR`, keep it visible in evidence, execute it when Maven does, and reject any remaining unknown Provider |
+
+The current experiment passes the ordered dependency classpath as the implicit
+Processor path, so direct javac is already capable of discovering both known
+Processors. The missing piece is not merely removing the Lombok-only guard.
+The model must retain Provider/artifact/order evidence and distinguish:
+
+```text
+Lombok                                      AST_TRANSFORM
+Spring ConfigurationMetadataAnnotationProcessor  METADATA_GENERATOR
+all other discovered Providers             UNKNOWN → reject
+```
+
+The primary experiment conclusion remains exact `.class` equivalence. If a
+metadata-generating Processor is accepted, auxiliary evidence should also
+compare `META-INF/spring-configuration-metadata.json` (exact first, canonical
+JSON only if later justified), report one-sided output, and verify that no
+unexpected generated Java source appeared. Class equality and metadata-output
+equality must remain separate claims.
+
+The dependency-manifest bypass must not be generalized to JAXB or any named
+library. A correct solution works from the manifest graph and the actual
+original filesystem resolution. An unresolved original reference and a
+resolved recursive dependency are different cases; both must remain equivalent
+after freezing. Rewriting signed dependency JARs is not an acceptable shortcut.
+
+These findings show that complete Maven-to-direct-javac equivalence has a much
+larger compatibility surface than compiler invocation alone. They do not prove
+that direct compilation is impossible, and they do not yet provide performance
+or correctness data because the full experiment never ran.
+
+## Candidate architecture: Maven bootstrap plus JDT incremental build
+
+Status: `discussion only / not approved for implementation`
+
+The alternative under consideration is not “replace javac with ecj.jar”. ECJ
+batch compilation still requires joLink to supply source roots, classpath,
+Processor path/options, output directories, language level, and resources. The
+candidate is instead:
+
+```text
+formal Maven bootstrap
+→ capture one versioned Build World
+→ create a private JDT project
+→ JDT full build establishes ECJ output and incremental state
+→ launch the target JVM from that private ECJ generation
+→ later Java deltas use JDT incremental build
+→ schema-compatible output uses standard JDWP HotSwap
+→ schema-incompatible output uses restart from a complete private generation
+```
+
+Maven remains the Build World constructor; JDT would maintain that world
+between invalidations. This changes the primary engineering problem from
+reimplementing arbitrary Maven plugins to capturing provenance and deciding
+when the captured world is stale. It does not eliminate build semantics.
+
+The candidate requires a versioned Build World containing at least:
+
+```text
+project/module identity and source roots
+generated-source roots and their producer/input provenance
+ordered compile classpath and artifact fingerprints
+language/target/encoding/debug/compiler settings
+Processor path, Provider order, options, and generated-output locations
+resource roots and whether each output is plain-copied, filtered, or generated
+Maven/settings/profile/parent/toolchain/plugin input fingerprints
+JDT/ECJ and Lombok compatibility identity
+```
+
+Any change to a Build World input must cause Maven re-bootstrap plus a new JDT
+full build. Ordinary Java changes may use incremental build only while that
+generation remains current. POM/parent/settings/profile changes, dependency or
+Processor replacement, generated-source inputs, `lombok.config`, resource
+filtering inputs, and unknown non-Java changes are initial invalidators.
+
+The JVM should not normally start from Maven/javac classes and then mix in ECJ
+classes. javac and ECJ may emit different synthetic/bridge/schema details even
+for semantically equivalent source. One runtime generation should therefore use
+the same compiler lineage: Maven constructs the model, JDT performs a private
+full build, and that ECJ output starts the JVM before subsequent ECJ deltas.
+
+This route has unresolved Go/No-Go risks:
+
+1. True JDT incremental compilation is an Eclipse Java Project Builder backed
+   by workspace/core-resources state, not a standalone ECJ incremental API.
+   Headless Equinox integration, lifecycle cleanup, distribution size, cold
+   start, idle RSS, peak RSS, and cancellation must be measured.
+2. The company project uses Lombok 1.18.20. Lombok integrates deeply with ECJ,
+   so a compatible JDT/worker runtime must be proven rather than assuming that
+   the newest JDT can load an old Lombok agent.
+3. JSR-269 incremental behavior must eventually be proven for metadata and
+   source-generating Processors. Lombok alone is insufficient evidence.
+4. JDT copies ordinary non-Java resources from configured source roots, but it
+   does not automatically reproduce Maven filtering, custom resource roots, or
+   plugin-generated resources. Resource generation and runtime reload remain
+   separate contracts.
+5. Standard `RedefineClasses` still rejects field/method/schema/hierarchy
+   changes. Fast compilation remains valuable if a complete private generation
+   can restart without Maven, but enhanced HotSwap agents are not part of the
+   initial candidate.
+
+No JDT branch, worker, dependency download, MCP action, production `update`
+change, or public Schema change should be created until the design is frozen.
+If approved later, the first POC should answer only:
+
+```text
+Can a bounded headless JDT worker perform full → incremental build on Windows?
+Can the selected JDT compile Java 8 source with the project's exact Lombok 1.18.20?
+Can a JVM started from ECJ full output accept and execute a method-body delta?
+Can a schema-changing delta restart from the private ECJ generation without Maven?
+What are cold/full/incremental latency, affected-source count, idle/peak RSS,
+cleanup behavior, and repeated-build stability?
+```
+
+MapStruct/QueryDSL/Dagger, Maven resource fidelity, JDT LS as a permanent
+dependency, enhanced HotSwap, MCP integration, and production promotion remain
+outside that first POC. Passing the POC would justify a second design review;
+it would not by itself select JDT as joLink's production compiler architecture.
+
 ## Verified debts deferred during experimentation
 
 The following findings were reproduced on 2026-08-09. They do not block
