@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A5 部分证据已通过；A6-A10 待验证`
+实现状态：`A1-A6 部分证据已通过；A7-A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -329,6 +329,13 @@ diagnostics 必须与 clean-full oracle 一致。
 
 分别删除、重命名一个 source/type。过期 top-level、inner、anonymous 和
 synthetic class family 都必须清除，输出和 diagnostics 等于 clean-full。
+
+首次 macOS A6 证据 fixture 包含 top-level class、member class、anonymous
+class、local class，以及 class 中包含 `ACC_BRIDGE | ACC_SYNTHETIC` 方法的
+generic override。删除 source 后，完整的 6 个 class-family 文件都被清除，
+不相关 class 保持不变。独立的 source/type 重命名实验同样清除了全部旧
+family，并生成完整新 family。两组增量输出树和 diagnostics 都与各自的
+clean-full oracle 完全一致。
 
 ### A7 — 错误与恢复
 

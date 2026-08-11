@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1-A5 partial evidence passed; complete gate remains open`
+Status: `Phase 1A A1-A6 partial evidence passed; complete gate remains open`
 
 Contract:
 
@@ -30,7 +30,8 @@ The current bootstrap can:
 10. capture target javac's complete platform view, including bootstrap
     placeholders and extension archives, from the exact target JDK 8;
 11. run full, leaf incremental, no-op incremental, upstream method-body, public
-    API propagation, and compile-time constant propagation builds;
+    API propagation, compile-time constant propagation, source deletion, and
+    source/type rename builds;
 12. reject a source that references Java 9's `List.of`;
 13. observe actual batch/incremental behavior and compiled source units through
     a read-only `CompilationParticipant`;
@@ -61,11 +62,11 @@ Extension ClassLoader cross-check. No effective endorsed archive was present.
 The latest real macOS run therefore reports:
 
 ```text
-status          = phase_1a_a1_a2_a3_a4_a5_evidence_passed
-evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4_a5
+status          = phase_1a_a1_a2_a3_a4_a5_a6_evidence_passed
+evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6
 ```
 
-This is real evidence for A1-A5, not a Phase 1A Go decision. A6 through A10,
+This is real evidence for A1-A6, not a Phase 1A Go decision. A7 through A10,
 resource/RSS measurement, cancellation pressure, workspace restart, and
 the Windows run are still outstanding.
 
@@ -98,6 +99,9 @@ fixtures/plain-java/
 
 fixtures/dependency-java/
     A5 public-API and compile-time-constant propagation fixture
+
+fixtures/class-family-java/
+    A6 delete/rename fixture with member, anonymous, local, and bridge outputs
 
 fixtures/java9-api-negative/
     companion source proving the Java 8 platform rejects List.of
@@ -139,7 +143,7 @@ Artifacts and attempts stay outside the repository by default:
 The candidate lock is committed; downloaded Eclipse JARs and attempt workspaces
 are not.
 
-## Latest observed A1-A5 evidence
+## Latest observed A1-A6 evidence
 
 On macOS a real run produced:
 
@@ -156,6 +160,9 @@ A4 vs clean-full oracle    exact
 public API propagation     Api/Application/Service incrementally compiled
 constant propagation       Api/Application/Service incrementally compiled
 A5 vs clean-full oracles   exact for both independent edits
+source deletion            complete six-file Legacy family removed
+source/type rename         old family removed / complete new family emitted
+A6 vs clean-full oracles   exact for both independent edits
 Java 9 API negative        List.of rejected with an ERROR marker
 target javac platform      20 advertised / 17 present / 3 absent placeholders
 extension libraries        11 / runtime cross-check exact
@@ -175,11 +182,10 @@ Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
 The next work should remain inside this experiment and add, in order:
 
-1. A6 delete/rename and stale class-family cleanup;
-2. A7 diagnostics/recovery;
-3. A8 workspace restart;
-4. A9 repeated-build/resource stability;
-5. A10 Windows, spaces, and non-ASCII paths.
+1. A7 diagnostics/recovery;
+2. A8 workspace restart;
+3. A9 repeated-build/resource stability;
+4. A10 Windows, spaces, and non-ASCII paths.
 
 Phase 1B Lombok work must not begin until the same exact evidence candidate
 passes the complete Phase 1A Go gate.

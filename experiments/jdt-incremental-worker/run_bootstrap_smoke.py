@@ -756,6 +756,7 @@ def main(argv: list[str] | None = None) -> int:
     fixture_roots = {
         "plain_java": root / "fixtures" / "plain-java" / "src",
         "dependency_java": root / "fixtures" / "dependency-java" / "src",
+        "class_family_java": root / "fixtures" / "class-family-java" / "src",
         "java9_api_negative": root
         / "fixtures"
         / "java9-api-negative"
@@ -789,6 +790,10 @@ def main(argv: list[str] | None = None) -> int:
         "a5_public_api_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "a5_constant": f"generation-{uuid.uuid4().hex[:12]}",
         "a5_constant_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a6_delete": f"generation-{uuid.uuid4().hex[:12]}",
+        "a6_delete_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a6_rename": f"generation-{uuid.uuid4().hex[:12]}",
+        "a6_rename_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "java9_api_negative": f"generation-{uuid.uuid4().hex[:12]}",
     }
     attempts_root = args.cache_root / "attempts"
@@ -1391,6 +1396,244 @@ def main(argv: list[str] | None = None) -> int:
                 a5_constant_oracle_client.close()
             )
 
+        a6_legacy_family = [
+            "example/Legacy$1.class",
+            "example/Legacy$1Local.class",
+            "example/Legacy$Bridge.class",
+            "example/Legacy$GenericBase.class",
+            "example/Legacy$Inner.class",
+            "example/Legacy.class",
+        ]
+        a6_replacement_family = [
+            relative.replace("Legacy", "Replacement")
+            for relative in a6_legacy_family
+        ]
+        a6_baseline_classes = sorted(
+            [*a6_legacy_family, "example/Keep.class"]
+        )
+
+        a6_delete_attempt = attempt / "a6-delete-source"
+        a6_delete_attempt.mkdir()
+        a6_delete_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a6_delete_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a6_delete_client.process.pid)
+        try:
+            a6_delete_source = (
+                a6_delete_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(
+                root / "fixtures" / "class-family-java" / "src",
+                a6_delete_source,
+                dirs_exist_ok=True,
+            )
+            a6_delete_baseline_full = a6_delete_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a6_delete_baseline_full,
+                label="A6 delete baseline full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Keep.java",
+                    "src/example/Legacy.java",
+                ],
+                changed_classes=a6_baseline_classes,
+            )
+            a6_delete_classes = (
+                a6_delete_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a6_delete_baseline_hashes = output_hashes(a6_delete_classes)
+            (a6_delete_source / "example" / "Legacy.java").unlink()
+            a6_delete_incremental = a6_delete_client.command("BUILD\tINCREMENTAL")
+            require_exact_observed_build(
+                a6_delete_incremental,
+                label="A6 source deletion",
+                actual_build_kind=None,
+                build_outcome="NO_COMPILE",
+                compiled_source_units=[],
+                changed_classes=[],
+                deleted_classes=a6_legacy_family,
+            )
+            a6_delete_incremental_hashes = output_hashes(a6_delete_classes)
+            if set(a6_delete_incremental_hashes) != {"example/Keep.class"}:
+                raise SmokeError("A6 deletion left a stale class-family output.")
+            if a6_delete_incremental_hashes.get(
+                "example/Keep.class"
+            ) != a6_delete_baseline_hashes.get("example/Keep.class"):
+                raise SmokeError("A6 deletion unexpectedly changed Keep.class.")
+        finally:
+            shutdown_reports["a6_delete"] = a6_delete_client.close()
+
+        a6_delete_oracle_attempt = attempt / "a6-delete-clean-full-oracle"
+        a6_delete_oracle_attempt.mkdir()
+        a6_delete_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a6_delete_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a6_delete_oracle_client.process.pid)
+        try:
+            a6_delete_oracle_source = (
+                a6_delete_oracle_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(
+                a6_delete_source,
+                a6_delete_oracle_source,
+                dirs_exist_ok=True,
+            )
+            a6_delete_oracle_full = a6_delete_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a6_delete_oracle_full,
+                label="A6 delete clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=["src/example/Keep.java"],
+                changed_classes=["example/Keep.class"],
+            )
+            a6_delete_oracle_hashes = output_hashes(
+                a6_delete_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a6_delete_oracle_equal = (
+                a6_delete_oracle_full.get("ok") is True
+                and a6_delete_oracle_hashes == a6_delete_incremental_hashes
+                and a6_delete_oracle_full.get("diagnostics")
+                == a6_delete_incremental.get("diagnostics")
+            )
+            if not a6_delete_oracle_equal:
+                raise SmokeError(
+                    "A6 deletion output differs from the clean-full oracle."
+                )
+        finally:
+            shutdown_reports["a6_delete_oracle"] = a6_delete_oracle_client.close()
+
+        a6_rename_attempt = attempt / "a6-rename-source-type"
+        a6_rename_attempt.mkdir()
+        a6_rename_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a6_rename_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a6_rename_client.process.pid)
+        try:
+            a6_rename_source = (
+                a6_rename_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(
+                root / "fixtures" / "class-family-java" / "src",
+                a6_rename_source,
+                dirs_exist_ok=True,
+            )
+            a6_rename_baseline_full = a6_rename_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a6_rename_baseline_full,
+                label="A6 rename baseline full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Keep.java",
+                    "src/example/Legacy.java",
+                ],
+                changed_classes=a6_baseline_classes,
+            )
+            a6_rename_classes = (
+                a6_rename_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a6_rename_baseline_hashes = output_hashes(a6_rename_classes)
+            legacy_source = a6_rename_source / "example" / "Legacy.java"
+            replacement_source = a6_rename_source / "example" / "Replacement.java"
+            replacement_source.write_text(
+                legacy_source.read_text(encoding="utf-8").replace(
+                    "Legacy", "Replacement"
+                ),
+                encoding="utf-8",
+            )
+            legacy_source.unlink()
+            a6_rename_incremental = a6_rename_client.command("BUILD\tINCREMENTAL")
+            require_exact_observed_build(
+                a6_rename_incremental,
+                label="A6 source and type rename",
+                actual_build_kind="INCREMENTAL",
+                build_outcome="COMPILED",
+                compiled_source_units=["src/example/Replacement.java"],
+                changed_classes=a6_replacement_family,
+                deleted_classes=a6_legacy_family,
+            )
+            a6_rename_incremental_hashes = output_hashes(a6_rename_classes)
+            if set(a6_rename_incremental_hashes) != {
+                *a6_replacement_family,
+                "example/Keep.class",
+            }:
+                raise SmokeError("A6 rename left stale or incomplete class-family output.")
+            if a6_rename_incremental_hashes.get(
+                "example/Keep.class"
+            ) != a6_rename_baseline_hashes.get("example/Keep.class"):
+                raise SmokeError("A6 rename unexpectedly changed Keep.class.")
+        finally:
+            shutdown_reports["a6_rename"] = a6_rename_client.close()
+
+        a6_rename_oracle_attempt = attempt / "a6-rename-clean-full-oracle"
+        a6_rename_oracle_attempt.mkdir()
+        a6_rename_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a6_rename_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a6_rename_oracle_client.process.pid)
+        try:
+            a6_rename_oracle_source = (
+                a6_rename_oracle_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(
+                a6_rename_source,
+                a6_rename_oracle_source,
+                dirs_exist_ok=True,
+            )
+            a6_rename_oracle_full = a6_rename_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a6_rename_oracle_full,
+                label="A6 rename clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Keep.java",
+                    "src/example/Replacement.java",
+                ],
+                changed_classes=sorted(
+                    [*a6_replacement_family, "example/Keep.class"]
+                ),
+            )
+            a6_rename_oracle_hashes = output_hashes(
+                a6_rename_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a6_rename_oracle_equal = (
+                a6_rename_oracle_full.get("ok") is True
+                and a6_rename_oracle_hashes == a6_rename_incremental_hashes
+                and a6_rename_oracle_full.get("diagnostics")
+                == a6_rename_incremental.get("diagnostics")
+            )
+            if not a6_rename_oracle_equal:
+                raise SmokeError("A6 rename output differs from clean-full oracle.")
+        finally:
+            shutdown_reports["a6_rename_oracle"] = a6_rename_oracle_client.close()
+
         negative_attempt = attempt / "java9-api-negative"
         negative_attempt.mkdir()
         negative_client = start_worker(
@@ -1479,8 +1722,8 @@ def main(argv: list[str] | None = None) -> int:
             "attempt_id": attempt_id,
             "generation_id": generation_ids["primary"],
             "generation_ids": generation_ids,
-            "status": "phase_1a_a1_a2_a3_a4_a5_evidence_passed",
-            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5",
+            "status": "phase_1a_a1_a2_a3_a4_a5_a6_evidence_passed",
+            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6",
             "candidate_id": lock["candidate_id"],
             "candidate_execution_environment": lock["execution_environment"],
             "provenance": {
@@ -1510,6 +1753,8 @@ def main(argv: list[str] | None = None) -> int:
                         "a4_primary": tree_fingerprint(a4_source),
                         "a5_public_api": tree_fingerprint(a5_api_source),
                         "a5_constant": tree_fingerprint(a5_constant_source),
+                        "a6_delete": tree_fingerprint(a6_delete_source),
+                        "a6_rename": tree_fingerprint(a6_rename_source),
                     },
                 },
             },
@@ -1538,6 +1783,12 @@ def main(argv: list[str] | None = None) -> int:
                 "a5_constant_baseline_full": a5_constant_baseline_full,
                 "a5_constant_incremental": a5_constant_incremental,
                 "a5_constant_clean_full_oracle": a5_constant_oracle_full,
+                "a6_delete_baseline_full": a6_delete_baseline_full,
+                "a6_delete_incremental": a6_delete_incremental,
+                "a6_delete_clean_full_oracle": a6_delete_oracle_full,
+                "a6_rename_baseline_full": a6_rename_baseline_full,
+                "a6_rename_incremental": a6_rename_incremental,
+                "a6_rename_clean_full_oracle": a6_rename_oracle_full,
                 "java9_api_negative": java9_api_negative,
             },
             "output": {
@@ -1575,6 +1826,28 @@ def main(argv: list[str] | None = None) -> int:
                 "a5_constant_incremental_equals_clean_full_oracle": (
                     a5_constant_oracle_equal
                 ),
+                "a6_legacy_class_family": a6_legacy_family,
+                "a6_replacement_class_family": a6_replacement_family,
+                "a6_delete_baseline_class_sha256": a6_delete_baseline_hashes,
+                "a6_delete_incremental_class_sha256": (
+                    a6_delete_incremental_hashes
+                ),
+                "a6_delete_clean_full_oracle_class_sha256": (
+                    a6_delete_oracle_hashes
+                ),
+                "a6_delete_incremental_equals_clean_full_oracle": (
+                    a6_delete_oracle_equal
+                ),
+                "a6_rename_baseline_class_sha256": a6_rename_baseline_hashes,
+                "a6_rename_incremental_class_sha256": (
+                    a6_rename_incremental_hashes
+                ),
+                "a6_rename_clean_full_oracle_class_sha256": (
+                    a6_rename_oracle_hashes
+                ),
+                "a6_rename_incremental_equals_clean_full_oracle": (
+                    a6_rename_oracle_equal
+                ),
             },
             "input_revalidation": input_revalidation,
             "lifecycle": {
@@ -1589,7 +1862,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "cancellation": {
                     "status": "not_run",
-                    "reason": "outside_A1_A5_scope",
+                    "reason": "outside_A1_A6_scope",
                 },
             },
             "measurements": {
@@ -1619,10 +1892,11 @@ def main(argv: list[str] | None = None) -> int:
                 "A3": "passed",
                 "A4": "passed",
                 "A5": "passed",
-                "A6_A10": "not_run",
+                "A6": "passed",
+                "A7_A10": "not_run",
             },
             "limitations": [
-                "only A1 through A5 ran; A6 through A10 are not implemented",
+                "only A1 through A6 ran; A7 through A10 are not implemented",
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
                 "owned process-tree verification remains an A9 lifecycle item",

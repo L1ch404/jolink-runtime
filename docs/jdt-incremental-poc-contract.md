@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A5 partial evidence passed; A6-A10 pending`
+Implementation-Status: `A1-A6 partial evidence passed; A7-A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -423,6 +423,14 @@ it is not yet evidence for arbitrary enterprise dependency graphs.
 Delete one source, then separately rename one source/type. Require obsolete
 top-level, inner, anonymous, and synthetic class-family outputs to be removed.
 The output and diagnostic state must equal a clean-full oracle.
+
+The first macOS A6 evidence fixture includes a top-level class, member classes,
+an anonymous class, a local class, and a generic override whose class contains
+an `ACC_BRIDGE | ACC_SYNTHETIC` method. Deleting the source removed the complete
+six-file class family while leaving an unrelated class unchanged. A separate
+source/type rename removed that same old family and produced the complete new
+family. Both incremental output trees and diagnostics matched independent
+clean-full oracles exactly.
 
 ### A7 — Broken edit and recovery
 
