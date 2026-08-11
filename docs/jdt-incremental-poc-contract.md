@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `Phase 1A bootstrap in progress`
+Implementation-Status: `A1/A2/A3 partial evidence passed; A4-A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -54,9 +54,10 @@ incremental project builder at an acceptable engineering and resource cost.
 - `Worker JDK`: the Java runtime that starts Equinox and the compiler worker.
 - `Source compliance`: the Java language level accepted by JDT.
 - `Class target`: the bytecode level emitted by JDT.
-- `TargetSystemLibrarySnapshot`: one ordered, content-fingerprinted view of
-  the Java platform libraries exposed by an exact JDK 8 installation. It
-  defines the API world seen by the compiler independently of the Worker JDK.
+- `TargetSystemLibrarySnapshot`: one ordered, state- and content-fingerprinted
+  view of the compiler platform libraries exposed by an exact JDK 8
+  installation. It includes bootstrap and extension mechanisms and defines
+  the API world seen by the compiler independently of the Worker JDK.
 - `Target JVM`: the JVM that would eventually execute the emitted application
   classes. It is not started in Phase 1.
 - `Java Builder`: the builder registered as
@@ -158,11 +159,16 @@ compressed bytes, when distributed as an archive
 installed bytes
 bundle start level and activation policy
 Equinox application/configuration identity
+every selected bundle's `osgi.ee` requirement and matching Worker JDK
+execution-environment capability
 ```
 
 Floating `latest`, version ranges at runtime, snapshots, and silent artifact
 replacement are forbidden. The worker performs no dependency download while
-building a fixture.
+building a fixture. The resolver must fail closed when a selected bundle's
+mandatory `osgi.ee` filter cannot be parsed or cannot be satisfied by the
+locked Worker JDK. Merely observing that Equinox happened to start is not
+execution-environment evidence.
 
 At most two locked evidence candidates may be evaluated before the Phase 1
 decision. Bootstrap attempts that never become evidence candidates do not
@@ -218,25 +224,45 @@ Phase 1 uses the minimal JDT Core classpath model rather than
 `org.eclipse.jdt.launching`. The launching bundle, its `JRE_CONTAINER`, VM
 install model, and transitive closure are excluded from the preferred worker.
 
-For the exact target JDK 8 installation, a bounded helper derives the active
-system-library view from that installation itself and captures:
+For the exact target JDK 8 installation, a bounded helper derives javac's
+effective platform-class-path view from that installation itself and captures:
 
 ```text
 java vendor/version and JDK-home identity
-ordered active bootstrap/system library paths
-entry type: archive or class directory
-SHA-256 for every archive
-deterministic content fingerprint for every class directory
-the ordering materialized into the JDT project
+sun.boot.class.path as ordered advertised bootstrap entries
+java.ext.dirs as ordered advertised extension directories
+java.endorsed.dirs as recorded provenance
+the ordered effective PLATFORM_CLASS_PATH reported by target javac
+entry state: PRESENT or ABSENT
+entry type: archive, class directory, or absent placeholder
+path-identity fingerprint for every advertised entry
+SHA-256 for every present archive
+deterministic content fingerprint for every present class directory
+optional runtime Extension ClassLoader URLs as cross-validation only
+the exact effective ordering materialized into the JDT project
 ```
 
 joLink must not approximate this snapshot by sorting every JAR found under a
 JRE directory or by applying directory-layout heuristics. It must never use
-the Worker JDK as the discovery source. Missing, unreadable, changed, or
-unresolved entries invalidate the generation. The snapshot is materialized as ordered
-`JavaCore.newLibraryEntry(...)` entries on the private Java project. No entry
-may fall back to the Worker JDK libraries, and the report must expose only
-fingerprints and target-JDK identity rather than sensitive absolute paths.
+the Worker JDK as the discovery source. Runtime extension-loader URLs may
+cross-check the compiler view but are not its normative source.
+
+An advertised entry that the exact target JDK consistently reports as absent
+is a tolerated placeholder and remains part of the snapshot with
+`state=ABSENT`; it is not materialized into JDT. Javac may preserve the same
+absent placeholder in `PLATFORM_CLASS_PATH`; it remains evidence but is still
+not materialized. An absent compiler entry that does not correspond to an
+advertised absent bootstrap placeholder is unresolved and invalidates the
+generation. A transition in either direction between `PRESENT` and `ABSENT`,
+a content-fingerprint change, or an unreadable present compiler entry also
+invalidates it. Every present javac platform entry is materialized in javac
+order as `JavaCore.newLibraryEntry(...)`. No entry may fall back to Worker JDK
+libraries, and public reports expose fingerprints and target-JDK identity
+rather than sensitive absolute paths.
+
+Phase 1A records endorsed-directory provenance but does not model a target JDK
+with effective endorsed archives. Discovering one makes the candidate
+conditional and requires a contract review rather than silent approximation.
 
 Introducing `org.eclipse.jdt.launching` later would change the dependency and
 resource experiment and therefore requires a contract amendment; it may not
@@ -346,11 +372,22 @@ compatibility evidence.
 ```text
 change no input
 → invoke INCREMENTAL_BUILD
-→ require an empty resource delta or no compiled units
+→ require an empty resource delta or `build_outcome=NO_COMPILE` with no
+  compilation callback and no compiled units
+→ keep `actual_build_kind` unavailable when no Java compilation callback
+  directly reveals the effective build kind
 → require identical output class set and SHA-256
 ```
 
 Wall-clock speed alone is not evidence of a no-op build.
+Some JDT versions emit neither `buildStarting()` nor `buildFinished()` for a
+true no-op. The runner must record that fact rather than inventing a callback.
+In that case it must also prove that `project.build()` returned normally, that
+the same enabled participant observed an adjacent compilation in the same
+Worker, and that no source unit, diagnostic, or output hash changed.
+The absence of participant callbacks is not, by itself, direct evidence that
+the Java Builder was not invoked; the report must not claim that fact until
+builder or resource-delta instrumentation observes it.
 
 ### A3 — Leaf method-body edit
 

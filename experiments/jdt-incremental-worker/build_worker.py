@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
             "replace file:plugins/ with the verified candidate plugins file URI"
         )
         lock["evidence_status"] = (
-            "locked_bootstrap_candidate_not_yet_evidence_bearing"
+            "locked_phase_1a_candidate_pending_case_evidence"
         )
         args.lock.write_text(
             json.dumps(lock, ensure_ascii=False, indent=2) + "\n",

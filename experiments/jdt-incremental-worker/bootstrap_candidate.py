@@ -112,16 +112,138 @@ class Requirement:
     version_range: VersionRange
 
 
+@dataclass(frozen=True)
+class ExecutionEnvironmentRequirement:
+    filter_text: str
+
+
 @dataclass
 class Unit:
     unit_id: str
     version: OSGiVersion
     capabilities: tuple[Capability, ...]
     requirements: tuple[Requirement, ...]
+    execution_environment_requirements: tuple[
+        ExecutionEnvironmentRequirement, ...
+    ]
     unsupported_mandatory_requirements: tuple[str, ...]
     artifact_classifier: str
     artifact_id: str
     artifact_version: str
+
+
+EEFilter = tuple[str, object]
+
+
+def parse_execution_environment_filter(filter_text: str) -> EEFilter:
+    """Parse the bounded LDAP-filter subset used by p2 osgi.ee metadata."""
+
+    text = filter_text.strip()
+    index = 0
+
+    def skip_space() -> None:
+        nonlocal index
+        while index < len(text) and text[index].isspace():
+            index += 1
+
+    def parse_filter() -> EEFilter:
+        nonlocal index
+        skip_space()
+        if index >= len(text) or text[index] != "(":
+            raise DiscoveryError(
+                f"Unable to parse osgi.ee requirement filter: {filter_text}"
+            )
+        index += 1
+        skip_space()
+        if index < len(text) and text[index] in "&|":
+            operator = text[index]
+            index += 1
+            children: list[EEFilter] = []
+            while True:
+                skip_space()
+                if index < len(text) and text[index] == "(":
+                    children.append(parse_filter())
+                    continue
+                break
+            if not children:
+                raise DiscoveryError(
+                    f"Empty osgi.ee boolean filter: {filter_text}"
+                )
+            node: EEFilter = (operator, tuple(children))
+        elif index < len(text) and text[index] == "!":
+            index += 1
+            node = ("!", parse_filter())
+        else:
+            end = text.find(")", index)
+            if end < 0:
+                raise DiscoveryError(
+                    f"Unterminated osgi.ee requirement filter: {filter_text}"
+                )
+            item = text[index:end].strip()
+            match = re.fullmatch(
+                r"([A-Za-z0-9_.-]+)\s*(>=|<=|=)\s*([^()]+)", item
+            )
+            if match is None or match.group(1) not in {"osgi.ee", "version"}:
+                raise DiscoveryError(
+                    f"Unsupported osgi.ee requirement expression: {item}"
+                )
+            if "*" in match.group(3):
+                raise DiscoveryError(
+                    f"Unsupported osgi.ee wildcard expression: {item}"
+                )
+            node = (
+                "item",
+                (match.group(1), match.group(2), match.group(3).strip()),
+            )
+            index = end
+        skip_space()
+        if index >= len(text) or text[index] != ")":
+            raise DiscoveryError(
+                f"Unable to close osgi.ee requirement filter: {filter_text}"
+            )
+        index += 1
+        return node
+
+    parsed = parse_filter()
+    skip_space()
+    if index != len(text):
+        raise DiscoveryError(
+            f"Trailing osgi.ee requirement filter content: {filter_text}"
+        )
+    return parsed
+
+
+def execution_environment_filter_matches(
+    parsed: EEFilter, capability: Capability
+) -> bool:
+    operator, value = parsed
+    if operator == "&":
+        return all(
+            execution_environment_filter_matches(child, capability)
+            for child in value
+        )
+    if operator == "|":
+        return any(
+            execution_environment_filter_matches(child, capability)
+            for child in value
+        )
+    if operator == "!":
+        return not execution_environment_filter_matches(value, capability)
+    if operator != "item":
+        raise DiscoveryError("Unknown parsed osgi.ee filter operator.")
+    attribute, comparison, expected = value
+    if attribute == "osgi.ee":
+        actual: str | OSGiVersion = capability.name
+    else:
+        actual = capability.version
+        expected = OSGiVersion.parse(expected)
+    if comparison == "=":
+        return actual == expected
+    if comparison == ">=":
+        return actual >= expected
+    if comparison == "<=":
+        return actual <= expected
+    raise DiscoveryError("Unknown osgi.ee filter comparison.")
 
 
 def sha256_file(path: Path) -> str:
@@ -211,6 +333,9 @@ def parse_units(content_xml: Path) -> dict[str, Unit]:
                     )
 
         requirements: list[Requirement] = []
+        execution_environment_requirements: list[
+            ExecutionEnvironmentRequirement
+        ] = []
         unsupported_mandatory: list[str] = []
         requires = element.find("requires")
         if requires is not None:
@@ -235,8 +360,19 @@ def parse_units(content_xml: Path) -> dict[str, Unit]:
                         f"{namespace}/{name or '<unnamed>'}"
                     )
             for required in requires.findall("requiredProperties"):
+                if required.get("optional") == "true":
+                    continue
                 namespace = required.get("namespace")
                 if namespace == "osgi.ee":
+                    match = (required.get("match") or "").strip()
+                    if not match:
+                        raise DiscoveryError(
+                            f"Selected unit {unit_id} has an empty osgi.ee requirement."
+                        )
+                    parse_execution_environment_filter(match)
+                    execution_environment_requirements.append(
+                        ExecutionEnvironmentRequirement(match)
+                    )
                     continue
                 match = required.get("match") or ""
                 if namespace not in SUPPORTED_REQUIREMENT_NAMESPACES:
@@ -272,6 +408,9 @@ def parse_units(content_xml: Path) -> dict[str, Unit]:
             version=OSGiVersion.parse(raw_version),
             capabilities=tuple(capabilities),
             requirements=tuple(requirements),
+            execution_environment_requirements=tuple(
+                execution_environment_requirements
+            ),
             unsupported_mandatory_requirements=tuple(unsupported_mandatory),
             artifact_classifier=artifact[0],
             artifact_id=artifact[1],
@@ -338,6 +477,22 @@ def _capability_satisfies(unit: Unit, requirement: Requirement) -> bool:
     )
 
 
+def _matching_execution_environment(
+    requirement: ExecutionEnvironmentRequirement,
+    system_capabilities: Iterable[Capability],
+) -> Capability | None:
+    parsed = parse_execution_environment_filter(requirement.filter_text)
+    return next(
+        (
+            capability
+            for capability in system_capabilities
+            if capability.namespace == "osgi.ee"
+            and execution_environment_filter_matches(parsed, capability)
+        ),
+        None,
+    )
+
+
 def resolve_units(
     all_units: dict[str, Unit],
     root_ids: Iterable[str],
@@ -362,6 +517,14 @@ def resolve_units(
                 "requirements: "
                 + ", ".join(consumer.unsupported_mandatory_requirements)
             )
+        for requirement in consumer.execution_environment_requirements:
+            if _matching_execution_environment(
+                requirement, system_capabilities
+            ) is None:
+                raise DiscoveryError(
+                    f"Worker execution environment does not satisfy "
+                    f"{consumer.unit_id}: {requirement.filter_text}"
+                )
         for requirement in consumer.requirements:
             if any(
                 capability.namespace == requirement.namespace
@@ -398,6 +561,51 @@ def resolve_units(
                 queue.append(provider)
 
     return sorted(selected.values(), key=lambda unit: unit.unit_id)
+
+
+def execution_environment_evidence(
+    units: Iterable[Unit],
+    *,
+    system_capabilities: Iterable[Capability],
+    worker_java_major: int,
+) -> dict[str, object]:
+    capabilities = tuple(system_capabilities)
+    requirements: list[dict[str, object]] = []
+    for unit in sorted(units, key=lambda item: item.unit_id):
+        if not unit.execution_environment_requirements:
+            requirements.append(
+                {
+                    "bundle": unit.unit_id,
+                    "bundle_version": unit.version.text(),
+                    "status": "no_requirement_declared",
+                }
+            )
+            continue
+        for requirement in unit.execution_environment_requirements:
+            matched = _matching_execution_environment(requirement, capabilities)
+            if matched is None:
+                raise DiscoveryError(
+                    f"Worker execution environment evidence is unsatisfied for "
+                    f"{unit.unit_id}: {requirement.filter_text}"
+                )
+            requirements.append(
+                {
+                    "bundle": unit.unit_id,
+                    "bundle_version": unit.version.text(),
+                    "filter": requirement.filter_text,
+                    "status": "satisfied",
+                    "matched_capability": {
+                        "name": matched.name,
+                        "version": matched.version.text(),
+                    },
+                }
+            )
+    return {
+        "worker_java_major": worker_java_major,
+        "status": "satisfied",
+        "source": "official-p2-requiredProperties-osgi.ee",
+        "requirements": requirements,
+    }
 
 
 def _manifest_headers(jar_path: Path) -> dict[str, str]:
@@ -451,6 +659,7 @@ def download_and_lock(
     candidate_id: str,
     bootstrap_config: dict[str, object],
     metadata: dict[str, object],
+    execution_environment: dict[str, object],
     lock_path: Path,
 ) -> dict[str, object]:
     artifacts: list[dict[str, object]] = []
@@ -486,14 +695,15 @@ def download_and_lock(
         )
 
     lock: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "candidate_id": candidate_id,
-        "evidence_status": "locked_bootstrap_candidate_not_yet_evidence_bearing",
+        "evidence_status": "locked_phase_1a_candidate_pending_case_evidence",
         "repository": {
             "url": repository_url,
             "content_metadata": metadata,
         },
         "worker_java_minimum": bootstrap_config["worker_java_minimum"],
+        "execution_environment": execution_environment,
         "root_installable_units": bootstrap_config["root_installable_units"],
         "equinox": {
             "application_id": "net.jolink.runtime.jdt.worker",
@@ -558,12 +768,18 @@ def main(argv: list[str] | None = None) -> int:
             bootstrap["root_installable_units"],
             system_capabilities=system_capabilities,
         )
+        ee_evidence = execution_environment_evidence(
+            units,
+            system_capabilities=system_capabilities,
+            worker_java_major=worker_java_minimum,
+        )
         if args.resolve_only:
             print(
                 json.dumps(
                     {
                         "candidate_id": bootstrap["candidate_id"],
                         "unit_count": len(units),
+                        "execution_environment": ee_evidence,
                         "units": [
                             {"id": unit.unit_id, "version": unit.version.text()}
                             for unit in units
@@ -580,6 +796,7 @@ def main(argv: list[str] | None = None) -> int:
             candidate_id=str(bootstrap["candidate_id"]),
             bootstrap_config=bootstrap,
             metadata=metadata,
+            execution_environment=ee_evidence,
             lock_path=args.lock,
         )
         print(

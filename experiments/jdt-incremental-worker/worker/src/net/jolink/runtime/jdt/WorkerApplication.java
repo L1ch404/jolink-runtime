@@ -257,17 +257,32 @@ public final class WorkerApplication implements IApplication {
             }
         }
 
+        String actualBuildKind = observation.actualBuildKind();
         StringBuilder result = new StringBuilder();
         result.append("{\"ok\":").append(errorCount == 0)
                 .append(",\"status\":\"build_finished\"")
                 .append(",\"requested_build_kind\":").append(json(requestedKind))
                 .append(",\"actual_build_kind\":")
-                .append(json(observation.actualBuildKind()))
-                .append(",\"incremental_evidence\":")
-                .append(observation.enabled
-                        && (observation.incrementalSeen
-                                || ("INCREMENTAL".equals(requestedKind)
-                                        && observation.compiledUnits.isEmpty())))
+                .append(actualBuildKind == null ? "null" : json(actualBuildKind))
+                .append(",\"build_outcome\":")
+                .append(json(observation.buildOutcome()))
+                .append(",\"project_build_returned\":true")
+                .append(",\"compilation_observation\":{")
+                .append("\"status\":")
+                .append(json(observation.enabled ? "enabled" : "disabled"))
+                .append(",\"callbacks_seen\":")
+                .append(observation.callbacksSeen())
+                .append(",\"batch_seen\":").append(observation.batchSeen)
+                .append(",\"incremental_compile_seen\":")
+                .append(observation.incrementalSeen)
+                .append(",\"build_finished\":")
+                .append(observation.buildFinished)
+                .append(",\"compiled_source_units\":")
+                .append(jsonArray(observation.compiledUnits))
+                .append("}")
+                .append(",\"resource_delta\":{")
+                .append("\"status\":\"unavailable\",")
+                .append("\"reason\":\"not_instrumented_in_a1_a3\"}")
                 .append(",\"observer_build_finished\":")
                 .append(observation.buildFinished)
                 .append(",\"compiled_source_units\":")
@@ -349,7 +364,7 @@ public final class WorkerApplication implements IApplication {
                         Platform.getBundle(JavaCore.PLUGIN_ID).getVersion())) + ","
                 + "\"instrumentation\":"
                 + json(instrumentationEnabled ? "enabled" : "disabled") + ","
-                + "\"evidence_status\":\"bootstrap_only\"}");
+                + "\"evidence_status\":\"phase_1a_candidate\"}");
     }
 
     private void emitError(String code, String message) {

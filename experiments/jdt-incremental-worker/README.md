@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A bootstrap implemented; evidence gate not yet open`
+Status: `Phase 1A A1/A2/A3 partial evidence passed; complete gate remains open`
 
 Contract:
 
@@ -18,40 +18,55 @@ The current bootstrap can:
 1. read the official Eclipse 4.40 p2 metadata;
 2. resolve mandatory `osgi.bundle`, `java.package`, and
    `osgi.extender` capabilities from a fixed root set;
-3. fail closed if a selected unit has an unsupported mandatory capability;
-4. download and hash only the resolved bundles;
-5. derive bundle license identity from signed bundle content;
-6. compile a small joLink Equinox application without Maven;
-7. launch it in a private configuration/workspace with JDT Core
+3. parse, satisfy, and lock every selected bundle's `osgi.ee` requirement
+   against the pinned Worker Java 17 capability;
+4. fail closed if a selected unit has an unsupported mandatory capability;
+5. download and hash only the resolved bundles;
+6. derive bundle license identity from signed bundle content;
+7. compile a small joLink Equinox application without Maven;
+8. launch it in a private configuration/workspace with JDT Core
    `3.46.0.v20260520-1003`;
-8. configure exactly one real `org.eclipse.jdt.core.javabuilder`;
-9. use an ordered system-library view captured by a helper running under the
-   target JDK 8;
-10. run full, leaf incremental, and no-op incremental builds;
-11. observe actual batch/incremental behavior and compiled source units through
+9. configure exactly one real `org.eclipse.jdt.core.javabuilder`;
+10. capture target javac's complete platform view, including bootstrap
+    placeholders and extension archives, from the exact target JDK 8;
+11. run full, leaf incremental, and no-op incremental builds;
+12. reject a source that references Java 9's `List.of`;
+13. observe actual batch/incremental behavior and compiled source units through
     a read-only `CompilationParticipant`;
-12. prove instrumentation OFF/ON output parity;
-13. compare the leaf incremental output with a separate clean-full oracle; and
-14. stop all owned Equinox workers.
+14. prove instrumentation OFF/ON output parity;
+15. compare the leaf incremental output with a separate clean-full oracle; and
+16. enforce exact FULL/INCREMENTAL build-kind or NO_COMPILE outcome gates,
+    including source-unit and class-output sets, rather than inferring the
+    build kind from stable SHA values;
+17. emit a contract-shaped v3 report with provenance, unavailable/not-run
+    measurements, lifecycle settlement, and complete class SHA maps;
+18. revalidate the candidate lock/artifacts, target-system snapshot, fixture
+    checkout, and Git worktree identity after the run; and
+19. stop all owned Equinox workers.
 
 The current closure is 23 Eclipse/OSGi bundles plus the joLink worker bundle.
 The locked bundle bytes total 16,096,227 bytes (about 15.4 MiB). It does not
 include JDT LS, M2E, Buildship, SWT, JDT UI, Eclipse UI, or debug bundles.
 
-## Why this is not Phase 1A evidence yet
+## Current evidence boundary
 
 The local Zulu JDK 8 used for the first macOS smoke advertises three absent
-entries in `sun.boot.class.path`. The contract says missing system-library
-entries invalidate an evidence generation. The smoke records and skips those
-absent placeholders so the Worker architecture can be exercised, but it
-explicitly reports:
+entries in `sun.boot.class.path`. Snapshot v2 now preserves those entries as
+stable `ABSENT` placeholders while materializing only the 17 present entries
+from target javac's 20-entry `PLATFORM_CLASS_PATH`. It also captures 11
+extension archives; javac's extension view exactly matched the runtime
+Extension ClassLoader cross-check. No effective endorsed archive was present.
+
+The latest real macOS run therefore reports:
 
 ```text
-evidence_status = not_phase_1a_evidence
+status          = phase_1a_a1_a2_a3_evidence_passed
+evidence_status = partial_phase_1a_evidence_a1_a2_a3
 ```
 
-A4 through A10, resource/RSS measurement, cancellation pressure, workspace
-restart, and the Windows run are also still outstanding.
+This is real evidence for A1/A2/A3, not a Phase 1A Go decision. A4 through
+A10, resource/RSS measurement, cancellation pressure, workspace restart, and
+the Windows run are still outstanding.
 
 ## Files
 
@@ -74,10 +89,14 @@ worker/
     Equinox IApplication and read-only CompilationParticipant
 
 target-system-helper/
-    Java 8 helper that captures the active sun.boot.class.path in JVM order
+    Java 8 helper that captures target javac PLATFORM_CLASS_PATH plus
+    bootstrap/extension/endorsed provenance
 
 fixtures/plain-java/
     tiny Maven-free Phase 1A fixture
+
+fixtures/java9-api-negative/
+    companion source proving the Java 8 platform rejects List.of
 
 run_bootstrap_smoke.py
     private target-library capture, Worker launch, full/incremental/no-op,
@@ -116,7 +135,7 @@ Artifacts and attempts stay outside the repository by default:
 The candidate lock is committed; downloaded Eclipse JARs and attempt workspaces
 are not.
 
-## First observed smoke result
+## Latest observed A1/A2/A3 evidence
 
 On macOS a real run produced:
 
@@ -125,27 +144,34 @@ JDT Core                  3.46.0.v20260520-1003
 Java Builder count         1
 full build                 3 source units / 3 changed classes
 leaf incremental           Application.java only / Application.class only
-no-op incremental          0 source units / 0 changed classes
+no-op incremental          requested INCREMENTAL / outcome NO_COMPILE
+no-op actual build kind    unavailable (no compilation callback observed)
+no-op participant callbacks none; project.build returned and output unchanged
+Java 9 API negative        List.of rejected with an ERROR marker
+target javac platform      20 advertised / 17 present / 3 absent placeholders
+extension libraries        11 / runtime cross-check exact
+osgi.ee requirements       23 / all satisfied and locked
 instrumentation parity     exact
 incremental vs clean-full  exact
 class major                52
 owned worker left behind   no
-overall elapsed            about 3.2 seconds
+post-run input revalidation exact
+report schema              v3 / no absolute user path
+overall elapsed            about 4.8 seconds
 ```
 
-Those are bootstrap facts, not a Phase 1A Go decision.
+Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
 ## Next implementation boundary
 
 The next work should remain inside this experiment and add, in order:
 
-1. an admissible exact JDK 8 `TargetSystemLibrarySnapshot`;
-2. A4 upstream body and A5 dependency/constant propagation;
-3. A6 delete/rename and stale class-family cleanup;
-4. A7 diagnostics/recovery;
-5. A8 workspace restart;
-6. A9 repeated-build/resource stability;
-7. A10 Windows, spaces, and non-ASCII paths.
+1. A4 upstream body and A5 dependency/constant propagation;
+2. A6 delete/rename and stale class-family cleanup;
+3. A7 diagnostics/recovery;
+4. A8 workspace restart;
+5. A9 repeated-build/resource stability;
+6. A10 Windows, spaces, and non-ASCII paths.
 
 Phase 1B Lombok work must not begin until the same exact evidence candidate
 passes the complete Phase 1A Go gate.

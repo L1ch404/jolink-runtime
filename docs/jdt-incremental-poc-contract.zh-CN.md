@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`Phase 1A bootstrap 进行中`
+实现状态：`A1/A2/A3 部分证据已通过；A4-A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -49,9 +49,9 @@ joLink（未来阶段）
 - `Worker JDK`：启动 Equinox 和 Compiler Worker 的 Java Runtime。
 - `Source compliance`：JDT 接受的 Java 语言级别。
 - `Class target`：JDT 输出的 class 字节码级别。
-- `TargetSystemLibrarySnapshot`：由一个精确 JDK 8 安装提供的、有顺序且
-  有内容指纹的 Java 平台库视图。它独立于 Worker JDK，定义编译器能看到的
-  平台 API 世界。
+- `TargetSystemLibrarySnapshot`：由一个精确 JDK 8 安装提供的、有顺序、
+  有状态和内容指纹的编译器平台库视图。它包含 bootstrap 与 extension
+  mechanism，独立于 Worker JDK 定义编译器能看到的平台 API 世界。
 - `Target JVM`：未来可能运行产物的 JVM；Phase 1 不启动它。
 - `Java Builder`：以 `org.eclipse.jdt.core.javabuilder` 注册、运行在
   Eclipse Workspace/Core Resources 中的 Builder。
@@ -130,9 +130,14 @@ bundle，但这些运行不计入 Phase 1 证据。
 lock。每个 bundle 和 launcher artifact 都要记录 symbolic name、精确版本、
 来源 repository/release、SHA-256、license identity、压缩/安装字节数、
 start level、activation policy 和 Equinox application/config identity。
+同时必须锁定每个 selected bundle 的 `osgi.ee` requirement，以及由 Worker
+JDK 提供并实际匹配的 execution-environment capability。
 
 运行时不允许 floating `latest`、version range、snapshot 或静默替换
 artifact。Worker 构建 fixture 时不能下载依赖。
+若 selected bundle 的 mandatory `osgi.ee` filter 无法解析，或 locked Worker
+JDK 无法满足，resolver 必须 fail closed。Equinox 碰巧能够启动不构成 EE
+证据。
 
 Phase 1 决策前最多评估两个已锁定 evidence candidate；尚未成为 candidate
 的 bootstrap 尝试不占名额：
@@ -174,23 +179,42 @@ Lombok 1.18.20 能在所选 Worker JDK/JDT 进程中运行。
 Phase 1 使用最小 JDT Core classpath，不使用 `org.eclipse.jdt.launching`
 及其 `JRE_CONTAINER`、VM install model 和传递依赖。
 
-一个受限 helper 必须从精确 target JDK 8 安装本身推导正在生效的系统库
-视图，并记录：
+一个受限 helper 必须从精确 target JDK 8 安装本身推导 javac 实际使用的
+platform class path，并记录：
 
 ```text
 Java vendor/version 与 JDK-home identity
-有顺序的 active bootstrap/system library paths
-entry 类型：archive 或 class directory
-每个 archive 的 SHA-256
-每个 class directory 的确定性内容指纹
-最终 materialize 到 JDT project 的顺序
+sun.boot.class.path 声明的有序 bootstrap entries
+java.ext.dirs 声明的有序 extension directories
+java.endorsed.dirs provenance
+target javac 报告的有序 effective PLATFORM_CLASS_PATH
+entry 状态：PRESENT 或 ABSENT
+entry 类型：archive、class directory 或 absent placeholder
+每个 advertised entry 的 path identity 指纹
+每个 present archive 的 SHA-256
+每个 present class directory 的确定性内容指纹
+可选 runtime Extension ClassLoader URLs，仅作交叉验证
+最终 materialize 到 JDT project 的精确 effective 顺序
 system_library_discovery_method
 ```
 
 不能简单排序 JRE 目录里的全部 JAR，不能依赖目录布局猜测，也不能从 Worker
-JDK 发现系统库。缺失、不可读、变化或无法解析的 entry 都会使 generation
-失效。最终按顺序转为 `JavaCore.newLibraryEntry(...)`。不得 fallback 到
+JDK 发现系统库。runtime extension loader URLs 可以交叉验证 compiler view，
+但不能代替 compiler view 成为规范来源。
+
+若 exact target JDK 持续将一个 advertised entry 报告为不存在，它是允许的
+placeholder，并以 `state=ABSENT` 留在 snapshot 中，但不 materialize 到 JDT。
+javac 可能在 `PLATFORM_CLASS_PATH` 中继续保留同一个 absent placeholder；它仍是
+证据，但同样不 materialize。若 compiler view 出现无法对应 advertised absent
+bootstrap placeholder 的缺失项，则视为 unresolved 并使 generation 失效。
+`PRESENT` 与 `ABSENT` 的双向状态变化、内容指纹变化，或 present compiler
+entry 不可读，也会使 generation 失效。所有 present javac platform entries
+按 javac 原始顺序转换为 `JavaCore.newLibraryEntry(...)`。不得 fallback 到
 Worker JDK；公开报告只暴露指纹和 target-JDK identity，不暴露敏感绝对路径。
+
+Phase 1A 只记录 endorsed-directory provenance，不建模实际存在 endorsed
+archive 的 target JDK。若发现有效 endorsed archive，candidate 进入
+conditional 并重新 review，不允许静默近似。
 
 以后若引入 `org.eclipse.jdt.launching`，必须修改契约，不能为让 Phase 1
 通过而静默加入。
@@ -268,8 +292,17 @@ Instrumentation OFF/ON 各跑一次 A1，完整 class 集合、SHA-256 和 diagn
 
 ### A2 — No-op incremental
 
-不改输入后执行 `INCREMENTAL_BUILD`；必须看到空 delta 或零编译单元，输出
-集合与 SHA-256 不变。耗时快不是 no-op 证据。
+不改输入后执行 `INCREMENTAL_BUILD`；必须看到空 delta，或明确记录
+`build_outcome=NO_COMPILE`（没有 compilation callback 且没有 compiled
+unit），输出集合与 SHA-256 不变。没有 callback 直接表明有效 build kind
+时，`actual_build_kind` 必须保持不可用。耗时快不是 no-op 证据。
+
+某些 JDT 版本在真实 no-op 时既不调用 `buildStarting()`，也不调用
+`buildFinished()`。Runner 必须如实记录，不能伪造 callback。此时还必须证明
+`project.build()` 正常返回、同一个 Worker 中启用的 participant 已观察到相邻
+编译，并且 source unit、diagnostic 和 output SHA 都没有变化。
+仅凭 participant 没有 callback，还不能直接证明 Java Builder 没有被调用；
+在 builder 或 resource-delta instrumentation 真正观察到之前，报告不得声明该事实。
 
 ### A3 — 叶子方法体修改
 

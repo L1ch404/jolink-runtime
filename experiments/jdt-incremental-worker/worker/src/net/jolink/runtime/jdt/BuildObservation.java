@@ -82,7 +82,7 @@ final class BuildObservation {
 
         String actualBuildKind() {
             if (!enabled) {
-                return "unverified";
+                return null;
             }
             if (batchSeen) {
                 return "FULL";
@@ -90,7 +90,21 @@ final class BuildObservation {
             if (incrementalSeen) {
                 return "INCREMENTAL";
             }
+            return null;
+        }
+
+        String buildOutcome() {
+            if (!enabled) {
+                return "UNVERIFIED";
+            }
+            if (batchSeen || incrementalSeen) {
+                return "COMPILED";
+            }
             return "NO_COMPILE";
+        }
+
+        boolean callbacksSeen() {
+            return batchSeen || incrementalSeen || buildFinished;
         }
     }
 }
