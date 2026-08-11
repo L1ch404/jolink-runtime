@@ -1,0 +1,712 @@
+# joLink Headless JDT Incremental POC Contract
+
+Contract-Version: `0.1`
+
+Design-Status: `approved for Phase 1A experiment`
+
+Implementation-Status: `not started`
+
+Product-Status: `experiment only / no MCP or Runtime behavior`
+
+Chinese edition:
+[`jdt-incremental-poc-contract.zh-CN.md`](jdt-incremental-poc-contract.zh-CN.md)
+
+This contract defines the evidence required before joLink may treat a
+headless Eclipse JDT Java Builder as a viable incremental compiler worker. It
+does not select JDT as a production architecture.
+
+This is an internal experiment contract, not an MCP or Project Launch public
+contract. The current public `update` implementation, Schema, annotation-
+processor rejection, and standard HotSwap safety boundaries remain unchanged.
+
+The related direct-javac research remains preserved but frozen. Its Maven
+model, fingerprints, private staging, process supervision, and fail-closed
+boundaries may be reused; complete Maven-to-direct-javac equivalence is no
+longer the active compile strategy. See
+[`java-compile-strategy-roadmap.md`](java-compile-strategy-roadmap.md).
+
+## Decision to be tested
+
+The experiment tests this hypothesis:
+
+```text
+Maven, later
+    constructs a versioned Build World
+
+Headless JDT Java Builder
+    performs one private full build
+    retains dependency and last-build state
+    applies ordinary Java deltas incrementally
+
+joLink, later
+    invalidates stale Build Worlds
+    supervises the compiler worker
+    chooses HotSwap or restart
+    verifies the running application
+```
+
+The POC is not successful merely because ECJ can compile Java. It must show
+that joLink can isolate, control, measure, stop, and maintain the real JDT
+incremental project builder at an acceptable engineering and resource cost.
+
+## Frozen terminology
+
+- `Worker JDK`: the Java runtime that starts Equinox and the compiler worker.
+- `Source compliance`: the Java language level accepted by JDT.
+- `Class target`: the bytecode level emitted by JDT.
+- `TargetSystemLibrarySnapshot`: one ordered, content-fingerprinted view of
+  the Java platform libraries exposed by an exact JDK 8 installation. It
+  defines the API world seen by the compiler independently of the Worker JDK.
+- `Target JVM`: the JVM that would eventually execute the emitted application
+  classes. It is not started in Phase 1.
+- `Java Builder`: the builder registered as
+  `org.eclipse.jdt.core.javabuilder`, running inside an Eclipse Workspace/Core
+  Resources environment.
+- `Real incremental build`: an `IProject.build(INCREMENTAL_BUILD, ...)` or
+  equivalent Workspace build that receives a resource delta and uses the Java
+  Builder's previous build state. Choosing source files in Python and invoking
+  ECJ batch compilation is not a real incremental build for this contract.
+- `Generation`: one private workspace, compiler identity, project
+  configuration, source snapshot, output tree, and associated build state.
+  Results from different generations may not be mixed.
+- `Clean-full oracle`: a new private generation built from the same frozen
+  inputs with the same pinned JDT stack. It is the Phase 1 correctness oracle
+  for an incremental result.
+- `Evidence candidate`: one exact experimental stack comprising the Worker
+  JDK, Equinox and bundle lock, JDT identity, `TargetSystemLibrarySnapshot`,
+  compiler/project options, and instrumentation artifact/configuration.
+  Changing any of these creates a different candidate.
+
+## Scope
+
+Phase 1 is deliberately split into two independent gates.
+
+```text
+Phase 1A
+    plain Java fixture
+    real headless Java Builder
+    full and incremental correctness
+    lifecycle and resource measurements
+
+Phase 1B
+    the same worker model
+    Java 8 source/target
+    exact Lombok 1.18.20
+    Lombok-generated member and dependency correctness
+```
+
+Phase 1A is authorized by this contract. Phase 1B may begin only after a
+recorded Phase 1A Go decision. Passing both permits a new review for Phase 2;
+it does not authorize Phase 2 implementation.
+
+Phase 2 would introduce Maven Bootstrap and a real-project Build World.
+Phase 3 would introduce Runtime launch, class-shape comparison, JDWP HotSwap,
+Fast Restart, readiness, and HTTP verification. Those phases are recorded to
+keep the direction coherent, but they remain out of scope here.
+
+## Explicit non-goals
+
+The first POC must not:
+
+- add or change an MCP Tool, action, Schema, result, or description;
+- change production `run`, `update`, restart, JDWP, or class-reading behavior;
+- run Maven, import a Maven or IDEA project, or inspect a company repository;
+- write into a user's source tree, `target`, IDE workspace, or Maven local
+  repository;
+- use JDT LS as the worker implementation;
+- include LSP4J, M2E, Buildship, JDT UI, Eclipse UI, completion, navigation,
+  refactoring, language-server, or debug bundles merely for convenience;
+- implement resources, Maven filtering, generated sources, MapStruct,
+  QueryDSL, Dagger, Spring metadata generation, or arbitrary JSR-269;
+- implement HotSwap, enhanced HotSwap, Fast Restart, or HTTP verification;
+- add ECJ BatchCompiler plus a joLink-owned dependency graph as a second
+  implementation in parallel;
+- claim compatibility with arbitrary Eclipse, JDT, Lombok, JDK, or operating
+  system versions.
+
+JDT LS may be measured separately as a comparison baseline. Passing through
+JDT LS is not a fallback implementation and cannot satisfy Phase 1.
+
+## Dependency and version boundary
+
+The worker must use the smallest proven Equinox/JDT bundle set capable of
+running the real Java Builder. Expected capabilities include:
+
+```text
+Equinox launcher and OSGi runtime
+Eclipse core runtime/jobs/filesystem/resources
+JDT Core and the Java project nature/builder
+only the transitive bundles required by those capabilities
+```
+
+The actual set is discovered by resolving bundle requirements, not by copying
+an Eclipse IDE or deleting apparently unused JARs until it starts. Bootstrap
+discovery may add or remove bundles while finding a viable closure, but none
+of its results count as Phase 1 evidence.
+
+Before the first evidence-bearing Phase 1A run, the discovered candidate must
+commit an artifact and configuration lock containing, for every bundle and
+launcher artifact:
+
+```text
+symbolic name
+exact version
+origin repository/release
+SHA-256
+license identity
+compressed bytes, when distributed as an archive
+installed bytes
+bundle start level and activation policy
+Equinox application/configuration identity
+```
+
+Floating `latest`, version ranges at runtime, snapshots, and silent artifact
+replacement are forbidden. The worker performs no dependency download while
+building a fixture.
+
+At most two locked evidence candidates may be evaluated before the Phase 1
+decision. Bootstrap attempts that never become evidence candidates do not
+consume this limit:
+
+1. A maintainable current candidate, pinned before its first evidence-bearing
+   run.
+2. If required, an Eclipse 2021-03 compatibility anchor because that release
+   line is explicitly mentioned by the Lombok 1.18.20 changelog. This is not
+   assumed compatibility. Its JDT Core identity is
+   `3.25.0.v20210223-0522`; all remaining platform artifacts and the Worker JDK
+   must still be pinned by the lock.
+
+The compatibility anchor is evidence, not an automatic product choice. If
+Lombok works only on an obsolete stack, the result is `conditional`, pending a
+maintenance and security decision.
+
+### Evidence candidate lineage
+
+Every evidence-bearing result belongs to exactly one locked evidence
+candidate. A candidate used for Phase 1B must independently satisfy the
+complete Phase 1A Go gate on that exact stack before it may produce Phase 1B
+evidence.
+
+Evidence may not be accumulated across candidates. In particular, Phase 1A
+success from one Worker JDK/Equinox/JDT/system-library/configuration stack
+cannot be combined with Phase 1B success from another stack to claim a Phase 1
+Go. Re-locking any candidate identity creates a new lineage and invalidates
+prior gate inheritance, even when the fixture sources are unchanged.
+
+### Required version matrix
+
+Every result must report these as separate identities:
+
+| Dimension | Phase 1A | Phase 1B |
+| --- | --- | --- |
+| Worker JDK vendor/version | Pinned candidate value | Same unless the compatibility test requires another pinned value |
+| Equinox/Platform release | Exact locked value | Exact locked value |
+| JDT Core | Exact locked value | Exact locked value |
+| Source compliance | `1.8` | `1.8` |
+| Class target | `1.8` | `1.8` |
+| Target system library | Exact JDK 8 library fingerprint | Exact JDK 8 library fingerprint |
+| Target JVM | Not started; compatibility target is Java 8 | Not started; compatibility target is Java 8 |
+| Lombok | Absent | Exactly `1.18.20` |
+
+The Worker JDK is not evidence of source or bytecode compatibility. Conversely,
+`target=1.8` does not prove that Lombok 1.18.20 can run inside the selected
+Worker JDK/JDT process.
+
+### TargetSystemLibrarySnapshot
+
+Phase 1 uses the minimal JDT Core classpath model rather than
+`org.eclipse.jdt.launching`. The launching bundle, its `JRE_CONTAINER`, VM
+install model, and transitive closure are excluded from the preferred worker.
+
+For the exact target JDK 8 installation, a bounded helper derives the active
+system-library view from that installation itself and captures:
+
+```text
+java vendor/version and JDK-home identity
+ordered active bootstrap/system library paths
+entry type: archive or class directory
+SHA-256 for every archive
+deterministic content fingerprint for every class directory
+the ordering materialized into the JDT project
+```
+
+joLink must not approximate this snapshot by sorting every JAR found under a
+JRE directory or by applying directory-layout heuristics. It must never use
+the Worker JDK as the discovery source. Missing, unreadable, changed, or
+unresolved entries invalidate the generation. The snapshot is materialized as ordered
+`JavaCore.newLibraryEntry(...)` entries on the private Java project. No entry
+may fall back to the Worker JDK libraries, and the report must expose only
+fingerprints and target-JDK identity rather than sensitive absolute paths.
+
+Introducing `org.eclipse.jdt.launching` later would change the dependency and
+resource experiment and therefore requires a contract amendment; it may not
+be added silently to make Phase 1 pass.
+
+## Isolation and lifecycle contract
+
+The POC worker is a separate supervised JVM. It is not loaded into the Python
+MCP process or the target application JVM.
+
+For every run:
+
+- create a new private attempt root outside the fixture checkout;
+- create a private Eclipse configuration area and workspace data area;
+- bind the project to the exact `TargetSystemLibrarySnapshot` rather than
+  compiling against the Worker JDK APIs;
+- copy fixture inputs into that generation or otherwise prove that no build
+  operation can mutate the fixture checkout;
+- direct every class, generated file, marker, log, cache, and workspace state
+  into the private attempt root;
+- disable automatic builds and invoke builds explicitly;
+- allow only one command to mutate one workspace at a time;
+- refresh external source changes into the Eclipse resource model before the
+  incremental build;
+- use bounded startup, build, cancellation, and shutdown deadlines;
+- on cancellation or timeout, request cooperative cancellation first and then
+  terminate the exact owned process tree;
+- mark any cancelled, timed-out, or crashed generation unpublishable; its next
+  use requires a clean/full build;
+- leave no worker, Equinox, compiler, or fixture application process behind;
+- never attach to JDWP or start the fixture as an application in Phase 1;
+- preserve a failed attempt only when the runner explicitly requests local
+  diagnostic retention.
+
+If stdio is used for worker control, stdout contains protocol frames only and
+all diagnostics go to stderr or a private log file. Public results must not
+include raw environment values, user-home paths, repository credentials, or
+unbounded compiler output.
+
+Worker shutdown and restart are part of the experiment. A full Workspace save
+must be requested before a graceful shutdown. Phase 1A then tests whether a
+new worker can reopen that exact generation and perform a valid incremental
+build.
+
+Each saved generation has a clean-shutdown marker and fingerprints the worker,
+bundle set, compiler options, system library, source snapshot, and classpath.
+Missing markers, a failed save, an abnormal exit, or any fingerprint change
+invalidates remembered build state. One workspace may be owned by only one
+worker. An idle graceful shutdown has an initial five-second settlement budget
+before the runner terminates only the identity-verified owned process tree.
+
+Cross-process build-state recovery is measured but is not an unconditional
+Phase 1A failure:
+
+```text
+preferred
+    restart restores state and the next eligible edit is incremental
+
+acceptable for continued evaluation
+    state is reliable while the worker lives;
+    reopening requires one private full build
+
+no-go
+    the same healthy worker repeatedly loses build state or silently performs
+    full builds for ordinary deltas
+```
+
+## Phase 1A fixture and cases
+
+The plain Java fixture must be intentionally small and must not use Maven,
+Gradle, Lombok, annotation processing, resources, modules, or external
+dependencies. It contains at least:
+
+```text
+Api.java
+    public API used by Service
+    one compile-time constant used downstream
+
+Service.java
+    implements or calls Api
+
+Application.java
+    calls Service
+```
+
+The runner must execute the following cases from clean private inputs.
+
+### A1 — Full build
+
+```text
+create Java project with JavaCore.NATURE_ID
+→ inspect its build spec and ensure exactly one JavaCore.BUILDER_ID
+→ reject a missing or duplicate Java Builder
+→ configure source/output entries and the TargetSystemLibrarySnapshot
+→ invoke the real Java Builder with FULL_BUILD
+→ require no ERROR markers or build-path errors
+→ require the complete expected class family
+→ require Java 8 class-file major version
+```
+
+A companion negative source referencing a post-Java-8 platform API such as
+`List.of` must fail. Class-file major version 52 alone is not Java 8 API
+compatibility evidence.
+
+### A2 — No-op incremental build
+
+```text
+change no input
+→ invoke INCREMENTAL_BUILD
+→ require an empty resource delta or no compiled units
+→ require identical output class set and SHA-256
+```
+
+Wall-clock speed alone is not evidence of a no-op build.
+
+### A3 — Leaf method-body edit
+
+Edit only a method body in `Application.java` without changing its schema.
+Require the incremental output to equal a clean-full oracle from the same
+edited inputs.
+
+### A4 — Upstream method-body edit
+
+Edit an implementation body in `Api.java` without changing its public schema.
+Require correct incremental output and no unnecessary clean/full build. The
+contract does not assume that unchanged consumers must be recompiled.
+
+### A5 — Dependency-propagating edit
+
+Perform both:
+
+- a public API change that affects `Service.java` and `Application.java`;
+- a compile-time constant change whose inlined consumers must be refreshed.
+
+Require affected downstream units or diagnostics to match a clean-full oracle.
+
+### A6 — Delete and rename
+
+Delete one source, then separately rename one source/type. Require obsolete
+top-level, inner, anonymous, and synthetic class-family outputs to be removed.
+The output and diagnostic state must equal a clean-full oracle.
+
+### A7 — Broken edit and recovery
+
+Introduce a deterministic compilation error. The worker must:
+
+- return bounded structured diagnostics derived from problem markers;
+- never report a publishable generation;
+- not present stale changed classes as successful output.
+
+Fix the source and require the next build to recover without recreating the
+worker unless the Java Builder itself requests a full build.
+
+### A8 — Workspace restart
+
+After a successful build, gracefully save and stop the worker, restart it on
+the same private generation, apply one ordinary method-body edit, and record
+whether the result is incremental or a required full rebuild. Either result
+must be explicit and correct; silent fallback is forbidden.
+
+### A9 — Repeated-build stability
+
+Run at least 100 deterministic edit/build cycles across method-body, constant,
+error/recovery, delete/restore, and no-op changes. Every successful incremental
+generation must equal its clean-full oracle. There must be no worker crash,
+stuck build, stale class family, or unbounded memory trend.
+
+### A10 — Platform and path boundary
+
+Phase 1A must pass on Windows, because that is the primary company dogfood
+environment. It must also pass on at least one POSIX environment. At least one
+run uses spaces and non-ASCII characters in the attempt and source paths.
+
+## Proving incremental behavior
+
+The experiment must not infer compiled units solely from class timestamps or
+from the elapsed duration. It must capture builder-side or filesystem-write
+evidence sufficient to distinguish:
+
+```text
+requested build kind
+actual build kind
+Java nature and configured builder identity
+delta available / unavailable
+resource delta summary
+compiled source units, if observable
+created/changed/deleted class families
+full-build fallback and its reason
+```
+
+The instrumentation must not choose the affected sources on behalf of JDT.
+Acceptable mechanisms include bounded Java Builder tracing, a read-only build
+participant, or output-write observation combined with resource-delta and
+actual-build-kind evidence. If the POC cannot prove whether Java Builder did
+incremental work, Phase 1A has not passed.
+
+If a `CompilationParticipant` is used, it is an observer under this contract,
+not another build stage. Its extension and implementation must satisfy:
+
+```text
+modifiesEnvironment=false
+createsProblems=false
+aboutToBuild() returns READY_FOR_BUILD only
+isAnnotationProcessor() returns false
+isPostProcessor() returns false
+no generated sources or folders
+no BuildContext mutation or recorded dependencies
+no added diagnostics
+no class-byte modification
+```
+
+Before its observations are accepted, A1 must be repeated once with the
+instrumentation disabled and once enabled. The complete output class set,
+class SHA-256 values, and diagnostics must match exactly. A participant that
+changes output or requests a full build invalidates the evidence candidate.
+
+Requesting `INCREMENTAL_BUILD` is not sufficient evidence: when no usable
+delta exists, Eclipse may invoke the builder as a full build. A normal return
+from the build API is also not compilation success; every result must inspect
+ERROR markers and build-path problems before a generation can be accepted.
+
+For every state-changing case, compare the complete incremental output tree
+with a clean-full oracle using:
+
+```text
+relative class-file set
+SHA-256 of every class file
+error/warning diagnostic identity and source location
+absence of obsolete output
+```
+
+Small runtime assertions may supplement this comparison, but they cannot
+replace complete output and diagnostic comparison.
+
+## Phase 1B Lombok fixture and cases
+
+Phase 1B adds only Lombok `1.18.20`; it does not generalize annotation
+processing. The fixture uses at least:
+
+```text
+@Data
+@Builder
+@Slf4j
+@NonNull
+a dependent source that calls a Lombok-generated getter/builder
+a method that uses the Lombok-generated log field
+a bounded lombok.config whose effect is observable in generated classes
+```
+
+The exact Lombok integration mechanism must be recorded. If Lombok must patch
+the ECJ/Equinox process as a Java agent, that is part of the worker identity;
+the experiment may not silently substitute delombok or javac-generated
+classes.
+
+Resolving Lombok annotations is not success by itself. The worker must prove
+that the transform is active by compiling downstream calls to generated
+members and code that uses the generated `log` field. The Lombok JAR SHA-256,
+classpath presence, agent arguments when applicable, and activation evidence
+belong to every Phase 1B report.
+
+Phase 1B must execute:
+
+1. a clean full build with all expected generated members;
+2. a plain method-body edit in a Lombok-annotated class;
+3. a field edit that changes Lombok-generated accessors and affects a
+   dependent source;
+4. a Lombok annotation edit that changes generated schema;
+5. an edit to a source that consumes a generated getter or builder;
+6. a `lombok.config` change, conservatively forced through a new generation and
+   full build;
+7. an error/recovery cycle involving a generated member;
+8. at least 100 mixed incremental/no-op cycles after warm-up.
+
+Every successful result must equal a clean-full oracle made with the same
+pinned JDT/Lombok stack. Phase 1B does not compare ECJ bytes with Maven/javac
+bytes and does not claim cross-compiler equivalence.
+
+The project dependency remains exactly Lombok 1.18.20. Upgrading it to make the
+experiment pass answers a different question and is prohibited.
+
+## Measurements and decision bands
+
+Measurements must separate process configuration from observed use.
+`-Xmx` is a maximum heap setting, not an RSS measurement.
+
+For each platform and version candidate, record at least:
+
+```text
+artifact download/archive bytes
+installed bundle bytes and bundle count
+Worker JDK identity and JVM arguments
+configured Xms/Xmx
+cold/warm process-tree identity
+cold start to ready
+full-build duration
+no-op incremental duration
+leaf-edit incremental duration
+dependency-edit incremental duration
+shutdown duration
+heap and Metaspace used after an explicit GC request and bounded settlement
+process-tree RSS after the same settlement plus 30 seconds idle
+peak heap and RSS during full and incremental builds
+RSS after the repeated-build run
+child-process count before, during, and after shutdown
+```
+
+The first POC uses these product decision bands, not performance claims:
+
+| Observed stripped-worker state | Interpretation |
+| --- | --- |
+| Idle RSS `<256 MiB` | Preferred |
+| Idle RSS `256–512 MiB` | Acceptable for continued evaluation |
+| Idle RSS `>512 MiB` and `<=768 MiB` | Conditional; requires explicit product review |
+| Idle RSS `>768 MiB`, or close to a measured full JDT LS baseline | No-Go for the preferred architecture |
+| Tiny-fixture full-build peak `>1 GiB` | No-Go unless measurement error is proven |
+
+Full-build peak memory on a later four-thousand-source company project is a
+separate Phase 2 measurement and is not constrained by the tiny-fixture peak
+alone.
+
+Phase 1 does not impose a sub-second latency target. It requires that an
+already-running worker demonstrably avoids a full build for eligible ordinary
+edits. Performance promotion thresholds belong to Phase 2 on a real project.
+
+Repeated-build RSS may fluctuate, but after warm-up it must not show a
+monotonic or unbounded trend. Any apparent growth must be rerun with heap and
+native-memory evidence before a Go decision.
+
+## Structured experiment report
+
+Each run emits one machine-readable report and a short Markdown summary. The
+report must include:
+
+```text
+attempt_id and generation_id
+git revision and dirty-worktree flag
+operating system and architecture
+locked artifact identities and hashes
+Worker JDK / compliance / target / Lombok identities
+target JDK 8 system-library fingerprint
+system_library_discovery_method
+fixture input fingerprint
+requested and actual build kind per case
+delta, compiled-unit, output-family, and diagnostic summaries
+clean-full comparison result
+timing and resource measurements
+cancellation/shutdown settlement
+workspace-restart result
+warnings, limitations, and retained local artifact location
+```
+
+Absolute user paths and raw environment values stay local. A failed or partial
+measurement is reported as unavailable; it is never coerced to zero. Facts,
+inferences, and product recommendations must be separate fields or sections.
+
+## Phase gates
+
+### Phase 1A Go
+
+All of the following are required:
+
+- the worker uses the real Java Builder and proves actual incremental builds;
+- the Java nature, Java Builder build spec, effective build kind, and resource
+  delta are observed rather than inferred from the requested operation;
+- A1 through A10 pass on Windows and at least one POSIX environment;
+- every incremental generation matches its clean-full oracle;
+- dependency propagation, diagnostic recovery, deletion, rename, and stale
+  output cleanup are correct;
+- no healthy same-process edit silently loses incremental state;
+- cancellation and shutdown are bounded and leave no owned process;
+- resource use is within the acceptable or preferred decision bands;
+- the minimal locked distribution excludes JDT LS and unrelated IDE services.
+
+### Phase 1B Go
+
+All of the following are required:
+
+- the exact Lombok 1.18.20 works without changing project source semantics;
+- the pinned JDK 8 system library rejects post-Java-8 platform APIs;
+- Lombok full and incremental cases match their clean-full oracle;
+- dependent sources observe generated-member changes correctly;
+- config and annotation changes do not leave stale generated schema;
+- lifecycle and repeated-build stability remain within Phase 1A bounds.
+
+### Conditional result
+
+Examples that require another design review rather than an automatic Go:
+
+- state survives only while the worker remains alive;
+- resource use is in the conditional band;
+- Lombok works only with the 2021-03 compatibility anchor;
+- one POSIX result differs while the required Windows path is stable;
+- instrumentation proves correct output but cannot yet expose exact compiled
+  source units.
+
+### No-Go
+
+Stop this preferred route if any of these remains after at most the two pinned
+JDT candidates:
+
+- a real incremental build cannot be distinguished from ECJ batch or full
+  recompilation;
+- ordinary deltas produce nondeterministic diagnostics, missing recompilation,
+  or stale class families;
+- Lombok 1.18.20 cannot be made correct without upgrading Lombok or patching
+  user source;
+- the worker requires JDT LS, M2E, Buildship, UI, or language-server services
+  to remain stable;
+- cancellation or shutdown is unreliable on Windows;
+- the same live worker repeatedly loses its Java Builder state;
+- observed resource use enters a No-Go band;
+- the bundle set or platform lifecycle cannot be pinned and reproduced.
+
+A No-Go freezes the result and reopens evaluation of ECJ Batch plus a bounded
+joLink-owned dependency graph. It does not authorize implementing both routes
+inside this POC.
+
+## Phase 1A deliverables
+
+Before a Phase 1A decision, the experiment branch must contain:
+
+```text
+this reviewed contract
+an exact artifact lock with hashes and licenses
+the minimal headless worker source/product definition
+the plain Java fixture
+a deterministic cross-platform runner
+clean-full comparison tooling
+bounded lifecycle and resource measurement tooling
+Phase 1A machine-readable reports from Windows and one POSIX environment
+a Phase 1A decision record: Go / Conditional / No-Go
+```
+
+## Phase 1B additional deliverables
+
+Only after a recorded Phase 1A Go, Phase 1B additionally requires:
+
+```text
+the Lombok fixture
+the exact Lombok 1.18.20 artifact lock and integration evidence
+Phase 1B machine-readable reports from Windows and one POSIX environment
+a Phase 1B decision record: Go / Conditional / No-Go
+```
+
+Experimental code should remain under a clearly isolated experiment surface
+and must not be imported by production Runtime modules. Building or testing
+the existing package without an explicit experiment command must not download
+or start Eclipse artifacts.
+
+## Promotion sequence after Phase 1
+
+Passing this contract permits only the next design review:
+
+```text
+Phase 2 contract
+    Maven Bootstrap
+    versioned BuildWorldSnapshot
+    conservative invalidation
+    real company-project full/incremental measurements
+
+Phase 3 contract
+    JVM launched from one complete ECJ generation
+    method-body delta → standard JDWP HotSwap
+    schema delta → restart from the complete private generation
+    readiness and HTTP business verification
+```
+
+Neither phase may mix Maven/javac baseline classes with later ECJ classes in
+one runtime generation without independent compatibility proof.
+
+MapStruct, QueryDSL, Spring metadata generation, resource fidelity, enhanced
+HotSwap, MCP integration, worker idle policies in production, and public
+installation remain later capability decisions.

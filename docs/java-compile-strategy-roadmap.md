@@ -9,8 +9,8 @@ user's Maven output or attach/redefine through JDWP.
 
 ## Purpose
 
-joLink is evaluating two ways to avoid paying the full Maven lifecycle for
-every edit:
+joLink evaluated two direct-javac strategies for avoiding the full Maven
+lifecycle on every edit:
 
 ```text
 explicit_sources
@@ -20,7 +20,8 @@ module_full_javac
     compile every main Java source in one selected Maven module
 ```
 
-The experiments must answer, with evidence rather than assumptions:
+That research line is now frozen. The experiments were designed to answer,
+with evidence rather than assumptions:
 
 1. Can joLink faithfully reproduce the Maven compiler and Processor model?
 2. How often is `explicit_sources` sufficient for real edits?
@@ -29,8 +30,11 @@ The experiments must answer, with evidence rather than assumptions:
 5. Can a verified private generation later support HotSwap, Fast Restart, or
    targeted tests without reviving stale build output?
 
-The prerequisite branch is `experiment/lombok-processor-model`. It validates
-Lombok before either source-selection strategy becomes a product feature.
+The retained branch is `experiment/lombok-processor-model`. It records the
+Maven/compiler model and the cost exposed by real-project exploration. New
+boundaries are not added merely because another project plugin or Processor is
+discovered; work resumes there only when a later approved strategy needs a
+specific capability.
 
 ## Non-negotiable invariants
 
@@ -68,10 +72,12 @@ extensions/options and unmodeled compile-phase plugins before the baseline,
 but it must still be run only against trusted source and build configuration.
 Python never imports or instantiates an Annotation Processor.
 
-## Shared compile model
+## Shared direct-javac compile model
 
-Future strategies must share one build model. They may differ only in source
-selection and the output-generation rules that follow from it.
+The retained direct-javac strategies share one compile-fidelity model. They
+may differ only in source selection and the output-generation rules that
+follow from it. This model is not the contract for the separate headless JDT
+experiment.
 
 The common model includes:
 
@@ -505,7 +511,12 @@ or correctness data because the full experiment never ran.
 
 ## Candidate architecture: Maven bootstrap plus JDT incremental build
 
-Status: `discussion only / not approved for implementation`
+Status: `Phase 1A contract approved / implementation not started`
+
+The Phase 1 evidence requirements and Go/No-Go boundary are defined in
+[`jdt-incremental-poc-contract.md`](jdt-incremental-poc-contract.md). Its review
+is complete. A dedicated experiment branch may implement only Phase 1A; Phase
+1B requires a recorded Phase 1A Go decision.
 
 The alternative under consideration is not “replace javac with ecj.jar”. ECJ
 batch compilation still requires joLink to supply source roots, classpath,
@@ -573,18 +584,11 @@ This route has unresolved Go/No-Go risks:
    can restart without Maven, but enhanced HotSwap agents are not part of the
    initial candidate.
 
-No JDT branch, worker, dependency download, MCP action, production `update`
-change, or public Schema change should be created until the design is frozen.
-If approved later, the first POC should answer only:
-
-```text
-Can a bounded headless JDT worker perform full → incremental build on Windows?
-Can the selected JDT compile Java 8 source with the project's exact Lombok 1.18.20?
-Can a JVM started from ECJ full output accept and execute a method-body delta?
-Can a schema-changing delta restart from the private ECJ generation without Maven?
-What are cold/full/incremental latency, affected-source count, idle/peak RSS,
-cleanup behavior, and repeated-build stability?
-```
+The approved experiment may create a dedicated branch, worker, and locked
+dependency set only for Phase 1A. It may not change an MCP action, production
+`update`, or the public Schema. Phase 1B adds the exact Java 8/Lombok 1.18.20
+boundary only after Phase 1A passes. Maven Bootstrap, company-project import,
+target-JVM launch, HotSwap, and Fast Restart require later contracts.
 
 MapStruct/QueryDSL/Dagger, Maven resource fidelity, JDT LS as a permanent
 dependency, enhanced HotSwap, MCP integration, and production promotion remain
@@ -709,7 +713,9 @@ Every thaw requires representative fixtures, at least one varied real project,
 Windows path/argfile coverage, JDK-version coverage, cancellation cleanup, and
 zero false success in adversarial tests.
 
-## Promotion gates
+## Retained direct-javac promotion gates
+
+Status: `inactive while the direct-javac research line is frozen`
 
 ### Lombok model
 
