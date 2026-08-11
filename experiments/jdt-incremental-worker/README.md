@@ -175,12 +175,11 @@ Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
 The next work should remain inside this experiment and add, in order:
 
-1. A4 upstream body and A5 dependency/constant propagation;
-2. A6 delete/rename and stale class-family cleanup;
-3. A7 diagnostics/recovery;
-4. A8 workspace restart;
-5. A9 repeated-build/resource stability;
-6. A10 Windows, spaces, and non-ASCII paths.
+1. A6 delete/rename and stale class-family cleanup;
+2. A7 diagnostics/recovery;
+3. A8 workspace restart;
+4. A9 repeated-build/resource stability;
+5. A10 Windows, spaces, and non-ASCII paths.
 
 Phase 1B Lombok work must not begin until the same exact evidence candidate
 passes the complete Phase 1A Go gate.
