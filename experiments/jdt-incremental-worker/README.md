@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1-A4 partial evidence passed; complete gate remains open`
+Status: `Phase 1A A1-A5 partial evidence passed; complete gate remains open`
 
 Contract:
 
@@ -29,8 +29,8 @@ The current bootstrap can:
 9. configure exactly one real `org.eclipse.jdt.core.javabuilder`;
 10. capture target javac's complete platform view, including bootstrap
     placeholders and extension archives, from the exact target JDK 8;
-11. run full, leaf incremental, no-op incremental, and upstream method-body
-    incremental builds;
+11. run full, leaf incremental, no-op incremental, upstream method-body, public
+    API propagation, and compile-time constant propagation builds;
 12. reject a source that references Java 9's `List.of`;
 13. observe actual batch/incremental behavior and compiled source units through
     a read-only `CompilationParticipant`;
@@ -61,11 +61,11 @@ Extension ClassLoader cross-check. No effective endorsed archive was present.
 The latest real macOS run therefore reports:
 
 ```text
-status          = phase_1a_a1_a2_a3_a4_evidence_passed
-evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4
+status          = phase_1a_a1_a2_a3_a4_a5_evidence_passed
+evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4_a5
 ```
 
-This is real evidence for A1-A4, not a Phase 1A Go decision. A5 through A10,
+This is real evidence for A1-A5, not a Phase 1A Go decision. A6 through A10,
 resource/RSS measurement, cancellation pressure, workspace restart, and
 the Windows run are still outstanding.
 
@@ -95,6 +95,9 @@ target-system-helper/
 
 fixtures/plain-java/
     tiny Maven-free Phase 1A fixture
+
+fixtures/dependency-java/
+    A5 public-API and compile-time-constant propagation fixture
 
 fixtures/java9-api-negative/
     companion source proving the Java 8 platform rejects List.of
@@ -136,7 +139,7 @@ Artifacts and attempts stay outside the repository by default:
 The candidate lock is committed; downloaded Eclipse JARs and attempt workspaces
 are not.
 
-## Latest observed A1-A4 evidence
+## Latest observed A1-A5 evidence
 
 On macOS a real run produced:
 
@@ -150,6 +153,9 @@ no-op actual build kind    unavailable (no compilation callback observed)
 no-op participant callbacks none; project.build returned and output unchanged
 upstream method body       Api.java only / Api.class only
 A4 vs clean-full oracle    exact
+public API propagation     Api/Application/Service incrementally compiled
+constant propagation       Api/Application/Service incrementally compiled
+A5 vs clean-full oracles   exact for both independent edits
 Java 9 API negative        List.of rejected with an ERROR marker
 target javac platform      20 advertised / 17 present / 3 absent placeholders
 extension libraries        11 / runtime cross-check exact

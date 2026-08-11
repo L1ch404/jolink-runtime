@@ -755,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     fixture_roots = {
         "plain_java": root / "fixtures" / "plain-java" / "src",
+        "dependency_java": root / "fixtures" / "dependency-java" / "src",
         "java9_api_negative": root
         / "fixtures"
         / "java9-api-negative"
@@ -784,6 +785,10 @@ def main(argv: list[str] | None = None) -> int:
         "clean_full_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "a4_primary": f"generation-{uuid.uuid4().hex[:12]}",
         "a4_clean_full_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a5_public_api": f"generation-{uuid.uuid4().hex[:12]}",
+        "a5_public_api_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a5_constant": f"generation-{uuid.uuid4().hex[:12]}",
+        "a5_constant_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "java9_api_negative": f"generation-{uuid.uuid4().hex[:12]}",
     }
     attempts_root = args.cache_root / "attempts"
@@ -1115,6 +1120,277 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             shutdown_reports["a4_clean_full_oracle"] = a4_oracle_client.close()
 
+        a5_api_attempt = attempt / "a5-public-api"
+        a5_api_attempt.mkdir()
+        a5_api_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a5_api_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a5_api_client.process.pid)
+        try:
+            a5_api_source = a5_api_attempt / "workspace" / "plain-fixture" / "src"
+            shutil.copytree(
+                root / "fixtures" / "dependency-java" / "src",
+                a5_api_source,
+                dirs_exist_ok=True,
+            )
+            a5_api_baseline_full = a5_api_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a5_api_baseline_full,
+                label="A5 public-API baseline full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a5_api_classes = a5_api_attempt / "workspace" / "plain-fixture" / "bin"
+            a5_api_baseline_hashes = output_hashes(a5_api_classes)
+            a5_api_file = a5_api_source / "example" / "Api.java"
+            a5_api_original = a5_api_file.read_text(encoding="utf-8")
+            a5_api_edited = a5_api_original.replace(
+                "public int transform(int value) {\n"
+                "        return value * MULTIPLIER;\n",
+                "public int transform(long value) {\n"
+                "        return (int) value * MULTIPLIER;\n",
+            )
+            if a5_api_edited == a5_api_original:
+                raise SmokeError("A5 public-API edit did not match the fixture.")
+            a5_api_file.write_text(a5_api_edited, encoding="utf-8")
+            a5_api_incremental = a5_api_client.command("BUILD\tINCREMENTAL")
+            require_exact_observed_build(
+                a5_api_incremental,
+                label="A5 public-API dependency propagation",
+                actual_build_kind="INCREMENTAL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a5_api_incremental_hashes = output_hashes(a5_api_classes)
+            if any(
+                a5_api_incremental_hashes.get(relative)
+                == a5_api_baseline_hashes.get(relative)
+                for relative in (
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                )
+            ):
+                raise SmokeError("A5 public-API edit left an affected class unchanged.")
+        finally:
+            shutdown_reports["a5_public_api"] = a5_api_client.close()
+
+        a5_api_oracle_attempt = attempt / "a5-public-api-clean-full-oracle"
+        a5_api_oracle_attempt.mkdir()
+        a5_api_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a5_api_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a5_api_oracle_client.process.pid)
+        try:
+            a5_api_oracle_source = (
+                a5_api_oracle_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(a5_api_source, a5_api_oracle_source, dirs_exist_ok=True)
+            a5_api_oracle_full = a5_api_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a5_api_oracle_full,
+                label="A5 public-API clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a5_api_oracle_hashes = output_hashes(
+                a5_api_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a5_api_oracle_equal = (
+                a5_api_oracle_full.get("ok") is True
+                and a5_api_oracle_hashes == a5_api_incremental_hashes
+                and a5_api_oracle_full.get("diagnostics")
+                == a5_api_incremental.get("diagnostics")
+            )
+            if not a5_api_oracle_equal:
+                raise SmokeError(
+                    "A5 public-API incremental output differs from clean-full oracle."
+                )
+        finally:
+            shutdown_reports["a5_public_api_oracle"] = a5_api_oracle_client.close()
+
+        a5_constant_attempt = attempt / "a5-compile-time-constant"
+        a5_constant_attempt.mkdir()
+        a5_constant_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a5_constant_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a5_constant_client.process.pid)
+        try:
+            a5_constant_source = (
+                a5_constant_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(
+                root / "fixtures" / "dependency-java" / "src",
+                a5_constant_source,
+                dirs_exist_ok=True,
+            )
+            a5_constant_baseline_full = a5_constant_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a5_constant_baseline_full,
+                label="A5 constant baseline full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a5_constant_classes = (
+                a5_constant_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a5_constant_baseline_hashes = output_hashes(a5_constant_classes)
+            a5_constant_file = a5_constant_source / "example" / "Api.java"
+            a5_constant_original = a5_constant_file.read_text(encoding="utf-8")
+            a5_constant_edited = a5_constant_original.replace(
+                "public static final int MULTIPLIER = 2;",
+                "public static final int MULTIPLIER = 3;",
+            )
+            if a5_constant_edited == a5_constant_original:
+                raise SmokeError("A5 constant edit did not match the fixture.")
+            a5_constant_file.write_text(a5_constant_edited, encoding="utf-8")
+            a5_constant_incremental = a5_constant_client.command("BUILD\tINCREMENTAL")
+            require_exact_observed_build(
+                a5_constant_incremental,
+                label="A5 compile-time constant propagation",
+                actual_build_kind="INCREMENTAL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a5_constant_incremental_hashes = output_hashes(a5_constant_classes)
+            if any(
+                a5_constant_incremental_hashes.get(relative)
+                == a5_constant_baseline_hashes.get(relative)
+                for relative in (
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                )
+            ):
+                raise SmokeError("A5 constant edit left an inlined consumer unchanged.")
+        finally:
+            shutdown_reports["a5_constant"] = a5_constant_client.close()
+
+        a5_constant_oracle_attempt = attempt / "a5-constant-clean-full-oracle"
+        a5_constant_oracle_attempt.mkdir()
+        a5_constant_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a5_constant_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a5_constant_oracle_client.process.pid)
+        try:
+            a5_constant_oracle_source = (
+                a5_constant_oracle_attempt
+                / "workspace"
+                / "plain-fixture"
+                / "src"
+            )
+            shutil.copytree(
+                a5_constant_source,
+                a5_constant_oracle_source,
+                dirs_exist_ok=True,
+            )
+            a5_constant_oracle_full = a5_constant_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a5_constant_oracle_full,
+                label="A5 constant clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a5_constant_oracle_hashes = output_hashes(
+                a5_constant_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a5_constant_oracle_equal = (
+                a5_constant_oracle_full.get("ok") is True
+                and a5_constant_oracle_hashes == a5_constant_incremental_hashes
+                and a5_constant_oracle_full.get("diagnostics")
+                == a5_constant_incremental.get("diagnostics")
+            )
+            if not a5_constant_oracle_equal:
+                raise SmokeError(
+                    "A5 constant incremental output differs from clean-full oracle."
+                )
+        finally:
+            shutdown_reports["a5_constant_oracle"] = (
+                a5_constant_oracle_client.close()
+            )
+
         negative_attempt = attempt / "java9-api-negative"
         negative_attempt.mkdir()
         negative_client = start_worker(
@@ -1203,8 +1479,8 @@ def main(argv: list[str] | None = None) -> int:
             "attempt_id": attempt_id,
             "generation_id": generation_ids["primary"],
             "generation_ids": generation_ids,
-            "status": "phase_1a_a1_a2_a3_a4_evidence_passed",
-            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4",
+            "status": "phase_1a_a1_a2_a3_a4_a5_evidence_passed",
+            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5",
             "candidate_id": lock["candidate_id"],
             "candidate_execution_environment": lock["execution_environment"],
             "provenance": {
@@ -1232,6 +1508,8 @@ def main(argv: list[str] | None = None) -> int:
                     "edited_generation_sha256": {
                         "a3_primary": edited_fixture_fingerprint,
                         "a4_primary": tree_fingerprint(a4_source),
+                        "a5_public_api": tree_fingerprint(a5_api_source),
+                        "a5_constant": tree_fingerprint(a5_constant_source),
                     },
                 },
             },
@@ -1254,6 +1532,12 @@ def main(argv: list[str] | None = None) -> int:
                 "a4_baseline_full": a4_baseline_full,
                 "a4_upstream_method_body_incremental": a4_incremental,
                 "a4_clean_full_oracle": a4_oracle_full,
+                "a5_public_api_baseline_full": a5_api_baseline_full,
+                "a5_public_api_incremental": a5_api_incremental,
+                "a5_public_api_clean_full_oracle": a5_api_oracle_full,
+                "a5_constant_baseline_full": a5_constant_baseline_full,
+                "a5_constant_incremental": a5_constant_incremental,
+                "a5_constant_clean_full_oracle": a5_constant_oracle_full,
                 "java9_api_negative": java9_api_negative,
             },
             "output": {
@@ -1271,6 +1555,26 @@ def main(argv: list[str] | None = None) -> int:
                 "a4_incremental_class_sha256": a4_incremental_hashes,
                 "a4_clean_full_oracle_class_sha256": a4_oracle_hashes,
                 "a4_incremental_equals_clean_full_oracle": a4_oracle_equal,
+                "a5_public_api_baseline_class_sha256": a5_api_baseline_hashes,
+                "a5_public_api_incremental_class_sha256": (
+                    a5_api_incremental_hashes
+                ),
+                "a5_public_api_clean_full_oracle_class_sha256": (
+                    a5_api_oracle_hashes
+                ),
+                "a5_public_api_incremental_equals_clean_full_oracle": (
+                    a5_api_oracle_equal
+                ),
+                "a5_constant_baseline_class_sha256": a5_constant_baseline_hashes,
+                "a5_constant_incremental_class_sha256": (
+                    a5_constant_incremental_hashes
+                ),
+                "a5_constant_clean_full_oracle_class_sha256": (
+                    a5_constant_oracle_hashes
+                ),
+                "a5_constant_incremental_equals_clean_full_oracle": (
+                    a5_constant_oracle_equal
+                ),
             },
             "input_revalidation": input_revalidation,
             "lifecycle": {
@@ -1285,7 +1589,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "cancellation": {
                     "status": "not_run",
-                    "reason": "outside_A1_A4_scope",
+                    "reason": "outside_A1_A5_scope",
                 },
             },
             "measurements": {
@@ -1314,10 +1618,11 @@ def main(argv: list[str] | None = None) -> int:
                 "A2": "passed",
                 "A3": "passed",
                 "A4": "passed",
-                "A5_A10": "not_run",
+                "A5": "passed",
+                "A6_A10": "not_run",
             },
             "limitations": [
-                "only A1 through A4 ran; A5 through A10 are not implemented",
+                "only A1 through A5 ran; A6 through A10 are not implemented",
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
                 "owned process-tree verification remains an A9 lifecycle item",

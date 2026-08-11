@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A4 partial evidence passed; A5-A10 pending`
+Implementation-Status: `A1-A5 partial evidence passed; A6-A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -409,6 +409,14 @@ Perform both:
 - a compile-time constant change whose inlined consumers must be refreshed.
 
 Require affected downstream units or diagnostics to match a clean-full oracle.
+
+The first macOS evidence run used a dedicated dependency fixture where both
+`Service.java` and `Application.java` consume `Api` directly. Changing only
+the upstream method signature, and separately changing only its compile-time
+constant, caused the real Java Builder to incrementally compile all three
+affected units. Both resulting class families and diagnostics matched separate
+clean-full oracles exactly. This proves the fixture's A5 propagation behavior;
+it is not yet evidence for arbitrary enterprise dependency graphs.
 
 ### A6 — Delete and rename
 

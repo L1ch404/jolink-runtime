@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A4 部分证据已通过；A5-A10 待验证`
+实现状态：`A1-A5 部分证据已通过；A6-A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -318,6 +318,12 @@ clean/full。本契约不预设未变化 consumer 一定需要重编。
 
 分别执行 public API 变化和 compile-time constant 变化。受影响下游或
 diagnostics 必须与 clean-full oracle 一致。
+
+首次 macOS 证据使用了专门的依赖 fixture，`Service.java` 和
+`Application.java` 都直接依赖 `Api`。仅修改上游方法签名，以及另一轮
+仅修改 compile-time constant 时，真实 Java Builder 都增量编译了三个
+受影响单元；class family 和 diagnostics 分别与独立 clean-full oracle
+完全一致。这证明的是该 fixture 的 A5 依赖传播行为，尚不能外推到任意企业项目依赖图。
 
 ### A6 — 删除与重命名
 
