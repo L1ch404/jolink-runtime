@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1-A9 implementation evidence passed; A10 remains open`
+Status: `Phase 1A A1-A9 canonical evidence passed; A10 remains open`
 
 Contract:
 
@@ -75,9 +75,9 @@ status          = a9_evidence_passed
 evidence_status = partial_phase_1a_evidence_a1_through_a9
 ```
 
-This is real implementation evidence for A1-A9, not yet a canonical clean-
-worktree Phase 1A Go decision. A10 Windows/path-boundary evidence (including
-spaces and non-ASCII paths) remains outstanding.
+This is real canonical clean-worktree evidence for A1-A9 on commit `f4eebeb`.
+It is not yet a complete Phase 1A Go decision: A10 Windows/path-boundary
+evidence (including spaces and non-ASCII paths) remains outstanding.
 
 ## Files
 
@@ -207,9 +207,12 @@ overall elapsed            about 4.8 seconds
 
 Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
-## Latest observed A9 implementation evidence
+## Latest observed A9 canonical evidence
 
-On macOS, the current locked Worker artifact completed the frozen A9 workload:
+On macOS, clean commit `f4eebeb` and its locked Worker artifact completed the
+frozen A9 workload. The canonical local report is
+`a9-6c8a9ebf4401.json`; it records `dirty_worktree=false` and successful
+post-run frozen-input revalidation.
 
 ```text
 A9-S same Worker requests       121 / 121

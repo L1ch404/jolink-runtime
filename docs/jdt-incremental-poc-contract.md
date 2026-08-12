@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A9 implementation evidence passed; canonical clean-worktree rerun and A10 pending`
+Implementation-Status: `A1-A9 canonical clean-worktree evidence passed on f4eebeb; A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 

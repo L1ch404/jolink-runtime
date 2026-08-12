@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A9 实现证据已通过；canonical clean-worktree 重跑与 A10 待验证`
+实现状态：`A1-A9 canonical clean-worktree 证据已在 f4eebeb 通过；A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
