@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A8 partial evidence passed; A9-A10 pending`
+Implementation-Status: `A1-A8 partial evidence passed; A9 design approved and implementation started; A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -67,17 +67,28 @@ incremental project builder at an acceptable engineering and resource cost.
   equivalent Workspace build that receives a resource delta and uses the Java
   Builder's previous build state. Choosing source files in Python and invoking
   ECJ batch compilation is not a real incremental build for this contract.
-- `Generation`: one private workspace, compiler identity, project
-  configuration, source snapshot, output tree, and associated build state.
-  Results from different generations may not be mixed.
+- `Workspace lineage`: one private workspace plus its compiler/project
+  identity, persistent JDT build state, ownership history, and saved-state
+  manifest. Its `workspace_lineage_id` remains stable across source edits,
+  builds, graceful Worker restart, and validated offline source deltas. A
+  cancelled/aborted build may move the lineage to `RECOVERY_REQUIRED`; it does
+  not rewrite the immutable result of that build.
+- `Build generation`: one immutable Workspace build operation identified by
+  `build_generation_id`, with an exact source-tree fingerprint, request and
+  operation identity, operation result, nullable compiler result, diagnostics,
+  and observed output state. It covers `CLEAN`, `FULL`, and `INCREMENTAL`.
+  Its terminal status is one of `SUCCEEDED`, `FAILED_COMPILE`, `CANCELLED`, or
+  `ABORTED` and never changes afterward. Results from different build
+  generations may not be mixed.
 - `Publication transaction`: a future product-integration boundary that keeps
-  the Runtime on a committed last-good generation while a candidate generation
-  is built and verified. `generation_publishable` is only the current logical
+  the Runtime on a committed last-good build generation while a candidate build
+  generation is built and verified. The existing `generation_publishable`
+  field belongs to the build generation and is only the current logical
   publication gate; it does not make JDT's mutable `bin` directory a physical
   last-good store.
-- `Clean-full oracle`: a new private generation built from the same frozen
-  inputs with the same pinned JDT stack. It is the Phase 1 correctness oracle
-  for an incremental result.
+- `Clean-full oracle`: a new private workspace lineage and full-build
+  generation built from the same frozen inputs with the same pinned JDT stack.
+  It is the Phase 1 correctness oracle for an incremental result.
 - `Evidence candidate`: one exact experimental stack comprising the Worker
   JDK, Equinox and bundle lock, JDT identity, `TargetSystemLibrarySnapshot`,
   compiler/project options, and instrumentation artifact/configuration.
@@ -258,7 +269,7 @@ is a tolerated placeholder and remains part of the snapshot with
 absent placeholder in `PLATFORM_CLASS_PATH`; it remains evidence but is still
 not materialized. An absent compiler entry that does not correspond to an
 advertised absent bootstrap placeholder is unresolved and invalidates the
-generation. A transition in either direction between `PRESENT` and `ABSENT`,
+workspace lineage. A transition in either direction between `PRESENT` and `ABSENT`,
 a content-fingerprint change, or an unreadable present compiler entry also
 invalidates it. Every present javac platform entry is materialized in javac
 order as `JavaCore.newLibraryEntry(...)`. No entry may fall back to Worker JDK
@@ -284,7 +295,7 @@ For every run:
 - create a private Eclipse configuration area and workspace data area;
 - bind the project to the exact `TargetSystemLibrarySnapshot` rather than
   compiling against the Worker JDK APIs;
-- copy fixture inputs into that generation or otherwise prove that no build
+- copy fixture inputs into that workspace lineage or otherwise prove that no build
   operation can mutate the fixture checkout;
 - direct every class, generated file, marker, log, cache, and workspace state
   into the private attempt root;
@@ -295,8 +306,9 @@ For every run:
 - use bounded startup, build, cancellation, and shutdown deadlines;
 - on cancellation or timeout, request cooperative cancellation first and then
   terminate the exact owned process tree;
-- mark any cancelled, timed-out, or crashed generation unpublishable; its next
-  use requires a clean/full build;
+- make every cancelled or timed-out build generation non-publishable and move
+  its workspace lineage to `RECOVERY_REQUIRED`; an infrastructure abort or
+  crash does the same;
 - leave no worker, Equinox, compiler, or fixture application process behind;
 - never attach to JDWP or start the fixture as an application in Phase 1;
 - preserve a failed attempt only when the runner explicitly requests local
@@ -309,15 +321,30 @@ unbounded compiler output.
 
 Worker shutdown and restart are part of the experiment. A full Workspace save
 must be requested before a graceful shutdown. Phase 1A then tests whether a
-new worker can reopen that exact generation and perform a valid incremental
-build.
+new Worker can reopen that exact workspace lineage and perform a valid
+incremental build.
 
-Each saved generation has a clean-shutdown marker and fingerprints the worker,
-bundle set, compiler options, system library, source snapshot, and classpath.
-Missing markers, a failed save, an abnormal exit, or any fingerprint change
-invalidates remembered build state. One workspace may be owned by only one
-worker. An idle graceful shutdown has an initial five-second settlement budget
-before the runner terminates only the identity-verified owned process tree.
+Each saved workspace lineage has a manifest and a Runner-owned clean-shutdown
+marker. The manifest fingerprints the Worker, bundle set, compiler/project
+model, system library, saved source snapshot, and classpath. The Worker may
+acknowledge `SAVE`, but it never writes or renews the clean marker. Before
+starting a Worker, the Runner atomically consumes any previous marker and
+thereby marks the workspace owned/dirty. Only after `SAVE_ACK`, a zero-exit
+Worker, and confirmed settlement of the complete identity-bound process tree
+may the Runner publish a new marker. Publication uses a temporary file,
+flush/file sync where supported, same-filesystem atomic replacement, and parent
+directory sync where meaningful; unsupported durability primitives and any
+failure are reported explicitly rather than overstated.
+
+A missing marker, failed save, abnormal exit, unsettled process tree, or change
+to an invariant compiler/project fingerprint invalidates remembered build
+state. A source change made while the Worker is stopped is not itself an
+invalidation: it is an untrusted offline delta that must be bounded to the
+owned source root, refreshed into the reopened resource model, and proved by
+incremental/build-kind and clean-full-oracle evidence. One workspace lineage
+may be owned by only one Worker. An idle graceful shutdown has an initial
+five-second settlement budget before the Runner terminates only the
+identity-verified owned process tree.
 
 Cross-process build-state recovery is measured but is not an unconditional
 Phase 1A failure:
@@ -444,7 +471,7 @@ clean-full oracles exactly.
 Introduce a deterministic compilation error. The worker must:
 
 - return bounded structured diagnostics derived from problem markers;
-- never report a publishable generation;
+- never report a publishable build generation;
 - not present stale changed classes as successful output.
 
 Fix the source and require the next build to recover without recreating the
@@ -453,7 +480,7 @@ worker unless the Java Builder itself requests a full build.
 The first macOS A7 evidence run introduces an unresolved symbol into a class
 that previously compiled. The same Worker returns a bounded structured ERROR
 diagnostic with resource, line, character range, severity, and message; marks
-the generation non-publishable; and exposes no publishable changed classes.
+the build generation non-publishable; and exposes no publishable changed classes.
 After replacing the broken body with a valid edit, that same Worker performs an
 incremental recovery, clears all diagnostics, and produces a publishable class
 tree exactly equal to an independent clean-full oracle. Any class emitted or
@@ -462,7 +489,7 @@ presented as publishable output.
 
 #### Future Runtime publication boundary (recorded, not implemented in Phase 1)
 
-JDT builds directly into the private generation's mutable output tree. A failed
+JDT builds directly into the private workspace lineage's mutable output tree. A failed
 build may retain, delete, or replace class files there. Therefore
 `generation_publishable=false` is a logical safety gate, not physical
 last-good-output isolation. Product Runtime integration must never scan the
@@ -470,10 +497,10 @@ current `bin` tree and HotSwap whatever it finds. It must treat compilation as
 a publication transaction:
 
 ```text
-committed last-good generation N remains active
-    candidate N+1 build fails  -> ABORT; publish no classes from N+1
-    candidate N+1 build passes -> COMMIT an explicitly verified output set
-                                  before HotSwap or restart
+committed last-good build generation N remains active
+    candidate build generation N+1 fails  -> ABORT; publish no classes from N+1
+    candidate build generation N+1 passes -> COMMIT an explicitly verified
+                                              output set before HotSwap/restart
 ```
 
 The physical representation (separate output roots, immutable snapshots,
@@ -484,13 +511,13 @@ it does not claim transactional output storage.
 ### A8 — Workspace restart
 
 After a successful build, gracefully save and stop the worker, restart it on
-the same private generation, apply one ordinary method-body edit, and record
+the same private workspace lineage, apply one ordinary method-body edit, and record
 whether the result is incremental or a required full rebuild. Either result
 must be explicit and correct; silent fallback is forbidden.
 
 The first macOS A8 evidence run performs a full build, receives an explicit
 Workspace save acknowledgement, cooperatively stops the Worker, and starts a
-new Worker process on the same configuration area, workspace, and generation.
+new Worker process on the same configuration area and workspace lineage.
 The reopened Worker then receives an ordinary method-body edit and a requested
 incremental build. The real Java Builder reports `actual_build_kind` as
 `INCREMENTAL`, compiles only `Application.java`, changes only
@@ -504,8 +531,379 @@ long-run stability.
 
 Run at least 100 deterministic edit/build cycles across method-body, constant,
 error/recovery, delete/restore, and no-op changes. Every successful incremental
-generation must equal its clean-full oracle. There must be no worker crash,
+build generation must equal its clean-full oracle. There must be no worker crash,
 stuck build, stale class family, or unbounded memory trend.
+
+#### A9 design status and decomposition
+
+This design is frozen and approved for implementation. Amend it only when
+implementation exposes a concrete contradiction, and record that amendment
+before changing behavior. A9 is split into independent evidence lanes so that oracle workers and
+destructive lifecycle tests do not contaminate the long-lived Worker's memory
+curve:
+
+```text
+A9-S  same-Worker deterministic stability workload
+A9-M  heap / Metaspace / `process_tree_rss_sum_bytes` measurement for A9-S
+A9-L  cooperative cancellation, recovery, shutdown, and process ownership
+```
+
+All lanes use the same locked candidate and target-system snapshot, but use
+separate private workspace lineages. A result from one lane may not hide or
+repair a failure in another.
+
+#### A9-S — deterministic long-lived workload
+
+Use one dedicated mixed plain-Java fixture containing the existing dependency,
+recovery, and class-family shapes. One Worker first performs a full baseline,
+then one warm-up epoch that is excluded from trend calculations, followed by
+ten measured epochs. Each epoch contains this exact eleven-operation sequence
+and returns the source tree to its frozen baseline:
+
+```text
+1   leaf method-body edit
+2   no-op incremental request
+3   leaf method-body restore
+4   upstream method-body edit
+5   upstream method-body restore
+6   compile-time constant edit
+7   compile-time constant restore
+8   deterministic unresolved-symbol error
+9   error recovery to the baseline source
+10  delete one source and its complete class family
+11  restore that source and class family
+```
+
+This produces 110 measured build requests after warm-up. The baseline full
+build, all 11/11 warm-up requests, and all 110/110 measured requests must pass
+the same applicable correctness, diagnostic, output-family, and oracle gates.
+Warm-up is excluded only from resource-trend calculations; it is never exempt
+from correctness. Mutations are deterministic, bounded, and applied only to
+the private source copy. Every epoch must begin and end at the same source-tree
+fingerprint. The same Worker and workspace must serve all 121 warm-up-plus-
+measured requests; recreating it resets the A9-S evidence.
+
+For every eligible state-changing request, `actual_build_kind` must be
+`INCREMENTAL`; the no-op must explicitly report `NO_COMPILE`; the broken edit
+must produce the expected structured ERROR. That source error is a completed
+build, not an infrastructure abort: it emits `BUILD_COMPLETED` with
+`operation_kind=INCREMENTAL`, `operation_ok=true`, and `compile_ok=false`;
+leaves the build generation terminal as `FAILED_COMPILE` and non-publishable;
+and leaves the workspace lineage `READY` for incremental source recovery. The
+recovery build must remain incremental and receives a new
+`build_generation_id`. Any silent full fallback, stuck request, unexpected
+diagnostic, stale/deleted class-family mismatch, or Worker restart fails A9-S.
+
+#### Oracle policy
+
+Every successful source state is compared with a clean-full oracle. To avoid
+launching an unnecessary oracle Worker for every repeated state, the runner may
+cache an oracle only by this complete key:
+
+```text
+candidate identity
+TargetSystemLibrarySnapshot fingerprint
+project_model_fingerprint
+exact source-tree fingerprint
+```
+
+`project_model_fingerprint` includes the ordered source roots, output roots,
+compile classpath content/identity, Java nature, builder identity and order,
+resource encoding, and effective compiler/project options. The first
+occurrence of a key must create a separate private workspace lineage, run a
+real clean full build, record its complete class SHA tree and diagnostics, and
+cooperatively stop that oracle Worker. Later cycles may reuse only that exact
+immutable oracle result. The oracle catalog is attempt-scoped and must be
+precomputed before the measured A9-S Worker starts; no oracle process may
+overlap the measured workload, and no report or output from a previous attempt
+may be trusted as its oracle. Cache hits and misses are reported. Oracle Worker
+memory is excluded from A9-M. A no-op must match both its pre-request output and
+the oracle for its source fingerprint. The intentionally broken state is
+compared with a clean-full diagnostic oracle, but neither output tree is ever
+publishable.
+
+#### A9-M — resource measurement
+
+The long-lived A9-S Worker is the measured subject. The runner samples the
+identity-bound process tree at intervals no greater than 100 ms and records
+root and child RSS, child count, sampling gaps, and each build's observed
+sampled RSS peak plus sample count. The machine field
+`process_tree_rss_sum_bytes` is the arithmetic sum of root and observed child
+RSS. It may double-count shared pages and is not PSS, USS, or unique physical
+memory; the Phase 1 decision bands deliberately use this reproducible
+engineering metric. A Worker-side bounded
+metrics command records heap used, committed, and maximum; Metaspace used and
+committed; Compressed Class Space used and committed when that pool exists;
+loaded-class count; thread count; and uptime. `class_metadata_used_bytes` is
+reported as Metaspace plus Compressed Class Space when the latter exists, while
+the two pools remain separately visible. A missing pool is explicitly
+`not_applicable` or `unavailable`, never zero-filled. Before each full or
+incremental build the Worker resets the relevant `MemoryPoolMXBean` peak
+counters and afterward records per-pool peak usage. Any aggregate of per-pool
+peaks is labeled as an upper bound because pool peaks may occur at different
+instants. This avoids adding an in-process polling thread to the measured
+subject.
+
+After the warm-up epoch and after each measured epoch, while no build is
+active, the runner first takes a pre-GC checkpoint, requests explicit GC, and
+uses a bounded one-second settlement before taking an after-request checkpoint.
+The Worker records every available `GarbageCollectorMXBean` collection count
+and collection time before and after the request. The report always sets
+`gc_request_sent=true`; it sets `gc_collection_observed=true` and names the
+sample `post_gc_checkpoint` only if at least one supported collection count
+increased. Otherwise it sets `gc_collection_observed=false` and names the
+sample `after_gc_request_checkpoint`. Unsupported counters remain explicitly
+unavailable. After the final checkpoint it also records
+`process_tree_rss_sum_bytes` after 30 seconds of true idle. `System.gc()` is a
+request, not proof that every
+collector ran or reclaimed all eligible objects. Resource sampling is complete
+only when at least 95% of the expected intervals were observed and no
+unexplained sampling gap exceeds 500 ms; otherwise A9-M requires a diagnostic
+rerun.
+
+The report preserves every raw checkpoint and computes early and tail medians
+from the comparable after-request checkpoints without pretending GC was
+observed when it was not. In addition to the existing absolute RSS/peak
+decision bands, the first run requires a diagnostic rerun when the last three
+checkpoint median exceeds the first three by any of:
+
+```text
+process_tree_rss_sum_bytes > max(64 MiB, 20%)
+heap used         > max(32 MiB, 20%)
+class metadata    > max(16 MiB, 20%)
+```
+
+or when the final five checkpoints are strictly increasing and exceed the same
+absolute threshold. Thread count also requires a diagnostic rerun when its tail
+median exceeds its early median by more than four, or its final five values are
+strictly increasing with a total increase greater than four. Loaded-class count
+does so when the corresponding increase exceeds `max(128, 10%)`. These are
+rerun triggers, not declarations of a leak. One noisy run must be repeated with
+the exact workload; only persistent replicated growth plus heap/native-memory
+evidence blocks approval as a growth failure.
+
+A9-M has exactly four decision states:
+
+```text
+PASS
+    complete measurements, stable trend, and an absolute resource value in the
+    Preferred or Acceptable band
+CONDITIONAL
+    complete and stable, but an absolute resource value is in the documented
+    conditional band
+DIAGNOSTIC_RERUN_REQUIRED
+    a growth trigger fired, sampling was noisy/incomplete, or a required RSS,
+    heap, class-metadata, peak, GC-checkpoint, thread, or class-count value is
+    unavailable
+NO_GO
+    an absolute No-Go band was crossed, or the exact diagnostic rerun confirms
+    persistent growth with supporting evidence
+```
+
+Missing measurements are never coerced to zero, and a single noisy run is
+never labeled a leak. Latency distributions are reported by operation type but
+are not Phase 1 performance promotion thresholds.
+
+#### A9-L — cancellation, recovery, and ownership
+
+Cancellation uses a separate workspace lineage and requires a real
+asynchronous Worker protocol: one build may run in the background while the
+control loop accepts only `STATUS`, `CANCEL`, and bounded shutdown for that
+build generation. The protocol must carry command/request IDs and
+`build_generation_id`; it may not infer ownership from the latest response. A
+deterministic test-only barrier may pause the observed Java Builder after it
+starts, but it may change timing only and is excluded from correctness and
+latency evidence.
+
+The asynchronous protocol, metrics support, and dormant barrier are part of
+the locked Worker artifact. Adding them changes candidate identity, so A1-A8
+must be rerun on that exact artifact before A9 can be approved. The barrier is
+activated only by an A9-L lifecycle command, must not change source, classpath,
+compiler options, markers, or class bytes, and no output from its cancelled
+operation is accepted as correctness evidence. A1 instrumentation parity must
+remain exact with all lifecycle barriers inactive.
+
+The protocol state machine is frozen before implementation. Workspace lineage
+state and build-generation outcome are separate state machines. Every
+`BUILD_COMPLETED` carries `operation_kind`, `operation_ok`, and nullable
+`compile_ok`:
+
+```text
+workspace lineage
+  READY
+    BUILD_ASYNC(request_id, build_generation_id, kind)
+      -> BUILDING(build_generation_id)
+          STATUS(build_generation_id) -> snapshot only
+          CANCEL(build_generation_id) -> CANCEL_REQUESTED when accepted
+          STOP                        -> CLOSING and cancellation request
+      -> exactly one terminal event for the build generation:
+          BUILD_COMPLETED(
+              operation_kind=CLEAN|FULL|INCREMENTAL,
+              operation_ok=true,
+              compile_ok=null|true|false
+          )
+          BUILD_CANCELLED
+          BUILD_ABORTED
+
+build generation outcome / resulting workspace state
+  BUILD_COMPLETED, CLEAN, operation_ok=true, compile_ok=null
+      -> SUCCEEDED / state chosen by the enclosing recovery transaction
+  BUILD_COMPLETED, FULL|INCREMENTAL, operation_ok=true, compile_ok=true
+      -> SUCCEEDED / READY outside recovery
+      -> SUCCEEDED / remain RECOVERING inside recovery until oracle equality
+  BUILD_COMPLETED, FULL|INCREMENTAL, operation_ok=true, compile_ok=false
+      -> FAILED_COMPILE / READY outside recovery
+      -> FAILED_COMPILE / LINEAGE_DISCARDED inside recovery
+  BUILD_CANCELLED
+      -> CANCELLED / RECOVERY_REQUIRED
+  BUILD_ABORTED or abnormal Worker exit
+      -> ABORTED / RECOVERY_REQUIRED
+
+RECOVERY_REQUIRED
+  RECOVER(recovery_id)
+      -> RECOVERING
+          CLEAN_BUILD -> FULL_BUILD -> clean-full oracle verification
+      -> READY only after the complete transaction succeeds
+      -> LINEAGE_DISCARDED if any step fails
+
+LINEAGE_DISCARDED
+  -> create a new private workspace lineage and perform a full build
+```
+
+`SUCCEEDED` means the compiler/workspace operation completed successfully; it
+does not by itself make the build generation publishable. The generation stays
+behind `generation_publishable=false` until every oracle and publication gate
+required by its case succeeds.
+
+Only one build may exist per Worker. Workspace mutation remains on the build
+thread; `STATUS` reads immutable/atomic snapshots and `CANCEL` only cancels the
+exact build monitor. Every request response and asynchronous event carries its
+request ID, `build_generation_id`, and a monotonically increasing protocol
+sequence. Exactly one terminal event is emitted per accepted build operation.
+For `CLEAN`, `operation_ok=true` and `compile_ok=null`; for `FULL` or
+`INCREMENTAL`, `operation_ok=true` means the Workspace operation itself
+completed and `compile_ok` reports whether Java compilation passed. A Java
+compiler error is therefore `BUILD_COMPLETED` with `compile_ok=false`; it is not
+`BUILD_ABORTED`, does not poison the workspace lineage, and permits the A7-style
+incremental repair request. `BUILD_ABORTED` is reserved for a Worker, JDT,
+protocol, I/O, or other infrastructure failure that prevents a trustworthy
+completed build result.
+
+The single terminal record is authoritative at the Runner boundary, not
+dependent on the Worker surviving long enough to emit it. If the Worker exits,
+the protocol stream breaks, or forced termination occurs before a valid
+terminal frame is accepted, the Runner records exactly one `BUILD_ABORTED` and
+rejects any late frame. An accepted cooperative cancellation that settles
+normally records `BUILD_CANCELLED`; one that requires force is `BUILD_ABORTED`.
+
+If completion wins before cancellation is accepted, `BUILD_COMPLETED` wins and
+`CANCEL` returns `ALREADY_FINISHED`. If cancellation is accepted first,
+`BUILD_CANCELLED` wins and no class or diagnostic output from that operation is
+publishable even if JDT wrote files before settling. `STOP` follows the same
+single-terminal-event rule: when completion already won it performs the normal
+save/close sequence; otherwise it requests cancellation, waits for the one
+cancel/abort terminal event, and then closes. Unknown/stale IDs are rejected
+and cannot affect the active build. A cancelled build is settled only after
+its build thread exits; the Worker may not start recovery or release workspace
+ownership earlier.
+
+Recovery is one atomic workspace-lineage recovery transaction, not merely a
+second full-build request. It is distinct from the future Runtime publication
+transaction and does not commit artifacts to HotSwap or restart. While
+`RECOVERING`, both `CLEAN_BUILD` and `FULL_BUILD` receive their
+own immutable build-generation records, but no intermediate output is
+publishable and the workspace does not return to `READY`. Only a successful
+clean (`operation_ok=true`, `compile_ok=null`), a successful full build
+(`operation_ok=true`, `compile_ok=true`), and exact clean-full-oracle equality
+commit the recovery transaction and return the lineage to `READY`. This means
+only that the workspace lineage is trusted again; Runtime publication remains
+a separate future gate. Any cancellation, compiler
+failure, infrastructure abort, or oracle mismatch during recovery discards the
+lineage; the runner must create a new private workspace lineage and establish a
+fresh full baseline.
+
+At least these lifecycle cases are required:
+
+```text
+active incremental build -> CANCEL -> bounded cooperative cancellation
+cancelled build generation -> non-publishable; lineage is RECOVERY_REQUIRED
+same Worker lineage      -> CLEAN + FULL recovery transaction -> oracle exact
+build deadline expires   -> cooperative cancel -> release barrier ->
+                            BUILD_CANCELLED -> RECOVERY_REQUIRED
+STOP after build wins    -> one BUILD_COMPLETED -> clean save/close
+STOP after cancel wins   -> one BUILD_CANCELLED -> bounded close
+clean stopped Worker     -> offline body edit -> reopen -> incremental + oracle
+abnormal Worker exit     -> missing clean marker invalidates saved state
+invalid saved state      -> no incremental reopen; new private lineage + full
+```
+
+The initial cooperative cancellation/shutdown budget is five seconds. A
+build deadline first triggers cooperative cancellation. Only if cancellation
+or shutdown then fails to settle within its five-second budget may the Runner
+terminate the exact identity-bound process tree and record that forced path; it
+cannot be reported as cooperative success. The timeout case uses the
+deterministic barrier so that deadline, accepted cancellation, barrier release,
+build-thread exit, terminal event, and state transition are all observed rather
+than inferred.
+
+Workspace-lineage reuse requires a manifest containing
+`workspace_lineage_id`, the last completed `build_generation_id`, and
+fingerprints of the candidate, Worker/bundles, target-system library,
+`project_model_fingerprint`, and source state at the last clean save. Only the
+Runner owns the clean-shutdown marker. On startup it atomically consumes the
+old marker before granting ownership. On shutdown it may atomically publish a
+new marker only after Worker `SAVE_ACK`, zero exit, and confirmation that the
+entire identity-bound owned process tree settled. Marker publication follows
+the platform-safe file/replace/sync behavior defined by the general lifecycle
+contract; the Worker cannot self-certify cleanliness. Invariant identity
+changes invalidate reuse. A bounded source-only difference from the saved
+fingerprint is recorded as an offline delta, not silently treated as
+configuration drift. This upgrades A8's runner lineage label into an
+independently persisted reuse precondition.
+
+Every owned PID is recorded with creation time to prevent PID-reuse mistakes.
+The runner continuously observes descendants, never signals an unowned process,
+and verifies that all observed owned processes are absent after settlement.
+A9-L does not require manufacturing an uncooperative JDT failure merely to
+exercise force-kill; the force fallback remains unit-tested, while real A9
+evidence must prove the normal cooperative path and abnormal-exit invalidation.
+
+#### A9 acceptance record
+
+A9 passes only when A9-S and A9-L pass and A9-M reports `PASS` on the same
+locked candidate. `CONDITIONAL` is complete evidence but produces a
+Conditional phase decision; `DIAGNOSTIC_RERUN_REQUIRED` blocks a decision until
+the exact rerun is complete; `NO_GO` fails A9.
+
+```text
+baseline full build passed its correctness and oracle gates
+11/11 warm-up requests passed their correctness and oracle gates
+110/110 measured requests completed with the expected outcome
+all successful states exactly matched their keyed clean-full oracle
+all compiler-error/cancelled/aborted build generations were non-publishable
+no silent full fallback, stale class family, stuck build, or Worker recreation
+resource measurements are complete, stable, and in the A9-M PASS bands
+cooperative cancel/stop settled within budget
+cancel/abort recovery used the atomic CLEAN -> FULL -> oracle transaction
+abnormal state was rejected rather than trusted
+all identity-bound Worker/oracle process trees settled with no residue
+```
+
+The machine report records the workload version, operation index/type, source
+fingerprint, requested/actual build kind, `operation_kind`, `operation_ok`,
+nullable `compile_ok`, diagnostics/publication state,
+oracle key and hit/miss, output equality, timing, raw resource samples,
+cancellation timeline, process identities, `workspace_lineage_id`, immutable
+`build_generation_id` and terminal outcome, recovery transaction, marker
+ownership/publication, and every limitation. A9 remains tiny-fixture evidence
+and makes no company-project, Lombok, HotSwap, or production
+publication-performance claim.
+
+Resource-delta instrumentation is still a separate Phase 1A Go requirement.
+A9 must preserve its current explicit `unavailable` evidence and must not infer
+a Java Builder delta from source fingerprints. If safe read-only delta
+instrumentation is not reviewed as part of A9, it remains an explicit pre-Go
+item rather than being silently closed by the repeated workload.
 
 ### A10 — Platform and path boundary
 
@@ -559,7 +957,7 @@ changes output or requests a full build invalidates the evidence candidate.
 Requesting `INCREMENTAL_BUILD` is not sufficient evidence: when no usable
 delta exists, Eclipse may invoke the builder as a full build. A normal return
 from the build API is also not compilation success; every result must inspect
-ERROR markers and build-path problems before a generation can be accepted.
+ERROR markers and build-path problems before a build generation can be accepted.
 
 For every state-changing case, compare the complete incremental output tree
 with a clean-full oracle using:
@@ -608,8 +1006,8 @@ Phase 1B must execute:
    dependent source;
 4. a Lombok annotation edit that changes generated schema;
 5. an edit to a source that consumes a generated getter or builder;
-6. a `lombok.config` change, conservatively forced through a new generation and
-   full build;
+6. a `lombok.config` change, conservatively forced through a new workspace
+   lineage and full build;
 7. an error/recovery cycle involving a generated member;
 8. at least 100 mixed incremental/no-op cycles after warm-up.
 
@@ -640,9 +1038,9 @@ leaf-edit incremental duration
 dependency-edit incremental duration
 shutdown duration
 heap and Metaspace used after an explicit GC request and bounded settlement
-process-tree RSS after the same settlement plus 30 seconds idle
-peak heap and RSS during full and incremental builds
-RSS after the repeated-build run
+process_tree_rss_sum_bytes after the same settlement plus 30 seconds idle
+peak heap and process_tree_rss_sum_bytes during full and incremental builds
+process_tree_rss_sum_bytes after the repeated-build run
 child-process count before, during, and after shutdown
 ```
 
@@ -650,11 +1048,11 @@ The first POC uses these product decision bands, not performance claims:
 
 | Observed stripped-worker state | Interpretation |
 | --- | --- |
-| Idle RSS `<256 MiB` | Preferred |
-| Idle RSS `256–512 MiB` | Acceptable for continued evaluation |
-| Idle RSS `>512 MiB` and `<=768 MiB` | Conditional; requires explicit product review |
-| Idle RSS `>768 MiB`, or close to a measured full JDT LS baseline | No-Go for the preferred architecture |
-| Tiny-fixture full-build peak `>1 GiB` | No-Go unless measurement error is proven |
+| Idle `process_tree_rss_sum_bytes` `<256 MiB` | Preferred |
+| Idle `process_tree_rss_sum_bytes` `256–512 MiB` | Acceptable for continued evaluation |
+| Idle `process_tree_rss_sum_bytes` `>512 MiB` and `<=768 MiB` | Conditional; requires explicit product review |
+| Idle `process_tree_rss_sum_bytes` `>768 MiB`, or close to a measured full JDT LS baseline | No-Go for the preferred architecture |
+| Tiny-fixture full-build `process_tree_rss_sum_bytes` peak `>1 GiB` | No-Go unless measurement error is proven |
 
 Full-build peak memory on a later four-thousand-source company project is a
 separate Phase 2 measurement and is not constrained by the tiny-fixture peak
@@ -664,7 +1062,7 @@ Phase 1 does not impose a sub-second latency target. It requires that an
 already-running worker demonstrably avoids a full build for eligible ordinary
 edits. Performance promotion thresholds belong to Phase 2 on a real project.
 
-Repeated-build RSS may fluctuate, but after warm-up it must not show a
+Repeated-build `process_tree_rss_sum_bytes` may fluctuate, but after warm-up it must not show a
 monotonic or unbounded trend. Any apparent growth must be rerun with heap and
 native-memory evidence before a Go decision.
 
@@ -674,7 +1072,7 @@ Each run emits one machine-readable report and a short Markdown summary. The
 report must include:
 
 ```text
-attempt_id and generation_id
+attempt_id, workspace_lineage_id, and build_generation_id
 git revision and dirty-worktree flag
 operating system and architecture
 locked artifact identities and hashes
@@ -705,7 +1103,7 @@ All of the following are required:
 - the Java nature, Java Builder build spec, effective build kind, and resource
   delta are observed rather than inferred from the requested operation;
 - A1 through A10 pass on Windows and at least one POSIX environment;
-- every incremental generation matches its clean-full oracle;
+- every incremental build generation matches its clean-full oracle;
 - dependency propagation, diagnostic recovery, deletion, rename, and stale
   output cleanup are correct;
 - no healthy same-process edit silently loses incremental state;
@@ -801,14 +1199,14 @@ Phase 2 contract
     real company-project full/incremental measurements
 
 Phase 3 contract
-    JVM launched from one complete ECJ generation
+    JVM launched from one complete, verified ECJ build generation
     method-body delta → standard JDWP HotSwap
-    schema delta → restart from the complete private generation
+    schema delta → restart from a complete committed build generation
     readiness and HTTP business verification
 ```
 
 Neither phase may mix Maven/javac baseline classes with later ECJ classes in
-one runtime generation without independent compatibility proof.
+one Runtime artifact generation without independent compatibility proof.
 
 MapStruct, QueryDSL, Spring metadata generation, resource fidelity, enhanced
 HotSwap, MCP integration, worker idle policies in production, and public
