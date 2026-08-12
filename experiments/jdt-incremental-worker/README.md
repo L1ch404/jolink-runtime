@@ -209,10 +209,9 @@ Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
 ## Latest observed A9 canonical evidence
 
-On macOS, clean commit `f4eebeb` and its locked Worker artifact completed the
-frozen A9 workload. The canonical local report is
-`a9-6c8a9ebf4401.json`; it records `dirty_worktree=false` and successful
-post-run frozen-input revalidation.
+On macOS, a clean committed worktree and its locked Worker artifact completed
+the frozen A9 workload. The canonical report records the exact Git revision,
+`dirty_worktree=false`, and successful post-run frozen-input revalidation.
 
 ```text
 A9-S same Worker requests       121 / 121

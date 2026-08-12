@@ -625,7 +625,7 @@ class WorkerClient:
 class ProcessTreeSampler:
     """Sample identity-bound Worker RSS without writing into the Worker JVM."""
 
-    def __init__(self, pid: int, interval_seconds: float = 0.1) -> None:
+    def __init__(self, pid: int, interval_seconds: float = 0.05) -> None:
         self.pid = pid
         self.interval_seconds = interval_seconds
         self.samples: list[dict[str, Any]] = []

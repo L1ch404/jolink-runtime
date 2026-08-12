@@ -629,6 +629,13 @@ def test_a9_resource_decision_requires_complete_sampling() -> None:
     assert "process_tree_sampling_incomplete" in decision["reasons"]
 
 
+def test_a9_sampler_cadence_is_stricter_than_contract_limit() -> None:
+    defaults = smoke.ProcessTreeSampler.__init__.__defaults__
+    assert defaults is not None
+    assert defaults[-1] == 0.05
+    assert defaults[-1] <= 0.1
+
+
 def test_workspace_lineage_marker_is_consumed_and_reports_offline_delta(
     tmp_path: Path,
 ) -> None:
