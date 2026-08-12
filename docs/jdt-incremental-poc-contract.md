@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A7 partial evidence passed; A8-A10 pending`
+Implementation-Status: `A1-A8 partial evidence passed; A9-A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -70,6 +70,11 @@ incremental project builder at an acceptable engineering and resource cost.
 - `Generation`: one private workspace, compiler identity, project
   configuration, source snapshot, output tree, and associated build state.
   Results from different generations may not be mixed.
+- `Publication transaction`: a future product-integration boundary that keeps
+  the Runtime on a committed last-good generation while a candidate generation
+  is built and verified. `generation_publishable` is only the current logical
+  publication gate; it does not make JDT's mutable `bin` directory a physical
+  last-good store.
 - `Clean-full oracle`: a new private generation built from the same frozen
   inputs with the same pinned JDT stack. It is the Phase 1 correctness oracle
   for an incremental result.
@@ -455,12 +460,45 @@ tree exactly equal to an independent clean-full oracle. Any class emitted or
 retained during the failed build is recorded as evidence only and is never
 presented as publishable output.
 
+#### Future Runtime publication boundary (recorded, not implemented in Phase 1)
+
+JDT builds directly into the private generation's mutable output tree. A failed
+build may retain, delete, or replace class files there. Therefore
+`generation_publishable=false` is a logical safety gate, not physical
+last-good-output isolation. Product Runtime integration must never scan the
+current `bin` tree and HotSwap whatever it finds. It must treat compilation as
+a publication transaction:
+
+```text
+committed last-good generation N remains active
+    candidate N+1 build fails  -> ABORT; publish no classes from N+1
+    candidate N+1 build passes -> COMMIT an explicitly verified output set
+                                  before HotSwap or restart
+```
+
+The physical representation (separate output roots, immutable snapshots,
+copy-on-commit, or another reviewed design) is intentionally deferred until
+productization. Phase 1 records compiler reality and enforces the logical gate;
+it does not claim transactional output storage.
+
 ### A8 — Workspace restart
 
 After a successful build, gracefully save and stop the worker, restart it on
 the same private generation, apply one ordinary method-body edit, and record
 whether the result is incremental or a required full rebuild. Either result
 must be explicit and correct; silent fallback is forbidden.
+
+The first macOS A8 evidence run performs a full build, receives an explicit
+Workspace save acknowledgement, cooperatively stops the Worker, and starts a
+new Worker process on the same configuration area, workspace, and generation.
+The reopened Worker then receives an ordinary method-body edit and a requested
+incremental build. The real Java Builder reports `actual_build_kind` as
+`INCREMENTAL`, compiles only `Application.java`, changes only
+`Application.class`, and produces an output tree and diagnostics exactly equal
+to an independent clean-full oracle. All three A8 Worker instances settle
+cooperatively. This proves state recovery only for the frozen candidate and
+fixture; it does not yet prove crash recovery, fingerprint invalidation, or
+long-run stability.
 
 ### A9 — Repeated-build stability
 

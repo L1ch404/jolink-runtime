@@ -614,19 +614,27 @@ def start_worker(
     system_libraries_file: Path,
     instrumentation: str,
     timeout: float,
+    reuse_existing: bool = False,
 ) -> WorkerClient:
     configuration = attempt / "configuration"
-    configuration.mkdir(parents=True)
-    template = (candidate_root / "configuration" / "config.ini").read_text(
-        encoding="utf-8"
-    )
-    plugin_uri_prefix = (candidate_root / "plugins").resolve().as_uri() + "/"
-    materialized = template.replace("file:plugins/", plugin_uri_prefix)
-    (configuration / "config.ini").write_text(materialized, encoding="utf-8")
+    configuration.mkdir(parents=True, exist_ok=reuse_existing)
+    if not reuse_existing:
+        template = (candidate_root / "configuration" / "config.ini").read_text(
+            encoding="utf-8"
+        )
+        plugin_uri_prefix = (candidate_root / "plugins").resolve().as_uri() + "/"
+        materialized = template.replace("file:plugins/", plugin_uri_prefix)
+        (configuration / "config.ini").write_text(materialized, encoding="utf-8")
+    elif not (configuration / "config.ini").is_file():
+        raise SmokeError("Restart requested without a saved configuration area.")
     workspace = attempt / "workspace"
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=reuse_existing)
+    if reuse_existing and not (workspace / ".metadata").is_dir():
+        raise SmokeError("Restart requested without a saved Eclipse workspace.")
     stderr_path = attempt / "worker.stderr.log"
-    stderr_stream = stderr_path.open("w", encoding="utf-8")
+    stderr_stream = stderr_path.open(
+        "a" if reuse_existing else "w", encoding="utf-8"
+    )
     launcher = candidate_root / "plugins" / lock["equinox"]["launcher_filename"]
     command = [
         str(java_tool(worker_java_home, "java")),
@@ -634,7 +642,6 @@ def start_worker(
         "-Xmx512m",
         "-jar",
         str(launcher),
-        "-clean",
         "-nosplash",
         "-install",
         str(candidate_root),
@@ -649,6 +656,8 @@ def start_worker(
         "--instrumentation",
         instrumentation,
     ]
+    if not reuse_existing:
+        command.insert(5, "-clean")
     process = subprocess.Popen(
         command,
         cwd=candidate_root,
@@ -668,6 +677,12 @@ def start_worker(
     if ready.get("java_builder_count") != 1:
         client.close()
         raise SmokeError("Worker project does not have exactly one Java Builder.")
+    expected_project_state = "reopened" if reuse_existing else "created"
+    if ready.get("workspace_project_state") != expected_project_state:
+        client.close()
+        raise SmokeError(
+            "Worker workspace project state did not match the requested lifecycle."
+        )
     client.ready = ready
     return client
 
@@ -679,6 +694,20 @@ def output_hashes(output: Path) -> dict[str, str]:
         path.relative_to(output).as_posix(): sha256_file(path)
         for path in sorted(output.rglob("*.class"))
     }
+
+
+def restart_build_expectations(actual_build_kind: Any) -> tuple[str, list[str]]:
+    if actual_build_kind == "INCREMENTAL":
+        return "incremental_state_restored", ["src/example/Application.java"]
+    if actual_build_kind == "FULL":
+        return "explicit_full_rebuild_required", [
+            "src/example/Api.java",
+            "src/example/Application.java",
+            "src/example/Service.java",
+        ]
+    raise SmokeError(
+        "A8 restart build did not explicitly report incremental or full."
+    )
 
 
 def class_major(path: Path) -> int:
@@ -872,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     attempt_id = f"bootstrap-{uuid.uuid4().hex[:12]}"
+    a8_restart_generation_id = f"generation-{uuid.uuid4().hex[:12]}"
     generation_ids = {
         "primary": f"generation-{uuid.uuid4().hex[:12]}",
         "instrumentation_off": f"generation-{uuid.uuid4().hex[:12]}",
@@ -888,6 +918,9 @@ def main(argv: list[str] | None = None) -> int:
         "a6_rename_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "a7_recovery": f"generation-{uuid.uuid4().hex[:12]}",
         "a7_recovery_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a8_before_restart": a8_restart_generation_id,
+        "a8_after_restart": a8_restart_generation_id,
+        "a8_clean_full_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "java9_api_negative": f"generation-{uuid.uuid4().hex[:12]}",
     }
     attempts_root = args.cache_root / "attempts"
@@ -1914,6 +1947,148 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             shutdown_reports["a7_recovery_oracle"] = a7_oracle_client.close()
 
+        a8_attempt = attempt / "a8-workspace-restart"
+        a8_attempt.mkdir()
+        a8_initial_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a8_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a8_initial_client.process.pid)
+        try:
+            a8_source = a8_attempt / "workspace" / "plain-fixture" / "src"
+            shutil.copytree(
+                root / "fixtures" / "plain-java" / "src",
+                a8_source,
+                dirs_exist_ok=True,
+            )
+            a8_baseline_full = a8_initial_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a8_baseline_full,
+                label="A8 pre-restart full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a8_classes = a8_attempt / "workspace" / "plain-fixture" / "bin"
+            a8_baseline_hashes = output_hashes(a8_classes)
+            a8_save = a8_initial_client.command("SAVE")
+            if a8_save != {"ok": True, "status": "saved"}:
+                raise SmokeError("A8 workspace save was not acknowledged.")
+        finally:
+            shutdown_reports["a8_before_restart"] = a8_initial_client.close()
+
+        a8_restart_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a8_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+            reuse_existing=True,
+        )
+        owned_worker_pids.append(a8_restart_client.process.pid)
+        a8_restart_ready = dict(a8_restart_client.ready)
+        try:
+            a8_application = a8_source / "example" / "Application.java"
+            a8_original = a8_application.read_text(encoding="utf-8")
+            a8_edited = a8_original.replace(
+                "service.calculate(20)", "service.calculate(22)"
+            )
+            if a8_edited == a8_original:
+                raise SmokeError("A8 restart edit did not change the fixture.")
+            a8_application.write_text(a8_edited, encoding="utf-8")
+            a8_after_restart = a8_restart_client.command("BUILD\tINCREMENTAL")
+            a8_actual_kind = a8_after_restart.get("actual_build_kind")
+            a8_restart_outcome, a8_compiled_units = restart_build_expectations(
+                a8_actual_kind
+            )
+            require_exact_observed_build(
+                a8_after_restart,
+                label="A8 post-restart build",
+                actual_build_kind=a8_actual_kind,
+                build_outcome="COMPILED",
+                compiled_source_units=a8_compiled_units,
+                changed_classes=["example/Application.class"],
+            )
+            a8_after_restart_hashes = output_hashes(a8_classes)
+            if a8_after_restart_hashes.get(
+                "example/Application.class"
+            ) == a8_baseline_hashes.get("example/Application.class"):
+                raise SmokeError("A8 post-restart edited class did not change.")
+            for unchanged_class in ("example/Api.class", "example/Service.class"):
+                if a8_after_restart_hashes.get(
+                    unchanged_class
+                ) != a8_baseline_hashes.get(unchanged_class):
+                    raise SmokeError(
+                        "A8 post-restart build changed an unrelated class."
+                    )
+        finally:
+            shutdown_reports["a8_after_restart"] = a8_restart_client.close()
+
+        a8_oracle_attempt = attempt / "a8-restart-clean-full-oracle"
+        a8_oracle_attempt.mkdir()
+        a8_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a8_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a8_oracle_client.process.pid)
+        try:
+            a8_oracle_source = (
+                a8_oracle_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(a8_source, a8_oracle_source, dirs_exist_ok=True)
+            a8_oracle_full = a8_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a8_oracle_full,
+                label="A8 clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Api.java",
+                    "src/example/Application.java",
+                    "src/example/Service.java",
+                ],
+                changed_classes=[
+                    "example/Api.class",
+                    "example/Application.class",
+                    "example/Service.class",
+                ],
+            )
+            a8_oracle_hashes = output_hashes(
+                a8_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a8_oracle_equal = (
+                a8_after_restart_hashes == a8_oracle_hashes
+                and a8_after_restart.get("diagnostic_details")
+                == a8_oracle_full.get("diagnostic_details")
+            )
+            if not a8_oracle_equal:
+                raise SmokeError(
+                    "A8 post-restart output differs from its clean-full oracle."
+                )
+        finally:
+            shutdown_reports["a8_clean_full_oracle"] = a8_oracle_client.close()
+
         negative_attempt = attempt / "java9-api-negative"
         negative_attempt.mkdir()
         negative_client = start_worker(
@@ -2002,8 +2177,8 @@ def main(argv: list[str] | None = None) -> int:
             "attempt_id": attempt_id,
             "generation_id": generation_ids["primary"],
             "generation_ids": generation_ids,
-            "status": "phase_1a_a1_a2_a3_a4_a5_a6_a7_evidence_passed",
-            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6_a7",
+            "status": "phase_1a_a1_a2_a3_a4_a5_a6_a7_a8_evidence_passed",
+            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6_a7_a8",
             "candidate_id": lock["candidate_id"],
             "candidate_execution_environment": lock["execution_environment"],
             "provenance": {
@@ -2036,6 +2211,7 @@ def main(argv: list[str] | None = None) -> int:
                         "a6_delete": tree_fingerprint(a6_delete_source),
                         "a6_rename": tree_fingerprint(a6_rename_source),
                         "a7_recovery": tree_fingerprint(a7_source),
+                        "a8_workspace_restart": tree_fingerprint(a8_source),
                     },
                 },
             },
@@ -2074,6 +2250,11 @@ def main(argv: list[str] | None = None) -> int:
                 "a7_broken_incremental": a7_broken,
                 "a7_recovered_incremental": a7_recovered,
                 "a7_recovery_clean_full_oracle": a7_oracle_full,
+                "a8_baseline_full": a8_baseline_full,
+                "a8_save": a8_save,
+                "a8_restart_ready": a8_restart_ready,
+                "a8_post_restart_build": a8_after_restart,
+                "a8_clean_full_oracle": a8_oracle_full,
                 "java9_api_negative": java9_api_negative,
             },
             "output": {
@@ -2140,6 +2321,10 @@ def main(argv: list[str] | None = None) -> int:
                 "a7_recovered_class_sha256": a7_recovered_hashes,
                 "a7_clean_full_oracle_class_sha256": a7_oracle_hashes,
                 "a7_recovered_equals_clean_full_oracle": a7_oracle_equal,
+                "a8_baseline_class_sha256": a8_baseline_hashes,
+                "a8_post_restart_class_sha256": a8_after_restart_hashes,
+                "a8_clean_full_oracle_class_sha256": a8_oracle_hashes,
+                "a8_post_restart_equals_clean_full_oracle": a8_oracle_equal,
             },
             "input_revalidation": input_revalidation,
             "lifecycle": {
@@ -2154,7 +2339,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "cancellation": {
                     "status": "not_run",
-                    "reason": "outside_A1_A7_scope",
+                    "reason": "outside_A1_A8_scope",
                 },
             },
             "measurements": {
@@ -2174,8 +2359,21 @@ def main(argv: list[str] | None = None) -> int:
                     "reason": "resource_delta_instrumentation_not_implemented",
                 },
                 "workspace_restart": {
-                    "status": "not_run",
-                    "reason": "A8_not_run",
+                    "status": "passed",
+                    "runner_generation_id_preserved": generation_ids[
+                        "a8_before_restart"
+                    ]
+                    == generation_ids["a8_after_restart"],
+                    "pre_restart_project_state": "created",
+                    "post_restart_project_state": a8_restart_ready[
+                        "workspace_project_state"
+                    ],
+                    "requested_build_kind": "INCREMENTAL",
+                    "actual_build_kind": a8_actual_kind,
+                    "outcome": a8_restart_outcome,
+                    "save_acknowledged": a8_save
+                    == {"ok": True, "status": "saved"},
+                    "clean_full_oracle_equal": a8_oracle_equal,
                 },
             },
             "phase_1a_case_status": {
@@ -2186,10 +2384,11 @@ def main(argv: list[str] | None = None) -> int:
                 "A5": "passed",
                 "A6": "passed",
                 "A7": "passed",
-                "A8_A10": "not_run",
+                "A8": "passed",
+                "A9_A10": "not_run",
             },
             "limitations": [
-                "only A1 through A7 ran; A8 through A10 are not implemented",
+                "only A1 through A8 ran; A9 and A10 are not implemented",
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
                 "owned process-tree verification remains an A9 lifecycle item",

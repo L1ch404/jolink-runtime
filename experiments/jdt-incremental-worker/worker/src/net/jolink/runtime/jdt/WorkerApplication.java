@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,6 +55,7 @@ public final class WorkerApplication implements IApplication {
     private IProject project;
     private IJavaProject javaProject;
     private boolean instrumentationEnabled;
+    private boolean projectReopened;
 
     @Override
     public Object start(IApplicationContext context) throws Exception {
@@ -121,6 +123,7 @@ public final class WorkerApplication implements IApplication {
         workspace.setDescription(workspaceDescription);
 
         project = workspace.getRoot().getProject(PROJECT_NAME);
+        projectReopened = project.exists();
         if (!project.exists()) {
             project.create(monitor);
         }
@@ -129,16 +132,32 @@ public final class WorkerApplication implements IApplication {
         }
 
         IProjectDescription projectDescription = project.getDescription();
-        projectDescription.setNatureIds(new String[] { JavaCore.NATURE_ID });
-        ICommand builder = projectDescription.newCommand();
-        builder.setBuilderName(JavaCore.BUILDER_ID);
-        projectDescription.setBuildSpec(new ICommand[] { builder });
-        project.setDescription(projectDescription, monitor);
+        boolean descriptionChanged = false;
+        if (!Arrays.equals(
+                projectDescription.getNatureIds(),
+                new String[] { JavaCore.NATURE_ID })) {
+            projectDescription.setNatureIds(new String[] { JavaCore.NATURE_ID });
+            descriptionChanged = true;
+        }
+        ICommand[] existingBuildSpec = projectDescription.getBuildSpec();
+        if (existingBuildSpec.length != 1
+                || !JavaCore.BUILDER_ID.equals(
+                        existingBuildSpec[0].getBuilderName())) {
+            ICommand builder = projectDescription.newCommand();
+            builder.setBuilderName(JavaCore.BUILDER_ID);
+            projectDescription.setBuildSpec(new ICommand[] { builder });
+            descriptionChanged = true;
+        }
+        if (descriptionChanged) {
+            project.setDescription(projectDescription, monitor);
+        }
 
         IFolder source = ensureFolder(project.getFolder("src"));
         IFolder output = ensureFolder(project.getFolder("bin"));
         javaProject = JavaCore.create(project);
-        javaProject.setOutputLocation(output.getFullPath(), monitor);
+        if (!output.getFullPath().equals(javaProject.getOutputLocation())) {
+            javaProject.setOutputLocation(output.getFullPath(), monitor);
+        }
 
         List<IClasspathEntry> classpath = new ArrayList<>();
         classpath.add(JavaCore.newSourceEntry(source.getFullPath()));
@@ -160,8 +179,10 @@ public final class WorkerApplication implements IApplication {
         if (classpath.size() == 1) {
             throw new IOException("System library snapshot is empty.");
         }
-        javaProject.setRawClasspath(
-                classpath.toArray(IClasspathEntry[]::new), monitor);
+        IClasspathEntry[] desiredClasspath = classpath.toArray(IClasspathEntry[]::new);
+        if (!Arrays.equals(javaProject.getRawClasspath(), desiredClasspath)) {
+            javaProject.setRawClasspath(desiredClasspath, monitor);
+        }
 
         Map<String, String> options = new LinkedHashMap<>(
                 javaProject.getOptions(false));
@@ -170,7 +191,9 @@ public final class WorkerApplication implements IApplication {
         options.put(JavaCore.COMPILER_COMPLIANCE, JavaCore.VERSION_1_8);
         options.put(JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, JavaCore.VERSION_1_8);
         options.put(JavaCore.COMPILER_PB_ENABLE_PREVIEW_FEATURES, JavaCore.DISABLED);
-        javaProject.setOptions(options);
+        if (!javaProject.getOptions(false).equals(options)) {
+            javaProject.setOptions(options);
+        }
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
     }
 
@@ -379,6 +402,8 @@ public final class WorkerApplication implements IApplication {
                         Platform.getBundle(JavaCore.PLUGIN_ID).getVersion())) + ","
                 + "\"instrumentation\":"
                 + json(instrumentationEnabled ? "enabled" : "disabled") + ","
+                + "\"workspace_project_state\":"
+                + json(projectReopened ? "reopened" : "created") + ","
                 + "\"evidence_status\":\"phase_1a_candidate\"}");
     }
 

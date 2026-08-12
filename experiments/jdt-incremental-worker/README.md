@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1-A7 partial evidence passed; complete gate remains open`
+Status: `Phase 1A A1-A8 partial evidence passed; complete gate remains open`
 
 Contract:
 
@@ -31,7 +31,8 @@ The current bootstrap can:
     placeholders and extension archives, from the exact target JDK 8;
 11. run full, leaf incremental, no-op incremental, upstream method-body, public
     API propagation, compile-time constant propagation, source deletion, and
-    source/type rename, and same-Worker error/recovery builds;
+    source/type rename, same-Worker error/recovery, and saved-workspace restart
+    builds;
 12. reject a source that references Java 9's `List.of`;
 13. observe actual batch/incremental behavior and compiled source units through
     a read-only `CompilationParticipant`;
@@ -62,13 +63,13 @@ Extension ClassLoader cross-check. No effective endorsed archive was present.
 The latest real macOS run therefore reports:
 
 ```text
-status          = phase_1a_a1_a2_a3_a4_a5_a6_a7_evidence_passed
-evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6_a7
+status          = phase_1a_a1_a2_a3_a4_a5_a6_a7_a8_evidence_passed
+evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6_a7_a8
 ```
 
-This is real evidence for A1-A7, not a Phase 1A Go decision. A8 through A10,
-resource/RSS measurement, cancellation pressure, workspace restart, and
-the Windows run are still outstanding.
+This is real evidence for A1-A8, not a Phase 1A Go decision. A9,
+resource/RSS measurement, cancellation pressure, and A10 Windows/path-boundary
+evidence (including spaces and non-ASCII paths) are still outstanding.
 
 ## Files
 
@@ -110,8 +111,9 @@ fixtures/java9-api-negative/
     companion source proving the Java 8 platform rejects List.of
 
 run_bootstrap_smoke.py
-    private target-library capture, Worker launch, full/incremental/no-op,
-    instrumentation parity, clean-full oracle, and bounded shutdown
+    private target-library capture, Worker launch/restart,
+    full/incremental/no-op, instrumentation parity, clean-full oracle, and
+    bounded shutdown
 ```
 
 ## Reproduce on macOS/POSIX
@@ -146,7 +148,7 @@ Artifacts and attempts stay outside the repository by default:
 The candidate lock is committed; downloaded Eclipse JARs and attempt workspaces
 are not.
 
-## Latest observed A1-A7 evidence
+## Latest observed A1-A8 evidence
 
 On macOS a real run produced:
 
@@ -169,6 +171,9 @@ A6 vs clean-full oracles   exact for both independent edits
 broken generation          structured ERROR / non-publishable
 same-Worker recovery       incremental / diagnostics cleared / publishable
 A7 vs clean-full oracle    exact
+workspace restart          saved / stopped / reopened in a new Worker
+post-restart build         actual INCREMENTAL / Application.java only
+A8 vs clean-full oracle    exact
 Java 9 API negative        List.of rejected with an ERROR marker
 target javac platform      20 advertised / 17 present / 3 absent placeholders
 extension libraries        11 / runtime cross-check exact
@@ -188,9 +193,8 @@ Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
 The next work should remain inside this experiment and add, in order:
 
-1. A8 workspace restart;
-2. A9 repeated-build/resource stability;
-3. A10 Windows, spaces, and non-ASCII paths.
+1. A9 repeated-build/resource stability;
+2. A10 Windows, spaces, and non-ASCII paths.
 
 Phase 1B Lombok work must not begin until the same exact evidence candidate
 passes the complete Phase 1A Go gate.

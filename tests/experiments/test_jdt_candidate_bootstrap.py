@@ -432,6 +432,41 @@ def test_class_family_uses_exact_binary_name_boundary(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("actual_build_kind", "expected_outcome", "expected_units"),
+    [
+        (
+            "INCREMENTAL",
+            "incremental_state_restored",
+            ["src/example/Application.java"],
+        ),
+        (
+            "FULL",
+            "explicit_full_rebuild_required",
+            [
+                "src/example/Api.java",
+                "src/example/Application.java",
+                "src/example/Service.java",
+            ],
+        ),
+    ],
+)
+def test_restart_build_expectations_are_explicit(
+    actual_build_kind: str,
+    expected_outcome: str,
+    expected_units: list[str],
+) -> None:
+    assert smoke.restart_build_expectations(actual_build_kind) == (
+        expected_outcome,
+        expected_units,
+    )
+
+
+def test_restart_build_expectations_reject_unobserved_kind() -> None:
+    with pytest.raises(smoke.SmokeError, match="incremental or full"):
+        smoke.restart_build_expectations(None)
+
+
 def test_selected_unknown_mandatory_capability_fails_closed(
     tmp_path: Path,
 ) -> None:

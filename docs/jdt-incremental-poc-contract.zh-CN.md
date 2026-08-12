@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A7 部分证据已通过；A8-A10 待验证`
+实现状态：`A1-A8 部分证据已通过；A9-A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -60,6 +60,10 @@ joLink（未来阶段）
   build。Python 自己挑源文件再调用 ECJ Batch 不属于本契约的增量构建。
 - `Generation`：一个私有 workspace、编译器身份、项目配置、源码快照、
   输出树及 build state。不同 generation 的结果不能混用。
+- `Publication transaction`：未来产品接入时的发布边界。Runtime 在 candidate
+  generation 编译和验证期间继续使用已提交的 last-good generation。
+  `generation_publishable` 目前只是逻辑发布门禁，并不会把 JDT 可变的 `bin`
+  目录变成物理 last-good 存储。
 - `Clean-full oracle`：从同一冻结输入、使用同一锁定 JDT 栈创建的新私有
   generation，是判断增量结果正确性的基准。
 - `Evidence candidate`：由精确的 Worker JDK、Equinox/bundle lock、JDT、
@@ -353,10 +357,37 @@ Java Builder 自己要求 full，否则应在同一 Worker 恢复。
 可发布 class tree。失败构建期间生成或保留的 class 只作为证据记录，绝不作为
 可发布输出对外呈现。
 
+#### 未来 Runtime 发布边界（仅记录，Phase 1 不实现）
+
+JDT 会直接写入私有 generation 的可变输出树；失败 build 可能保留、删除或
+替换其中的 class。因此 `generation_publishable=false` 是逻辑安全门禁，不是
+物理 last-good output 隔离。产品 Runtime 接入时绝不能扫描当前 `bin` 后把
+其中所有 class 直接 HotSwap，而必须把编译视为 publication transaction：
+
+```text
+已提交的 last-good generation N 继续服务 Runtime
+    candidate N+1 编译失败 -> ABORT；N+1 的 class 一个也不发布
+    candidate N+1 编译成功 -> COMMIT 明确验证过的输出集合
+                              然后才允许 HotSwap 或 restart
+```
+
+物理实现可以是独立输出根、不可变快照、copy-on-commit 或以后评审确定的其他
+方案，当前故意留到产品化阶段再决定。Phase 1 只记录编译器现实并执行逻辑门禁，
+不宣称已经具备事务化输出存储。
+
 ### A8 — Workspace restart
 
 成功 build 后优雅保存、停止、重启同一 generation，再做普通方法体修改。
 结果是 incremental 或 required full 都必须显式且正确，禁止静默 fallback。
+
+首次 macOS A8 证据先完成 full build，收到明确的 Workspace save 确认并协作式
+关闭 Worker，然后用同一 configuration area、workspace 和 generation 启动新的
+Worker 进程。重开的 Worker 接收普通方法体修改和 requested incremental build；
+真实 Java Builder 报告 `actual_build_kind=INCREMENTAL`，只编译
+`Application.java`、只改变 `Application.class`，最终输出树和 diagnostics 与
+独立 clean-full oracle 完全一致。A8 的三个 Worker 实例全部协作式退出。该证据
+只证明当前冻结 candidate 与 fixture 的状态恢复，不证明 crash recovery、指纹失效
+或长期运行稳定性。
 
 ### A9 — 重复构建稳定性
 
