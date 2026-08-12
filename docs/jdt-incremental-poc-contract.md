@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A6 partial evidence passed; A7-A10 pending`
+Implementation-Status: `A1-A7 partial evidence passed; A8-A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -425,9 +425,11 @@ top-level, inner, anonymous, and synthetic class-family outputs to be removed.
 The output and diagnostic state must equal a clean-full oracle.
 
 The first macOS A6 evidence fixture includes a top-level class, member classes,
-an anonymous class, a local class, and a generic override whose class contains
-an `ACC_BRIDGE | ACC_SYNTHETIC` method. Deleting the source removed the complete
-six-file class family while leaving an unrelated class unchanged. A separate
+an anonymous class, a local class, and a generic override. The runner discovers
+the candidate's class family from the full-build output and directly verifies
+that the override class contains an `ACC_BRIDGE | ACC_SYNTHETIC` method.
+Deleting the source removed the complete discovered class family while leaving
+an unrelated class unchanged. A separate
 source/type rename removed that same old family and produced the complete new
 family. Both incremental output trees and diagnostics matched independent
 clean-full oracles exactly.
@@ -442,6 +444,16 @@ Introduce a deterministic compilation error. The worker must:
 
 Fix the source and require the next build to recover without recreating the
 worker unless the Java Builder itself requests a full build.
+
+The first macOS A7 evidence run introduces an unresolved symbol into a class
+that previously compiled. The same Worker returns a bounded structured ERROR
+diagnostic with resource, line, character range, severity, and message; marks
+the generation non-publishable; and exposes no publishable changed classes.
+After replacing the broken body with a valid edit, that same Worker performs an
+incremental recovery, clears all diagnostics, and produces a publishable class
+tree exactly equal to an independent clean-full oracle. Any class emitted or
+retained during the failed build is recorded as evidence only and is never
+presented as publishable output.
 
 ### A8 — Workspace restart
 

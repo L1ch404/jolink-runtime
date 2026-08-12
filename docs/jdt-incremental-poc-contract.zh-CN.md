@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A6 部分证据已通过；A7-A10 待验证`
+实现状态：`A1-A7 部分证据已通过；A8-A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -331,8 +331,10 @@ diagnostics 必须与 clean-full oracle 一致。
 synthetic class family 都必须清除，输出和 diagnostics 等于 clean-full。
 
 首次 macOS A6 证据 fixture 包含 top-level class、member class、anonymous
-class、local class，以及 class 中包含 `ACC_BRIDGE | ACC_SYNTHETIC` 方法的
-generic override。删除 source 后，完整的 6 个 class-family 文件都被清除，
+class、local class 和 generic override。Runner 从 full-build 实际输出中动态发现
+该 candidate 的 class family，并直接验证 override class 中包含
+`ACC_BRIDGE | ACC_SYNTHETIC` 方法。删除 source 后，完整的已发现
+class family 都被清除，
 不相关 class 保持不变。独立的 source/type 重命名实验同样清除了全部旧
 family，并生成完整新 family。两组增量输出树和 diagnostics 都与各自的
 clean-full oracle 完全一致。
@@ -342,6 +344,14 @@ clean-full oracle 完全一致。
 引入确定性编译错误。Worker 必须返回 problem marker 的有界结构化诊断，
 不能宣布 generation 可发布，也不能把过期 class 当成功输出。修复后除非
 Java Builder 自己要求 full，否则应在同一 Worker 恢复。
+
+首次 macOS A7 证据在一个原本可编译的 class 中引入 unresolved symbol。
+同一 Worker 返回包含 resource、line、character range、severity 和 message 的
+有界结构化 ERROR 诊断，明确标记 generation 不可发布，并且不暴露任何
+可发布 changed class。将错误修复为另一个有效实现后，同一 Worker 完成
+增量恢复、清空全部 diagnostics，并产生与独立 clean-full oracle 完全相同的
+可发布 class tree。失败构建期间生成或保留的 class 只作为证据记录，绝不作为
+可发布输出对外呈现。
 
 ### A8 — Workspace restart
 

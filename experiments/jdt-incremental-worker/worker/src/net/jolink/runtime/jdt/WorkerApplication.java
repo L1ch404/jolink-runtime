@@ -243,6 +243,7 @@ public final class WorkerApplication implements IApplication {
         IMarker[] markers = project.findMarkers(
                 IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
         List<String> diagnostics = new ArrayList<>();
+        List<String> diagnosticDetails = new ArrayList<>();
         int errorCount = 0;
         for (IMarker marker : markers) {
             int severity = marker.getAttribute(IMarker.SEVERITY, -1);
@@ -254,6 +255,15 @@ public final class WorkerApplication implements IApplication {
                 int line = marker.getAttribute(IMarker.LINE_NUMBER, -1);
                 String message = marker.getAttribute(IMarker.MESSAGE, "");
                 diagnostics.add(resource + ":" + line + ":" + severity + ":" + message);
+                int characterStart = marker.getAttribute(IMarker.CHAR_START, -1);
+                int characterEnd = marker.getAttribute(IMarker.CHAR_END, -1);
+                diagnosticDetails.add("{\"resource\":" + json(resource)
+                        + ",\"line\":" + line
+                        + ",\"severity\":" + severity
+                        + ",\"severity_name\":" + json(severityName(severity))
+                        + ",\"character_start\":" + characterStart
+                        + ",\"character_end\":" + characterEnd
+                        + ",\"message\":" + json(message) + "}");
             }
         }
 
@@ -282,17 +292,22 @@ public final class WorkerApplication implements IApplication {
                 .append("}")
                 .append(",\"resource_delta\":{")
                 .append("\"status\":\"unavailable\",")
-                .append("\"reason\":\"not_instrumented_in_a1_a3\"}")
+                .append("\"reason\":\"resource_delta_instrumentation_not_implemented\"}")
                 .append(",\"observer_build_finished\":")
                 .append(observation.buildFinished)
                 .append(",\"compiled_source_units\":")
                 .append(jsonArray(observation.compiledUnits))
                 .append(",\"elapsed_ms\":").append(elapsedMillis)
                 .append(",\"error_count\":").append(errorCount)
+                .append(",\"generation_publishable\":").append(errorCount == 0)
                 .append(",\"class_count\":").append(after.size())
                 .append(",\"changed_classes\":").append(jsonArray(changed))
+                .append(",\"publishable_changed_classes\":")
+                .append(errorCount == 0 ? jsonArray(changed) : "[]")
                 .append(",\"deleted_classes\":").append(jsonArray(deleted))
                 .append(",\"diagnostics\":").append(jsonArray(diagnostics))
+                .append(",\"diagnostic_details\":")
+                .append(jsonObjectsArray(diagnosticDetails))
                 .append(",\"diagnostics_truncated\":")
                 .append(markers.length > MAX_DIAGNOSTICS)
                 .append("}");
@@ -386,6 +401,23 @@ public final class WorkerApplication implements IApplication {
             result.append(json(values.get(index)));
         }
         return result.append(']').toString();
+    }
+
+    private static String jsonObjectsArray(List<String> values) {
+        return "[" + String.join(",", values) + "]";
+    }
+
+    private static String severityName(int severity) {
+        if (severity == IMarker.SEVERITY_ERROR) {
+            return "ERROR";
+        }
+        if (severity == IMarker.SEVERITY_WARNING) {
+            return "WARNING";
+        }
+        if (severity == IMarker.SEVERITY_INFO) {
+            return "INFO";
+        }
+        return "UNKNOWN";
     }
 
     private static String json(String value) {

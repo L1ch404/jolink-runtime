@@ -253,6 +253,8 @@ def test_exact_build_gate_accepts_observed_leaf_incremental() -> None:
         },
         "compiled_source_units": ["src/example/Application.java"],
         "changed_classes": ["example/Application.class"],
+        "generation_publishable": True,
+        "publishable_changed_classes": ["example/Application.class"],
         "deleted_classes": [],
         "error_count": 0,
     }
@@ -291,6 +293,8 @@ def test_exact_build_gate_rejects_full_build_masquerading_as_incremental() -> No
             "src/example/Service.java",
         ],
         "changed_classes": ["example/Application.class"],
+        "generation_publishable": True,
+        "publishable_changed_classes": ["example/Application.class"],
         "deleted_classes": [],
         "error_count": 0,
     }
@@ -322,6 +326,8 @@ def test_exact_no_compile_gate_accepts_absent_compilation_callbacks() -> None:
         },
         "compiled_source_units": [],
         "changed_classes": [],
+        "generation_publishable": True,
+        "publishable_changed_classes": [],
         "deleted_classes": [],
         "error_count": 0,
     }
@@ -354,6 +360,8 @@ def test_exact_build_gate_requires_project_build_to_return() -> None:
         },
         "compiled_source_units": [],
         "changed_classes": [],
+        "generation_publishable": True,
+        "publishable_changed_classes": [],
         "deleted_classes": [],
         "error_count": 0,
     }
@@ -369,6 +377,59 @@ def test_exact_build_gate_requires_project_build_to_return() -> None:
             expected_callbacks_seen=False,
             expected_observer_build_finished=False,
         )
+
+
+def test_exact_build_gate_rejects_non_publishable_generation() -> None:
+    frame = {
+        "ok": True,
+        "actual_build_kind": "INCREMENTAL",
+        "build_outcome": "COMPILED",
+        "project_build_returned": True,
+        "compilation_observation": {
+            "status": "enabled",
+            "callbacks_seen": True,
+            "batch_seen": False,
+            "incremental_compile_seen": True,
+            "build_finished": True,
+            "compiled_source_units": ["src/example/Application.java"],
+        },
+        "compiled_source_units": ["src/example/Application.java"],
+        "changed_classes": ["example/Application.class"],
+        "generation_publishable": False,
+        "publishable_changed_classes": [],
+        "deleted_classes": [],
+        "error_count": 0,
+    }
+
+    with pytest.raises(smoke.SmokeError, match="publishable generation"):
+        smoke.require_exact_observed_build(
+            frame,
+            label="fixture",
+            actual_build_kind="INCREMENTAL",
+            build_outcome="COMPILED",
+            compiled_source_units=["src/example/Application.java"],
+            changed_classes=["example/Application.class"],
+        )
+
+
+def test_class_family_uses_exact_binary_name_boundary(tmp_path: Path) -> None:
+    output = tmp_path / "bin"
+    package = output / "example"
+    package.mkdir(parents=True)
+    for relative in (
+        "Legacy.class",
+        "Legacy$Inner.class",
+        "Legacy$1.class",
+        "LegacyExtra.class",
+        "Unrelated.class",
+    ):
+        (package / relative).write_bytes(b"fixture")
+
+    assert smoke.class_family(output, "example/Legacy") == [
+        "example/Legacy$1.class",
+        "example/Legacy$Inner.class",
+        "example/Legacy.class",
+    ]
 
 
 def test_selected_unknown_mandatory_capability_fails_closed(

@@ -688,6 +688,93 @@ def class_major(path: Path) -> int:
     return int.from_bytes(payload[6:8], "big")
 
 
+def class_family(output: Path, binary_name: str) -> list[str]:
+    package, _, simple_name = binary_name.rpartition("/")
+    directory = output / package if package else output
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path.relative_to(output).as_posix()
+        for path in directory.glob(f"{simple_name}*.class")
+        if path.name == f"{simple_name}.class"
+        or path.name.startswith(f"{simple_name}$")
+    )
+
+
+def class_file_has_bridge_synthetic_method(path: Path) -> bool:
+    data = path.read_bytes()
+    if len(data) < 10 or data[:4] != b"\xca\xfe\xba\xbe":
+        raise SmokeError("Invalid class output while reading method flags.")
+    index = 8
+
+    def u1() -> int:
+        nonlocal index
+        value = data[index]
+        index += 1
+        return value
+
+    def u2() -> int:
+        nonlocal index
+        value = int.from_bytes(data[index : index + 2], "big")
+        index += 2
+        return value
+
+    def u4() -> int:
+        nonlocal index
+        value = int.from_bytes(data[index : index + 4], "big")
+        index += 4
+        return value
+
+    constant_pool_count = u2()
+    slot = 1
+    while slot < constant_pool_count:
+        tag = u1()
+        if tag == 1:
+            length = u2()
+            index += length
+        elif tag in {3, 4, 9, 10, 11, 12, 17, 18}:
+            index += 4
+        elif tag in {5, 6}:
+            index += 8
+            slot += 1
+        elif tag in {7, 8, 16, 19, 20}:
+            index += 2
+        elif tag == 15:
+            index += 3
+        else:
+            raise SmokeError(f"Unsupported class-file constant-pool tag: {tag}")
+        slot += 1
+
+    index += 6
+    interfaces_count = u2()
+    index += interfaces_count * 2
+
+    def skip_members() -> None:
+        nonlocal index
+        member_count = u2()
+        for _ in range(member_count):
+            index += 6
+            attribute_count = u2()
+            for _ in range(attribute_count):
+                index += 2
+                attribute_length = u4()
+                index += attribute_length
+
+    skip_members()
+    method_count = u2()
+    for _ in range(method_count):
+        access_flags = u2()
+        index += 4
+        attribute_count = u2()
+        for _ in range(attribute_count):
+            index += 2
+            attribute_length = u4()
+            index += attribute_length
+        if access_flags & 0x0040 and access_flags & 0x1000:
+            return True
+    return False
+
+
 def require_exact_observed_build(
     frame: dict[str, Any],
     *,
@@ -737,6 +824,10 @@ def require_exact_observed_build(
         raise SmokeError(f"{label} incremental observation is inconsistent.")
     if int(frame.get("error_count", -1)) != 0:
         raise SmokeError(f"{label} produced ERROR markers.")
+    if frame.get("generation_publishable") is not True:
+        raise SmokeError(f"{label} did not produce a publishable generation.")
+    if frame.get("publishable_changed_classes") != changed_classes:
+        raise SmokeError(f"{label} publishable class evidence is inconsistent.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -757,6 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         "plain_java": root / "fixtures" / "plain-java" / "src",
         "dependency_java": root / "fixtures" / "dependency-java" / "src",
         "class_family_java": root / "fixtures" / "class-family-java" / "src",
+        "recovery_java": root / "fixtures" / "recovery-java" / "src",
         "java9_api_negative": root
         / "fixtures"
         / "java9-api-negative"
@@ -794,6 +886,8 @@ def main(argv: list[str] | None = None) -> int:
         "a6_delete_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "a6_rename": f"generation-{uuid.uuid4().hex[:12]}",
         "a6_rename_oracle": f"generation-{uuid.uuid4().hex[:12]}",
+        "a7_recovery": f"generation-{uuid.uuid4().hex[:12]}",
+        "a7_recovery_oracle": f"generation-{uuid.uuid4().hex[:12]}",
         "java9_api_negative": f"generation-{uuid.uuid4().hex[:12]}",
     }
     attempts_root = args.cache_root / "attempts"
@@ -1396,22 +1490,6 @@ def main(argv: list[str] | None = None) -> int:
                 a5_constant_oracle_client.close()
             )
 
-        a6_legacy_family = [
-            "example/Legacy$1.class",
-            "example/Legacy$1Local.class",
-            "example/Legacy$Bridge.class",
-            "example/Legacy$GenericBase.class",
-            "example/Legacy$Inner.class",
-            "example/Legacy.class",
-        ]
-        a6_replacement_family = [
-            relative.replace("Legacy", "Replacement")
-            for relative in a6_legacy_family
-        ]
-        a6_baseline_classes = sorted(
-            [*a6_legacy_family, "example/Keep.class"]
-        )
-
         a6_delete_attempt = attempt / "a6-delete-source"
         a6_delete_attempt.mkdir()
         a6_delete_client = start_worker(
@@ -1434,6 +1512,14 @@ def main(argv: list[str] | None = None) -> int:
                 dirs_exist_ok=True,
             )
             a6_delete_baseline_full = a6_delete_client.command("BUILD\tFULL")
+            a6_delete_classes = (
+                a6_delete_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a6_delete_baseline_hashes = output_hashes(a6_delete_classes)
+            a6_legacy_family = class_family(a6_delete_classes, "example/Legacy")
+            a6_baseline_classes = sorted(
+                [*a6_legacy_family, "example/Keep.class"]
+            )
             require_exact_observed_build(
                 a6_delete_baseline_full,
                 label="A6 delete baseline full build",
@@ -1445,10 +1531,19 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 changed_classes=a6_baseline_classes,
             )
-            a6_delete_classes = (
-                a6_delete_attempt / "workspace" / "plain-fixture" / "bin"
-            )
-            a6_delete_baseline_hashes = output_hashes(a6_delete_classes)
+            if len(a6_legacy_family) < 2:
+                raise SmokeError("A6 baseline did not generate a class family.")
+            if not class_file_has_bridge_synthetic_method(
+                a6_delete_classes / "example" / "Legacy$Bridge.class"
+            ):
+                raise SmokeError(
+                    "A6 baseline did not contain a bridge/synthetic method."
+                )
+            if set(a6_delete_baseline_hashes) != {
+                *a6_legacy_family,
+                "example/Keep.class",
+            }:
+                raise SmokeError("A6 baseline class-family discovery is incomplete.")
             (a6_delete_source / "example" / "Legacy.java").unlink()
             a6_delete_incremental = a6_delete_client.command("BUILD\tINCREMENTAL")
             require_exact_observed_build(
@@ -1538,6 +1633,13 @@ def main(argv: list[str] | None = None) -> int:
                 dirs_exist_ok=True,
             )
             a6_rename_baseline_full = a6_rename_client.command("BUILD\tFULL")
+            a6_rename_classes = (
+                a6_rename_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a6_rename_baseline_hashes = output_hashes(a6_rename_classes)
+            a6_rename_legacy_family = class_family(
+                a6_rename_classes, "example/Legacy"
+            )
             require_exact_observed_build(
                 a6_rename_baseline_full,
                 label="A6 rename baseline full build",
@@ -1549,10 +1651,8 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 changed_classes=a6_baseline_classes,
             )
-            a6_rename_classes = (
-                a6_rename_attempt / "workspace" / "plain-fixture" / "bin"
-            )
-            a6_rename_baseline_hashes = output_hashes(a6_rename_classes)
+            if a6_rename_legacy_family != a6_legacy_family:
+                raise SmokeError("A6 baseline class-family output is inconsistent.")
             legacy_source = a6_rename_source / "example" / "Legacy.java"
             replacement_source = a6_rename_source / "example" / "Replacement.java"
             replacement_source.write_text(
@@ -1563,6 +1663,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             legacy_source.unlink()
             a6_rename_incremental = a6_rename_client.command("BUILD\tINCREMENTAL")
+            a6_replacement_family = class_family(
+                a6_rename_classes, "example/Replacement"
+            )
+            if len(a6_replacement_family) != len(a6_legacy_family):
+                raise SmokeError("A6 rename produced an incomplete new class family.")
+            expected_replacement_suffixes = sorted(
+                relative.removeprefix("example/Legacy")
+                for relative in a6_legacy_family
+            )
+            actual_replacement_suffixes = sorted(
+                relative.removeprefix("example/Replacement")
+                for relative in a6_replacement_family
+            )
+            if actual_replacement_suffixes != expected_replacement_suffixes:
+                raise SmokeError("A6 renamed class-family shape changed unexpectedly.")
             require_exact_observed_build(
                 a6_rename_incremental,
                 label="A6 source and type rename",
@@ -1633,6 +1748,171 @@ def main(argv: list[str] | None = None) -> int:
                 raise SmokeError("A6 rename output differs from clean-full oracle.")
         finally:
             shutdown_reports["a6_rename_oracle"] = a6_rename_oracle_client.close()
+
+        a7_attempt = attempt / "a7-error-recovery"
+        a7_attempt.mkdir()
+        a7_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a7_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a7_client.process.pid)
+        try:
+            a7_source = a7_attempt / "workspace" / "plain-fixture" / "src"
+            shutil.copytree(
+                root / "fixtures" / "recovery-java" / "src",
+                a7_source,
+                dirs_exist_ok=True,
+            )
+            a7_baseline_full = a7_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a7_baseline_full,
+                label="A7 baseline full build",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Keep.java",
+                    "src/example/Recovery.java",
+                ],
+                changed_classes=[
+                    "example/Keep.class",
+                    "example/Recovery.class",
+                ],
+            )
+            a7_classes = a7_attempt / "workspace" / "plain-fixture" / "bin"
+            a7_baseline_hashes = output_hashes(a7_classes)
+            a7_recovery_source = a7_source / "example" / "Recovery.java"
+            a7_original = a7_recovery_source.read_text(encoding="utf-8")
+            a7_broken_source = a7_original.replace(
+                "return 7;", "return missingSymbol;"
+            )
+            if a7_broken_source == a7_original:
+                raise SmokeError("A7 broken edit did not match the fixture.")
+            a7_recovery_source.write_text(a7_broken_source, encoding="utf-8")
+            a7_broken = a7_client.command("BUILD\tINCREMENTAL")
+            broken_observation = a7_broken.get("compilation_observation")
+            broken_diagnostics = a7_broken.get("diagnostic_details")
+            if (
+                a7_broken.get("ok") is not False
+                or a7_broken.get("actual_build_kind") != "INCREMENTAL"
+                or a7_broken.get("build_outcome") != "COMPILED"
+                or a7_broken.get("project_build_returned") is not True
+                or not isinstance(broken_observation, dict)
+                or broken_observation.get("status") != "enabled"
+                or broken_observation.get("callbacks_seen") is not True
+                or broken_observation.get("incremental_compile_seen") is not True
+                or broken_observation.get("compiled_source_units")
+                != ["src/example/Recovery.java"]
+                or int(a7_broken.get("error_count", 0)) < 1
+                or a7_broken.get("generation_publishable") is not False
+                or a7_broken.get("publishable_changed_classes") != []
+                or a7_broken.get("diagnostics_truncated") is not False
+                or not isinstance(broken_diagnostics, list)
+                or not broken_diagnostics
+                or len(broken_diagnostics) > 64
+            ):
+                raise SmokeError("A7 broken generation evidence is incomplete.")
+            primary_error = broken_diagnostics[0]
+            if (
+                primary_error.get("resource") != "src/example/Recovery.java"
+                or primary_error.get("severity_name") != "ERROR"
+                or int(primary_error.get("line", -1)) != 5
+                or int(primary_error.get("character_start", -1)) < 0
+                or int(primary_error.get("character_end", -1))
+                <= int(primary_error.get("character_start", -1))
+                or "missingSymbol" not in str(primary_error.get("message", ""))
+            ):
+                raise SmokeError("A7 structured diagnostic is incomplete.")
+            a7_broken_hashes = output_hashes(a7_classes)
+            a7_failed_output_state = (
+                "deleted"
+                if "example/Recovery.class" not in a7_broken_hashes
+                else (
+                    "retained_unchanged"
+                    if a7_broken_hashes["example/Recovery.class"]
+                    == a7_baseline_hashes["example/Recovery.class"]
+                    else "problem_output_changed"
+                )
+            )
+            if a7_broken_hashes.get("example/Keep.class") != a7_baseline_hashes.get(
+                "example/Keep.class"
+            ):
+                raise SmokeError("A7 broken edit unexpectedly changed Keep.class.")
+
+            a7_fixed_source = a7_original.replace("return 7;", "return 9;")
+            a7_recovery_source.write_text(a7_fixed_source, encoding="utf-8")
+            a7_recovered = a7_client.command("BUILD\tINCREMENTAL")
+            require_exact_observed_build(
+                a7_recovered,
+                label="A7 same-worker recovery",
+                actual_build_kind="INCREMENTAL",
+                build_outcome="COMPILED",
+                compiled_source_units=["src/example/Recovery.java"],
+                changed_classes=["example/Recovery.class"],
+            )
+            if a7_recovered.get("diagnostic_details") != []:
+                raise SmokeError("A7 recovery left structured diagnostics behind.")
+            a7_recovered_hashes = output_hashes(a7_classes)
+            if a7_recovered_hashes.get(
+                "example/Recovery.class"
+            ) == a7_baseline_hashes.get("example/Recovery.class"):
+                raise SmokeError("A7 recovered output did not reflect the fixed source.")
+            if a7_recovered_hashes.get(
+                "example/Keep.class"
+            ) != a7_baseline_hashes.get("example/Keep.class"):
+                raise SmokeError("A7 recovery unexpectedly changed Keep.class.")
+        finally:
+            shutdown_reports["a7_recovery"] = a7_client.close()
+
+        a7_oracle_attempt = attempt / "a7-recovery-clean-full-oracle"
+        a7_oracle_attempt.mkdir()
+        a7_oracle_client = start_worker(
+            lock=lock,
+            candidate_root=candidate_root,
+            worker_java_home=args.worker_java_home,
+            attempt=a7_oracle_attempt,
+            system_libraries_file=snapshot["worker_input"],
+            instrumentation="enabled",
+            timeout=args.timeout,
+        )
+        owned_worker_pids.append(a7_oracle_client.process.pid)
+        try:
+            a7_oracle_source = (
+                a7_oracle_attempt / "workspace" / "plain-fixture" / "src"
+            )
+            shutil.copytree(a7_source, a7_oracle_source, dirs_exist_ok=True)
+            a7_oracle_full = a7_oracle_client.command("BUILD\tFULL")
+            require_exact_observed_build(
+                a7_oracle_full,
+                label="A7 recovery clean-full oracle",
+                actual_build_kind="FULL",
+                build_outcome="COMPILED",
+                compiled_source_units=[
+                    "src/example/Keep.java",
+                    "src/example/Recovery.java",
+                ],
+                changed_classes=[
+                    "example/Keep.class",
+                    "example/Recovery.class",
+                ],
+            )
+            a7_oracle_hashes = output_hashes(
+                a7_oracle_attempt / "workspace" / "plain-fixture" / "bin"
+            )
+            a7_oracle_equal = (
+                a7_oracle_full.get("ok") is True
+                and a7_oracle_hashes == a7_recovered_hashes
+                and a7_oracle_full.get("diagnostic_details")
+                == a7_recovered.get("diagnostic_details")
+            )
+            if not a7_oracle_equal:
+                raise SmokeError("A7 recovered output differs from clean-full oracle.")
+        finally:
+            shutdown_reports["a7_recovery_oracle"] = a7_oracle_client.close()
 
         negative_attempt = attempt / "java9-api-negative"
         negative_attempt.mkdir()
@@ -1722,8 +2002,8 @@ def main(argv: list[str] | None = None) -> int:
             "attempt_id": attempt_id,
             "generation_id": generation_ids["primary"],
             "generation_ids": generation_ids,
-            "status": "phase_1a_a1_a2_a3_a4_a5_a6_evidence_passed",
-            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6",
+            "status": "phase_1a_a1_a2_a3_a4_a5_a6_a7_evidence_passed",
+            "evidence_status": "partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6_a7",
             "candidate_id": lock["candidate_id"],
             "candidate_execution_environment": lock["execution_environment"],
             "provenance": {
@@ -1755,6 +2035,7 @@ def main(argv: list[str] | None = None) -> int:
                         "a5_constant": tree_fingerprint(a5_constant_source),
                         "a6_delete": tree_fingerprint(a6_delete_source),
                         "a6_rename": tree_fingerprint(a6_rename_source),
+                        "a7_recovery": tree_fingerprint(a7_source),
                     },
                 },
             },
@@ -1789,6 +2070,10 @@ def main(argv: list[str] | None = None) -> int:
                 "a6_rename_baseline_full": a6_rename_baseline_full,
                 "a6_rename_incremental": a6_rename_incremental,
                 "a6_rename_clean_full_oracle": a6_rename_oracle_full,
+                "a7_baseline_full": a7_baseline_full,
+                "a7_broken_incremental": a7_broken,
+                "a7_recovered_incremental": a7_recovered,
+                "a7_recovery_clean_full_oracle": a7_oracle_full,
                 "java9_api_negative": java9_api_negative,
             },
             "output": {
@@ -1848,6 +2133,13 @@ def main(argv: list[str] | None = None) -> int:
                 "a6_rename_incremental_equals_clean_full_oracle": (
                     a6_rename_oracle_equal
                 ),
+                "a6_bridge_synthetic_method_verified": True,
+                "a7_baseline_class_sha256": a7_baseline_hashes,
+                "a7_broken_class_sha256": a7_broken_hashes,
+                "a7_failed_output_state": a7_failed_output_state,
+                "a7_recovered_class_sha256": a7_recovered_hashes,
+                "a7_clean_full_oracle_class_sha256": a7_oracle_hashes,
+                "a7_recovered_equals_clean_full_oracle": a7_oracle_equal,
             },
             "input_revalidation": input_revalidation,
             "lifecycle": {
@@ -1862,7 +2154,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "cancellation": {
                     "status": "not_run",
-                    "reason": "outside_A1_A6_scope",
+                    "reason": "outside_A1_A7_scope",
                 },
             },
             "measurements": {
@@ -1893,10 +2185,11 @@ def main(argv: list[str] | None = None) -> int:
                 "A4": "passed",
                 "A5": "passed",
                 "A6": "passed",
-                "A7_A10": "not_run",
+                "A7": "passed",
+                "A8_A10": "not_run",
             },
             "limitations": [
-                "only A1 through A6 ran; A7 through A10 are not implemented",
+                "only A1 through A7 ran; A8 through A10 are not implemented",
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
                 "owned process-tree verification remains an A9 lifecycle item",
