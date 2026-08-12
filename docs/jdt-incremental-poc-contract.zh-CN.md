@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A8 部分证据已通过；A9 设计已批准并进入实现；A10 待验证`
+实现状态：`A1-A9 实现证据已通过；canonical clean-worktree 重跑与 A10 待验证`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -458,8 +458,11 @@ diagnostic、output-family 和 oracle gate。warm-up 只是不计入资源趋势
 开始和结束的 source-tree fingerprint 必须一致。121 个 warm-up + measured 请求
 必须由同一个 Worker 和 workspace 完成；中途重建 Worker 会使 A9-S 证据失效。
 
-所有适合增量的状态修改都必须报告 `actual_build_kind=INCREMENTAL`；no-op 必须
-明确为 `NO_COMPILE`；错误修改必须产生预期的结构化 ERROR。源码错误属于一次已完成
+所有适合增量的源码编译请求都必须报告 `actual_build_kind=INCREMENTAL`；no-op 必须
+明确为 `NO_COMPILE`。删除源码属于仅资源变更：它必须报告
+`actual_build_kind=null`、`build_outcome=NO_COMPILE`、无 compiled unit，并在
+`deleted_classes` 中返回完整被删除 class family，最终输出必须与 clean-full oracle
+一致；恢复该源码时必须重新报告 `INCREMENTAL`。错误修改必须产生预期的结构化 ERROR。源码错误属于一次已完成
 的 build，而不是 infrastructure abort：它发出 `BUILD_COMPLETED`，其中
 `operation_kind=INCREMENTAL`、`operation_ok=true`、`compile_ok=false`；对应 build
 generation 的不可变终态是 `FAILED_COMPILE` 且不可发布，但 workspace lineage 仍

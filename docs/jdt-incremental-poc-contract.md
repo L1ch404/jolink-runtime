@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A8 partial evidence passed; A9 design approved and implementation started; A10 pending`
+Implementation-Status: `A1-A9 implementation evidence passed; canonical clean-worktree rerun and A10 pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -583,8 +583,12 @@ the private source copy. Every epoch must begin and end at the same source-tree
 fingerprint. The same Worker and workspace must serve all 121 warm-up-plus-
 measured requests; recreating it resets the A9-S evidence.
 
-For every eligible state-changing request, `actual_build_kind` must be
-`INCREMENTAL`; the no-op must explicitly report `NO_COMPILE`; the broken edit
+For every eligible source compilation request, `actual_build_kind` must be
+`INCREMENTAL`; the no-op must explicitly report `NO_COMPILE`. A source deletion
+is a resource-only state change: it must report `actual_build_kind=null`,
+`build_outcome=NO_COMPILE`, no compiled units, and the complete removed class
+family in `deleted_classes`, with the resulting output equal to its clean-full
+oracle. Restoring that source must again report `INCREMENTAL`. The broken edit
 must produce the expected structured ERROR. That source error is a completed
 build, not an infrastructure abort: it emits `BUILD_COMPLETED` with
 `operation_kind=INCREMENTAL`, `operation_ok=true`, and `compile_ok=false`;

@@ -31,6 +31,7 @@ import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.NullProgressMonitor;
+import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.equinox.app.IApplication;
 import org.eclipse.equinox.app.IApplicationContext;
@@ -41,9 +42,10 @@ import org.eclipse.jdt.core.JavaCore;
 /**
  * Small protocol worker used only by the isolated Phase 1A experiment.
  *
- * <p>Input frames are one line: {@code BUILD<TAB>FULL},
- * {@code BUILD<TAB>INCREMENTAL}, {@code SAVE}, or {@code STOP}. Stdout contains
- * JSON protocol frames only. Diagnostics belong on stderr.</p>
+ * <p>The original synchronous BUILD/SAVE/STOP protocol remains available for
+ * A1-A8. A9 additionally uses identity-bound asynchronous build, status,
+ * cancellation, barrier, metrics, and GC commands. Stdout contains JSON
+ * protocol frames only. Diagnostics belong on stderr.</p>
  */
 public final class WorkerApplication implements IApplication {
     private static final String PROJECT_NAME = "plain-fixture";
@@ -56,6 +58,27 @@ public final class WorkerApplication implements IApplication {
     private IJavaProject javaProject;
     private boolean instrumentationEnabled;
     private boolean projectReopened;
+    private ActiveBuild activeBuild;
+    private String lastTerminalRequestId;
+    private String lastTerminalBuildGenerationId;
+    private String lastTerminalStatus;
+    private long protocolSequence;
+
+    private static final class ActiveBuild {
+        final String requestId;
+        final String buildGenerationId;
+        final String operationKind;
+        final NullProgressMonitor monitor = new NullProgressMonitor();
+        Thread thread;
+        boolean cancelAccepted;
+        boolean terminalEmitted;
+
+        ActiveBuild(String requestId, String buildGenerationId, String operationKind) {
+            this.requestId = requestId;
+            this.buildGenerationId = buildGenerationId;
+            this.operationKind = operationKind;
+        }
+    }
 
     @Override
     public Object start(IApplicationContext context) throws Exception {
@@ -209,12 +232,51 @@ public final class WorkerApplication implements IApplication {
     }
 
     private boolean handle(String line) throws Exception {
+        if (line.equals("METRICS")) {
+            emit("{\"ok\":true,\"status\":\"metrics\",\"metrics\":"
+                    + WorkerMetrics.snapshotJson(false) + "}");
+            return true;
+        }
+        if (line.equals("GC")) {
+            System.gc();
+            emit("{\"ok\":true,\"status\":\"gc_requested\",\"metrics\":"
+                    + WorkerMetrics.snapshotJson(true) + "}");
+            return true;
+        }
+        if (line.startsWith("BUILD_ASYNC\t")) {
+            String[] parts = line.split("\\t", -1);
+            if (parts.length == 4) {
+                startAsyncBuild(parts[1], parts[2], parts[3]);
+            } else {
+                emitError("INVALID_COMMAND", "BUILD_ASYNC requires request/build/kind.");
+            }
+            return true;
+        }
+        if (line.startsWith("STATUS\t")) {
+            String[] parts = line.split("\\t", -1);
+            emitActiveStatus(parts.length == 2 ? parts[1] : "");
+            return true;
+        }
+        if (line.startsWith("CANCEL\t")) {
+            String[] parts = line.split("\\t", -1);
+            cancelActiveBuild(parts.length == 2 ? parts[1] : "");
+            return true;
+        }
+        if (line.startsWith("BARRIER\t")) {
+            handleBarrier(line.split("\\t", -1));
+            return true;
+        }
         if (line.equals("SAVE")) {
+            if (hasActiveBuild()) {
+                emitError("ACTIVE_BUILD", "Cannot save while a build is active.");
+                return true;
+            }
             saveWorkspace();
             emit("{\"ok\":true,\"status\":\"saved\"}");
             return true;
         }
         if (line.equals("STOP")) {
+            settleActiveBuildForStop();
             saveWorkspace();
             emit("{\"ok\":true,\"status\":\"stopped\"}");
             return false;
@@ -222,15 +284,18 @@ public final class WorkerApplication implements IApplication {
         if (line.startsWith("BUILD\t")) {
             String kind = line.substring("BUILD\t".length());
             if (kind.equals("FULL")) {
-                build(IncrementalProjectBuilder.FULL_BUILD, kind);
+                build(IncrementalProjectBuilder.FULL_BUILD, kind,
+                        new NullProgressMonitor(), null);
                 return true;
             }
             if (kind.equals("INCREMENTAL")) {
-                build(IncrementalProjectBuilder.INCREMENTAL_BUILD, kind);
+                build(IncrementalProjectBuilder.INCREMENTAL_BUILD, kind,
+                        new NullProgressMonitor(), null);
                 return true;
             }
             if (kind.equals("CLEAN")) {
-                build(IncrementalProjectBuilder.CLEAN_BUILD, kind);
+                build(IncrementalProjectBuilder.CLEAN_BUILD, kind,
+                        new NullProgressMonitor(), null);
                 return true;
             }
         }
@@ -238,12 +303,163 @@ public final class WorkerApplication implements IApplication {
         return true;
     }
 
-    private void build(int buildKind, String requestedKind) throws Exception {
+    private void startAsyncBuild(
+            String requestId, String buildGenerationId, String operationKind) {
+        final int buildKind;
+        if ("FULL".equals(operationKind)) {
+            buildKind = IncrementalProjectBuilder.FULL_BUILD;
+        } else if ("INCREMENTAL".equals(operationKind)) {
+            buildKind = IncrementalProjectBuilder.INCREMENTAL_BUILD;
+        } else if ("CLEAN".equals(operationKind)) {
+            buildKind = IncrementalProjectBuilder.CLEAN_BUILD;
+        } else {
+            emitError("INVALID_BUILD_KIND", "Unsupported asynchronous build kind.");
+            return;
+        }
+        synchronized (this) {
+            if (activeBuild != null) {
+                emitError("ACTIVE_BUILD", "Only one build may be active.");
+                return;
+            }
+            ActiveBuild build = new ActiveBuild(
+                    requestId, buildGenerationId, operationKind);
+            activeBuild = build;
+            build.thread = new Thread(() -> runAsyncBuild(buildKind, build),
+                    "jolink-jdt-build-" + buildGenerationId);
+            build.thread.setDaemon(false);
+            // A request acknowledgement must precede every asynchronous
+            // terminal frame, including an immediately completing no-op.
+            emit("{\"ok\":true,\"status\":\"BUILD_ACCEPTED\""
+                    + identityFields(requestId, buildGenerationId)
+                    + ",\"operation_kind\":" + json(operationKind) + "}");
+            build.thread.start();
+        }
+    }
+
+    private void runAsyncBuild(int buildKind, ActiveBuild build) {
+        try {
+            build(buildKind, build.operationKind, build.monitor, build);
+        } catch (OperationCanceledException exception) {
+            emitTerminal(build, "BUILD_CANCELLED", null);
+        } catch (Throwable throwable) {
+            throwable.printStackTrace(System.err);
+            emitTerminal(build, "BUILD_ABORTED", throwable.getClass().getSimpleName());
+        } finally {
+            synchronized (this) {
+                if (activeBuild == build) {
+                    activeBuild = null;
+                }
+                notifyAll();
+            }
+            BuildObservation.clearBarrier();
+        }
+    }
+
+    private synchronized boolean hasActiveBuild() {
+        return activeBuild != null;
+    }
+
+    private synchronized void emitActiveStatus(String buildGenerationId) {
+        if (activeBuild == null) {
+            emitFinishedOrStale(buildGenerationId);
+            return;
+        }
+        if (!activeBuild.buildGenerationId.equals(buildGenerationId)) {
+            emitError("STALE_BUILD_ID", "The build generation is not active.");
+            return;
+        }
+        if (activeBuild.terminalEmitted) {
+            emitFinishedOrStale(buildGenerationId);
+            return;
+        }
+        emit("{\"ok\":true,\"status\":\"BUILDING\""
+                + identityFields(activeBuild.requestId, activeBuild.buildGenerationId)
+                + ",\"operation_kind\":" + json(activeBuild.operationKind)
+                + ",\"cancel_requested\":" + activeBuild.cancelAccepted
+                + ",\"barrier_reached\":"
+                + BuildObservation.barrierReached(buildGenerationId) + "}");
+    }
+
+    private synchronized void cancelActiveBuild(String buildGenerationId) {
+        if (activeBuild == null) {
+            emitFinishedOrStale(buildGenerationId);
+            return;
+        }
+        if (!activeBuild.buildGenerationId.equals(buildGenerationId)) {
+            emitError("STALE_BUILD_ID", "The build generation is not active.");
+            return;
+        }
+        if (activeBuild.terminalEmitted) {
+            emit("{\"ok\":false,\"status\":\"ALREADY_FINISHED\""
+                    + identityFields(
+                            activeBuild.requestId,
+                            activeBuild.buildGenerationId)
+                    + ",\"terminal_event\":"
+                    + json(lastTerminalStatus == null
+                            ? "UNKNOWN" : lastTerminalStatus)
+                    + "}");
+            return;
+        }
+        activeBuild.cancelAccepted = true;
+        activeBuild.monitor.setCanceled(true);
+        emit("{\"ok\":true,\"status\":\"CANCEL_REQUESTED\""
+                + identityFields(activeBuild.requestId, activeBuild.buildGenerationId)
+                + "}");
+    }
+
+    private void handleBarrier(String[] parts) {
+        if (parts.length != 4) {
+            emitError("INVALID_COMMAND", "BARRIER requires action, request id, and build id.");
+            return;
+        }
+        String requestId = parts[2];
+        String buildGenerationId = parts[3];
+        if ("ARM".equals(parts[1])) {
+            BuildObservation.armBarrier(buildGenerationId);
+            emit("{\"ok\":true,\"status\":\"BARRIER_ARMED\""
+                    + identityFields(requestId, buildGenerationId) + "}");
+        } else if ("RELEASE".equals(parts[1])) {
+            // Order the acknowledgement before unblocking the build thread so
+            // the asynchronous terminal event cannot overtake this response.
+            emit("{\"ok\":true,\"status\":\"BARRIER_RELEASED\""
+                    + identityFields(requestId, buildGenerationId) + "}");
+            BuildObservation.releaseBarrier(buildGenerationId);
+        } else {
+            emitError("INVALID_COMMAND", "Unsupported BARRIER action.");
+        }
+    }
+
+    private void settleActiveBuildForStop() throws InterruptedException {
+        ActiveBuild build;
+        synchronized (this) {
+            build = activeBuild;
+            if (build == null) {
+                return;
+            }
+            build.cancelAccepted = true;
+            build.monitor.setCanceled(true);
+        }
+        BuildObservation.releaseBarrier(build.buildGenerationId);
+        build.thread.join(5000L);
+        if (build.thread.isAlive()) {
+            throw new IllegalStateException("Active build did not settle before STOP.");
+        }
+    }
+
+    private void build(
+            int buildKind,
+            String requestedKind,
+            NullProgressMonitor buildMonitor,
+            ActiveBuild active) throws Exception {
         Map<String, String> before = outputHashes();
         BuildObservation.begin();
+        WorkerMetrics.resetPeaks();
         long started = System.nanoTime();
-        project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
-        project.build(buildKind, monitor);
+        project.refreshLocal(IResource.DEPTH_INFINITE, buildMonitor);
+        project.build(buildKind, buildMonitor);
+        if (buildMonitor.isCanceled()) {
+            throw new OperationCanceledException();
+        }
         long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
         Map<String, String> after = outputHashes();
         BuildObservation.Snapshot observation = BuildObservation.snapshot();
@@ -291,9 +507,19 @@ public final class WorkerApplication implements IApplication {
         }
 
         String actualBuildKind = observation.actualBuildKind();
+        boolean compileOperation = !"CLEAN".equals(requestedKind);
+        boolean compileOk = errorCount == 0;
         StringBuilder result = new StringBuilder();
         result.append("{\"ok\":").append(errorCount == 0)
-                .append(",\"status\":\"build_finished\"")
+                .append(",\"status\":")
+                .append(json(active == null ? "build_finished" : "BUILD_COMPLETED"))
+                .append(",\"operation_kind\":").append(json(requestedKind))
+                .append(",\"operation_ok\":true")
+                .append(",\"compile_ok\":")
+                .append(compileOperation ? Boolean.toString(compileOk) : "null")
+                .append(",\"terminal_status\":")
+                .append(json(compileOk || !compileOperation
+                        ? "SUCCEEDED" : "FAILED_COMPILE"))
                 .append(",\"requested_build_kind\":").append(json(requestedKind))
                 .append(",\"actual_build_kind\":")
                 .append(actualBuildKind == null ? "null" : json(actualBuildKind))
@@ -322,19 +548,86 @@ public final class WorkerApplication implements IApplication {
                 .append(jsonArray(observation.compiledUnits))
                 .append(",\"elapsed_ms\":").append(elapsedMillis)
                 .append(",\"error_count\":").append(errorCount)
-                .append(",\"generation_publishable\":").append(errorCount == 0)
+                .append(",\"generation_publishable\":")
+                .append(compileOperation && errorCount == 0)
                 .append(",\"class_count\":").append(after.size())
                 .append(",\"changed_classes\":").append(jsonArray(changed))
                 .append(",\"publishable_changed_classes\":")
-                .append(errorCount == 0 ? jsonArray(changed) : "[]")
+                .append(compileOperation && errorCount == 0
+                        ? jsonArray(changed) : "[]")
                 .append(",\"deleted_classes\":").append(jsonArray(deleted))
                 .append(",\"diagnostics\":").append(jsonArray(diagnostics))
                 .append(",\"diagnostic_details\":")
                 .append(jsonObjectsArray(diagnosticDetails))
                 .append(",\"diagnostics_truncated\":")
                 .append(markers.length > MAX_DIAGNOSTICS)
+                .append(",\"metrics\":")
+                .append(WorkerMetrics.snapshotJson(false));
+        if (active != null) {
+            result.append(identityFields(
+                    active.requestId, active.buildGenerationId));
+        }
+        result
                 .append("}");
-        emit(result.toString());
+        if (active == null) {
+            emit(result.toString());
+        } else {
+            emitTerminal(active, result.toString());
+        }
+    }
+
+    private synchronized void emitTerminal(
+            ActiveBuild build, String status, String errorType) {
+        String frame = "{\"ok\":false,\"status\":" + json(status)
+                + identityFields(build.requestId, build.buildGenerationId)
+                + ",\"operation_kind\":" + json(build.operationKind)
+                + ",\"operation_ok\":false,\"compile_ok\":null"
+                + ",\"generation_publishable\":false"
+                + ",\"terminal_status\":"
+                + json("BUILD_CANCELLED".equals(status) ? "CANCELLED" : "ABORTED")
+                + (errorType == null ? "" : ",\"error_type\":" + json(errorType))
+                + "}";
+        emitTerminal(build, frame);
+    }
+
+    private synchronized void emitTerminal(ActiveBuild build, String frame) {
+        if (build.terminalEmitted) {
+            return;
+        }
+        build.terminalEmitted = true;
+        lastTerminalRequestId = build.requestId;
+        lastTerminalBuildGenerationId = build.buildGenerationId;
+        int statusStart = frame.indexOf("\"status\":\"");
+        if (statusStart >= 0) {
+            statusStart += "\"status\":\"".length();
+            int statusEnd = frame.indexOf('"', statusStart);
+            lastTerminalStatus = statusEnd > statusStart
+                    ? frame.substring(statusStart, statusEnd) : "UNKNOWN";
+        }
+        emit(frame);
+    }
+
+    private void emitFinishedOrStale(String buildGenerationId) {
+        if (buildGenerationId != null
+                && buildGenerationId.equals(lastTerminalBuildGenerationId)) {
+            emit("{\"ok\":false,\"status\":\"ALREADY_FINISHED\""
+                    + identityFields(
+                            lastTerminalRequestId,
+                            lastTerminalBuildGenerationId)
+                    + ",\"terminal_event\":"
+                    + json(lastTerminalStatus == null
+                            ? "UNKNOWN" : lastTerminalStatus)
+                    + "}");
+        } else {
+            emitError("STALE_BUILD_ID", "The build generation is not active.");
+        }
+    }
+
+    private synchronized String identityFields(
+            String requestId, String buildGenerationId) {
+        return ",\"request_id\":" + json(requestId)
+                + ",\"build_generation_id\":" + json(buildGenerationId)
+                + ",\"protocol_sequence\":" + (++protocolSequence);
     }
 
     private Map<String, String> outputHashes() throws Exception {
@@ -412,7 +705,7 @@ public final class WorkerApplication implements IApplication {
                 + ",\"message\":" + json(message) + "}");
     }
 
-    private void emit(String frame) {
+    private synchronized void emit(String frame) {
         protocol.println(frame);
         protocol.flush();
     }

@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1-A8 partial evidence passed; complete gate remains open`
+Status: `Phase 1A A1-A9 implementation evidence passed; A10 remains open`
 
 Contract:
 
@@ -45,7 +45,15 @@ The current bootstrap can:
     measurements, lifecycle settlement, and complete class SHA maps;
 18. revalidate the candidate lock/artifacts, target-system snapshot, fixture
     checkout, and Git worktree identity after the run; and
-19. stop all owned Equinox workers.
+19. stop all owned Equinox workers;
+20. execute the frozen A9-S workload in one Worker: one 11-operation warm-up
+    epoch plus ten measured epochs (121/121 requests total), with immutable
+    build-generation identities and attempt-scoped clean-full oracles;
+21. measure Worker heap/class metadata and fixed-cadence identity-bound process
+    tree RSS, including per-build sampled peaks and a 30-second idle value; and
+22. prove explicit/deadline cancellation, both STOP race outcomes, atomic
+    CLEAN/FULL recovery, clean-marker reopen with an offline source delta, and
+    abnormal-exit state invalidation in separate workspace lineages.
 
 The current closure is 23 Eclipse/OSGi bundles plus the joLink worker bundle.
 The locked bundle bytes total 16,096,227 bytes (about 15.4 MiB). It does not
@@ -63,13 +71,13 @@ Extension ClassLoader cross-check. No effective endorsed archive was present.
 The latest real macOS run therefore reports:
 
 ```text
-status          = phase_1a_a1_a2_a3_a4_a5_a6_a7_a8_evidence_passed
-evidence_status = partial_phase_1a_evidence_a1_a2_a3_a4_a5_a6_a7_a8
+status          = a9_evidence_passed
+evidence_status = partial_phase_1a_evidence_a1_through_a9
 ```
 
-This is real evidence for A1-A8, not a Phase 1A Go decision. A9,
-resource/RSS measurement, cancellation pressure, and A10 Windows/path-boundary
-evidence (including spaces and non-ASCII paths) are still outstanding.
+This is real implementation evidence for A1-A9, not yet a canonical clean-
+worktree Phase 1A Go decision. A10 Windows/path-boundary evidence (including
+spaces and non-ASCII paths) remains outstanding.
 
 ## Files
 
@@ -114,6 +122,11 @@ run_bootstrap_smoke.py
     private target-library capture, Worker launch/restart,
     full/incremental/no-op, instrumentation parity, clean-full oracle, and
     bounded shutdown
+
+run_a9_experiment.py
+    frozen A9-S/M/L workload, attempt-scoped Oracle catalog, fixed-cadence
+    process-tree sampling, lifecycle races, recovery, and Runner-owned lineage
+    manifest/clean-marker evidence
 ```
 
 ## Reproduce on macOS/POSIX
@@ -128,6 +141,11 @@ uv run python experiments/jdt-incremental-worker/build_worker.py \
   --java-home /path/to/jdk-17
 
 uv run python experiments/jdt-incremental-worker/run_bootstrap_smoke.py \
+  --worker-java-home /path/to/jdk-17 \
+  --target-java-home /path/to/jdk-8 \
+  --keep-attempt
+
+uv run python experiments/jdt-incremental-worker/run_a9_experiment.py \
   --worker-java-home /path/to/jdk-17 \
   --target-java-home /path/to/jdk-8 \
   --keep-attempt
@@ -189,12 +207,34 @@ overall elapsed            about 4.8 seconds
 
 Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
+## Latest observed A9 implementation evidence
+
+On macOS, the current locked Worker artifact completed the frozen A9 workload:
+
+```text
+A9-S same Worker requests       121 / 121
+measured requests               110 / 110
+unique build generations        121 / 121
+attempt-scoped oracle states    6 / all exact
+process-tree sample coverage    100%
+every build RSS sample count    at least 2
+observed process-tree RSS peak  about 193 MiB
+30-second idle RSS sum          about 54 MiB
+A9-M decision                   PASS
+explicit/deadline cancellation  BUILD_CANCELLED / recovered
+STOP races                      completion-win and cancel-win passed
+clean reopen + offline delta    actual INCREMENTAL / oracle exact
+abnormal exit                   clean marker absent / lineage discarded
+owned Worker residue            none
+```
+
+These are tiny-fixture implementation facts. They do not claim company-project,
+Lombok, HotSwap, or production publication performance.
+
 ## Next implementation boundary
 
-The next work should remain inside this experiment and add, in order:
-
-1. A9 repeated-build/resource stability;
-2. A10 Windows, spaces, and non-ASCII paths.
+The next work should remain inside this experiment and add A10 Windows, spaces,
+and non-ASCII path evidence, then record the complete Phase 1A decision.
 
 Phase 1B Lombok work must not begin until the same exact evidence candidate
 passes the complete Phase 1A Go gate.

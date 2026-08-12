@@ -21,6 +21,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 
 class SmokeError(RuntimeError):
     pass
@@ -447,7 +449,20 @@ class WorkerClient:
         self.process = process
         self.stderr_stream = stderr_stream
         self.timeout = timeout
+        try:
+            self.process_create_time = psutil.Process(process.pid).create_time()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            self.process_create_time = None
+        self.owned_process_identities: dict[int, float] = {}
+        self._ownership_stop = threading.Event()
+        self._ownership_thread = threading.Thread(
+            target=self._observe_owned_process_tree_loop,
+            daemon=True,
+        )
+        self._observe_owned_process_tree()
+        self._ownership_thread.start()
         self.frames: queue.Queue[str | None] = queue.Queue()
+        self.received_frames: list[dict[str, Any]] = []
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
         self.reader.start()
 
@@ -459,9 +474,9 @@ class WorkerClient:
         finally:
             self.frames.put(None)
 
-    def receive(self) -> dict[str, Any]:
+    def receive(self, timeout: float | None = None) -> dict[str, Any]:
         try:
-            line = self.frames.get(timeout=self.timeout)
+            line = self.frames.get(timeout=self.timeout if timeout is None else timeout)
         except queue.Empty as exc:
             raise SmokeError("Timed out waiting for worker protocol frame.") from exc
         if line is None:
@@ -476,26 +491,80 @@ class WorkerClient:
             ) from exc
         if not isinstance(frame, dict):
             raise SmokeError("Worker protocol frame must be an object.")
+        self.received_frames.append(frame)
+        self._observe_owned_process_tree()
         return frame
 
-    def command(self, value: str) -> dict[str, Any]:
+    def _observe_owned_process_tree(self) -> None:
+        try:
+            root = psutil.Process(self.process.pid)
+            processes = [root, *root.children(recursive=True)]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return
+        for process in processes:
+            try:
+                self.owned_process_identities.setdefault(
+                    process.pid, process.create_time()
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+    def _observe_owned_process_tree_loop(self) -> None:
+        while not self._ownership_stop.is_set():
+            self._observe_owned_process_tree()
+            if self.process.poll() is not None:
+                return
+            self._ownership_stop.wait(0.05)
+
+    def send(self, value: str) -> None:
         if self.process.stdin is None:
             raise SmokeError("Worker stdin is unavailable.")
         self.process.stdin.write(value + "\n")
         self.process.stdin.flush()
+
+    def command(self, value: str) -> dict[str, Any]:
+        self.send(value)
         return self.receive()
 
+    def async_build(
+        self, *, request_id: str, build_generation_id: str, kind: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        accepted = self.command(
+            f"BUILD_ASYNC\t{request_id}\t{build_generation_id}\t{kind}"
+        )
+        if accepted.get("status") != "BUILD_ACCEPTED":
+            raise SmokeError("Worker did not accept the asynchronous build.")
+        terminal = self.receive()
+        if terminal.get("build_generation_id") != build_generation_id:
+            raise SmokeError("Worker terminal frame belongs to another generation.")
+        return accepted, terminal
+
     def close(self) -> dict[str, Any]:
-        cooperative_acknowledged = False
+        cooperative_acknowledged = any(
+            frame.get("ok") is True and frame.get("status") == "stopped"
+            for frame in self.received_frames
+        )
         forced = False
+        terminal_frames: list[dict[str, Any]] = []
+        self._observe_owned_process_tree()
         try:
             if self.process.poll() is None:
                 try:
-                    response = self.command("STOP")
-                    cooperative_acknowledged = (
-                        response.get("ok") is True
-                        and response.get("status") == "stopped"
-                    )
+                    self.send("STOP")
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        response = self.receive(
+                            timeout=max(0.01, deadline - time.monotonic())
+                        )
+                        if response.get("status") == "stopped":
+                            cooperative_acknowledged = response.get("ok") is True
+                            break
+                        if response.get("status") in {
+                            "BUILD_COMPLETED",
+                            "BUILD_CANCELLED",
+                            "BUILD_ABORTED",
+                        }:
+                            terminal_frames.append(response)
                 except (BrokenPipeError, SmokeError):
                     pass
                 try:
@@ -509,7 +578,23 @@ class WorkerClient:
                         self.process.kill()
                         self.process.wait(timeout=2)
         finally:
+            self._ownership_stop.set()
+            self._ownership_thread.join(timeout=1)
             self.stderr_stream.close()
+        remaining_identities: list[dict[str, Any]] = []
+        for pid, create_time in self.owned_process_identities.items():
+            try:
+                current = psutil.Process(pid)
+                if abs(current.create_time() - create_time) <= 0.01:
+                    remaining_identities.append(
+                        {"pid": pid, "create_time": create_time}
+                    )
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.AccessDenied:
+                remaining_identities.append(
+                    {"pid": pid, "create_time": create_time, "state": "access_denied"}
+                )
         return {
             "status": (
                 "settled" if self.process.poll() is not None else "unsettled"
@@ -518,7 +603,145 @@ class WorkerClient:
             "forced": forced,
             "exit_code": self.process.poll(),
             "direct_process_exited": self.process.poll() is not None,
+            "terminal_frames_before_stop": terminal_frames,
+            "root_process_identity": {
+                "pid": self.process.pid,
+                "create_time": self.process_create_time,
+            },
+            "observed_owned_process_identities": [
+                {"pid": pid, "create_time": create_time}
+                for pid, create_time in sorted(
+                    self.owned_process_identities.items()
+                )
+            ],
+            "remaining_owned_process_identities": remaining_identities,
+            "owned_root_identity_absent": not any(
+                item["pid"] == self.process.pid for item in remaining_identities
+            ),
+            "owned_process_tree_absent": not remaining_identities,
         }
+
+
+class ProcessTreeSampler:
+    """Sample identity-bound Worker RSS without writing into the Worker JVM."""
+
+    def __init__(self, pid: int, interval_seconds: float = 0.1) -> None:
+        self.pid = pid
+        self.interval_seconds = interval_seconds
+        self.samples: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.started_monotonic: float | None = None
+        self.stopped_monotonic: float | None = None
+        self.scheduled_sample_count = 0
+        try:
+            self.root_create_time = psutil.Process(pid).create_time()
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            raise SmokeError("Unable to bind process-tree sampling identity.") from exc
+        self.observed_identities: dict[int, float] = {pid: self.root_create_time}
+
+    def start(self) -> None:
+        self.started_monotonic = time.monotonic()
+        self._thread.start()
+
+    def capture(self, source: str = "boundary") -> dict[str, Any]:
+        captured = self._sample(source=source)
+        if captured is None:
+            raise SmokeError("Unable to sample the identity-bound Worker tree.")
+        with self._lock:
+            self.samples.append(captured)
+        return captured
+
+    def stop(self) -> dict[str, Any]:
+        self._stop.set()
+        self._thread.join(timeout=2)
+        self.stopped_monotonic = time.monotonic()
+        with self._lock:
+            samples = list(self.samples)
+        scheduled = [sample for sample in samples if sample["sample_source"] == "interval"]
+        gaps = [
+            right["monotonic_seconds"] - left["monotonic_seconds"]
+            for left, right in zip(scheduled, scheduled[1:])
+        ]
+        values = [sample["process_tree_rss_sum_bytes"] for sample in samples]
+        duration = max(
+            0.0,
+            (self.stopped_monotonic or 0.0) - (self.started_monotonic or 0.0),
+        )
+        expected = max(1, int(duration / self.interval_seconds))
+        coverage = min(1.0, len(scheduled) / expected)
+        return {
+            "interval_ms": round(self.interval_seconds * 1000, 3),
+            "sample_count": len(samples),
+            "scheduled_sample_count": len(scheduled),
+            "expected_interval_count": expected,
+            "observed_interval_ratio": round(coverage, 6),
+            "coverage_status": (
+                "complete"
+                if coverage >= 0.95 and (not gaps or max(gaps) <= 0.5)
+                else "incomplete"
+            ),
+            "max_gap_ms": round(max(gaps, default=0.0) * 1000, 3),
+            "peak_process_tree_rss_sum_bytes": max(values, default=None),
+            "root_identity": {
+                "pid": self.pid,
+                "create_time": self.root_create_time,
+            },
+            "observed_process_identities": [
+                {"pid": pid, "create_time": create_time}
+                for pid, create_time in sorted(self.observed_identities.items())
+            ],
+            "samples": samples,
+        }
+
+    def _run(self) -> None:
+        next_sample = time.monotonic()
+        while not self._stop.is_set():
+            captured = self._sample(source="interval")
+            if captured is not None:
+                with self._lock:
+                    self.samples.append(captured)
+                    self.scheduled_sample_count += 1
+            # Maintain a fixed cadence. Waiting a full interval after the
+            # psutil walk would make the real interval exceed the frozen
+            # <=100ms contract on every sample.
+            next_sample += self.interval_seconds
+            delay = max(0.0, next_sample - time.monotonic())
+            self._stop.wait(delay)
+
+    def _sample(self, *, source: str) -> dict[str, Any] | None:
+        try:
+            root = psutil.Process(self.pid)
+            if abs(root.create_time() - self.root_create_time) > 0.01:
+                raise SmokeError("Worker PID identity changed during sampling.")
+            processes = [root, *root.children(recursive=True)]
+            rows: list[dict[str, Any]] = []
+            for process in processes:
+                try:
+                    rows.append(
+                        {
+                            "pid": process.pid,
+                            "create_time": process.create_time(),
+                            "rss_bytes": process.memory_info().rss,
+                        }
+                    )
+                    self.observed_identities.setdefault(
+                        process.pid, process.create_time()
+                    )
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            return {
+                "monotonic_seconds": time.monotonic(),
+                "sample_source": source,
+                "process_tree_rss_sum_bytes": sum(
+                    int(row["rss_bytes"]) for row in rows
+                ),
+                "process_count": len(rows),
+                "processes": rows,
+            }
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
 
 
 def load_lock(path: Path) -> dict[str, Any]:
@@ -694,6 +917,467 @@ def output_hashes(output: Path) -> dict[str, str]:
         path.relative_to(output).as_posix(): sha256_file(path)
         for path in sorted(output.rglob("*.class"))
     }
+
+
+def diagnostics_identity(frame: dict[str, Any]) -> list[str]:
+    diagnostics = frame.get("diagnostics")
+    if not isinstance(diagnostics, list) or not all(
+        isinstance(value, str) for value in diagnostics
+    ):
+        raise SmokeError("Worker diagnostics are not a string list.")
+    # Marker enumeration order is not a semantic part of a compiler result and
+    # can differ between a clean full build and an incremental build.
+    return sorted(diagnostics)
+
+
+def build_operation_identity(
+    operation_kind: str, *, compile_ok: bool | None
+) -> tuple[str, bool | None, str]:
+    if operation_kind == "CLEAN":
+        if compile_ok is not None:
+            raise SmokeError("CLEAN must not report a compiler result.")
+        return operation_kind, None, "SUCCEEDED"
+    if compile_ok is True:
+        return operation_kind, True, "SUCCEEDED"
+    if compile_ok is False:
+        return operation_kind, False, "FAILED_COMPILE"
+    raise SmokeError("A compiler operation must report compile_ok.")
+
+
+def require_build_operation_contract(
+    frame: dict[str, Any], *, operation_kind: str
+) -> None:
+    if frame.get("operation_kind") != operation_kind:
+        raise SmokeError("Worker operation_kind is inconsistent.")
+    if frame.get("operation_ok") is not True:
+        raise SmokeError("Completed build operation is not operation_ok.")
+    expected = build_operation_identity(
+        operation_kind, compile_ok=frame.get("compile_ok")
+    )
+    if frame.get("terminal_status") != expected[2]:
+        raise SmokeError("Worker terminal status is inconsistent.")
+
+
+def gc_counts(metrics: dict[str, Any]) -> dict[str, int]:
+    collectors = metrics.get("garbage_collectors")
+    if not isinstance(collectors, list):
+        raise SmokeError("Worker GC metrics are unavailable.")
+    result: dict[str, int] = {}
+    for collector in collectors:
+        if not isinstance(collector, dict):
+            raise SmokeError("Worker GC metrics are malformed.")
+        name = collector.get("name")
+        count = collector.get("collection_count")
+        if isinstance(name, str) and isinstance(count, int) and count >= 0:
+            result[name] = count
+    return result
+
+
+def class_metadata_used(metrics: dict[str, Any]) -> dict[str, Any]:
+    pools = metrics.get("memory_pools")
+    if not isinstance(pools, list):
+        raise SmokeError("Worker memory-pool metrics are unavailable.")
+    selected: dict[str, int] = {}
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        name = pool.get("name")
+        used = pool.get("used_bytes")
+        if name in {"Metaspace", "Compressed Class Space"} and isinstance(
+            used, int
+        ):
+            selected[str(name)] = used
+    metaspace = selected.get("Metaspace")
+    compressed = selected.get("Compressed Class Space")
+    return {
+        "metaspace_used_bytes": metaspace,
+        "compressed_class_space_used_bytes": compressed,
+        "compressed_class_space_state": (
+            "observed" if compressed is not None else "not_applicable"
+        ),
+        "class_metadata_used_bytes": (
+            None
+            if metaspace is None
+            else metaspace + (compressed if compressed is not None else 0)
+        ),
+    }
+
+
+def metrics_checkpoint(
+    client: WorkerClient,
+    *,
+    request_gc: bool,
+    sampler: ProcessTreeSampler | None = None,
+) -> dict[str, Any]:
+    before_rss = sampler.capture("checkpoint_pre_gc") if sampler else None
+    before_frame = client.command("METRICS")
+    before = before_frame.get("metrics")
+    if not isinstance(before, dict):
+        raise SmokeError("Worker did not return pre-GC metrics.")
+    before_counts = gc_counts(before)
+    if request_gc:
+        requested = client.command("GC")
+        if requested.get("status") != "gc_requested":
+            raise SmokeError("Worker did not acknowledge the GC request.")
+        time.sleep(1.0)
+    after_frame = client.command("METRICS")
+    after = after_frame.get("metrics")
+    if not isinstance(after, dict):
+        raise SmokeError("Worker did not return after-request metrics.")
+    after_counts = gc_counts(after)
+    observed = any(
+        after_counts.get(name, count) > count
+        for name, count in before_counts.items()
+    )
+    after_rss = sampler.capture("checkpoint_after_gc") if sampler else None
+    return {
+        "checkpoint_name": (
+            "post_gc_checkpoint" if observed else "after_gc_request_checkpoint"
+        ),
+        "gc_request_sent": request_gc,
+        "gc_collection_observed": observed,
+        "before": before,
+        "after": {**after, **class_metadata_used(after)},
+        "process_tree_before": before_rss,
+        "process_tree_after": after_rss,
+    }
+
+
+def annotate_sampled_build_peaks(
+    operations: list[dict[str, Any]], sampler: dict[str, Any]
+) -> None:
+    samples = sampler.get("samples", [])
+    if not isinstance(samples, list):
+        raise SmokeError("A9 process-tree samples are unavailable.")
+    for operation in operations:
+        started = operation.pop("started_monotonic")
+        ended = operation.pop("ended_monotonic")
+        observed = [
+            sample
+            for sample in samples
+            if isinstance(sample, dict)
+            and isinstance(sample.get("monotonic_seconds"), (int, float))
+            and started <= sample["monotonic_seconds"] <= ended
+        ]
+        operation["sampled_process_tree_peak"] = {
+            "sample_count": len(observed),
+            "process_tree_rss_sum_bytes": max(
+                (sample["process_tree_rss_sum_bytes"] for sample in observed),
+                default=None,
+            ),
+        }
+
+
+def median(values: list[int]) -> float:
+    if not values:
+        raise SmokeError("A9 metric median has no values.")
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[middle])
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def a9_resource_decision(
+    *,
+    checkpoints: list[dict[str, Any]],
+    sampler: dict[str, Any],
+    build_evidence: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if sampler.get("coverage_status") != "complete":
+        reasons.append("process_tree_sampling_incomplete")
+    if len(checkpoints) < 6:
+        reasons.append("insufficient_checkpoints")
+
+    def values(name: str) -> list[int]:
+        result: list[int] = []
+        for checkpoint in checkpoints:
+            value = checkpoint.get("after", {}).get(name)
+            if isinstance(value, int) and value >= 0:
+                result.append(value)
+        return result
+
+    heap = values("heap_used_bytes")
+    metadata = values("class_metadata_used_bytes")
+    threads = values("thread_count")
+    loaded = values("loaded_class_count")
+    rss = [
+        int(checkpoint["process_tree_after"]["process_tree_rss_sum_bytes"])
+        for checkpoint in checkpoints
+        if isinstance(checkpoint.get("process_tree_after"), dict)
+        and isinstance(
+            checkpoint["process_tree_after"].get(
+                "process_tree_rss_sum_bytes"
+            ),
+            int,
+        )
+    ]
+    rss_samples = [
+        int(sample["process_tree_rss_sum_bytes"])
+        for sample in sampler.get("samples", [])
+        if isinstance(sample.get("process_tree_rss_sum_bytes"), int)
+    ]
+    for name, series in {
+        "heap": heap,
+        "class_metadata": metadata,
+        "thread_count": threads,
+        "loaded_class_count": loaded,
+        "process_tree_rss_sum": rss,
+    }.items():
+        if not series:
+            reasons.append(f"{name}_unavailable")
+
+    growth: dict[str, Any] = {}
+    thresholds = {
+        "heap_used_bytes": (32 * 1024**2, 0.2),
+        "class_metadata_used_bytes": (16 * 1024**2, 0.2),
+        "process_tree_rss_sum_bytes": (64 * 1024**2, 0.2),
+    }
+
+    def numeric_growth(
+        label: str, series: list[int], *, absolute: int, relative: float
+    ) -> None:
+        if len(series) < 6:
+            return
+        early = median(series[:3])
+        tail = median(series[-3:])
+        threshold = max(absolute, early * relative)
+        delta = tail - early
+        strictly_increasing = all(
+            left < right for left, right in zip(series[-5:], series[-4:])
+        )
+        growth[label] = {
+            "early_median": early,
+            "tail_median": tail,
+            "delta": delta,
+            "threshold": threshold,
+            "final_five_strictly_increasing": strictly_increasing,
+        }
+        if delta > threshold or (
+            strictly_increasing and series[-1] - series[-5] > threshold
+        ):
+            reasons.append(f"{label}_growth")
+
+    numeric_growth(
+        "heap_used_bytes", heap, absolute=thresholds["heap_used_bytes"][0], relative=0.2
+    )
+    numeric_growth(
+        "class_metadata_used_bytes",
+        metadata,
+        absolute=thresholds["class_metadata_used_bytes"][0],
+        relative=0.2,
+    )
+    numeric_growth(
+        "process_tree_rss_sum_bytes",
+        rss,
+        absolute=thresholds["process_tree_rss_sum_bytes"][0],
+        relative=0.2,
+    )
+    if len(threads) >= 6:
+        delta = median(threads[-3:]) - median(threads[:3])
+        increasing = all(
+            left < right for left, right in zip(threads[-5:], threads[-4:])
+        )
+        growth["thread_count"] = {
+            "delta": delta,
+            "final_five_strictly_increasing": increasing,
+        }
+        if delta > 4 or (increasing and threads[-1] - threads[-5] > 4):
+            reasons.append("thread_growth")
+    if len(loaded) >= 6:
+        early = median(loaded[:3])
+        delta = median(loaded[-3:]) - early
+        threshold = max(128, early * 0.1)
+        increasing = all(
+            left < right for left, right in zip(loaded[-5:], loaded[-4:])
+        )
+        growth["loaded_class_count"] = {
+            "delta": delta,
+            "threshold": threshold,
+            "final_five_strictly_increasing": increasing,
+        }
+        if delta > threshold or (
+            increasing and loaded[-1] - loaded[-5] > threshold
+        ):
+            reasons.append("loaded_class_growth")
+
+    if build_evidence is not None:
+        missing_peaks = [
+            item.get("build_generation_id")
+            for item in build_evidence
+            if item.get("sampled_process_tree_peak", {}).get("sample_count", 0)
+            < 1
+            or item.get("sampled_process_tree_peak", {}).get(
+                "process_tree_rss_sum_bytes"
+            )
+            is None
+            or not isinstance(item.get("worker_metrics_after_build"), dict)
+        ]
+        if missing_peaks:
+            reasons.append("build_peak_measurement_unavailable")
+
+    peak_rss = max(rss_samples, default=0)
+    final_rss = rss_samples[-1] if rss_samples else None
+    if final_rss is not None and final_rss > 768 * 1024**2:
+        status = "NO_GO"
+        reasons.append("idle_rss_no_go_band")
+    elif reasons:
+        status = "DIAGNOSTIC_RERUN_REQUIRED"
+    elif final_rss is not None and final_rss > 512 * 1024**2:
+        status = "CONDITIONAL"
+        reasons.append("idle_rss_conditional_band")
+    else:
+        status = "PASS"
+    return {
+        "status": status,
+        "reasons": reasons,
+        "growth": growth,
+        "peak_process_tree_rss_sum_bytes": peak_rss,
+        "final_process_tree_rss_sum_bytes": final_rss,
+        "checkpoint_process_tree_rss_sum_bytes": rss,
+    }
+
+
+def project_model_fingerprint(
+    *, system_library_fingerprint: str, candidate_id: str
+) -> str:
+    return canonical_json_fingerprint(
+        {
+            "source_roots": ["src"],
+            "output_roots": ["bin"],
+            "classpath": system_library_fingerprint,
+            "nature_ids": ["org.eclipse.jdt.core.javanature"],
+            "builder_ids": ["org.eclipse.jdt.core.javabuilder"],
+            "encoding": "UTF-8",
+            "compiler_options": {
+                "source": "1.8",
+                "compliance": "1.8",
+                "target": "1.8",
+                "preview": "disabled",
+            },
+            "candidate_id": candidate_id,
+        }
+    )
+
+
+class OracleCatalog:
+    """Attempt-scoped immutable clean-full results, prepared before A9-S."""
+
+    def __init__(
+        self,
+        *,
+        lock: dict[str, Any],
+        candidate_root: Path,
+        worker_java_home: Path,
+        system_libraries_file: Path,
+        timeout: float,
+        attempt_root: Path,
+        candidate_id: str,
+        system_library_fingerprint: str,
+        shutdown_reports: dict[str, dict[str, Any]],
+        owned_worker_pids: list[int],
+    ) -> None:
+        self.lock = lock
+        self.candidate_root = candidate_root
+        self.worker_java_home = worker_java_home
+        self.system_libraries_file = system_libraries_file
+        self.timeout = timeout
+        self.attempt_root = attempt_root
+        self.candidate_id = candidate_id
+        self.system_library_fingerprint = system_library_fingerprint
+        self.project_model_fingerprint = project_model_fingerprint(
+            system_library_fingerprint=system_library_fingerprint,
+            candidate_id=candidate_id,
+        )
+        self.shutdown_reports = shutdown_reports
+        self.owned_worker_pids = owned_worker_pids
+        self.entries: dict[str, dict[str, Any]] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def key(self, source: Path) -> str:
+        return canonical_json_fingerprint(
+            {
+                "candidate_id": self.candidate_id,
+                "target_system_library_fingerprint": (
+                    self.system_library_fingerprint
+                ),
+                "project_model_fingerprint": self.project_model_fingerprint,
+                "source_tree_fingerprint": tree_fingerprint(source),
+            }
+        )
+
+    def precompute(self, states: dict[str, Path]) -> None:
+        for label, source in states.items():
+            key = self.key(source)
+            if key in self.entries:
+                self.entries[key]["labels"].append(label)
+                self.hits += 1
+                continue
+            self.misses += 1
+            oracle_attempt = self.attempt_root / f"oracle-{len(self.entries):02d}"
+            oracle_attempt.mkdir()
+            client = start_worker(
+                lock=self.lock,
+                candidate_root=self.candidate_root,
+                worker_java_home=self.worker_java_home,
+                attempt=oracle_attempt,
+                system_libraries_file=self.system_libraries_file,
+                instrumentation="enabled",
+                timeout=self.timeout,
+            )
+            self.owned_worker_pids.append(client.process.pid)
+            shutdown_key = f"a9_oracle_{len(self.entries):02d}"
+            try:
+                oracle_source = (
+                    oracle_attempt / "workspace" / "plain-fixture" / "src"
+                )
+                shutil.copytree(source, oracle_source, dirs_exist_ok=True)
+                frame = client.command("BUILD\tFULL")
+                require_build_operation_contract(frame, operation_kind="FULL")
+                self.entries[key] = {
+                    "labels": [label],
+                    "source_tree_fingerprint": tree_fingerprint(source),
+                    "compile_ok": frame.get("compile_ok"),
+                    "diagnostics": diagnostics_identity(frame),
+                    "output_hashes": output_hashes(
+                        oracle_attempt
+                        / "workspace"
+                        / "plain-fixture"
+                        / "bin"
+                    ),
+                }
+            finally:
+                self.shutdown_reports[shutdown_key] = client.close()
+
+    def require(self, source: Path) -> dict[str, Any]:
+        key = self.key(source)
+        entry = self.entries.get(key)
+        if entry is None:
+            raise SmokeError("A9 requested an oracle that was not precomputed.")
+        self.hits += 1
+        return entry
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "scope": "attempt",
+            "precomputed_before_measured_worker": True,
+            "project_model_fingerprint": self.project_model_fingerprint,
+            "entry_count": len(self.entries),
+            "hits": self.hits,
+            "misses": self.misses,
+            "entries": {
+                key: {
+                    "labels": value["labels"],
+                    "source_tree_fingerprint": value["source_tree_fingerprint"],
+                    "compile_ok": value["compile_ok"],
+                    "diagnostics": value["diagnostics"],
+                    "output_hashes": value["output_hashes"],
+                }
+                for key, value in self.entries.items()
+            },
+        }
 
 
 def restart_build_expectations(actual_build_kind: Any) -> tuple[str, list[str]]:
@@ -2388,10 +3072,10 @@ def main(argv: list[str] | None = None) -> int:
                 "A9_A10": "not_run",
             },
             "limitations": [
-                "only A1 through A8 ran; A9 and A10 are not implemented",
+                "this runner executes only A1 through A8; run_a9_experiment.py covers A9, and A10 remains pending",
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
-                "owned process-tree verification remains an A9 lifecycle item",
+                "owned process-tree lifecycle verification is reported by the separate A9 runner",
             ],
             "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
         }

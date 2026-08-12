@@ -11,6 +11,9 @@ final class BuildObservation {
     private static boolean incrementalSeen;
     private static boolean buildFinished;
     private static final List<String> compiledUnits = new ArrayList<>();
+    private static String barrierBuildId;
+    private static boolean barrierReached;
+    private static boolean barrierReleased;
 
     private BuildObservation() {
     }
@@ -30,6 +33,50 @@ final class BuildObservation {
         compiledUnits.clear();
     }
 
+    static synchronized void armBarrier(String buildId) {
+        barrierBuildId = buildId;
+        barrierReached = false;
+        barrierReleased = false;
+    }
+
+    static synchronized void clearBarrier() {
+        barrierBuildId = null;
+        barrierReached = false;
+        barrierReleased = true;
+        BuildObservation.class.notifyAll();
+    }
+
+    static synchronized boolean barrierReached(String buildId) {
+        return buildId != null
+                && buildId.equals(barrierBuildId)
+                && barrierReached;
+    }
+
+    static synchronized void releaseBarrier(String buildId) {
+        if (buildId != null && buildId.equals(barrierBuildId)) {
+            barrierReleased = true;
+            BuildObservation.class.notifyAll();
+        }
+    }
+
+    private static void awaitBarrierIfArmed() {
+        synchronized (BuildObservation.class) {
+            if (barrierBuildId == null || barrierReleased) {
+                return;
+            }
+            barrierReached = true;
+            BuildObservation.class.notifyAll();
+            while (!barrierReleased) {
+                try {
+                    BuildObservation.class.wait();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
     static synchronized void recordStarting(
             boolean batch, List<String> sourceUnits) {
         if (!enabled) {
@@ -41,6 +88,7 @@ final class BuildObservation {
             incrementalSeen = true;
         }
         compiledUnits.addAll(sourceUnits);
+        awaitBarrierIfArmed();
     }
 
     static synchronized void recordFinished() {

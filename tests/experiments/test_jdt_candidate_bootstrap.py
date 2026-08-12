@@ -34,6 +34,11 @@ smoke = _load_module(
     "jolink_jdt_bootstrap_smoke",
     EXPERIMENT / "run_bootstrap_smoke.py",
 )
+sys.modules["run_bootstrap_smoke"] = smoke
+a9 = _load_module(
+    "jolink_jdt_a9_experiment",
+    EXPERIMENT / "run_a9_experiment.py",
+)
 
 
 @pytest.mark.parametrize(
@@ -563,3 +568,120 @@ def test_worker_jar_is_reproducible(tmp_path: Path) -> None:
     worker_build._create_worker_jar(worker, classes, second)
 
     assert worker_build.sha256_file(first) == worker_build.sha256_file(second)
+
+
+def test_diagnostic_identity_ignores_marker_enumeration_order() -> None:
+    assert smoke.diagnostics_identity(
+        {"diagnostics": ["Service.java:7:error", "Service.java:4:warning"]}
+    ) == ["Service.java:4:warning", "Service.java:7:error"]
+
+
+@pytest.mark.parametrize(
+    ("operation_kind", "compile_ok", "terminal_status"),
+    [
+        ("CLEAN", None, "SUCCEEDED"),
+        ("FULL", True, "SUCCEEDED"),
+        ("INCREMENTAL", False, "FAILED_COMPILE"),
+    ],
+)
+def test_a9_build_operation_contract(
+    operation_kind: str,
+    compile_ok: bool | None,
+    terminal_status: str,
+) -> None:
+    smoke.require_build_operation_contract(
+        {
+            "operation_kind": operation_kind,
+            "operation_ok": True,
+            "compile_ok": compile_ok,
+            "terminal_status": terminal_status,
+        },
+        operation_kind=operation_kind,
+    )
+
+
+def test_a9_resource_decision_requires_complete_sampling() -> None:
+    checkpoints = []
+    for index in range(6):
+        checkpoints.append(
+            {
+                "after": {
+                    "heap_used_bytes": 10_000_000 + index,
+                    "class_metadata_used_bytes": 20_000_000 + index,
+                    "thread_count": 12,
+                    "loaded_class_count": 1000,
+                },
+                "process_tree_after": {
+                    "process_tree_rss_sum_bytes": 100_000_000 + index
+                },
+            }
+        )
+    decision = smoke.a9_resource_decision(
+        checkpoints=checkpoints,
+        sampler={
+            "coverage_status": "incomplete",
+            "samples": [
+                {"process_tree_rss_sum_bytes": 100_000_000}
+            ],
+        },
+    )
+    assert decision["status"] == "DIAGNOSTIC_RERUN_REQUIRED"
+    assert "process_tree_sampling_incomplete" in decision["reasons"]
+
+
+def test_workspace_lineage_marker_is_consumed_and_reports_offline_delta(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "Fixture.java").write_text("class Fixture {}\n", encoding="utf-8")
+    lineage = a9.WorkspaceLineage(
+        root=tmp_path / "lineage",
+        workspace_lineage_id="workspace-1",
+        candidate_id="candidate-1",
+        candidate_lock_fingerprint="lock-sha",
+        bundle_set_fingerprint="bundle-sha",
+        worker_sha256="worker-sha",
+        target_system_library_fingerprint="system-sha",
+        project_model_fingerprint="model-sha",
+    )
+    manifest = lineage.write_manifest(
+        last_completed_build_generation_id="build-1",
+        source=source,
+    )
+    lineage.publish_clean_marker(manifest=manifest)
+    (source / "Fixture.java").write_text("class Fixture { int x; }\n", encoding="utf-8")
+
+    reuse = lineage.consume_for_reopen(source=source)
+
+    assert reuse["reusable"] is True
+    assert reuse["offline_source_delta"] is True
+    assert not lineage.marker_path.exists()
+    assert lineage.claimed_marker_path.exists()
+
+
+def test_workspace_lineage_without_runner_marker_is_not_reusable(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "Fixture.java").write_text("class Fixture {}\n", encoding="utf-8")
+    lineage = a9.WorkspaceLineage(
+        root=tmp_path / "lineage",
+        workspace_lineage_id="workspace-1",
+        candidate_id="candidate-1",
+        candidate_lock_fingerprint="lock-sha",
+        bundle_set_fingerprint="bundle-sha",
+        worker_sha256="worker-sha",
+        target_system_library_fingerprint="system-sha",
+        project_model_fingerprint="model-sha",
+    )
+    lineage.write_manifest(
+        last_completed_build_generation_id="build-1",
+        source=source,
+    )
+
+    assert lineage.consume_for_reopen(source=source) == {
+        "reusable": False,
+        "reason": "missing_manifest_or_clean_shutdown_marker",
+    }
