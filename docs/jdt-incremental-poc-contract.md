@@ -1090,6 +1090,25 @@ evidence, not a product selection or Phase 1B PASS: the anchor must still pass
 Phase 1A on its own lineage, resource/lifecycle gates, platform evidence, and
 maintenance/security review before it can become a product candidate.
 
+A later full macOS/POSIX run promoted that anchor beyond the dual probe. On
+the same locked Eclipse 2021-03/JDT 3.25 lineage it passed A1-A8, A9-S/M/L,
+the current-platform A10 path boundary, and the complete Phase 1B workload.
+The `@Builder(toBuilder=true)` gate compiled a downstream consumer of
+`model.toBuilder()`, verified the exact generated descriptor
+`()Lexample/LombokModel$LombokModelBuilder;`, and matched an independent
+same-stack clean-full class tree and diagnostics oracle. The bounded
+`lombok.config` output also matched its independent clean-full oracle. All ten
+warm-up and one hundred measured edit/no-op operations were oracle-exact.
+The identity-bound Lombok Worker used fixed-cadence process-tree sampling,
+eleven explicit-GC checkpoints and a 30-second final idle observation; its
+A9-M resource decision was `PASS` for the tiny fixture.
+
+This is a successful POSIX compatibility-candidate result, not final Phase 1
+Go. Windows A1-A10 and Phase 1B evidence plus the explicit
+maintenance/security review remain required. The evidence isolates a
+candidate-stack compatibility difference; it does not attribute causality to
+JDT Core alone.
+
 The old p2 repository exposes Java 11 as its highest synthetic
 `a.jre.javase` capability unit, while the actual locked Worker is JDK 17. The
 anchor lock therefore records both `p2_capability_unit_java_major=11` for

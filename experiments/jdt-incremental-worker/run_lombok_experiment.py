@@ -159,6 +159,72 @@ def require_oracle_equal(
     }
 
 
+def require_to_builder_contract(output: Path) -> dict[str, Any]:
+    """Prove the generated API used by a downstream source, not just its name."""
+    from jolink_runtime.adapters.java.classfile import parse_class_file
+
+    expected_descriptor = "()Lexample/LombokModel$LombokModelBuilder;"
+    model = parse_class_file((output / "example/LombokModel.class").read_bytes())
+    observed = sorted(
+        method.descriptor for method in model.methods if method.name == "toBuilder"
+    )
+    if observed != [expected_descriptor]:
+        raise common.SmokeError(
+            "The @Builder(toBuilder=true) generated method descriptor is incorrect."
+        )
+    if not (output / "example/LombokConsumer.class").is_file():
+        raise common.SmokeError(
+            "The @Builder(toBuilder=true) downstream consumer did not compile."
+        )
+    return {
+        "generated_method": "toBuilder",
+        "expected_descriptor": expected_descriptor,
+        "observed_descriptors": observed,
+        "downstream_consumer_compiled": True,
+    }
+
+
+def add_to_builder_consumer(source_root: Path) -> None:
+    consumer = source_root / "example/LombokConsumer.java"
+    original = consumer.read_text(encoding="utf-8")
+    updated = original.replace(
+        "        model.setCount(model.getCount() + 1);\n",
+        (
+            "        model.setCount(model.getCount() + 1);\n"
+            "        LombokModel copy = model.toBuilder()\n"
+            "                .count(3)\n"
+            "                .build();\n"
+        ),
+    ).replace(
+        "return model.getName() + \":\" + model.getCount()",
+        "return copy.getName() + \":\" + copy.getCount()",
+    )
+    if updated == original or "model.toBuilder()" not in updated:
+        raise common.SmokeError(
+            "The @Builder(toBuilder=true) downstream consumer edit was not applied."
+        )
+    consumer.write_text(updated, encoding="utf-8")
+
+
+def sampled_process_tree_peak(
+    sampler: dict[str, Any], *, started: float, ended: float
+) -> dict[str, Any]:
+    samples = [
+        sample
+        for sample in sampler.get("samples", [])
+        if isinstance(sample, dict)
+        and isinstance(sample.get("monotonic_seconds"), (int, float))
+        and started <= sample["monotonic_seconds"] <= ended
+    ]
+    return {
+        "sample_count": len(samples),
+        "process_tree_rss_sum_bytes": max(
+            (sample["process_tree_rss_sum_bytes"] for sample in samples),
+            default=None,
+        ),
+    }
+
+
 def start_lombok_worker(
     *,
     common_lock: dict[str, Any],
@@ -268,6 +334,7 @@ def run_compatibility_probes(
             ),
             encoding="utf-8",
         )
+        add_to_builder_consumer(builder_source)
         builder_frame = builder_worker.command("BUILD\tFULL")
     finally:
         shutdown.append(builder_worker.close())
@@ -276,6 +343,7 @@ def run_compatibility_probes(
         encoding="utf-8", errors="replace"
     )
     builder_supported = builder_frame.get("compile_ok") is True
+    builder_contract: dict[str, Any] | None = None
     if builder_supported:
         require_success(
             builder_frame,
@@ -292,6 +360,10 @@ def run_compatibility_probes(
         builder_supported = any(
             method.name == "toBuilder" for method in model_class.methods
         )
+        if builder_supported:
+            builder_contract = require_to_builder_contract(
+                builder_attempt / "workspace/plain-fixture/bin"
+            )
     builder_internal_api_failure = (
         "NoSuchMethodError" in builder_stderr
         and "Expression.print" in builder_stderr
@@ -434,6 +506,7 @@ def run_compatibility_probes(
             "compile_ok": builder_frame.get("compile_ok"),
             "diagnostics": common.diagnostics_identity(builder_frame),
             "ecj_internal_api_failure_matched": builder_internal_api_failure,
+            "generated_api_contract": builder_contract,
             "source_path_evidence": builder_path_evidence,
         },
         "lombok_config_probe": {
@@ -517,6 +590,7 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     clients: list[common.WorkerClient] = []
     shutdown: list[dict[str, Any]] = []
+    primary_sampler: common.ProcessTreeSampler | None = None
     try:
         git = common.git_identity(repository_root)
         lombok_lock_file_sha256 = common.sha256_file(args.lombok_lock)
@@ -600,9 +674,15 @@ def main(argv: list[str] | None = None) -> int:
             lombok_jar=lombok_jar,
         )
         clients.append(primary)
+        primary_sampler = common.ProcessTreeSampler(primary.process.pid)
+        primary_sampler.start()
         primary_source = primary_attempt / "workspace/plain-fixture/src"
         shutil.copytree(fixture, primary_source, dirs_exist_ok=True)
+        baseline_started = time.monotonic()
+        primary_sampler.capture("phase1b_baseline_full_start")
         full = primary.command("BUILD\tFULL")
+        primary_sampler.capture("phase1b_baseline_full_end")
+        baseline_ended = time.monotonic()
         require_success(full, label="Phase 1B baseline full build")
         output = primary_attempt / "workspace/plain-fixture/bin"
         baseline_hashes = common.output_hashes(output)
@@ -660,7 +740,9 @@ def main(argv: list[str] | None = None) -> int:
 
         oracle_counter = 0
 
-        def clean_full_oracle(label: str) -> tuple[dict[str, str], list[str]]:
+        def clean_full_oracle(
+            label: str, *, source_root: Path | None = None
+        ) -> tuple[dict[str, str], list[str]]:
             nonlocal oracle_counter
             oracle_counter += 1
             oracle_case_attempt = attempt / (
@@ -681,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
                     oracle_case_attempt / "workspace/plain-fixture/src"
                 )
                 shutil.copytree(
-                    primary_source,
+                    primary_source if source_root is None else source_root,
                     oracle_case_source,
                     dirs_exist_ok=True,
                 )
@@ -936,7 +1018,11 @@ def main(argv: list[str] | None = None) -> int:
                 model_source.write_text(
                     cycle_sources[current_cycle_state], encoding="utf-8"
                 )
+            operation_started = time.monotonic()
+            primary_sampler.capture("phase1b_cycle_start")
             frame = primary.command("BUILD\tINCREMENTAL")
+            primary_sampler.capture("phase1b_cycle_end")
+            operation_ended = time.monotonic()
             if edit:
                 require_incremental_sources(
                     frame,
@@ -972,15 +1058,51 @@ def main(argv: list[str] | None = None) -> int:
                 "actual_build_kind": frame.get("actual_build_kind"),
                 "build_outcome": frame.get("build_outcome"),
                 "compiled_source_units": frame.get("compiled_source_units"),
+                "worker_metrics_after_build": frame.get("metrics"),
+                "started_monotonic": operation_started,
+                "ended_monotonic": operation_ended,
+                "elapsed_ms": round(
+                    (operation_ended - operation_started) * 1000, 3
+                ),
                 "oracle_equal": True,
             }
 
-        warmup_cycles = [
-            run_cycle(index, measured=False) for index in range(10)
-        ]
-        measured_cycles = [
-            run_cycle(index + 10, measured=True) for index in range(100)
-        ]
+        warmup_cycles: list[dict[str, Any]] = []
+        measured_cycles: list[dict[str, Any]] = []
+        resource_checkpoints: list[dict[str, Any]] = []
+        for epoch in range(11):
+            target = warmup_cycles if epoch == 0 else measured_cycles
+            for offset in range(10):
+                target.append(
+                    run_cycle(epoch * 10 + offset, measured=epoch > 0)
+                )
+            resource_checkpoints.append(
+                common.metrics_checkpoint(
+                    primary, request_gc=True, sampler=primary_sampler
+                )
+            )
+        time.sleep(30.0)
+        final_idle_sample = primary_sampler.capture("phase1b_final_30_second_idle")
+        primary_sampler_report = primary_sampler.stop()
+        primary_sampler = None
+        all_cycles = [*warmup_cycles, *measured_cycles]
+        common.annotate_sampled_build_peaks(all_cycles, primary_sampler_report)
+        baseline_resource_evidence = {
+            "actual_build_kind": full.get("actual_build_kind"),
+            "compile_ok": full.get("compile_ok"),
+            "worker_metrics_after_build": full.get("metrics"),
+            "elapsed_ms": round((baseline_ended - baseline_started) * 1000, 3),
+            "sampled_process_tree_peak": sampled_process_tree_peak(
+                primary_sampler_report,
+                started=baseline_started,
+                ended=baseline_ended,
+            ),
+        }
+        resource_decision = common.a9_resource_decision(
+            checkpoints=resource_checkpoints,
+            sampler=primary_sampler_report,
+            build_evidence=[baseline_resource_evidence, *all_cycles],
+        )
         repeated_build_evidence = {
             "warmup_operation_count": len(warmup_cycles),
             "measured_operation_count": len(measured_cycles),
@@ -992,9 +1114,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "every_operation_oracle_equal": all(
                 item["oracle_equal"]
-                for item in [*warmup_cycles, *measured_cycles]
+                for item in all_cycles
             ),
-            "operations": [*warmup_cycles, *measured_cycles],
+            "operations": all_cycles,
         }
 
         optional_builder_attempt = attempt / "optional-builder-probe"
@@ -1023,6 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 encoding="utf-8",
             )
+            add_to_builder_consumer(optional_builder_source)
             optional_builder_frame = optional_builder_worker.command("BUILD\tFULL")
         finally:
             optional_builder_shutdown = optional_builder_worker.close()
@@ -1032,10 +1155,31 @@ def main(argv: list[str] | None = None) -> int:
             optional_builder_attempt / "worker.stderr.log"
         ).read_text(encoding="utf-8", errors="replace")
         optional_builder_supported = optional_builder_frame.get("compile_ok") is True
+        optional_builder_contract: dict[str, Any] | None = None
+        optional_builder_oracle: dict[str, Any] | None = None
         if optional_builder_supported:
             require_success(
                 optional_builder_frame,
                 label="Phase 1B optional @Builder compatibility probe",
+            )
+            optional_builder_output = (
+                optional_builder_attempt / "workspace/plain-fixture/bin"
+            )
+            optional_builder_contract = require_to_builder_contract(
+                optional_builder_output
+            )
+            (
+                optional_builder_oracle_hashes,
+                optional_builder_oracle_diagnostics,
+            ) = clean_full_oracle(
+                "builder_to_builder", source_root=optional_builder_source
+            )
+            optional_builder_oracle = require_oracle_equal(
+                label="Phase 1B optional @Builder compatibility probe",
+                output=optional_builder_output,
+                frame=optional_builder_frame,
+                oracle_hashes=optional_builder_oracle_hashes,
+                oracle_diagnostics=optional_builder_oracle_diagnostics,
             )
         optional_builder_internal_api_failure = (
             "NoSuchMethodError" in optional_builder_stderr
@@ -1061,6 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
                 if optional_builder_supported
                 else "ECJ Expression#print signature"
             ),
+            "generated_api_contract": optional_builder_contract,
+            "clean_full_oracle": optional_builder_oracle,
             "owned_worker_settled": (
                 optional_builder_shutdown.get("status") == "settled"
                 and optional_builder_shutdown.get("owned_process_tree_absent") is True
@@ -1123,6 +1269,18 @@ def main(argv: list[str] | None = None) -> int:
             raise common.SmokeError(
                 "The lombok.config probe failed with an unknown signature."
             )
+        config_oracle: dict[str, Any] | None = None
+        if config_supported:
+            config_oracle_hashes, config_oracle_diagnostics = clean_full_oracle(
+                "lombok_config", source_root=config_source
+            )
+            config_oracle = require_oracle_equal(
+                label="Phase 1B lombok.config probe",
+                output=config_output,
+                frame=config_frame,
+                oracle_hashes=config_oracle_hashes,
+                oracle_diagnostics=config_oracle_diagnostics,
+            )
 
         while clients:
             shutdown.append(clients.pop().close())
@@ -1163,6 +1321,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         current_candidate_blockers = []
+        if resource_decision["status"] not in {"PASS", "CONDITIONAL"}:
+            current_candidate_blockers.append(
+                "lombok_worker_resource_gate_not_acceptable"
+            )
         if not config_supported:
             current_candidate_blockers.append("lombok_config_unresolved")
         if not optional_builder_supported:
@@ -1224,6 +1386,13 @@ def main(argv: list[str] | None = None) -> int:
             "generated_member_consumer_edit": consumer_evidence,
             "generated_member_error_recovery": recovery_evidence,
             "repeated_build_stability": repeated_build_evidence,
+            "resource_measurement": {
+                "decision": resource_decision,
+                "baseline": baseline_resource_evidence,
+                "checkpoints": resource_checkpoints,
+                "process_tree_sampler": primary_sampler_report,
+                "final_30_second_idle": final_idle_sample,
+            },
             "lombok_config_probe": {
                 "status": (
                     "passed"
@@ -1240,6 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 "source_path_evidence": config_path_evidence,
                 "config_relative_path": "example/lombok.config",
+                "clean_full_oracle": config_oracle,
             },
             "compatibility_findings": [optional_builder_finding],
             "current_candidate_blockers": current_candidate_blockers,
@@ -1293,6 +1463,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
+        if primary_sampler is not None:
+            primary_sampler.stop()
         while clients:
             shutdown.append(clients.pop().close())
 

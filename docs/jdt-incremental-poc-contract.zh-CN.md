@@ -865,6 +865,21 @@ Worker JDK binary、完全一致的 Worker JAR SHA-256、精确 Lombok 1.18.20 a
 完整 Phase 1A、资源/生命周期 gate、平台证据和维护性/安全性评审，才可能成为产品
 candidate。
 
+后续完整 macOS/POSIX 实跑把该 anchor 从双 Probe 推进到了完整候选验证。在同一套锁定
+的 Eclipse 2021-03/JDT 3.25 血缘上，A1-A8、A9-S/M/L、当前平台的 A10 路径边界和
+完整 Phase 1B workload 均通过。`@Builder(toBuilder=true)` gate 编译了真实调用
+`model.toBuilder()` 的下游 consumer，验证了精确生成方法描述符
+`()Lexample/LombokModel$LombokModelBuilder;`，并与独立、同栈的 clean-full class
+tree 和 diagnostics oracle 完全一致；有界 `lombok.config` 输出也通过独立
+clean-full oracle。10 次 warm-up 和 100 次 measured edit/no-op 全部 oracle-exact。
+Lombok Worker 使用固定频率进程树采样、11 个显式 GC checkpoint 和 30 秒最终 idle
+观测；在小型 fixture 上 A9-M 资源判定为 `PASS`。
+
+这表示 Eclipse 2021-03 已经成为成功的 POSIX compatibility candidate，但还不是产品
+选型或最终 Phase 1 Go。Windows 上的 A1-A10/Phase 1B 证据和明确的维护性/安全性评审
+仍是外部门槛。这里证明的是 candidate stack 的兼容性差异，不能把因果只归到 JDT
+Core。
+
 旧 p2 repository 最高只提供 Java 11 的 synthetic `a.jre.javase` capability unit，
 而实际锁定 Worker 使用 JDK 17。因此 anchor lock 分别记录：用于解析 bundle filter 的
 `p2_capability_unit_java_major=11`，以及实际执行身份的 `worker_java_major=17` 和 Java

@@ -137,8 +137,10 @@ run_a9_experiment.py
 run_lombok_experiment.py
     exploratory Phase 1B Lombok 1.18.20 full/incremental compatibility,
     clean-full oracles, generated-member propagation/recovery, and repeated
-    mixed edit/no-op stability; its compatibility-only mode compares bounded
-    lombok.config and @Builder(toBuilder=true) behavior across candidates
+    mixed edit/no-op stability; the full run also records fixed-cadence
+    process-tree sampling and an A9-M resource decision. Its compatibility-only
+    mode compares bounded lombok.config and @Builder(toBuilder=true) behavior
+    across candidates
 ```
 
 ## Reproduce on macOS/POSIX
@@ -303,6 +305,22 @@ exact Lombok 1.18.20, target JDK 8 snapshot, and fixture, both
 the version trade-off concrete; it does not make the old anchor a product
 choice. Its separate Phase 1A, resource/lifecycle, platform, maintenance, and
 security gates remain open.
+
+The promoted anchor has since completed one full macOS/POSIX candidate run.
+On that exact artifact lineage A1-A8, A9-S/M/L, and the current-platform A10
+spaces/non-ASCII path boundary passed. The complete Phase 1B workload also
+passed with no blockers: `lombok.config` generated the configured field;
+`@Builder(toBuilder=true)` compiled a downstream `toBuilder()` consumer with
+the exact descriptor `()Lexample/LombokModel$LombokModelBuilder;`; every
+successful state matched an independent same-stack clean-full class tree and
+diagnostics oracle; and all 110 mixed warm-up/measured operations were
+oracle-exact. Fixed-cadence process-tree sampling was complete and the Lombok
+Worker resource decision was `PASS`, with a tiny-fixture peak below 256 MiB.
+
+This promotes Eclipse 2021-03 from a dual-probe-only anchor to a successful
+POSIX compatibility candidate. It is still not a product selection or final
+Phase 1 Go: Windows A1-A10/Phase 1B evidence and the explicit
+maintenance/security review remain external gates.
 
 ## Next implementation boundary
 

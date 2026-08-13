@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import queue
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -1017,6 +1018,42 @@ def test_phase1b_oracle_gate_compares_diagnostics_and_complete_tree(
             oracle_hashes=hashes,
             oracle_diagnostics=[],
         )
+
+
+def test_phase1b_to_builder_consumer_is_real_downstream_usage(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    fixture = EXPERIMENT / "fixtures/lombok-java/src"
+    shutil.copytree(fixture, source, dirs_exist_ok=True)
+    phase1b.add_to_builder_consumer(source)
+
+    consumer = (source / "example/LombokConsumer.java").read_text(
+        encoding="utf-8"
+    )
+    assert "LombokModel copy = model.toBuilder()" in consumer
+    assert ".count(3)" in consumer
+    assert "return copy.getName()" in consumer
+
+
+def test_phase1b_sampled_peak_is_bounded_to_operation_window() -> None:
+    evidence = phase1b.sampled_process_tree_peak(
+        {
+            "samples": [
+                {"monotonic_seconds": 1.0, "process_tree_rss_sum_bytes": 10},
+                {"monotonic_seconds": 2.0, "process_tree_rss_sum_bytes": 20},
+                {"monotonic_seconds": 3.0, "process_tree_rss_sum_bytes": 30},
+            ]
+        },
+        started=1.5,
+        ended=2.5,
+    )
+
+    assert evidence == {
+        "sample_count": 1,
+        "process_tree_rss_sum_bytes": 20,
+    }
 
 
 def test_p2_metadata_cache_is_partitioned_by_repository_url(
