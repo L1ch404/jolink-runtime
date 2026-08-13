@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
+import json
 import queue
 import sys
 import zipfile
@@ -39,6 +41,10 @@ sys.modules["run_bootstrap_smoke"] = smoke
 a9 = _load_module(
     "jolink_jdt_a9_experiment",
     EXPERIMENT / "run_a9_experiment.py",
+)
+phase1b = _load_module(
+    "jolink_jdt_phase1b_lombok_experiment",
+    EXPERIMENT / "run_lombok_experiment.py",
 )
 
 
@@ -143,6 +149,8 @@ def test_resolver_validates_and_records_osgi_execution_environment(
 
     assert evidence["status"] == "satisfied"
     assert evidence["worker_java_major"] == 17
+    assert evidence["p2_capability_unit_java_major"] == 17
+    assert evidence["worker_java_satisfies_p2_profile"] is True
     assert evidence["requirements"] == [
         {
             "bundle": "root",
@@ -152,6 +160,93 @@ def test_resolver_validates_and_records_osgi_execution_environment(
             "matched_capability": {"name": "JavaSE", "version": "17.0.0"},
         }
     ]
+
+
+def test_execution_environment_can_use_older_p2_profile_for_newer_worker(
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "content.xml"
+    content.write_text(
+        """<?xml version='1.0'?>
+<repository>
+  <units>
+    <unit id='a.jre.javase' version='11.0.0'>
+      <provides>
+        <provided namespace='osgi.ee' name='JavaSE' version='11.0.0'/>
+      </provides>
+    </unit>
+    <unit id='root' version='1.0.0'>
+      <provides>
+        <provided namespace='osgi.bundle' name='root' version='1.0.0'/>
+      </provides>
+      <requires>
+        <requiredProperties namespace='osgi.ee'
+          match='(&amp;(osgi.ee=JavaSE)(version=11))'/>
+      </requires>
+      <artifacts><artifact classifier='osgi.bundle' id='root' version='1.0.0'/></artifacts>
+    </unit>
+  </units>
+</repository>
+""",
+        encoding="utf-8",
+    )
+    units = bootstrap.parse_units(content)
+    system = bootstrap.parse_system_capabilities(content, java_major=11)
+    resolved = bootstrap.resolve_units(
+        units, ["root"], system_capabilities=system
+    )
+
+    evidence = bootstrap.execution_environment_evidence(
+        resolved,
+        system_capabilities=system,
+        worker_java_major=17,
+        p2_capability_unit_java_major=11,
+    )
+
+    assert evidence["worker_java_major"] == 17
+    assert evidence["p2_capability_unit_java_major"] == 11
+    assert evidence["worker_java_satisfies_p2_profile"] is True
+
+
+def test_execution_environment_rejects_worker_older_than_p2_profile() -> None:
+    with pytest.raises(
+        bootstrap.DiscoveryError,
+        match="older than the p2 execution-environment profile",
+    ):
+        bootstrap.execution_environment_evidence(
+            [],
+            system_capabilities=(),
+            worker_java_major=8,
+            p2_capability_unit_java_major=11,
+        )
+
+
+def test_phase1b_source_path_evidence_is_shareable_and_redacted(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "private-user-name" / "workspace" / "src"
+
+    class Worker:
+        ready = {
+            "source_resource_full_path": "/plain-fixture/src",
+            "source_location_uri": source.resolve().as_uri(),
+        }
+
+    evidence = phase1b.worker_source_path_evidence(
+        Worker(), expected_source=source
+    )
+    serialized = json.dumps(evidence)
+
+    assert evidence["location_uri_scheme"] == "file"
+    assert evidence["physical_path_matches_expected"] is True
+    assert evidence["expected_path_identity_sha256"] == evidence[
+        "observed_path_identity_sha256"
+    ]
+    assert "private-user-name" not in serialized
+    assert str(tmp_path) not in serialized
+    assert "location_uri" not in evidence
+    assert "expected_physical_path" not in evidence
+    assert "observed_physical_path" not in evidence
 
 
 def test_resolver_rejects_unsatisfied_osgi_execution_environment(
@@ -814,6 +909,230 @@ def test_a10_path_boundary_facts_do_not_expose_the_path(tmp_path: Path) -> None:
         "contains_non_ascii": True,
     }
     assert str(boundary) not in repr(facts)
+
+
+def test_phase1b_lock_rejects_changed_lombok_artifact(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    artifact = repository / "org/projectlombok/lombok/1.18.20/lombok.jar"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"changed")
+    support = repository / "org/slf4j/slf4j-api/1.7.30/slf4j.jar"
+    support.parent.mkdir(parents=True)
+    support.write_bytes(b"support")
+    lock = tmp_path / "lock.json"
+    lock.write_text(
+        json.dumps(
+            {
+                "lombok": {
+                    "relative_maven_path": str(artifact.relative_to(repository)),
+                    "sha256": "0" * 64,
+                    "bytes": len(b"changed"),
+                },
+                "slf4j_api": {
+                    "relative_maven_path": str(support.relative_to(repository)),
+                    "sha256": smoke.sha256_file(support),
+                    "bytes": len(b"support"),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(smoke.SmokeError, match="lombok"):
+        phase1b.load_lombok_lock(lock, maven_repository=repository)
+
+
+def test_phase1b_activation_gate_requires_every_transform() -> None:
+    with pytest.raises(smoke.SmokeError, match="activation evidence"):
+        phase1b.assert_activation_shape(
+            {
+                "activation": {
+                    "builder_generated": True,
+                    "getter_generated": True,
+                    "setter_generated": True,
+                    "nonnull_guard_literal_present": True,
+                    "slf4j_field_generated": False,
+                }
+            }
+        )
+
+
+def test_phase1b_lock_matches_exact_lombok_1_18_20_identity() -> None:
+    lock = json.loads(
+        (EXPERIMENT / "lombok-1.18.20-lock.json").read_text(encoding="utf-8")
+    )
+
+    assert lock["lombok"]["version"] == "1.18.20"
+    assert lock["lombok"]["sha256"] == (
+        "ce947be6c2fbe759fbbe8ef3b42b6825f814c98c8853f1013f2d9630cedf74b0"
+    )
+    assert lock["integration"]["java_agent_argument"] == "=ECJ"
+    assert lock["integration"]["worker_jvm_arguments"] == [
+        "--add-opens=java.base/java.lang=ALL-UNNAMED"
+    ]
+
+
+def test_phase1b_compile_failure_accepts_worker_failure_semantics() -> None:
+    phase1b.require_compile_failure(
+        {
+            "ok": False,
+            "operation_kind": "INCREMENTAL",
+            "operation_ok": True,
+            "compile_ok": False,
+            "terminal_status": "FAILED_COMPILE",
+            "error_count": 1,
+            "generation_publishable": False,
+            "build_outcome": "COMPILED",
+            "compiled_source_units": ["src/example/LombokConsumer.java"],
+        },
+        label="generated-member failure",
+    )
+
+
+def test_phase1b_oracle_gate_compares_diagnostics_and_complete_tree(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "bin"
+    target = output / "example/Model.class"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"class-bytes")
+    frame = {"diagnostics": []}
+    hashes = smoke.output_hashes(output)
+
+    evidence = phase1b.require_oracle_equal(
+        label="fixture",
+        output=output,
+        frame=frame,
+        oracle_hashes=hashes,
+        oracle_diagnostics=[],
+    )
+
+    assert evidence["clean_full_oracle_equal"] is True
+    target.write_bytes(b"changed")
+    with pytest.raises(smoke.SmokeError, match="clean-full oracle"):
+        phase1b.require_oracle_equal(
+            label="fixture",
+            output=output,
+            frame=frame,
+            oracle_hashes=hashes,
+            oracle_diagnostics=[],
+        )
+
+
+def test_p2_metadata_cache_is_partitioned_by_repository_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    downloads: list[tuple[str, Path]] = []
+
+    def fake_download(url: str, destination: Path) -> None:
+        downloads.append((url, destination))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("content.xml", "<repository />")
+
+    monkeypatch.setattr(bootstrap, "_download", fake_download)
+
+    first_xml, first_identity = bootstrap._content_xml(
+        "https://example.invalid/eclipse/current", tmp_path
+    )
+    second_xml, second_identity = bootstrap._content_xml(
+        "https://example.invalid/eclipse/anchor", tmp_path
+    )
+
+    assert first_xml != second_xml
+    assert first_identity["url"] != second_identity["url"]
+    assert len(downloads) == 2
+    assert downloads[0][1].parent != downloads[1][1].parent
+
+
+def test_bundle_download_retries_a_truncated_cached_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = bootstrap.Unit(
+        unit_id="example.bundle",
+        version=bootstrap.OSGiVersion.parse("1.0.0"),
+        capabilities=(),
+        requirements=(),
+        execution_environment_requirements=(),
+        unsupported_mandatory_requirements=(),
+        artifact_classifier="osgi.bundle",
+        artifact_id="example.bundle",
+        artifact_version="1.0.0",
+    )
+    destination = (
+        tmp_path
+        / "candidates/candidate/plugins/example.bundle_1.0.0.jar"
+    )
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"truncated")
+    download_count = 0
+
+    def fake_download(url: str, path: Path) -> None:
+        nonlocal download_count
+        download_count += 1
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(
+                "META-INF/MANIFEST.MF",
+                "Manifest-Version: 1.0\n"
+                "Bundle-SymbolicName: example.bundle\n"
+                "Bundle-Version: 1.0.0\n\n",
+            )
+            archive.writestr(
+                "about.html",
+                "Eclipse Public License Version 2.0",
+            )
+
+    monkeypatch.setattr(bootstrap, "_download", fake_download)
+
+    lock = bootstrap.download_and_lock(
+        repository_url="https://example.invalid/repository",
+        units=[unit],
+        cache_root=tmp_path,
+        candidate_id="candidate",
+        bootstrap_config={
+            "worker_java_minimum": 17,
+            "root_installable_units": ["example.bundle"],
+        },
+        metadata={"sha256": "metadata"},
+        execution_environment={"status": "satisfied"},
+        lock_path=tmp_path / "lock.json",
+    )
+
+    assert download_count == 1
+    assert lock["artifacts"][0]["symbolic_name"] == "example.bundle"
+
+
+def test_download_retries_transient_transport_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    class Response(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"payload")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+            return False
+
+    def fake_urlopen(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("transient transport failure")
+        return Response()
+
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(bootstrap.time, "sleep", lambda _: None)
+    destination = tmp_path / "artifact.jar"
+
+    bootstrap._download("https://example.invalid/artifact.jar", destination)
+
+    assert attempts == 3
+    assert destination.read_bytes() == b"payload"
 
 
 def test_workspace_lineage_marker_is_consumed_and_reports_offline_delta(

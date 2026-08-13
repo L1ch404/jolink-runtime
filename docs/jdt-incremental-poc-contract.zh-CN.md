@@ -99,8 +99,10 @@ Phase 1B
     Lombok 生成成员及依赖传播正确性
 ```
 
-本契约只批准 Phase 1A。只有记录 Phase 1A Go 后才能开始 Phase 1B。两者
-都通过也只允许评审 Phase 2，不自动授权实现。
+本契约批准 Phase 1A。在正式记录 Phase 1A Go 前，Phase 1B 只能运行明确标为
+`exploratory_non_canonical` 的兼容性 Probe，且不得继承任何 Phase 1A gate。只有
+记录 Phase 1A Go 后，才能生成 canonical Phase 1B 证据。两者都通过也只允许
+评审 Phase 2，不自动授权实现。
 
 Phase 2 才引入 Maven Bootstrap 和真实项目 Build World；Phase 3 才引入
 Runtime launch、class-shape 比较、JDWP HotSwap、Fast Restart、readiness
@@ -823,6 +825,50 @@ getter/builder 的 dependent source、使用生成 `log` 字段的方法，以�
 ECJ/Equinox，agent 属于 Worker identity；不能静默替换为 delombok 或 javac
 class。仅能解析 annotation 不算成功，必须证明下游能调用生成成员且 `log`
 字段真的存在。
+
+当前 candidate 的第一次兼容性 Probe 已确认下面这组精确启动身份：
+
+```text
+-javaagent:<locked-lombok-1.18.20.jar>=ECJ
+--add-opens=java.base/java.lang=ALL-UNNAMED
+compile classpath = target JDK 8 system libraries + Lombok + SLF4J API
+```
+
+若没有显式 module opening，Lombok 1.18.20 会在锁定的 Worker JDK 17 上反射访问
+`ClassLoader#defineClass` 时失败。因此该 opening 属于 candidate identity，不能作为
+机器环境隐式配置或失败后的静默重试。Probe 已证明 `@Data`、`@Builder`、`@NonNull`、
+`@Slf4j`、下游 generated-member 调用以及方法体增量编译生效，且完整 class tree 与
+clean-full oracle 逐 SHA 相同；同时发现有界 `lombok.config` 在当前 JDT 3.46
+candidate 下仍退回默认日志字段。Worker READY 证据已经证明 Eclipse source resource
+URI 与 joLink 私有源码树的物理 URI 完全一致，config 文件也确实位于其子目录。因此，
+“joLink 把源码映射到了错误物理目录”这一早期假设可以排除；剩余问题应定性为当前
+candidate 特有的 Lombok workspace/config-resolution 兼容边界。该 config case 继续
+保持 open，并阻止当前 candidate 的 Phase 1B 批准，不能用其他 transform 的成功结果
+推断它已经通过。
+
+扩展后的探索 workload 还证明了：改变 generated accessor 的字段修改、由 annotation
+变化导致旧 `@Data` 方法被移除、下游 consumer 修改、generated-member error/recovery，
+以及 10 次 warm-up 加 100 次 measured mixed edit/no-op。所有成功状态都与同一套
+JDT/Lombok 的 clean-full oracle 完全一致，全部 owned Worker 均协作式退出。
+
+当前 candidate 同时暴露出一个更窄的兼容性边界：`@Builder(toBuilder = true)` 会进入
+Lombok 1.18.20 中依赖旧 ECJ internal `Expression#print` 签名的 handler 路径，并以
+`NoSuchMethodError` 失败。普通 `@Builder` 已证明生效，但当前 candidate 不支持这个
+形态；未来产品若没有单独的兼容性结论，不得宣称支持它。
+
+随后又在锁定的 Eclipse 2021-03 anchor（JDT Core
+`3.25.0.v20210223-0522`）上执行了有界双 Probe。当前 candidate 与 anchor 使用同一个
+Worker JDK binary、完全一致的 Worker JAR SHA-256、精确 Lombok 1.18.20 artifact、
+同一 target JDK 8 system-library snapshot、fixture 和编译选项。anchor 上
+`@Builder(toBuilder=true)` 与可观察的 `lombok.config` 日志字段覆盖均通过。这是很强的
+探索性兼容证据，但不是产品选型或 Phase 1B PASS：anchor 仍须在自己的血缘上通过
+完整 Phase 1A、资源/生命周期 gate、平台证据和维护性/安全性评审，才可能成为产品
+candidate。
+
+旧 p2 repository 最高只提供 Java 11 的 synthetic `a.jre.javase` capability unit，
+而实际锁定 Worker 使用 JDK 17。因此 anchor lock 分别记录：用于解析 bundle filter 的
+`p2_capability_unit_java_major=11`，以及实际执行身份的 `worker_java_major=17` 和 Java
+binary SHA-256。两者不得混为一谈。
 
 Phase 1B 必须执行 clean full、普通方法体修改、改变生成 accessor 的字段修改、
 改变生成 schema 的 annotation 修改、consumer 修改、`lombok.config`

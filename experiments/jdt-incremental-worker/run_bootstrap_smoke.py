@@ -1031,6 +1031,8 @@ def start_worker(
     instrumentation: str,
     timeout: float,
     reuse_existing: bool = False,
+    java_agents: tuple[str, ...] = (),
+    extra_jvm_arguments: tuple[str, ...] = (),
 ) -> WorkerClient:
     configuration = attempt / "configuration"
     configuration.mkdir(parents=True, exist_ok=reuse_existing)
@@ -1056,6 +1058,8 @@ def start_worker(
         str(java_tool(worker_java_home, "java")),
         "-Xms64m",
         "-Xmx512m",
+        *extra_jvm_arguments,
+        *(f"-javaagent:{agent}" for agent in java_agents),
         "-jar",
         str(launcher),
         "-nosplash",
@@ -1073,7 +1077,9 @@ def start_worker(
         instrumentation,
     ]
     if not reuse_existing:
-        command.insert(5, "-clean")
+        command.insert(
+            5 + len(extra_jvm_arguments) + len(java_agents), "-clean"
+        )
     process = subprocess.Popen(
         command,
         cwd=candidate_root,

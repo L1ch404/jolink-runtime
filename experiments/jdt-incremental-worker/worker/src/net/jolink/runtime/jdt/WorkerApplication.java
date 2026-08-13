@@ -687,9 +687,11 @@ public final class WorkerApplication implements IApplication {
                                 .toString();
                         hashes.put(relative, sha256(path));
                     } catch (Exception exception) {
-                        throw new CoreException(
-                                org.eclipse.core.runtime.Status.error(
-                                        "Unable to hash class output.", exception));
+                        throw new CoreException(new org.eclipse.core.runtime.Status(
+                                org.eclipse.core.runtime.IStatus.ERROR,
+                                WorkerApplication.class,
+                                "Unable to hash class output.",
+                                exception));
                     }
                 }
             }
@@ -724,6 +726,8 @@ public final class WorkerApplication implements IApplication {
         } catch (CoreException exception) {
             exception.printStackTrace(System.err);
         }
+        IFolder source = project.getFolder("src");
+        java.net.URI sourceLocation = source.getLocationURI();
         emit("{\"ok\":true,\"status\":\"ready\","
                 + "\"application_id\":\"net.jolink.runtime.jdt.worker\","
                 + "\"java_builder_id\":" + json(JavaCore.BUILDER_ID) + ","
@@ -735,6 +739,11 @@ public final class WorkerApplication implements IApplication {
                 + json(instrumentationEnabled ? "enabled" : "disabled") + ","
                 + "\"workspace_project_state\":"
                 + json(projectReopened ? "reopened" : "created") + ","
+                + "\"source_resource_full_path\":"
+                + json(source.getFullPath().toString()) + ","
+                + "\"source_location_uri\":"
+                + (sourceLocation == null
+                        ? "null" : json(sourceLocation.toASCIIString())) + ","
                 + "\"evidence_status\":\"phase_1a_candidate\"}");
     }
 

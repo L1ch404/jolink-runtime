@@ -133,6 +133,12 @@ run_a9_experiment.py
     frozen A9-S/M/L workload, attempt-scoped Oracle catalog, fixed-cadence
     process-tree sampling, lifecycle races, recovery, and Runner-owned lineage
     manifest/clean-marker evidence
+
+run_lombok_experiment.py
+    exploratory Phase 1B Lombok 1.18.20 full/incremental compatibility,
+    clean-full oracles, generated-member propagation/recovery, and repeated
+    mixed edit/no-op stability; its compatibility-only mode compares bounded
+    lombok.config and @Builder(toBuilder=true) behavior across candidates
 ```
 
 ## Reproduce on macOS/POSIX
@@ -160,6 +166,19 @@ uv run python experiments/jdt-incremental-worker/run_bootstrap_smoke.py \
   --worker-java-home /path/to/jdk-17 \
   --target-java-home /path/to/jdk-8 \
   --a10-path-boundary \
+  --keep-attempt
+
+uv run python experiments/jdt-incremental-worker/run_lombok_experiment.py \
+  --worker-java-home /path/to/jdk-17 \
+  --target-java-home /path/to/jdk-8 \
+  --keep-attempt
+
+# Bounded current/anchor compatibility probe (select either lock):
+uv run python experiments/jdt-incremental-worker/run_lombok_experiment.py \
+  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor.json \
+  --worker-java-home /path/to/jdk-17 \
+  --target-java-home /path/to/jdk-8 \
+  --compatibility-probes-only \
   --keep-attempt
 ```
 
@@ -249,6 +268,42 @@ owned Worker residue            none
 These are tiny-fixture implementation facts. They do not claim company-project,
 Lombok, HotSwap, or production publication performance.
 
+## Current Phase 1B exploratory result
+
+The Phase 1B runner is intentionally labelled `exploratory_non_canonical`
+until the complete Phase 1A Go gate is recorded. On the current macOS
+candidate it proves:
+
+```text
+Lombok                         1.18.20, exact locked SHA
+integration                    -javaagent:lombok.jar=ECJ
+Worker JVM opening             java.base/java.lang
+target class major             52
+@Data/@Builder/@NonNull/@Slf4j active
+downstream generated members   compiled
+method/field/annotation/consumer incrementals exact vs clean full
+generated-member failure       rejected; recovery exact vs clean full
+warm-up operations             10 / all oracle exact
+measured mixed operations      100 (50 edits + 50 no-ops) / all oracle exact
+owned Worker residue           none
+```
+
+This is not Phase 1B PASS. On JDT 3.46, bounded `lombok.config` lookup still
+falls back to the default log field and `@Builder(toBuilder=true)` exposes a
+Lombok 1.18.20 versus current ECJ internal-API incompatibility. READY evidence
+shows that the Eclipse source URI and private filesystem source directory are
+identical, so this is no longer described as a wrong physical-path mapping.
+Windows evidence is also missing. The report preserves these findings instead
+of weakening the successful core-transform evidence.
+
+A compatibility-only dual probe now locks Eclipse 2021-03 / JDT Core
+`3.25.0.v20210223-0522`. With the same JDK 17 binary, identical Worker JAR,
+exact Lombok 1.18.20, target JDK 8 snapshot, and fixture, both
+`lombok.config` and `@Builder(toBuilder=true)` pass on that anchor. This makes
+the version trade-off concrete; it does not make the old anchor a product
+choice. Its separate Phase 1A, resource/lifecycle, platform, maintenance, and
+security gates remain open.
+
 ## Next implementation boundary
 
 The experiment may proceed with A10 Windows, spaces, and non-ASCII path
@@ -258,5 +313,6 @@ that a live-Worker EOF and a shutdown deadline expiry force-settle the exact
 identity-bound process tree under one five-second budget and publish exactly
 one Runner-owned `BUILD_ABORTED` terminal.
 
-Phase 1B Lombok work must not begin until the same exact evidence candidate
-passes the complete Phase 1A Go gate.
+Phase 1B compatibility probes may continue only as non-canonical exploration.
+Canonical Phase 1B evidence still requires the same exact evidence candidate
+to pass the complete Phase 1A Go gate first.

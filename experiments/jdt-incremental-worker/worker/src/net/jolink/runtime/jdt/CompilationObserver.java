@@ -49,8 +49,4 @@ public final class CompilationObserver extends CompilationParticipant {
         return false;
     }
 
-    @Override
-    public boolean isPostProcessor() {
-        return false;
-    }
 }

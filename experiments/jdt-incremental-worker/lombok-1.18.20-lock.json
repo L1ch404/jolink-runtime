@@ -1,0 +1,32 @@
+{
+  "schema_version": "jolink-jdt-lombok-artifact-v1",
+  "lombok": {
+    "group_id": "org.projectlombok",
+    "artifact_id": "lombok",
+    "version": "1.18.20",
+    "sha256": "ce947be6c2fbe759fbbe8ef3b42b6825f814c98c8853f1013f2d9630cedf74b0",
+    "bytes": 1931717,
+    "license_identity": "MIT",
+    "relative_maven_path": "org/projectlombok/lombok/1.18.20/lombok-1.18.20.jar"
+  },
+  "slf4j_api": {
+    "group_id": "org.slf4j",
+    "artifact_id": "slf4j-api",
+    "version": "1.7.30",
+    "sha256": "cdba07964d1bb40a0761485c6b1e8c2f8fd9eb1d19c53928ac0d7f9510105c57",
+    "bytes": 41472,
+    "license_identity": "MIT",
+    "relative_maven_path": "org/slf4j/slf4j-api/1.7.30/slf4j-api-1.7.30.jar"
+  },
+  "integration": {
+    "java_agent_argument": "=ECJ",
+    "worker_jvm_arguments": [
+      "--add-opens=java.base/java.lang=ALL-UNNAMED"
+    ],
+    "compile_classpath_order": [
+      "target_system_libraries",
+      "lombok",
+      "slf4j_api"
+    ]
+  }
+}

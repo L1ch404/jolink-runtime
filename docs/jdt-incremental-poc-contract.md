@@ -113,9 +113,11 @@ Phase 1B
     Lombok-generated member and dependency correctness
 ```
 
-Phase 1A is authorized by this contract. Phase 1B may begin only after a
-recorded Phase 1A Go decision. Passing both permits a new review for Phase 2;
-it does not authorize Phase 2 implementation.
+Phase 1A is authorized by this contract. Phase 1B may produce exploratory
+compatibility probes before a recorded Phase 1A Go only when they are labelled
+`exploratory_non_canonical` and inherit no Phase 1A gate. Canonical Phase 1B
+evidence may begin only after a recorded Phase 1A Go decision. Passing both
+permits a new review for Phase 2; it does not authorize Phase 2 implementation.
 
 Phase 2 would introduce Maven Bootstrap and a real-project Build World.
 Phase 3 would introduce Runtime launch, class-shape comparison, JDWP HotSwap,
@@ -1041,6 +1043,58 @@ The exact Lombok integration mechanism must be recorded. If Lombok must patch
 the ECJ/Equinox process as a Java agent, that is part of the worker identity;
 the experiment may not silently substitute delombok or javac-generated
 classes.
+
+The first current-candidate compatibility probe established this exact launch
+identity:
+
+```text
+-javaagent:<locked-lombok-1.18.20.jar>=ECJ
+--add-opens=java.base/java.lang=ALL-UNNAMED
+compile classpath = target JDK 8 system libraries + Lombok + SLF4J API
+```
+
+Without the explicit module opening, Lombok 1.18.20 fails while reflectively
+accessing `ClassLoader#defineClass` on the pinned Worker JDK 17. This opening is
+therefore candidate identity, not an ambient machine setting or silent retry.
+The same probe proved `@Data`, `@Builder`, `@NonNull`, `@Slf4j`, downstream
+generated-member calls, and a method-body incremental build whose complete
+class tree exactly equals a clean-full oracle. It also found that bounded
+`lombok.config` lookup falls back to the default log field on the current JDT
+3.46 candidate. Worker READY evidence proves that the Eclipse source resource
+URI equals the private source tree's physical URI, with the config file located
+beneath it. The hypothesis that joLink mapped the source to the wrong physical
+directory is therefore rejected; the remaining finding is a candidate-specific
+Lombok workspace/config-resolution compatibility boundary. It remains open and
+prevents Phase 1B approval on the current candidate; it must not be inferred
+from the other successful transforms.
+The expanded exploratory workload now also proves generated-accessor field
+propagation, annotation-driven removal of stale `@Data` methods, downstream
+consumer edits, generated-member error/recovery, and ten warm-up plus one
+hundred measured mixed edit/no-op operations. Every successful state matched a
+same-stack clean-full oracle and every owned Worker settled cooperatively.
+
+The current candidate also exposes a narrower compatibility boundary:
+`@Builder(toBuilder = true)` reaches a Lombok 1.18.20 handler path that expects
+an older ECJ internal `Expression#print` signature and fails with
+`NoSuchMethodError`. The base `@Builder` transform is proven active, but this
+form is not supported by the current candidate and must not be advertised by a
+future product without a separate compatibility decision.
+
+A bounded dual probe was then executed on the locked Eclipse 2021-03 anchor,
+using JDT Core `3.25.0.v20210223-0522`. The current and anchor probes used the
+same Worker JDK binary, identical Worker JAR SHA-256, exact Lombok 1.18.20
+artifact, target JDK 8 system-library snapshot, fixture, and compiler options.
+Both `@Builder(toBuilder=true)` and the observable `lombok.config` log-field
+override passed on the anchor. This is strong exploratory compatibility
+evidence, not a product selection or Phase 1B PASS: the anchor must still pass
+Phase 1A on its own lineage, resource/lifecycle gates, platform evidence, and
+maintenance/security review before it can become a product candidate.
+
+The old p2 repository exposes Java 11 as its highest synthetic
+`a.jre.javase` capability unit, while the actual locked Worker is JDK 17. The
+anchor lock therefore records both `p2_capability_unit_java_major=11` for
+dependency-filter resolution and `worker_java_major=17` plus the actual Java
+binary SHA-256 for execution identity. These fields must not be conflated.
 
 Resolving Lombok annotations is not success by itself. The worker must prove
 that the transform is active by compiling downstream calls to generated

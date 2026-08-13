@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.request
 from urllib.error import URLError
 import xml.etree.ElementTree as ET
@@ -256,23 +257,43 @@ def sha256_file(path: Path) -> str:
 
 def _download(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        with tempfile.NamedTemporaryFile(
-            dir=destination.parent, prefix=f".{destination.name}.", delete=False
-        ) as stream:
-            temporary = Path(stream.name)
-            shutil.copyfileobj(response, stream)
-    try:
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+    last_error: OSError | URLError | None = None
+    for attempt in range(3):
+        temporary: Path | None = None
+        try:
+            request = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT}
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                with tempfile.NamedTemporaryFile(
+                    dir=destination.parent,
+                    prefix=f".{destination.name}.",
+                    delete=False,
+                ) as stream:
+                    temporary = Path(stream.name)
+                    shutil.copyfileobj(response, stream)
+            os.replace(temporary, destination)
+            return
+        except (OSError, URLError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.25 * (attempt + 1))
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    assert last_error is not None
+    raise last_error
 
 
 def _content_xml(repository_url: str, cache_root: Path) -> tuple[Path, dict[str, object]]:
-    metadata_jar = cache_root / "metadata" / "content.jar"
+    normalized_url = repository_url.rstrip("/")
+    repository_fingerprint = hashlib.sha256(
+        normalized_url.encode("utf-8")
+    ).hexdigest()
+    metadata_root = cache_root / "metadata" / repository_fingerprint
+    metadata_jar = metadata_root / "content.jar"
     if not metadata_jar.exists():
-        _download(f"{repository_url.rstrip('/')}/content.jar", metadata_jar)
+        _download(f"{normalized_url}/content.jar", metadata_jar)
     try:
         with zipfile.ZipFile(metadata_jar) as archive:
             names = [name for name in archive.namelist() if name.endswith("content.xml")]
@@ -281,10 +302,10 @@ def _content_xml(repository_url: str, cache_root: Path) -> tuple[Path, dict[str,
             payload = archive.read(names[0])
     except (OSError, zipfile.BadZipFile, KeyError) as exc:
         raise DiscoveryError("Unable to read p2 content metadata.") from exc
-    content_xml = cache_root / "metadata" / "content.xml"
+    content_xml = metadata_root / "content.xml"
     content_xml.write_bytes(payload)
     return content_xml, {
-        "url": f"{repository_url.rstrip('/')}/content.jar",
+        "url": f"{normalized_url}/content.jar",
         "sha256": sha256_file(metadata_jar),
         "bytes": metadata_jar.stat().st_size,
     }
@@ -568,7 +589,17 @@ def execution_environment_evidence(
     *,
     system_capabilities: Iterable[Capability],
     worker_java_major: int,
+    p2_capability_unit_java_major: int | None = None,
 ) -> dict[str, object]:
+    p2_major = (
+        p2_capability_unit_java_major
+        if p2_capability_unit_java_major is not None
+        else worker_java_major
+    )
+    if worker_java_major < p2_major:
+        raise DiscoveryError(
+            "Worker Java is older than the p2 execution-environment profile."
+        )
     capabilities = tuple(system_capabilities)
     requirements: list[dict[str, object]] = []
     for unit in sorted(units, key=lambda item: item.unit_id):
@@ -602,6 +633,8 @@ def execution_environment_evidence(
             )
     return {
         "worker_java_major": worker_java_major,
+        "p2_capability_unit_java_major": p2_major,
+        "worker_java_satisfies_p2_profile": worker_java_major >= p2_major,
         "status": "satisfied",
         "source": "official-p2-requiredProperties-osgi.ee",
         "requirements": requirements,
@@ -673,9 +706,21 @@ def download_and_lock(
             f"{quote(unit.artifact_id)}_{quote(unit.artifact_version)}.jar"
         )
         destination = plugins / filename
-        if not destination.exists():
-            _download(url, destination)
-        headers = _manifest_headers(destination)
+        headers: dict[str, str] | None = None
+        for attempt in range(2):
+            if not destination.exists():
+                _download(url, destination)
+            try:
+                headers = _manifest_headers(destination)
+                break
+            except DiscoveryError:
+                destination.unlink(missing_ok=True)
+                if attempt == 1:
+                    raise
+        if headers is None:
+            raise DiscoveryError(
+                f"Unable to validate downloaded bundle: {filename}"
+            )
         symbolic_name = headers.get("Bundle-SymbolicName", unit.unit_id).split(";", 1)[0]
         artifacts.append(
             {
@@ -760,8 +805,13 @@ def main(argv: list[str] | None = None) -> int:
         content_xml, metadata = _content_xml(repository_url, args.cache_root)
         all_units = parse_units(content_xml)
         worker_java_minimum = int(bootstrap["worker_java_minimum"])
+        p2_execution_environment_major = int(
+            bootstrap.get(
+                "p2_execution_environment_major", worker_java_minimum
+            )
+        )
         system_capabilities = parse_system_capabilities(
-            content_xml, java_major=worker_java_minimum
+            content_xml, java_major=p2_execution_environment_major
         )
         units = resolve_units(
             all_units,
@@ -772,6 +822,7 @@ def main(argv: list[str] | None = None) -> int:
             units,
             system_capabilities=system_capabilities,
             worker_java_major=worker_java_minimum,
+            p2_capability_unit_java_major=p2_execution_environment_major,
         )
         if args.resolve_only:
             print(
