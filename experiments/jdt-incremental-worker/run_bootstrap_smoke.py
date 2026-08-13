@@ -28,6 +28,110 @@ class SmokeError(RuntimeError):
     pass
 
 
+class WorkerResponseTimeout(SmokeError):
+    """No protocol frame arrived before the caller's wait budget expired."""
+
+
+class WorkerEOF(SmokeError):
+    """The Worker protocol stream ended before the expected frame."""
+
+
+class WorkerProtocolError(SmokeError):
+    """The Worker emitted a malformed or contract-invalid protocol frame."""
+
+
+BUILD_TERMINAL_STATUSES = frozenset(
+    {"BUILD_COMPLETED", "BUILD_CANCELLED", "BUILD_ABORTED"}
+)
+
+
+class RunnerBuildLedger:
+    """Runner-boundary single-terminal arbiter for accepted async builds."""
+
+    def __init__(self) -> None:
+        self._active: dict[str, dict[str, Any]] = {}
+        self._terminal: dict[str, dict[str, Any]] = {}
+        self._max_protocol_sequence = 0
+
+    def observe(self, frame: dict[str, Any]) -> None:
+        sequence = frame.get("protocol_sequence")
+        if sequence is None:
+            return
+        if not isinstance(sequence, int) or sequence <= self._max_protocol_sequence:
+            raise WorkerProtocolError(
+                "Worker build-protocol sequence is not monotonic."
+            )
+        self._max_protocol_sequence = sequence
+
+    def accept(self, frame: dict[str, Any]) -> None:
+        build_id = frame.get("build_generation_id")
+        request_id = frame.get("request_id")
+        if (
+            frame.get("status") != "BUILD_ACCEPTED"
+            or not isinstance(build_id, str)
+            or not build_id
+            or not isinstance(request_id, str)
+            or not request_id
+        ):
+            raise SmokeError("Runner cannot register an invalid BUILD_ACCEPTED frame.")
+        if build_id in self._active or build_id in self._terminal:
+            raise SmokeError("Runner received a duplicate build generation identity.")
+        self._active[build_id] = {
+            "request_id": request_id,
+            "build_generation_id": build_id,
+            "operation_kind": frame.get("operation_kind"),
+        }
+
+    def terminalize_worker(self, frame: dict[str, Any]) -> dict[str, Any]:
+        build_id = frame.get("build_generation_id")
+        if not isinstance(build_id, str) or build_id not in self._active:
+            raise SmokeError("Runner rejected a late or unknown Worker terminal frame.")
+        if frame.get("status") not in BUILD_TERMINAL_STATUSES:
+            raise SmokeError("Runner received a non-terminal frame for terminalization.")
+        identity = self._active.pop(build_id)
+        if frame.get("request_id") != identity["request_id"]:
+            raise SmokeError("Worker terminal request identity changed.")
+        terminal = dict(frame)
+        terminal.setdefault("terminal_record_source", "worker")
+        self._terminal[build_id] = terminal
+        return terminal
+
+    def abort(
+        self,
+        build_generation_id: str,
+        *,
+        error_type: str,
+    ) -> dict[str, Any]:
+        if build_generation_id in self._terminal:
+            return self._terminal[build_generation_id]
+        identity = self._active.pop(build_generation_id, None)
+        if identity is None:
+            raise SmokeError("Runner cannot abort an unknown build generation.")
+        self._max_protocol_sequence += 1
+        terminal = {
+            "ok": False,
+            "status": "BUILD_ABORTED",
+            **identity,
+            "operation_ok": False,
+            "compile_ok": None,
+            "compiler_output_eligible": False,
+            "generation_publishable": False,
+            "publishable_changed_classes": [],
+            "terminal_status": "ABORTED",
+            "terminal_record_source": "runner",
+            "protocol_sequence": self._max_protocol_sequence,
+            "error_type": error_type,
+        }
+        self._terminal[build_generation_id] = terminal
+        return terminal
+
+    def terminal(self, build_generation_id: str) -> dict[str, Any] | None:
+        return self._terminal.get(build_generation_id)
+
+    def active_build_ids(self) -> tuple[str, ...]:
+        return tuple(self._active)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -50,6 +154,16 @@ def canonical_json_fingerprint(value: Any) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def path_boundary_facts(path: Path) -> dict[str, bool]:
+    """Report A10 path properties without exposing the absolute path."""
+
+    rendered = str(path)
+    return {
+        "contains_space": any(character.isspace() for character in rendered),
+        "contains_non_ascii": any(ord(character) > 127 for character in rendered),
+    }
 
 
 def git_identity(repository: Path) -> dict[str, Any]:
@@ -463,6 +577,8 @@ class WorkerClient:
         self._ownership_thread.start()
         self.frames: queue.Queue[str | None] = queue.Queue()
         self.received_frames: list[dict[str, Any]] = []
+        self.build_ledger = RunnerBuildLedger()
+        self._runner_forced_termination = False
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
         self.reader.start()
 
@@ -478,22 +594,83 @@ class WorkerClient:
         try:
             line = self.frames.get(timeout=self.timeout if timeout is None else timeout)
         except queue.Empty as exc:
-            raise SmokeError("Timed out waiting for worker protocol frame.") from exc
+            raise WorkerResponseTimeout(
+                "Timed out waiting for worker protocol frame."
+            ) from exc
         if line is None:
-            raise SmokeError(
+            raise WorkerEOF(
                 f"Worker exited before a protocol frame (code={self.process.poll()})."
             )
         try:
             frame = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise SmokeError(
+            raise WorkerProtocolError(
                 f"Worker stdout contained a non-JSON frame: {line[:200]!r}"
             ) from exc
         if not isinstance(frame, dict):
-            raise SmokeError("Worker protocol frame must be an object.")
+            raise WorkerProtocolError("Worker protocol frame must be an object.")
         self.received_frames.append(frame)
+        self.build_ledger.observe(frame)
         self._observe_owned_process_tree()
         return frame
+
+    def receive_terminal(
+        self,
+        *,
+        build_generation_id: str,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        try:
+            frame = self.receive(timeout=timeout)
+        except WorkerResponseTimeout:
+            # A wait budget expiring is not a terminal build outcome. The
+            # Worker may still be compiling and mutating its private output.
+            # The caller must enter the explicit cancel/shutdown policy.
+            raise
+        except WorkerEOF as exc:
+            return self.build_ledger.abort(
+                build_generation_id,
+                error_type=type(exc).__name__,
+            )
+        except WorkerProtocolError as exc:
+            self._force_stop_owned_process_tree()
+            return self.build_ledger.abort(
+                build_generation_id,
+                error_type=type(exc).__name__,
+            )
+        try:
+            return self.build_ledger.terminalize_worker(frame)
+        except SmokeError as exc:
+            self._force_stop_owned_process_tree()
+            return self.build_ledger.abort(
+                build_generation_id,
+                error_type=type(exc).__name__,
+            )
+
+    def _force_stop_owned_process_tree(self) -> None:
+        """Stop only identity-bound Worker processes after protocol corruption."""
+        self._runner_forced_termination = True
+        self._observe_owned_process_tree()
+        targets: list[psutil.Process] = []
+        for pid, create_time in self.owned_process_identities.items():
+            try:
+                process = psutil.Process(pid)
+                if abs(process.create_time() - create_time) <= 0.01:
+                    targets.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        # Children first prevents a root exit from orphaning an observed child.
+        targets.sort(key=lambda process: process.pid == self.process.pid)
+        for process in targets:
+            try:
+                process.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if targets:
+            psutil.wait_procs(targets, timeout=5.0)
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait(timeout=5.0)
 
     def _observe_owned_process_tree(self) -> None:
         try:
@@ -534,7 +711,10 @@ class WorkerClient:
         )
         if accepted.get("status") != "BUILD_ACCEPTED":
             raise SmokeError("Worker did not accept the asynchronous build.")
-        terminal = self.receive()
+        self.build_ledger.accept(accepted)
+        terminal = self.receive_terminal(
+            build_generation_id=build_generation_id
+        )
         if terminal.get("build_generation_id") != build_generation_id:
             raise SmokeError("Worker terminal frame belongs to another generation.")
         return accepted, terminal
@@ -544,7 +724,7 @@ class WorkerClient:
             frame.get("ok") is True and frame.get("status") == "stopped"
             for frame in self.received_frames
         )
-        forced = False
+        forced = self._runner_forced_termination
         terminal_frames: list[dict[str, Any]] = []
         self._observe_owned_process_tree()
         try:
@@ -564,7 +744,9 @@ class WorkerClient:
                             "BUILD_CANCELLED",
                             "BUILD_ABORTED",
                         }:
-                            terminal_frames.append(response)
+                            terminal_frames.append(
+                                self.build_ledger.terminalize_worker(response)
+                            )
                 except (BrokenPipeError, SmokeError):
                     pass
                 try:
@@ -577,6 +759,17 @@ class WorkerClient:
                     except subprocess.TimeoutExpired:
                         self.process.kill()
                         self.process.wait(timeout=2)
+            for build_id in self.build_ledger.active_build_ids():
+                terminal_frames.append(
+                    self.build_ledger.abort(
+                        build_id,
+                        error_type=(
+                            "ForcedTermination"
+                            if forced
+                            else "WorkerExitedWithoutTerminal"
+                        ),
+                    )
+                )
         finally:
             self._ownership_stop.set()
             self._ownership_thread.join(timeout=1)
@@ -1089,6 +1282,65 @@ def a9_resource_decision(
         reasons.append("process_tree_sampling_incomplete")
     if len(checkpoints) < 6:
         reasons.append("insufficient_checkpoints")
+    required_checkpoint_fields = {
+        "heap_used_bytes",
+        "thread_count",
+        "loaded_class_count",
+        "memory_pools",
+        "garbage_collectors",
+    }
+    required_pool_fields = {
+        "name",
+        "used_bytes",
+        "committed_bytes",
+        "max_bytes",
+        "peak_used_bytes",
+    }
+    required_collector_fields = {
+        "name",
+        "collection_count",
+        "collection_time_ms",
+    }
+
+    def complete_checkpoint(checkpoint: dict[str, Any]) -> bool:
+        before = checkpoint.get("before")
+        after = checkpoint.get("after")
+        if (
+            checkpoint.get("gc_request_sent") is not True
+            or not isinstance(before, dict)
+            or not isinstance(after, dict)
+            or not required_checkpoint_fields.issubset(after)
+            or not isinstance(checkpoint.get("process_tree_before"), dict)
+            or not isinstance(checkpoint.get("process_tree_after"), dict)
+        ):
+            return False
+        pools = after.get("memory_pools")
+        collectors = after.get("garbage_collectors")
+        if not isinstance(pools, list) or not pools:
+            return False
+        if not isinstance(collectors, list) or not collectors:
+            return False
+        if any(
+            not isinstance(pool, dict)
+            or not required_pool_fields.issubset(pool)
+            for pool in pools
+        ):
+            return False
+        if any(
+            not isinstance(collector, dict)
+            or not required_collector_fields.issubset(collector)
+            for collector in collectors
+        ):
+            return False
+        return True
+
+    incomplete_checkpoints = [
+        index
+        for index, checkpoint in enumerate(checkpoints)
+        if not complete_checkpoint(checkpoint)
+    ]
+    if incomplete_checkpoints:
+        reasons.append("required_checkpoint_metrics_unavailable")
 
     def values(name: str) -> list[int]:
         result: list[int] = []
@@ -1219,7 +1471,10 @@ def a9_resource_decision(
 
     peak_rss = max(rss_samples, default=0)
     final_rss = rss_samples[-1] if rss_samples else None
-    if final_rss is not None and final_rss > 768 * 1024**2:
+    if peak_rss > 1024**3:
+        status = "NO_GO"
+        reasons.append("full_build_peak_rss_no_go_band")
+    elif final_rss is not None and final_rss > 768 * 1024**2:
         status = "NO_GO"
         reasons.append("idle_rss_no_go_band")
     elif reasons:
@@ -1537,10 +1792,12 @@ def require_exact_observed_build(
         raise SmokeError(f"{label} incremental observation is inconsistent.")
     if int(frame.get("error_count", -1)) != 0:
         raise SmokeError(f"{label} produced ERROR markers.")
-    if frame.get("generation_publishable") is not True:
-        raise SmokeError(f"{label} did not produce a publishable generation.")
-    if frame.get("publishable_changed_classes") != changed_classes:
-        raise SmokeError(f"{label} publishable class evidence is inconsistent.")
+    if frame.get("compiler_output_eligible") is not True:
+        raise SmokeError(f"{label} did not produce compiler-eligible output.")
+    if frame.get("generation_publishable") is not False:
+        raise SmokeError(f"{label} bypassed the Runner publication gate.")
+    if frame.get("publishable_changed_classes") != []:
+        raise SmokeError(f"{label} exposed classes before publication commit.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1582,6 +1839,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-java-home", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--keep-attempt", action="store_true")
+    parser.add_argument(
+        "--a10-path-boundary",
+        action="store_true",
+        help=(
+            "Run A1-A8 below an attempt/source path containing both spaces and "
+            "non-ASCII characters, and machine-gate the A10 path facts."
+        ),
+    )
     args = parser.parse_args(argv)
 
     attempt_id = f"bootstrap-{uuid.uuid4().hex[:12]}"
@@ -1608,8 +1873,12 @@ def main(argv: list[str] | None = None) -> int:
         "java9_api_negative": f"generation-{uuid.uuid4().hex[:12]}",
     }
     attempts_root = args.cache_root / "attempts"
+    attempt_prefix = f"{attempt_id}-"
+    if args.a10_path_boundary:
+        attempts_root = attempts_root / "A10 path 路径边界"
+        attempt_prefix = f"A10 测试 {attempt_id}-"
     attempts_root.mkdir(parents=True, exist_ok=True)
-    attempt = Path(tempfile.mkdtemp(prefix=f"{attempt_id}-", dir=attempts_root))
+    attempt = Path(tempfile.mkdtemp(prefix=attempt_prefix, dir=attempts_root))
     client: WorkerClient | None = None
     shutdown_reports: dict[str, dict[str, Any]] = {}
     owned_worker_pids: list[int] = []
@@ -2853,6 +3122,28 @@ def main(argv: list[str] | None = None) -> int:
             raise SmokeError("Candidate lock fingerprint changed after revalidation.")
 
         edited_fixture_fingerprint = tree_fingerprint(source)
+        a10_path_boundary: dict[str, Any] = {
+            "requested": args.a10_path_boundary,
+            "status": "not_run",
+        }
+        if args.a10_path_boundary:
+            attempt_path_facts = path_boundary_facts(attempt)
+            source_path_facts = path_boundary_facts(source)
+            if not all(attempt_path_facts.values()) or not all(
+                source_path_facts.values()
+            ):
+                raise SmokeError(
+                    "A10 path-boundary mode did not create both attempt and "
+                    "source paths with spaces and non-ASCII characters."
+                )
+            a10_path_boundary = {
+                "requested": True,
+                "status": "passed_for_current_platform",
+                "platform": platform.system(),
+                "attempt_path": attempt_path_facts,
+                "source_path": source_path_facts,
+                "absolute_paths_redacted": True,
+            }
         all_direct_workers_exited = all(
             report["direct_process_exited"] for report in shutdown_reports.values()
         )
@@ -3059,6 +3350,7 @@ def main(argv: list[str] | None = None) -> int:
                     == {"ok": True, "status": "saved"},
                     "clean_full_oracle_equal": a8_oracle_equal,
                 },
+                "a10_path_boundary": a10_path_boundary,
             },
             "phase_1a_case_status": {
                 "A1": "passed",
@@ -3069,10 +3361,20 @@ def main(argv: list[str] | None = None) -> int:
                 "A6": "passed",
                 "A7": "passed",
                 "A8": "passed",
-                "A9_A10": "not_run",
+                "A9": "not_run",
+                "A10": (
+                    "passed_for_current_platform"
+                    if args.a10_path_boundary
+                    else "not_run"
+                ),
             },
             "limitations": [
-                "this runner executes only A1 through A8; run_a9_experiment.py covers A9, and A10 remains pending",
+                "this runner executes A1 through A8; run_a9_experiment.py covers A9",
+                (
+                    "A10 path-boundary evidence covers only this operating system; the other required platform remains pending"
+                    if args.a10_path_boundary
+                    else "A10 remains pending"
+                ),
                 "this partial evidence does not satisfy the complete Phase 1A Go gate",
                 "resource delta observation is unavailable until its instrumentation is implemented",
                 "owned process-tree lifecycle verification is reported by the separate A9 runner",
@@ -3095,6 +3397,7 @@ def main(argv: list[str] | None = None) -> int:
                     "candidate_id": lock["candidate_id"],
                     "report_path": str(report_path),
                     "evidence_status": report["evidence_status"],
+                    "a10_path_boundary_status": a10_path_boundary["status"],
                     "limitations": report["limitations"],
                 }
             )

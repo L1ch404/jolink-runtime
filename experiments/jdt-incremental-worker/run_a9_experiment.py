@@ -185,7 +185,24 @@ def require_oracle(
         )
     if expected_compile_ok and common.output_hashes(classes) != oracle["output_hashes"]:
         raise common.SmokeError("A9 output differs from the clean-full oracle.")
+    if frame.get("generation_publishable") is not False:
+        raise common.SmokeError("A9 Worker bypassed the Runner publication gate.")
+    if frame.get("publishable_changed_classes") != []:
+        raise common.SmokeError("A9 Worker exposed classes before oracle commit.")
+    if frame.get("compiler_output_eligible") is not expected_compile_ok:
+        raise common.SmokeError("A9 compiler eligibility differs from expectation.")
     return catalog.key(source), oracle
+
+
+def commit_generation_after_oracle(frame: dict[str, Any]) -> dict[str, Any]:
+    """Create Runner-owned publication evidence after oracle validation."""
+    if frame.get("compiler_output_eligible") is not True:
+        raise common.SmokeError("Cannot commit compiler-ineligible output.")
+    return {
+        "generation_publishable": True,
+        "publication_gate_source": "runner_oracle_commit",
+        "publishable_changed_classes": list(frame.get("changed_classes", [])),
+    }
 
 
 def execute_build(
@@ -287,8 +304,15 @@ def run_workload(
                     "A9 source deletion did not remove its class family "
                     "without a compilation callback."
                 )
-            if frame.get("generation_publishable") is not compile_ok:
-                raise common.SmokeError("A9 generation publication state is incorrect.")
+            publication = (
+                commit_generation_after_oracle(frame)
+                if compile_ok
+                else {
+                    "generation_publishable": False,
+                    "publication_gate_source": "runner_compile_rejection",
+                    "publishable_changed_classes": [],
+                }
+            )
             if common.tree_fingerprint(source) != common.tree_fingerprint(desired):
                 raise common.SmokeError("A9 private source state changed unexpectedly.")
             operations.append(
@@ -311,7 +335,13 @@ def run_workload(
                         accepted.get("protocol_sequence"),
                         frame.get("protocol_sequence"),
                     ],
-                    "generation_publishable": frame.get("generation_publishable"),
+                    "worker_generation_publishable": frame.get(
+                        "generation_publishable"
+                    ),
+                    "compiler_output_eligible": frame.get(
+                        "compiler_output_eligible"
+                    ),
+                    **publication,
                     "diagnostics": common.diagnostics_identity(frame),
                     "worker_metrics_after_build": frame.get("metrics"),
                     "started_monotonic": started,
@@ -326,6 +356,7 @@ def run_workload(
                 client, request_gc=True, sampler=sampler
             )
         )
+    baseline_publication = commit_generation_after_oracle(baseline_frame)
     baseline_evidence = {
         "request_id": baseline_accepted.get("request_id"),
         "build_generation_id": baseline_accepted.get("build_generation_id"),
@@ -335,7 +366,13 @@ def run_workload(
         ],
         "actual_build_kind": baseline_frame.get("actual_build_kind"),
         "compile_ok": baseline_frame.get("compile_ok"),
-        "generation_publishable": baseline_frame.get("generation_publishable"),
+        "worker_generation_publishable": baseline_frame.get(
+            "generation_publishable"
+        ),
+        "compiler_output_eligible": baseline_frame.get(
+            "compiler_output_eligible"
+        ),
+        **baseline_publication,
         "oracle_key": baseline_oracle_key,
         "oracle_cache_result": "hit",
         "oracle_output_equal": True,
@@ -389,6 +426,7 @@ def run_lifecycle(
     timeline.append({"event": "BUILD_ACCEPTED", "at": time.monotonic()})
     if accepted.get("status") != "BUILD_ACCEPTED":
         raise common.SmokeError("A9 asynchronous build was not accepted.")
+    client.build_ledger.accept(accepted)
     wait_for_barrier(client, build_id, 5.0)
     timeline.append({"event": "BARRIER_REACHED", "at": time.monotonic()})
     if deadline_seconds is not None:
@@ -404,7 +442,7 @@ def run_lifecycle(
     timeline.append({"event": "BARRIER_RELEASED", "at": time.monotonic()})
     if released.get("status") != "BARRIER_RELEASED":
         raise common.SmokeError("A9 lifecycle barrier was not released.")
-    terminal = client.receive()
+    terminal = client.receive_terminal(build_generation_id=build_id)
     timeline.append({"event": str(terminal.get("status")), "at": time.monotonic()})
     if terminal.get("status") != "BUILD_CANCELLED":
         raise common.SmokeError("A9 cancelled build has the wrong terminal event.")
@@ -431,6 +469,7 @@ def run_lifecycle(
         frame=recovered,
         expected_compile_ok=True,
     )
+    recovery_publication = commit_generation_after_oracle(recovered)
     return {
         "request_id": request_id,
         "build_generation_id": build_id,
@@ -458,6 +497,7 @@ def run_lifecycle(
             "full_accepted": full_accepted,
             "full": recovered,
             "oracle_equal": True,
+            **recovery_publication,
             "workspace_state": "READY",
             "runtime_publication_performed": False,
         },
@@ -548,9 +588,15 @@ def run_stop_after_cancel_wins(
     accepted = client.command(
         f"BUILD_ASYNC\t{request_id}\t{build_id}\tINCREMENTAL"
     )
+    if accepted.get("status") != "BUILD_ACCEPTED":
+        raise common.SmokeError("A9 STOP cancel race build was not accepted.")
+    client.build_ledger.accept(accepted)
     wait_for_barrier(client, build_id, 5.0)
+    cancelled = client.command(f"CANCEL\t{build_id}")
+    if cancelled.get("status") != "CANCEL_REQUESTED":
+        raise common.SmokeError("A9 STOP race cancellation was not accepted first.")
     client.send("STOP")
-    terminal = client.receive()
+    terminal = client.receive_terminal(build_generation_id=build_id)
     stopped = client.receive()
     if terminal.get("status") != "BUILD_CANCELLED":
         raise common.SmokeError("A9 STOP did not produce BUILD_CANCELLED.")
@@ -570,6 +616,7 @@ def run_stop_after_cancel_wins(
     return {
         "winner": "BUILD_CANCELLED",
         "accepted": accepted,
+        "cancel": cancelled,
         "terminal": terminal,
         "stop_ack": stopped,
         "terminal_frame_count": terminal_count,
@@ -623,6 +670,7 @@ def run_clean_reopen_case(
 
     sync_source(source, states["leaf"])
     reuse = lineage.consume_for_reopen(source=source)
+    marker_consumed = not lineage.marker_path.exists()
     if reuse.get("reusable") is not True or reuse.get("offline_source_delta") is not True:
         raise common.SmokeError("A9 clean lineage did not identify offline source delta.")
     reopened = start_case_worker(
@@ -663,7 +711,7 @@ def run_clean_reopen_case(
         "first_shutdown": first_shutdown,
         "manifest": manifest,
         "published_clean_marker": marker,
-        "marker_consumed_before_reopen": not lineage.marker_path.exists(),
+        "marker_consumed_before_reopen": marker_consumed,
         "reuse_decision": reuse,
         "reopen_project_state": reopened.ready.get("workspace_project_state"),
         "incremental": incremental,
@@ -683,6 +731,7 @@ def run_abnormal_exit_case(
     system_libraries_file: Path,
     timeout: float,
     states: dict[str, Path],
+    catalog: common.OracleCatalog,
     lineage: WorkspaceLineage,
 ) -> dict[str, Any]:
     client = start_case_worker(
@@ -696,15 +745,55 @@ def run_abnormal_exit_case(
     source = case_root / "workspace/plain-fixture/src"
     sync_source(source, states["baseline"])
     _, baseline = execute_build(client, "FULL")
+    require_oracle(
+        catalog=catalog,
+        source=states["baseline"],
+        classes=case_root / "workspace/plain-fixture/bin",
+        frame=baseline,
+        expected_compile_ok=True,
+    )
     lineage.write_manifest(
         last_completed_build_generation_id=str(
             baseline["build_generation_id"]
         ),
         source=source,
     )
+    sync_source(source, states["leaf"])
+    request_id = f"request-{uuid.uuid4().hex[:12]}"
+    build_id = f"build-{uuid.uuid4().hex[:12]}"
+    client.command(f"BARRIER\tARM\t{request_id}\t{build_id}")
+    accepted = client.command(
+        f"BUILD_ASYNC\t{request_id}\t{build_id}\tINCREMENTAL"
+    )
+    if accepted.get("status") != "BUILD_ACCEPTED":
+        raise common.SmokeError("A9 abnormal-exit build was not accepted.")
+    client.build_ledger.accept(accepted)
+    wait_for_barrier(client, build_id, 5.0)
+    crash_source_fingerprint = common.tree_fingerprint(source)
     create_time = client.process_create_time
     client.process.kill()
     client.process.wait(timeout=5)
+    terminal = client.receive_terminal(
+        build_generation_id=build_id,
+        timeout=5.0,
+    )
+    if (
+        terminal.get("status") != "BUILD_ABORTED"
+        or terminal.get("terminal_record_source") != "runner"
+        or terminal.get("generation_publishable") is not False
+    ):
+        raise common.SmokeError(
+            "A9 Runner did not synthesize the abnormal terminal record."
+        )
+    terminal_count = sum(
+        frame.get("build_generation_id") == build_id
+        and frame.get("status") in common.BUILD_TERMINAL_STATUSES
+        for frame in [*client.received_frames, terminal]
+    )
+    if terminal_count != 1:
+        raise common.SmokeError(
+            "A9 abnormal exit produced more than one terminal record."
+        )
     client.stderr_stream.close()
     invalid = lineage.consume_for_reopen(source=source)
     if invalid.get("reusable") is not False:
@@ -717,12 +806,84 @@ def run_abnormal_exit_case(
             ) > 0.01
         except common.psutil.NoSuchProcess:
             identity_absent = True
+    fresh_root = case_root.parent / "abnormal-exit-fallback"
+    fresh_identity = {
+        key: value
+        for key, value in lineage.identity.items()
+        if key != "workspace_lineage_id"
+    }
+    fresh_lineage = WorkspaceLineage(
+        root=fresh_root,
+        workspace_lineage_id=f"workspace-{uuid.uuid4().hex[:12]}",
+        **fresh_identity,
+    )
+    fresh_client = start_case_worker(
+        case_root=fresh_root,
+        lock=lock,
+        candidate_root=candidate_root,
+        worker_java_home=worker_java_home,
+        system_libraries_file=system_libraries_file,
+        timeout=timeout,
+    )
+    fresh_source = fresh_root / "workspace/plain-fixture/src"
+    fresh_classes = fresh_root / "workspace/plain-fixture/bin"
+    try:
+        # Preserve the exact source world that existed when the old Worker
+        # crashed. Discard compiler state, never the user's current sources.
+        sync_source(fresh_source, source)
+        fresh_source_fingerprint = common.tree_fingerprint(fresh_source)
+        if fresh_source_fingerprint != crash_source_fingerprint:
+            raise common.SmokeError(
+                "A9 abnormal fallback did not preserve crash-time source state."
+            )
+        fresh_accepted, fresh_full = execute_build(fresh_client, "FULL")
+        require_oracle(
+            catalog=catalog,
+            source=source,
+            classes=fresh_classes,
+            frame=fresh_full,
+            expected_compile_ok=True,
+        )
+        fresh_publication = commit_generation_after_oracle(fresh_full)
+    finally:
+        fresh_shutdown = fresh_client.close()
+    require_shutdown(fresh_shutdown)
+    if fresh_lineage.identity["workspace_lineage_id"] == lineage.identity[
+        "workspace_lineage_id"
+    ]:
+        raise common.SmokeError("A9 abnormal fallback reused the old lineage id.")
     return {
         "exit_code": client.process.returncode,
+        "accepted": accepted,
+        "terminal": terminal,
+        "terminal_record_count": terminal_count,
         "clean_marker_present": lineage.marker_path.exists(),
         "reuse_decision": invalid,
         "lineage_discarded": True,
         "owned_root_identity_absent": identity_absent,
+        "fresh_fallback": {
+            "old_workspace_lineage_id": lineage.identity[
+                "workspace_lineage_id"
+            ],
+            "new_workspace_lineage_id": fresh_lineage.identity[
+                "workspace_lineage_id"
+            ],
+            "workspace_project_state": fresh_client.ready.get(
+                "workspace_project_state"
+            ),
+            "invalidated_source_tree_fingerprint": (
+                crash_source_fingerprint
+            ),
+            "fresh_fallback_source_tree_fingerprint": (
+                fresh_source_fingerprint
+            ),
+            "source_continuity_preserved": True,
+            "accepted": fresh_accepted,
+            "full": fresh_full,
+            "oracle_equal": True,
+            **fresh_publication,
+            "shutdown": fresh_shutdown,
+        },
     }
 
 
@@ -968,6 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
             system_libraries_file=snapshot["worker_input"],
             timeout=args.timeout,
             states=states,
+            catalog=catalog,
             lineage=abnormal_lineage,
         )
 
@@ -989,9 +1151,9 @@ def main(argv: list[str] | None = None) -> int:
         warmup = [item for item in operations if not item["measured"]]
         if len(warmup) != 11 or len(measured) != 110:
             raise common.SmokeError("A9 workload request count is incorrect.")
-        if resource_decision["status"] not in {"PASS", "CONDITIONAL"}:
+        if resource_decision["status"] != "PASS":
             raise common.SmokeError(
-                "A9 resource decision requires follow-up: "
+                "A9 overall PASS requires an A9-M PASS decision: "
                 f"decision={resource_decision}, "
                 "sampling="
                 f"{ {key: sampler_report.get(key) for key in ('sample_count', 'scheduled_sample_count', 'expected_interval_count', 'observed_interval_ratio', 'max_gap_ms', 'coverage_status')} }"
@@ -1036,6 +1198,9 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 "abnormal_exit": abnormal_lineage.identity[
                     "workspace_lineage_id"
+                ],
+                "abnormal_exit_fallback": abnormal_exit["fresh_fallback"][
+                    "new_workspace_lineage_id"
                 ],
             },
             "a9_s": {

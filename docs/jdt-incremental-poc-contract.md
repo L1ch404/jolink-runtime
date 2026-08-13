@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A9 canonical clean-worktree evidence passed; A10 pending`
+Implementation-Status: `A1-A8 plus A9-S/M and cooperative A9-L passed on the current review candidate; forced-shutdown settlement, a clean-worktree canonical A9 rerun, and A10 remain open`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
@@ -82,10 +82,11 @@ incremental project builder at an acceptable engineering and resource cost.
   generations may not be mixed.
 - `Publication transaction`: a future product-integration boundary that keeps
   the Runtime on a committed last-good build generation while a candidate build
-  generation is built and verified. The existing `generation_publishable`
-  field belongs to the build generation and is only the current logical
-  publication gate; it does not make JDT's mutable `bin` directory a physical
-  last-good store.
+  generation is built and verified. The Worker reports only
+  `compiler_output_eligible`; it cannot authorize publication. The Runner sets
+  `generation_publishable=true` only in its evidence after the required oracle
+  and case publication gates commit. This logical gate does not make JDT's
+  mutable `bin` directory a physical last-good store.
 - `Clean-full oracle`: a new private workspace lineage and full-build
   generation built from the same frozen inputs with the same pinned JDT stack.
   It is the Phase 1 correctness oracle for an incremental result.
@@ -869,8 +870,9 @@ Every owned PID is recorded with creation time to prevent PID-reuse mistakes.
 The runner continuously observes descendants, never signals an unowned process,
 and verifies that all observed owned processes are absent after settlement.
 A9-L does not require manufacturing an uncooperative JDT failure merely to
-exercise force-kill; the force fallback remains unit-tested, while real A9
-evidence must prove the normal cooperative path and abnormal-exit invalidation.
+exercise force-kill; the force fallback must be proven with deterministic unit
+tests, while real A9 evidence must prove the normal cooperative path and
+abnormal-exit invalidation.
 
 #### A9 acceptance record
 
@@ -909,11 +911,55 @@ a Java Builder delta from source fingerprints. If safe read-only delta
 instrumentation is not reviewed as part of A9, it remains an explicit pre-Go
 item rather than being silently closed by the repeated workload.
 
+Non-blocking follow-ups recorded after A9 implementation review:
+
+- tighten checkpoint validation so both pre/post-GC payloads and
+  `checkpoint_name` / `gc_collection_observed` consistency are machine-gated;
+- separate command request identity from build request identity, allowing an
+  unknown/stale build's historical request identity to remain nullable while
+  every command still has its own non-null identity.
+
+#### Deferred A9-L forced-shutdown settlement blocker
+
+The current review candidate has passed A9-S, A9-M, cooperative cancellation,
+both STOP race outcomes, abnormal-exit invalidation, source-world continuity,
+and fresh-lineage FULL recovery. Company-environment A1-A9 dogfood also passed.
+Those results remain useful evidence and are not invalidated by the item below.
+
+One P1 lifecycle boundary is intentionally deferred to later destructive
+lifecycle testing; this is recorded debt, not a relaxation of the frozen A9-L
+contract:
+
+```text
+Worker protocol EOF while the root process is still alive
+    -> force-settle the exact identity-bound owned process tree
+    -> only then record the Runner BUILD_ABORTED terminal
+
+shutdown
+    -> use one shared five-second settlement deadline for STOP response,
+       process exit, and escalation
+    -> on expiry force the identity-bound tree, not only the root process
+    -> record exactly one Runner BUILD_ABORTED with ForcedTermination
+```
+
+Deterministic tests must prove both the live-Worker EOF case and the single-
+budget forced-shutdown case without manufacturing a stuck real JDT build. Until
+that evidence exists, A9-S/M and cooperative A9-L testing may be used and A10
+may proceed, but the forced fallback is not verified, complete A9-L approval
+must not be claimed, and no complete Phase 1A Go decision may be issued. If the
+eventual fix changes only the Python runner/tests and leaves the locked Worker
+artifact unchanged, it does not by itself invalidate A1-A8 Worker-artifact
+evidence; final A9 evidence must still be regenerated from a committed clean
+worktree.
+
 ### A10 — Platform and path boundary
 
 Phase 1A must pass on Windows, because that is the primary company dogfood
 environment. It must also pass on at least one POSIX environment. At least one
 run uses spaces and non-ASCII characters in the attempt and source paths.
+The A10 machine report records only the operating-system identity and boolean
+space/non-ASCII facts for both paths; absolute user paths remain local. Passing
+on one operating system is `passed_for_current_platform`, not complete A10.
 
 ## Proving incremental behavior
 

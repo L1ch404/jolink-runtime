@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import queue
 import sys
 import zipfile
 from pathlib import Path
@@ -258,8 +259,9 @@ def test_exact_build_gate_accepts_observed_leaf_incremental() -> None:
         },
         "compiled_source_units": ["src/example/Application.java"],
         "changed_classes": ["example/Application.class"],
-        "generation_publishable": True,
-        "publishable_changed_classes": ["example/Application.class"],
+        "compiler_output_eligible": True,
+        "generation_publishable": False,
+        "publishable_changed_classes": [],
         "deleted_classes": [],
         "error_count": 0,
     }
@@ -298,8 +300,9 @@ def test_exact_build_gate_rejects_full_build_masquerading_as_incremental() -> No
             "src/example/Service.java",
         ],
         "changed_classes": ["example/Application.class"],
-        "generation_publishable": True,
-        "publishable_changed_classes": ["example/Application.class"],
+        "compiler_output_eligible": True,
+        "generation_publishable": False,
+        "publishable_changed_classes": [],
         "deleted_classes": [],
         "error_count": 0,
     }
@@ -331,7 +334,8 @@ def test_exact_no_compile_gate_accepts_absent_compilation_callbacks() -> None:
         },
         "compiled_source_units": [],
         "changed_classes": [],
-        "generation_publishable": True,
+        "compiler_output_eligible": True,
+        "generation_publishable": False,
         "publishable_changed_classes": [],
         "deleted_classes": [],
         "error_count": 0,
@@ -365,7 +369,8 @@ def test_exact_build_gate_requires_project_build_to_return() -> None:
         },
         "compiled_source_units": [],
         "changed_classes": [],
-        "generation_publishable": True,
+        "compiler_output_eligible": True,
+        "generation_publishable": False,
         "publishable_changed_classes": [],
         "deleted_classes": [],
         "error_count": 0,
@@ -384,7 +389,7 @@ def test_exact_build_gate_requires_project_build_to_return() -> None:
         )
 
 
-def test_exact_build_gate_rejects_non_publishable_generation() -> None:
+def test_exact_build_gate_rejects_worker_publication_before_runner_commit() -> None:
     frame = {
         "ok": True,
         "actual_build_kind": "INCREMENTAL",
@@ -400,13 +405,14 @@ def test_exact_build_gate_rejects_non_publishable_generation() -> None:
         },
         "compiled_source_units": ["src/example/Application.java"],
         "changed_classes": ["example/Application.class"],
-        "generation_publishable": False,
-        "publishable_changed_classes": [],
+        "compiler_output_eligible": True,
+        "generation_publishable": True,
+        "publishable_changed_classes": ["example/Application.class"],
         "deleted_classes": [],
         "error_count": 0,
     }
 
-    with pytest.raises(smoke.SmokeError, match="publishable generation"):
+    with pytest.raises(smoke.SmokeError, match="publication gate"):
         smoke.require_exact_observed_build(
             frame,
             label="fixture",
@@ -629,11 +635,185 @@ def test_a9_resource_decision_requires_complete_sampling() -> None:
     assert "process_tree_sampling_incomplete" in decision["reasons"]
 
 
+def _complete_a9_checkpoint(rss: int = 100_000_000) -> dict[str, object]:
+    metrics = {
+        "heap_used_bytes": 10_000_000,
+        "class_metadata_used_bytes": 20_000_000,
+        "thread_count": 12,
+        "loaded_class_count": 1000,
+        "memory_pools": [
+            {
+                "name": "Metaspace",
+                "used_bytes": 20_000_000,
+                "committed_bytes": 24_000_000,
+                "max_bytes": -1,
+                "peak_used_bytes": 20_000_000,
+            }
+        ],
+        "garbage_collectors": [
+            {
+                "name": "Fixture GC",
+                "collection_count": 1,
+                "collection_time_ms": 1,
+            }
+        ],
+    }
+    process_tree = {"process_tree_rss_sum_bytes": rss}
+    return {
+        "gc_request_sent": True,
+        "before": dict(metrics),
+        "after": dict(metrics),
+        "process_tree_before": dict(process_tree),
+        "process_tree_after": dict(process_tree),
+    }
+
+
+def test_a9_resource_decision_rejects_gib_peak() -> None:
+    decision = smoke.a9_resource_decision(
+        checkpoints=[_complete_a9_checkpoint() for _ in range(6)],
+        sampler={
+            "coverage_status": "complete",
+            "samples": [
+                {"process_tree_rss_sum_bytes": 100_000_000},
+                {"process_tree_rss_sum_bytes": 1024**3 + 1},
+                {"process_tree_rss_sum_bytes": 100_000_000},
+            ],
+        },
+    )
+    assert decision["status"] == "NO_GO"
+    assert "full_build_peak_rss_no_go_band" in decision["reasons"]
+
+
+def test_runner_ledger_synthesizes_exactly_one_abort() -> None:
+    ledger = smoke.RunnerBuildLedger()
+    accepted = {
+        "ok": True,
+        "status": "BUILD_ACCEPTED",
+        "request_id": "request-1",
+        "build_generation_id": "build-1",
+        "operation_kind": "INCREMENTAL",
+        "protocol_sequence": 1,
+    }
+    ledger.observe(accepted)
+    ledger.accept(accepted)
+
+    terminal = ledger.abort("build-1", error_type="WorkerEOF")
+    duplicate = ledger.abort("build-1", error_type="ForcedTermination")
+
+    assert terminal == duplicate
+    assert terminal["status"] == "BUILD_ABORTED"
+    assert terminal["terminal_record_source"] == "runner"
+    assert terminal["protocol_sequence"] == 2
+    assert terminal["generation_publishable"] is False
+
+
+def test_runner_ledger_rejects_late_worker_terminal() -> None:
+    ledger = smoke.RunnerBuildLedger()
+    accepted = {
+        "ok": True,
+        "status": "BUILD_ACCEPTED",
+        "request_id": "request-1",
+        "build_generation_id": "build-1",
+        "operation_kind": "FULL",
+        "protocol_sequence": 1,
+    }
+    ledger.observe(accepted)
+    ledger.accept(accepted)
+    ledger.abort("build-1", error_type="WorkerEOF")
+
+    with pytest.raises(smoke.SmokeError, match="late or unknown"):
+        ledger.terminalize_worker(
+            {
+                "status": "BUILD_COMPLETED",
+                "request_id": "request-1",
+                "build_generation_id": "build-1",
+                "protocol_sequence": 2,
+            }
+        )
+
+
+def test_live_worker_terminal_timeout_does_not_abort_active_build() -> None:
+    client = object.__new__(smoke.WorkerClient)
+    client.timeout = 0.001
+    client.frames = queue.Queue()
+    client.received_frames = []
+    client.build_ledger = smoke.RunnerBuildLedger()
+    client.process = type(
+        "LiveProcess",
+        (),
+        {"poll": lambda self: None},
+    )()
+    accepted = {
+        "ok": True,
+        "status": "BUILD_ACCEPTED",
+        "request_id": "request-1",
+        "build_generation_id": "build-1",
+        "operation_kind": "INCREMENTAL",
+        "protocol_sequence": 1,
+    }
+    client.build_ledger.observe(accepted)
+    client.build_ledger.accept(accepted)
+
+    with pytest.raises(smoke.WorkerResponseTimeout):
+        client.receive_terminal(
+            build_generation_id="build-1",
+            timeout=0.001,
+        )
+
+    assert client.build_ledger.terminal("build-1") is None
+
+
+def test_worker_eof_synthesizes_runner_abort() -> None:
+    client = object.__new__(smoke.WorkerClient)
+    client.timeout = 0.001
+    client.frames = queue.Queue()
+    client.frames.put(None)
+    client.received_frames = []
+    client.build_ledger = smoke.RunnerBuildLedger()
+    client.process = type(
+        "ExitedProcess",
+        (),
+        {"poll": lambda self: -9},
+    )()
+    accepted = {
+        "ok": True,
+        "status": "BUILD_ACCEPTED",
+        "request_id": "request-1",
+        "build_generation_id": "build-1",
+        "operation_kind": "INCREMENTAL",
+        "protocol_sequence": 1,
+    }
+    client.build_ledger.observe(accepted)
+    client.build_ledger.accept(accepted)
+
+    terminal = client.receive_terminal(
+        build_generation_id="build-1",
+        timeout=0.001,
+    )
+
+    assert terminal["status"] == "BUILD_ABORTED"
+    assert terminal["terminal_record_source"] == "runner"
+    assert terminal["error_type"] == "WorkerEOF"
+
+
 def test_a9_sampler_cadence_is_stricter_than_contract_limit() -> None:
     defaults = smoke.ProcessTreeSampler.__init__.__defaults__
     assert defaults is not None
     assert defaults[-1] == 0.05
     assert defaults[-1] <= 0.1
+
+
+def test_a10_path_boundary_facts_do_not_expose_the_path(tmp_path: Path) -> None:
+    boundary = tmp_path / "A10 path 路径边界" / "source 目录"
+    boundary.mkdir(parents=True)
+
+    facts = smoke.path_boundary_facts(boundary)
+
+    assert facts == {
+        "contains_space": True,
+        "contains_non_ascii": True,
+    }
+    assert str(boundary) not in repr(facts)
 
 
 def test_workspace_lineage_marker_is_consumed_and_reports_offline_delta(

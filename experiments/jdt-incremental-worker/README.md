@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `Phase 1A A1-A9 canonical evidence passed; A10 remains open`
+Status: `A1-A8 plus A9-S/M and cooperative A9-L passed on the current review candidate; forced-shutdown settlement, canonical A9 rerun, and A10 remain open`
 
 Contract:
 
@@ -75,9 +75,15 @@ status          = a9_evidence_passed
 evidence_status = partial_phase_1a_evidence_a1_through_a9
 ```
 
-This is real canonical clean-worktree evidence for A1-A9 on commit `f4eebeb`.
-It is not yet a complete Phase 1A Go decision: A10 Windows/path-boundary
-evidence (including spaces and non-ASCII paths) remains outstanding.
+The previously recorded A1-A9 result is canonical evidence for its exact
+committed candidate. The current review candidate has also passed A1-A9
+functional runs, including company-environment dogfood, but still carries the
+deferred forced-shutdown settlement blocker described in the contract. Any
+Worker/protocol change creates a new candidate and requires a new clean-
+worktree canonical run before the canonical claim is renewed. This is not yet
+a complete Phase 1A Go decision: the forced fallback is not verified, and A10
+Windows/path-boundary evidence (including spaces and non-ASCII paths) remains
+outstanding.
 
 ## Files
 
@@ -149,10 +155,20 @@ uv run python experiments/jdt-incremental-worker/run_a9_experiment.py \
   --worker-java-home /path/to/jdk-17 \
   --target-java-home /path/to/jdk-8 \
   --keep-attempt
+
+uv run python experiments/jdt-incremental-worker/run_bootstrap_smoke.py \
+  --worker-java-home /path/to/jdk-17 \
+  --target-java-home /path/to/jdk-8 \
+  --a10-path-boundary \
+  --keep-attempt
 ```
 
 Use the same Python entry points on Windows and pass JDK home directories
-without appending `bin`. No Maven or target application JVM is involved.
+without appending `bin`. The A10 mode creates both attempt and source paths
+with spaces and non-ASCII characters, then reports only boolean path facts so
+absolute user paths are not published. Run it once on Windows and once on
+POSIX; either run alone is only `passed_for_current_platform`. No Maven or
+target application JVM is involved.
 
 Artifacts and attempts stay outside the repository by default:
 
@@ -226,7 +242,7 @@ A9-M decision                   PASS
 explicit/deadline cancellation  BUILD_CANCELLED / recovered
 STOP races                      completion-win and cancel-win passed
 clean reopen + offline delta    actual INCREMENTAL / oracle exact
-abnormal exit                   clean marker absent / lineage discarded
+abnormal exit                   Runner BUILD_ABORTED / fresh lineage FULL exact
 owned Worker residue            none
 ```
 
@@ -235,8 +251,12 @@ Lombok, HotSwap, or production publication performance.
 
 ## Next implementation boundary
 
-The next work should remain inside this experiment and add A10 Windows, spaces,
-and non-ASCII path evidence, then record the complete Phase 1A decision.
+The experiment may proceed with A10 Windows, spaces, and non-ASCII path
+evidence while the forced-shutdown settlement P1 remains explicitly recorded.
+Before a complete Phase 1A decision, deterministic lifecycle tests must prove
+that a live-Worker EOF and a shutdown deadline expiry force-settle the exact
+identity-bound process tree under one five-second budget and publish exactly
+one Runner-owned `BUILD_ABORTED` terminal.
 
 Phase 1B Lombok work must not begin until the same exact evidence candidate
 passes the complete Phase 1A Go gate.

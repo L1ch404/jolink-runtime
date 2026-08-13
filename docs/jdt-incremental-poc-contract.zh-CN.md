@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`A1-A9 canonical clean-worktree 证据已通过；A10 待验证`
+实现状态：`当前 Review candidate 的 A1-A8、A9-S/M 与协作式 A9-L 已通过；强制关闭 settlement、clean-worktree canonical A9 重跑和 A10 仍待完成`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
@@ -71,8 +71,10 @@ joLink（未来阶段）
   不能混用。
 - `Publication transaction`：未来产品接入时的发布边界。Runtime 在 candidate
   build generation 编译和验证期间继续使用已提交的 last-good build generation。
-  既有字段 `generation_publishable` 属于 build generation，目前只是逻辑发布门禁，
-  并不会把 JDT 可变的 `bin` 目录变成物理 last-good 存储。
+  Worker 只能返回 `compiler_output_eligible`，无权批准发布。只有 Runner 在所需
+  oracle 和 case publication gate 全部提交后，才能在自己的证据中设置
+  `generation_publishable=true`。这个逻辑门禁不会把 JDT 可变的 `bin` 目录变成
+  物理 last-good 存储。
 - `Clean-full oracle`：从同一冻结输入、使用同一锁定 JDT 栈创建的新私有
   workspace lineage 和 full-build generation，是判断增量结果正确性的基准。
 - `Evidence candidate`：由精确的 Worker JDK、Equinox/bundle lock、JDT、
@@ -692,7 +694,7 @@ tree 已 settled 后，Runner 才能原子发布新 marker。marker 发布遵守
 每个 owned PID 都记录 create time，避免 PID 复用误杀。Runner 持续观察 descendant，
 绝不能 signal 未拥有的进程，并在 settlement 后确认全部观察到的 owned process
 都消失。A9-L 不要求人为制造一个不响应取消的 JDT 故障来证明 force-kill；force
-fallback 继续由单元测试覆盖，真实 A9 证据必须证明正常协作路径和异常退出失效。
+fallback 必须由确定性单元测试证明，真实 A9 证据则证明正常协作路径和异常退出失效。
 
 #### A9 验收记录
 
@@ -727,10 +729,47 @@ Resource-delta instrumentation 仍是独立的 Phase 1A Go 条件。A9 必须继
 包含经过评审的只读 delta instrumentation，它就继续作为 pre-Go 项保留，不能被
 100 轮 workload 静默视为已经解决。
 
+A9 实现 Review 后记录两个非阻塞后续项：
+
+- 继续收紧 checkpoint 校验，让 pre/post-GC 两侧 payload 以及
+  `checkpoint_name` / `gc_collection_observed` 一致性都进入机器门禁；
+- 区分 command request identity 与 build request identity。unknown/stale build 的
+  历史 build request identity 可以为空，但每条 command 仍须拥有自己的非空 identity。
+
+#### 延后处理的 A9-L 强制关闭 settlement 阻塞项
+
+当前 Review candidate 已通过 A9-S、A9-M、协作式取消、两种 STOP 竞态、异常退出
+失效、源码世界连续性以及新 lineage 的 FULL 恢复；公司环境中的 A1-A9 dogfood 也
+已通过。这些结果仍然是有效证据，不会被下面的问题推翻。
+
+目前有一个 P1 生命周期边界明确延后到后续破坏性生命周期测试。它是已记录的技术
+债务，不代表放宽已冻结的 A9-L 契约：
+
+```text
+Worker protocol EOF，但 root process 仍然存活
+    -> 先强制 settle 身份精确绑定的 owned process tree
+    -> 然后才能记录 Runner BUILD_ABORTED 唯一终态
+
+shutdown
+    -> STOP 响应、进程退出和升级终止共用一个 5 秒 settlement deadline
+    -> deadline 到期后终止身份绑定的完整 process tree，而不只是 root process
+    -> Runner 只记录一次 BUILD_ABORTED，error_type=ForcedTermination
+```
+
+后续必须用确定性测试证明“存活 Worker 的 EOF”和“单一 budget 的强制关闭”两条路径，
+无需人为制造真实 JDT 卡死。在证据补齐前，可以继续使用 A9-S/M 与协作式 A9-L 的
+结果，也可以进入 A10；但不得宣称 force fallback 已验证、A9-L 完整 Approved，或
+给出完整 Phase 1A Go。若最终只修改 Python Runner/test，未改变锁定的 Worker
+artifact，则不因该修复机械作废 A1-A8 的 Worker-artifact 证据；最终 A9 仍必须在
+已提交且 clean worktree 上重新生成 canonical evidence。
+
 ### A10 — 平台和路径边界
 
 必须在 Windows 和至少一个 POSIX 环境通过。至少一次 attempt/source 路径
 包含空格与非 ASCII 字符。
+机器报告只记录操作系统身份，以及 attempt/source 两条路径是否含空格、是否含
+非 ASCII 字符的布尔事实；绝对用户路径仍留在本机。只通过一个操作系统时只能记为
+`passed_for_current_platform`，不能宣称 A10 已完整通过。
 
 ## 如何证明真的增量
 

@@ -248,7 +248,11 @@ public final class WorkerApplication implements IApplication {
             if (parts.length == 4) {
                 startAsyncBuild(parts[1], parts[2], parts[3]);
             } else {
-                emitError("INVALID_COMMAND", "BUILD_ASYNC requires request/build/kind.");
+                emitBuildError(
+                        "INVALID_COMMAND",
+                        "BUILD_ASYNC requires request/build/kind.",
+                        parts.length > 1 ? parts[1] : null,
+                        parts.length > 2 ? parts[2] : null);
             }
             return true;
         }
@@ -313,12 +317,20 @@ public final class WorkerApplication implements IApplication {
         } else if ("CLEAN".equals(operationKind)) {
             buildKind = IncrementalProjectBuilder.CLEAN_BUILD;
         } else {
-            emitError("INVALID_BUILD_KIND", "Unsupported asynchronous build kind.");
+            emitBuildError(
+                    "INVALID_BUILD_KIND",
+                    "Unsupported asynchronous build kind.",
+                    requestId,
+                    buildGenerationId);
             return;
         }
         synchronized (this) {
             if (activeBuild != null) {
-                emitError("ACTIVE_BUILD", "Only one build may be active.");
+                emitBuildError(
+                        "ACTIVE_BUILD",
+                        "Only one build may be active.",
+                        requestId,
+                        buildGenerationId);
                 return;
             }
             ActiveBuild build = new ActiveBuild(
@@ -365,7 +377,11 @@ public final class WorkerApplication implements IApplication {
             return;
         }
         if (!activeBuild.buildGenerationId.equals(buildGenerationId)) {
-            emitError("STALE_BUILD_ID", "The build generation is not active.");
+            emitBuildError(
+                    "STALE_BUILD_ID",
+                    "The build generation is not active.",
+                    null,
+                    buildGenerationId);
             return;
         }
         if (activeBuild.terminalEmitted) {
@@ -386,7 +402,11 @@ public final class WorkerApplication implements IApplication {
             return;
         }
         if (!activeBuild.buildGenerationId.equals(buildGenerationId)) {
-            emitError("STALE_BUILD_ID", "The build generation is not active.");
+            emitBuildError(
+                    "STALE_BUILD_ID",
+                    "The build generation is not active.",
+                    null,
+                    buildGenerationId);
             return;
         }
         if (activeBuild.terminalEmitted) {
@@ -409,7 +429,11 @@ public final class WorkerApplication implements IApplication {
 
     private void handleBarrier(String[] parts) {
         if (parts.length != 4) {
-            emitError("INVALID_COMMAND", "BARRIER requires action, request id, and build id.");
+            emitBuildError(
+                    "INVALID_COMMAND",
+                    "BARRIER requires action, request id, and build id.",
+                    parts.length > 2 ? parts[2] : null,
+                    parts.length > 3 ? parts[3] : null);
             return;
         }
         String requestId = parts[2];
@@ -425,7 +449,11 @@ public final class WorkerApplication implements IApplication {
                     + identityFields(requestId, buildGenerationId) + "}");
             BuildObservation.releaseBarrier(buildGenerationId);
         } else {
-            emitError("INVALID_COMMAND", "Unsupported BARRIER action.");
+            emitBuildError(
+                    "INVALID_COMMAND",
+                    "Unsupported BARRIER action.",
+                    requestId,
+                    buildGenerationId);
         }
     }
 
@@ -509,6 +537,7 @@ public final class WorkerApplication implements IApplication {
         String actualBuildKind = observation.actualBuildKind();
         boolean compileOperation = !"CLEAN".equals(requestedKind);
         boolean compileOk = errorCount == 0;
+        boolean compilerOutputEligible = compileOperation && compileOk;
         StringBuilder result = new StringBuilder();
         result.append("{\"ok\":").append(errorCount == 0)
                 .append(",\"status\":")
@@ -548,13 +577,14 @@ public final class WorkerApplication implements IApplication {
                 .append(jsonArray(observation.compiledUnits))
                 .append(",\"elapsed_ms\":").append(elapsedMillis)
                 .append(",\"error_count\":").append(errorCount)
-                .append(",\"generation_publishable\":")
-                .append(compileOperation && errorCount == 0)
+                .append(",\"compiler_output_eligible\":")
+                .append(compilerOutputEligible)
+                // The Worker can only report compiler eligibility. Oracle
+                // validation and publication commit belong to the Runner.
+                .append(",\"generation_publishable\":false")
                 .append(",\"class_count\":").append(after.size())
                 .append(",\"changed_classes\":").append(jsonArray(changed))
-                .append(",\"publishable_changed_classes\":")
-                .append(compileOperation && errorCount == 0
-                        ? jsonArray(changed) : "[]")
+                .append(",\"publishable_changed_classes\":[]")
                 .append(",\"deleted_classes\":").append(jsonArray(deleted))
                 .append(",\"diagnostics\":").append(jsonArray(diagnostics))
                 .append(",\"diagnostic_details\":")
@@ -565,7 +595,8 @@ public final class WorkerApplication implements IApplication {
                 .append(WorkerMetrics.snapshotJson(false));
         if (active != null) {
             result.append(identityFields(
-                    active.requestId, active.buildGenerationId));
+                    active.requestId, active.buildGenerationId))
+                    .append(",\"terminal_record_source\":\"worker\"");
         }
         result
                 .append("}");
@@ -582,9 +613,12 @@ public final class WorkerApplication implements IApplication {
                 + identityFields(build.requestId, build.buildGenerationId)
                 + ",\"operation_kind\":" + json(build.operationKind)
                 + ",\"operation_ok\":false,\"compile_ok\":null"
+                + ",\"compiler_output_eligible\":false"
                 + ",\"generation_publishable\":false"
+                + ",\"publishable_changed_classes\":[]"
                 + ",\"terminal_status\":"
                 + json("BUILD_CANCELLED".equals(status) ? "CANCELLED" : "ABORTED")
+                + ",\"terminal_record_source\":\"worker\""
                 + (errorType == null ? "" : ",\"error_type\":" + json(errorType))
                 + "}";
         emitTerminal(build, frame);
@@ -619,14 +653,18 @@ public final class WorkerApplication implements IApplication {
                             ? "UNKNOWN" : lastTerminalStatus)
                     + "}");
         } else {
-            emitError("STALE_BUILD_ID", "The build generation is not active.");
+            emitBuildError(
+                    "STALE_BUILD_ID",
+                    "The build generation is not active.",
+                    null,
+                    buildGenerationId);
         }
     }
 
     private synchronized String identityFields(
             String requestId, String buildGenerationId) {
-        return ",\"request_id\":" + json(requestId)
-                + ",\"build_generation_id\":" + json(buildGenerationId)
+        return ",\"request_id\":" + jsonNullable(requestId)
+                + ",\"build_generation_id\":" + jsonNullable(buildGenerationId)
                 + ",\"protocol_sequence\":" + (++protocolSequence);
     }
 
@@ -705,6 +743,16 @@ public final class WorkerApplication implements IApplication {
                 + ",\"message\":" + json(message) + "}");
     }
 
+    private void emitBuildError(
+            String code,
+            String message,
+            String requestId,
+            String buildGenerationId) {
+        emit("{\"ok\":false,\"error_code\":" + json(code)
+                + ",\"message\":" + json(message)
+                + identityFields(requestId, buildGenerationId) + "}");
+    }
+
     private synchronized void emit(String frame) {
         protocol.println(frame);
         protocol.flush();
@@ -736,6 +784,10 @@ public final class WorkerApplication implements IApplication {
             return "INFO";
         }
         return "UNKNOWN";
+    }
+
+    private static String jsonNullable(String value) {
+        return value == null ? "null" : json(value);
     }
 
     private static String json(String value) {
