@@ -49,6 +49,204 @@ phase1b = _load_module(
 )
 
 
+from jolink_runtime.experiments import jdt_build_world as build_world
+
+
+def _compile_java_tree(root: Path, *, value: str = "one") -> Path:
+    source = root / "src" / "example" / "Api.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "package example; public class Api { "
+        f"public String value() {{ return \"{value}\"; }} "
+        "protected int size() { return 1; } }\n",
+        encoding="utf-8",
+    )
+    output = root / "classes"
+    output.mkdir()
+    import subprocess
+
+    completed = subprocess.run(
+        ["javac", "-source", "8", "-target", "8", "-d", str(output), str(source)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        pytest.skip("A local javac is unavailable for class-structure tests")
+    return output
+
+
+def test_phase2a_filters_current_module_outputs(tmp_path: Path) -> None:
+    module = tmp_path / "app"
+    output = module / "target" / "classes"
+    tests_output = module / "target" / "test-classes"
+    repository_jar = (
+        tmp_path
+        / "repository"
+        / "example"
+        / "app"
+        / "1.0"
+        / "app-1.0.jar"
+    )
+    dependency = tmp_path / "repository" / "example" / "dep" / "1.0" / "dep-1.0.jar"
+    private_output = tmp_path / "attempt" / "bin"
+    for path in (output, tests_output, private_output):
+        path.mkdir(parents=True)
+    for path in (repository_jar, dependency):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"jar")
+
+    accepted, facts = build_world.filter_self_outputs(
+        [output, tests_output, repository_jar, dependency, private_output],
+        module_root=module,
+        maven_output=output,
+        private_candidate_output=private_output,
+        current_module_coordinate=("example", "app", "1.0"),
+    )
+
+    assert accepted == (dependency.resolve(),)
+    assert facts == {
+        "excluded_self_output_entry_count": 4,
+        "self_output_on_compile_classpath": False,
+        "stale_candidate_output_on_classpath": False,
+    }
+
+
+def test_phase2a_materialization_rejects_conflicting_roots(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    module = workspace / "app"
+    declared = module / "src" / "main" / "java"
+    generated = module / "target" / "generated-sources" / "annotations"
+    for root, text in ((declared, "class A {}"), (generated, "class B {}")):
+        source = root / "example" / "Same.java"
+        source.parent.mkdir(parents=True)
+        source.write_text(text, encoding="utf-8")
+    output = module / "target" / "classes"
+    output.mkdir(parents=True)
+    snapshot = build_world.create_snapshot(
+        workspace_root=workspace,
+        module_root=module,
+        maven_output=output,
+        source_roots=(
+            build_world.describe_source_root(
+                declared, "DECLARED_SOURCE", workspace_root=workspace
+            ),
+            build_world.describe_source_root(
+                generated, "COMPILE_TIME_AP_GENERATED", workspace_root=workspace
+            ),
+        ),
+        compile_classpath=(),
+        private_candidate_output=tmp_path / "private-bin",
+        source_level=8,
+        target_level=8,
+        encoding="UTF-8",
+        configuration_fingerprint="config",
+    )
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        build_world.materialize_private_sources(
+            snapshot, destination=tmp_path / "private-src"
+        )
+    assert raised.value.error_code == "SOURCE_ROOT_COLLISION"
+
+
+def test_phase2a_summary_never_contains_private_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "company-secret-workspace"
+    module = workspace / "secret-module"
+    source = module / "src" / "main" / "java"
+    (source / "example").mkdir(parents=True)
+    (source / "example" / "Api.java").write_text(
+        "package example; public class Api {}\n", encoding="utf-8"
+    )
+    output = module / "target" / "classes"
+    output.mkdir(parents=True)
+    snapshot = build_world.create_snapshot(
+        workspace_root=workspace,
+        module_root=module,
+        maven_output=output,
+        source_roots=(
+            build_world.describe_source_root(
+                source, "DECLARED_SOURCE", workspace_root=workspace
+            ),
+        ),
+        compile_classpath=(),
+        private_candidate_output=tmp_path / "private-bin",
+        source_level=8,
+        target_level=8,
+        encoding="UTF-8",
+        configuration_fingerprint="config",
+    )
+
+    rendered = json.dumps(snapshot.redacted_summary(), ensure_ascii=False)
+    assert "company-secret-workspace" not in rendered
+    assert "secret-module" not in rendered
+    assert str(tmp_path) not in rendered
+    assert snapshot.redacted_summary()["self_output_on_compile_classpath"] is False
+
+
+def test_phase2a_structural_comparison_ignores_method_body_bytes(
+    tmp_path: Path,
+) -> None:
+    maven = _compile_java_tree(tmp_path / "maven", value="maven")
+    jdt = _compile_java_tree(tmp_path / "jdt", value="jdt")
+
+    comparison = build_world.compare_class_outputs(
+        maven_output=maven, jdt_output=jdt
+    )
+
+    assert comparison["class_loading_or_initialization_used"] is False
+    assert comparison["tier1"]["status"] == "compatible"
+    assert comparison["tier1"]["api_mismatch_count"] == 0
+
+
+def test_phase2a_diagnostic_summary_contains_no_raw_messages() -> None:
+    secret = "C:/company/SecretService.java:42:error: TokenValue cannot be resolved"
+    summary = build_world.classify_diagnostics([secret])
+    rendered = json.dumps(summary)
+
+    assert summary["diagnostic_count"] == 1
+    assert summary["raw_diagnostics_in_report"] is False
+    assert "SecretService" not in rendered
+    assert "TokenValue" not in rendered
+
+
+def test_phase2a_unknown_processor_blocks_incremental_only(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    module = workspace / "app"
+    source = module / "src" / "main" / "java"
+    source.mkdir(parents=True)
+    (source / "Api.java").write_text("class Api {}\n", encoding="utf-8")
+    output = module / "target" / "classes"
+    output.mkdir(parents=True)
+
+    snapshot = build_world.create_snapshot(
+        workspace_root=workspace,
+        module_root=module,
+        maven_output=output,
+        source_roots=(
+            build_world.describe_source_root(
+                source, "DECLARED_SOURCE", workspace_root=workspace
+            ),
+        ),
+        compile_classpath=(),
+        private_candidate_output=tmp_path / "private-bin",
+        source_level=8,
+        target_level=8,
+        encoding="UTF-8",
+        configuration_fingerprint="config",
+        declared_processor_identities=("processor-sha",),
+        declared_processor_kinds=("unknown",),
+    )
+
+    assert snapshot.phase2b_incremental_eligible is False
+    assert snapshot.phase2b_blockers == (
+        "unknown_declared_annotation_processor",
+    )
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

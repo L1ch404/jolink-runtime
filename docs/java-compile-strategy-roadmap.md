@@ -713,6 +713,32 @@ Every thaw requires representative fixtures, at least one varied real project,
 Windows path/argfile coverage, JDK-version coverage, cancellation cleanup, and
 zero false success in adversarial tests.
 
+## Active Phase 2A Maven-to-JDT experiment
+
+The direct-javac line remains frozen. The active experiment now treats Maven
+as the bootstrap authority and asks a narrower question:
+
+```text
+formal Maven clean compile
+-> frozen BuildWorldSnapshot
+-> private JDT FULL_BUILD
+-> tiered structural comparison
+```
+
+The executable contract and company runbook are:
+
+- `docs/jdt-phase2a-real-maven-build-world-contract.md`
+- `docs/jdt-phase2a-real-maven-build-world-contract.zh-CN.md`
+- `docs/jdt-phase2a-company-runbook.zh-CN.md`
+
+This route shifts the long-term problem from reproducing every Maven plugin to
+capturing a build world and invalidating it when Maven-owned generation inputs
+change. It still does not make plugin semantics disappear: generated-source
+provenance, compile-time Processor refresh, resource transforms, bytecode
+enhancers, toolchains, and reactor closure remain explicit invalidation or
+fallback boundaries. Phase 2A records those boundaries instead of adding a
+new plugin-specific allow-list.
+
 ## Retained direct-javac promotion gates
 
 Status: `inactive while the direct-javac research line is frozen`

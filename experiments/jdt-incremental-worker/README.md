@@ -141,6 +141,12 @@ run_lombok_experiment.py
     process-tree sampling and an A9-M resource decision. Its compatibility-only
     mode compares bounded lombok.config and @Builder(toBuilder=true) behavior
     across candidates
+
+run_real_maven_build_world.py
+    private Phase 2A experiment: runs the real Maven clean-compile baseline,
+    freezes one representative Java 8 module as BuildWorldSnapshot v1,
+    excludes the module's old output from the JDT classpath, executes a private
+    JDT FULL build, and records tiered cross-compiler structural evidence
 ```
 
 ## Reproduce on macOS/POSIX
@@ -181,6 +187,15 @@ uv run python experiments/jdt-incremental-worker/run_lombok_experiment.py \
   --worker-java-home /path/to/jdk-17 \
   --target-java-home /path/to/jdk-8 \
   --compatibility-probes-only \
+  --keep-attempt
+
+# Phase 2A real Maven module (use the Maven/JDK/settings from the project):
+uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py \
+  --project-path /path/to/maven-project \
+  --maven-executable /path/to/mvn \
+  --build-java-home /path/to/jdk-8 \
+  --target-java-home /path/to/jdk-8 \
+  --worker-java-home /path/to/locked-jdk-17 \
   --keep-attempt
 ```
 
