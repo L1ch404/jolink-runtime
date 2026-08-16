@@ -49,7 +49,10 @@ import org.eclipse.jdt.core.JavaCore;
  */
 public final class WorkerApplication implements IApplication {
     private static final String PROJECT_NAME = "plain-fixture";
-    private static final int MAX_DIAGNOSTICS = 64;
+    private static final int MAX_ERROR_DIAGNOSTICS = 128;
+    private static final int MAX_OTHER_DIAGNOSTICS = 32;
+    private static final String DIAGNOSTIC_SELECTION_POLICY =
+            "errors_first_then_warnings_then_info";
 
     private final NullProgressMonitor monitor = new NullProgressMonitor();
     private PrintWriter protocol;
@@ -77,6 +80,56 @@ public final class WorkerApplication implements IApplication {
             this.requestId = requestId;
             this.buildGenerationId = buildGenerationId;
             this.operationKind = operationKind;
+        }
+    }
+
+    private static final class ProblemDiagnostic
+            implements Comparable<ProblemDiagnostic> {
+        final String resource;
+        final int line;
+        final int severity;
+        final int characterStart;
+        final int characterEnd;
+        final String message;
+
+        ProblemDiagnostic(IMarker marker) throws CoreException {
+            this.resource = marker.getResource().getProjectRelativePath().toString();
+            this.line = marker.getAttribute(IMarker.LINE_NUMBER, -1);
+            this.severity = marker.getAttribute(IMarker.SEVERITY, -1);
+            this.characterStart = marker.getAttribute(IMarker.CHAR_START, -1);
+            this.characterEnd = marker.getAttribute(IMarker.CHAR_END, -1);
+            this.message = marker.getAttribute(IMarker.MESSAGE, "");
+        }
+
+        @Override
+        public int compareTo(ProblemDiagnostic other) {
+            int compared = resource.compareTo(other.resource);
+            if (compared != 0) {
+                return compared;
+            }
+            compared = Integer.compare(line, other.line);
+            if (compared != 0) {
+                return compared;
+            }
+            compared = Integer.compare(characterStart, other.characterStart);
+            if (compared != 0) {
+                return compared;
+            }
+            return message.compareTo(other.message);
+        }
+
+        String compact() {
+            return resource + ":" + line + ":" + severity + ":" + message;
+        }
+
+        String detailJson() {
+            return "{\"resource\":" + json(resource)
+                    + ",\"line\":" + line
+                    + ",\"severity\":" + severity
+                    + ",\"severity_name\":" + json(severityName(severity))
+                    + ",\"character_start\":" + characterStart
+                    + ",\"character_end\":" + characterEnd
+                    + ",\"message\":" + json(message) + "}";
         }
     }
 
@@ -509,30 +562,43 @@ public final class WorkerApplication implements IApplication {
 
         IMarker[] markers = project.findMarkers(
                 IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
-        List<String> diagnostics = new ArrayList<>();
-        List<String> diagnosticDetails = new ArrayList<>();
-        int errorCount = 0;
+        List<ProblemDiagnostic> errorDiagnostics = new ArrayList<>();
+        List<ProblemDiagnostic> warningDiagnostics = new ArrayList<>();
+        List<ProblemDiagnostic> infoDiagnostics = new ArrayList<>();
         for (IMarker marker : markers) {
-            int severity = marker.getAttribute(IMarker.SEVERITY, -1);
-            if (severity == IMarker.SEVERITY_ERROR) {
-                errorCount++;
-            }
-            if (diagnostics.size() < MAX_DIAGNOSTICS) {
-                String resource = marker.getResource().getProjectRelativePath().toString();
-                int line = marker.getAttribute(IMarker.LINE_NUMBER, -1);
-                String message = marker.getAttribute(IMarker.MESSAGE, "");
-                diagnostics.add(resource + ":" + line + ":" + severity + ":" + message);
-                int characterStart = marker.getAttribute(IMarker.CHAR_START, -1);
-                int characterEnd = marker.getAttribute(IMarker.CHAR_END, -1);
-                diagnosticDetails.add("{\"resource\":" + json(resource)
-                        + ",\"line\":" + line
-                        + ",\"severity\":" + severity
-                        + ",\"severity_name\":" + json(severityName(severity))
-                        + ",\"character_start\":" + characterStart
-                        + ",\"character_end\":" + characterEnd
-                        + ",\"message\":" + json(message) + "}");
+            ProblemDiagnostic diagnostic = new ProblemDiagnostic(marker);
+            if (diagnostic.severity == IMarker.SEVERITY_ERROR) {
+                errorDiagnostics.add(diagnostic);
+            } else if (diagnostic.severity == IMarker.SEVERITY_WARNING) {
+                warningDiagnostics.add(diagnostic);
+            } else {
+                infoDiagnostics.add(diagnostic);
             }
         }
+        Collections.sort(errorDiagnostics);
+        Collections.sort(warningDiagnostics);
+        Collections.sort(infoDiagnostics);
+
+        List<ProblemDiagnostic> selectedDiagnostics = new ArrayList<>();
+        selectedDiagnostics.addAll(errorDiagnostics.subList(
+                0, Math.min(errorDiagnostics.size(), MAX_ERROR_DIAGNOSTICS)));
+        int remainingOther = MAX_OTHER_DIAGNOSTICS;
+        int returnedWarningCount = Math.min(warningDiagnostics.size(), remainingOther);
+        selectedDiagnostics.addAll(warningDiagnostics.subList(0, returnedWarningCount));
+        remainingOther -= returnedWarningCount;
+        int returnedInfoCount = Math.min(infoDiagnostics.size(), remainingOther);
+        selectedDiagnostics.addAll(infoDiagnostics.subList(0, returnedInfoCount));
+
+        List<String> diagnostics = new ArrayList<>();
+        List<String> diagnosticDetails = new ArrayList<>();
+        for (ProblemDiagnostic diagnostic : selectedDiagnostics) {
+            diagnostics.add(diagnostic.compact());
+            diagnosticDetails.add(diagnostic.detailJson());
+        }
+        int errorCount = errorDiagnostics.size();
+        int warningCount = warningDiagnostics.size();
+        int infoCount = infoDiagnostics.size();
+        int returnedErrorCount = Math.min(errorCount, MAX_ERROR_DIAGNOSTICS);
 
         String actualBuildKind = observation.actualBuildKind();
         boolean compileOperation = !"CLEAN".equals(requestedKind);
@@ -577,6 +643,16 @@ public final class WorkerApplication implements IApplication {
                 .append(jsonArray(observation.compiledUnits))
                 .append(",\"elapsed_ms\":").append(elapsedMillis)
                 .append(",\"error_count\":").append(errorCount)
+                .append(",\"warning_count\":").append(warningCount)
+                .append(",\"info_count\":").append(infoCount)
+                .append(",\"returned_error_count\":")
+                .append(returnedErrorCount)
+                .append(",\"returned_warning_count\":")
+                .append(returnedWarningCount)
+                .append(",\"returned_info_count\":")
+                .append(returnedInfoCount)
+                .append(",\"diagnostic_selection_policy\":")
+                .append(json(DIAGNOSTIC_SELECTION_POLICY))
                 .append(",\"compiler_output_eligible\":")
                 .append(compilerOutputEligible)
                 // The Worker can only report compiler eligibility. Oracle
@@ -590,7 +666,7 @@ public final class WorkerApplication implements IApplication {
                 .append(",\"diagnostic_details\":")
                 .append(jsonObjectsArray(diagnosticDetails))
                 .append(",\"diagnostics_truncated\":")
-                .append(markers.length > MAX_DIAGNOSTICS)
+                .append(selectedDiagnostics.size() < markers.length)
                 .append(",\"metrics\":")
                 .append(WorkerMetrics.snapshotJson(false));
         if (active != null) {

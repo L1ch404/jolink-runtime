@@ -552,6 +552,26 @@ Maven/settings/profile/parent/toolchain/plugin input fingerprints
 JDT/ECJ and Lombok compatibility identity
 ```
 
+### Maven-native Build World Probe
+
+The preferred discovery direction is now a dependency-light normal Maven Mojo
+running in the project's own Maven reactor/session. The implemented spike uses
+a joLink-owned content-addressed `file://` plugin repository and an
+attempt-private settings copy, so no user POM or source settings file is edited.
+Wildcard mirrors are preserved for every other repository and exclude only the
+Probe repository ID.
+
+Strict Maven offline mode cannot fetch a previously unseen plugin even from a
+`file://` repository. The verified fallback seeds the content-checked Probe
+coordinate into an explicitly selected Maven local repository and reports that
+cache write. A Maven Core Extension is intentionally not used. Full authority,
+schema, evidence, and migration rules are frozen in
+`maven-build-world-probe-contract.md`. An explicit Phase 2A hybrid path now uses
+Probe facts for source roots, compile classpath, and reactor outputs while
+retaining effective-POM/dependency metadata for compiler, Processor, and
+artifact-type evidence. Each provider is reported; the legacy path remains only
+for regression/differential evidence rather than silent fallback.
+
 Any change to a Build World input must cause Maven re-bootstrap plus a new JDT
 full build. Ordinary Java changes may use incremental build only while that
 generation remains current. POM/parent/settings/profile changes, dependency or
@@ -730,6 +750,7 @@ The executable contract and company runbook are:
 - `docs/jdt-phase2a-real-maven-build-world-contract.md`
 - `docs/jdt-phase2a-real-maven-build-world-contract.zh-CN.md`
 - `docs/jdt-phase2a-company-runbook.zh-CN.md`
+- `docs/jdt-phase2a-open-source-staircase.zh-CN.md`
 
 This route shifts the long-term problem from reproducing every Maven plugin to
 capturing a build world and invalidating it when Maven-owned generation inputs
@@ -738,6 +759,16 @@ provenance, compile-time Processor refresh, resource transforms, bytecode
 enhancers, toolchains, and reactor closure remain explicit invalidation or
 fallback boundaries. Phase 2A records those boundaries instead of adding a
 new plugin-specific allow-list.
+
+The first enterprise run also established three reusable boundaries. Maven
+classpath discovery can emit known non-binary artifacts, so entries are now
+content-classified before JDT and unknown files fail closed. Worker diagnostics
+use a separate error-first budget so warning volume cannot hide compile
+failures. Finally, javac-accepted but ECJ-rejected source remains a distinct
+cross-compiler compatibility category rather than being mislabeled as a Build
+World gap. Open-source projects now progress through controlled Spring Boot,
+scale, Reactor, Processor, and large-project levels before the enterprise
+project is rerun as an acceptance test.
 
 ## Retained direct-javac promotion gates
 

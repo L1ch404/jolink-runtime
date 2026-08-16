@@ -43,6 +43,7 @@ uv sync
 
 ```powershell
 git status --short --branch
+uv run python experiments/jdt-incremental-worker/run_maven_probe_spike.py --help
 uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py --help
 ```
 
@@ -51,22 +52,23 @@ uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py -
 Phase 2A 默认使用：
 
 ```text
-experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor.json
+experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor-diagnostics-v2.json
 ```
 
-如果本机 cache 中已跑过 A1-A9，通常不需要重新下载。若 candidate 不存在，执行：
+旧 `eclipse-2021-03-lombok-anchor` 的 A1-A10/Phase 1B 证据不能继承到
+diagnostics-v2。若新 candidate 不存在，执行：
 
 ```powershell
 uv run python experiments/jdt-incremental-worker/bootstrap_candidate.py `
-  --bootstrap experiments/jdt-incremental-worker/candidate-bootstrap-eclipse-2021-03.json `
-  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor.json
+  --bootstrap experiments/jdt-incremental-worker/candidate-bootstrap-eclipse-2021-03-diagnostics-v2.json `
+  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor-diagnostics-v2.json
 ```
 
 如果 Worker JAR 缺失或 identity 不一致，必须用同一套 Worker JDK 17 重新构建：
 
 ```powershell
 uv run python experiments/jdt-incremental-worker/build_worker.py `
-  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor.json `
+  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor-diagnostics-v2.json `
   --java-home D:\tools\jdk-17
 ```
 
@@ -75,21 +77,77 @@ uv run python experiments/jdt-incremental-worker/build_worker.py `
 
 ## 4. 公司单模块项目命令
 
-命令模板如下。所有路径都是脱敏占位值，执行前必须替换成公司电脑上 IDEA 实际使用的
+本轮必须先由 Maven Probe 导出事实，再把同一份私有 Probe 报告交给 Phase 2A。不要只跑
+第二条命令，否则 JDT 仍会使用历史 discovery，无法回答本轮问题。
+
+先设置一次变量。所有路径都是脱敏占位值，执行前必须替换成公司电脑上 IDEA 实际使用的
 项目、Maven、settings、本地仓库和 JDK 路径：
 
 ```powershell
 cd C:\work\jolink-runtime
 
+$Project = "C:\work\your-service"
+$Maven = "D:\tools\apache-maven\bin\mvn.cmd"
+$Settings = "D:\tools\apache-maven\conf\settings.xml"
+$Repository = "D:\maven-repository"
+$BuildJdk = "D:\tools\jdk-8"
+$WorkerJdk = "D:\tools\jdk-17"
+$Cache = "$env:LOCALAPPDATA\jolink-runtime\jdt-poc"
+```
+
+### 4.1 Maven-native Probe
+
+```powershell
+$ProbeRaw = uv run python experiments/jdt-incremental-worker/run_maven_probe_spike.py `
+  --project-root $Project `
+  --maven-executable $Maven `
+  --settings-file $Settings `
+  --local-repository $Repository `
+  --java-home $BuildJdk `
+  --cache-root "$Cache\maven-probe" `
+  --timeout 1800 `
+  --keep-attempt
+
+if ($LASTEXITCODE -ne 0) { throw "Maven Probe process failed" }
+$Probe = $ProbeRaw | Select-Object -Last 1 | ConvertFrom-Json
+if (-not $Probe.ok) { throw "Maven Probe failed" }
+if ($Probe.ephemeral_settings_retained) { throw "Temporary Maven settings retained" }
+$ProbePrivateReport = $Probe.private_report_path
+if (-not (Test-Path $ProbePrivateReport)) { throw "Probe private report missing" }
+```
+
+如 IDEA 使用 profile，在 Probe 命令中重复增加：
+
+```powershell
+  --profile profile-a --profile profile-b
+```
+
+Probe 会读取显式 settings；如果省略 `--settings-file`，则保留 Maven 默认的
+`~/.m2/settings.xml` 语义。包含 server 凭证的 attempt-local settings 只在 Maven 执行期间
+存在，即使使用 `--keep-attempt` 也必须在结果中看到：
+
+```text
+ephemeral_settings_retained = false
+```
+
+Probe 成功只能证明 Maven-native 基础事实已经导出；不要分享 `private_report_path` 指向的
+文件，因为其中包含公司绝对路径和本地仓库信息。
+
+### 4.2 Probe Build World -> JDT FULL
+
+```powershell
+
 uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py `
-  --project-path C:\work\your-service `
-  --maven-executable D:\tools\apache-maven\bin\mvn.cmd `
-  --settings-file D:\tools\apache-maven\conf\settings.xml `
-  --local-repository D:\maven-repository `
-  --build-java-home D:\tools\jdk-8 `
-  --target-java-home D:\tools\jdk-8 `
-  --worker-java-home D:\tools\jdk-17 `
-  --maven-timeout 1200 `
+  --project-path $Project `
+  --maven-executable $Maven `
+  --settings-file $Settings `
+  --local-repository $Repository `
+  --build-java-home $BuildJdk `
+  --target-java-home $BuildJdk `
+  --worker-java-home $WorkerJdk `
+  --maven-probe-private-report $ProbePrivateReport `
+  --cache-root $Cache `
+  --maven-timeout 1800 `
   --worker-timeout 900 `
   --keep-attempt
 ```
@@ -100,13 +158,15 @@ uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py `
   --module your-service-module
 ```
 
-如 IDEA 使用 profile，可重复传入：
+如 IDEA 使用 profile，Phase 2A 必须传入完全相同且顺序相同的 profile：
 
 ```powershell
   --profile profile-a --profile profile-b
 ```
 
-第一轮建议保留 `--keep-attempt`。成功或失败后都不要立刻删除本地 attempt。
+第一轮建议保留 `--keep-attempt`。成功或失败后都不要立刻删除本地 attempt。Phase 2A 会
+校验项目、POM、Maven executable、settings 内容、本地仓库、profile、模块和 Probe
+implementation identity；不一致时会 fail closed，不能拿旧报告凑数。
 
 ## 5. 运行中的正常现象
 
@@ -114,8 +174,10 @@ uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py `
 Runner 会依次执行：
 
 ```text
+Maven Probe compile + Maven-native export（第一条命令）
 Maven clean compile
-Maven compile classpath + effective POM discovery
+legacy effective POM / compiler / artifact-type metadata discovery
+Probe source roots + compile classpath + reactor outputs validation
 BuildWorldSnapshot freeze
 private source materialization
 JDT FULL BUILD
@@ -125,6 +187,19 @@ Worker shutdown
 
 终端不会打印 Maven 全量日志。详细 Maven/JDT 证据在本机 attempt；可分享报告只包含
 脱敏统计和 SHA-256。
+
+当前是有意保留的混合模型：
+
+```text
+source roots / compile classpath / reactor outputs
+    <- Maven Probe（权威）
+
+source/target/encoding/compiler config/processor declaration/artifact type
+    <- effective POM + dependency metadata（暂时）
+```
+
+因此这轮能验证“基础 Maven Build World 是否忠实”，但不能宣称 Maven compiler invocation
+已被 100% 重建。
 
 ## 6. 结果判断
 
@@ -145,6 +220,19 @@ project_inputs_unchanged_after_jdt = true
 如果 `phase2b_incremental_eligible=false`，仍然不能直接进入 incremental；先看
 `phase2b_blockers`，通常是未知 Processor 或 compile-time generated source 刷新语义。
 
+同时必须检查：
+
+```text
+build_world_provider.source_roots = maven_probe_v1
+build_world_provider.compile_classpath = maven_probe_v1
+build_world_provider.reactor_outputs = maven_probe_v1
+build_world_provider.compiler_configuration = legacy_effective_pom
+build_world_provider.hybrid_model = true
+build_world_provider.probe_implementation_id 非空
+```
+
+若前三项不是 `maven_probe_v1`，这次结果不能作为本轮公司验证证据。
+
 ### B. `phase2a_jdt_full_failed`
 
 这不是实验无价值。查看报告中的：
@@ -160,6 +248,19 @@ jdt_full.diagnostics.buckets
 - `processor_or_generated_api_mismatch`：Lombok/Processor/生成 API 不一致；
 - `language_or_compiler_incompatibility`：JDT/Java level 兼容问题；
 - `other`：需要在本机查看 raw Worker diagnostics。
+
+报告中的诊断摘要会优先保留 ERROR，并明确返回：
+
+```text
+error_count / warning_count / info_count
+returned_error_count / returned_warning_count / returned_info_count
+diagnostics_truncated
+diagnostic_selection_policy=errors_first_then_warnings_then_info
+```
+
+如果本地 raw diagnostics 显示 javac 能接受、ECJ 拒绝同一段源码（例如 raw 集合与
+匿名双括号初始化触发的泛型推断差异），将它记录为
+`cross-compiler-source-compatibility`，不要当成 Build World classpath 缺失。
 
 报告不会包含诊断原文，避免公司类名、路径或 SQL/URL 等信息泄漏。分析原文只在公司
 电脑本地进行。
@@ -179,6 +280,11 @@ Tier 2 compiler-generated 差异本身不是失败；Tier 1 差异不能忽略�
 - `LOMBOK_CONFIG_LAYOUT_UNREPRESENTABLE`：冻结的一根 source model 无法忠实映射配置；
 - `WORKER_JDK_IDENTITY_MISMATCH`：Worker JDK 与 lock 不一致；
 - `MAVEN_BOOTSTRAP_FAILED`：先看本地 Maven 日志。
+- `MAVEN_PROBE_IDENTITY_MISMATCH`：Maven 命中了旧 Probe，清理所选本地仓库中仅
+  `io/jolink/jolink-maven-probe/0.1.0-spike1` 的旧实验坐标后重新运行；不要清空整个仓库；
+- `MAVEN_PROBE_PROJECT_CHANGED`：Probe 后 POM 发生变化，重新跑 Probe；
+- `MAVEN_PROBE_INVOCATION_MISMATCH` / `MAVEN_PROBE_SETTINGS_CHANGED`：两步使用的
+  Maven、settings、本地仓库或 profile 不一致。
 
 这些都应记录，不要通过复制旧 class、删除 Processor、升级 Lombok 或改公司 POM 强行
 让实验通过。
@@ -192,6 +298,9 @@ diagnostics。建议只发：
 status / decision
 candidate_id / JDT version
 Build/Target/Worker JDK major
+Maven version / Maven executable SHA
+Probe implementation identity
+Build World provider 各字段（不要私有路径）
 source_root_count / java_source_count
 compile_classpath_entry_count
 generated source provenance counts

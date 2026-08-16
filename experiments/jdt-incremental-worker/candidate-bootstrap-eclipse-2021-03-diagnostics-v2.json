@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "candidate_id": "eclipse-2021-03-lombok-anchor-diagnostics-v2",
+  "eclipse_release": "4.19",
+  "repository_url": "https://download.eclipse.org/eclipse/updates/4.19/R-4.19-202103031800",
+  "worker_java_minimum": 17,
+  "p2_execution_environment_major": 11,
+  "root_installable_units": [
+    "org.apache.felix.scr",
+    "org.eclipse.osgi",
+    "org.eclipse.equinox.launcher",
+    "org.eclipse.equinox.app",
+    "org.eclipse.core.runtime",
+    "org.eclipse.core.resources",
+    "org.eclipse.jdt.core"
+  ],
+  "excluded_unit_patterns": [
+    ".source",
+    ".feature",
+    ".sdk"
+  ],
+  "evidence_status": "bootstrap_discovery_only"
+}

@@ -4,7 +4,7 @@
 
 设计状态：`已批准进入 Phase 1A 实验`
 
-实现状态：`当前 Review candidate 的 A1-A8、A9-S/M 与协作式 A9-L 已通过；强制关闭 settlement、clean-worktree canonical A9 重跑和 A10 仍待完成`
+实现状态：`旧精确 Worker artifact 保留已记录的 A1-A10/A9/Phase 1B 证据；独立 diagnostics-v2 candidate 当前只有本地功能性 A1-A8 和 Phase 2A 证据，clean-worktree canonical、A9、A10 与 Phase 1B 均待重验`
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 

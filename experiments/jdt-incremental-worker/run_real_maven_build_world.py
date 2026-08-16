@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -35,6 +36,7 @@ from jolink_runtime.experiments.lombok_processor import (
     LombokExperimentError,
     discover_lombok_configuration,
 )
+from jolink_runtime.experiments.maven_probe import resolve_source_settings
 from jolink_runtime.launch.contracts import BuildOperationSpec, LaunchIntent
 from jolink_runtime.launch.idea_environment import IdeaBuildPreferences
 from jolink_runtime.launch.maven import (
@@ -50,6 +52,23 @@ from jolink_runtime.launch.toolchain import (
     MavenToolCandidate,
     MavenToolResolver,
 )
+
+
+_DEPENDENCY_LIST_GOAL = "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:list"
+_MAVEN_BINARY_CLASSPATH_TYPES = frozenset(
+    {"jar", "test-jar", "maven-plugin", "ejb", "ejb-client"}
+)
+_MAVEN_NON_BINARY_CLASSIFIERS = frozenset(
+    {"source", "sources", "javadoc"}
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class MavenArtifactClasspathEvidence:
+    path: Path
+    artifact_type: str
+    classifier: str | None
+    scope: str
 
 
 def _java_tool(home: Path, name: str) -> Path:
@@ -175,10 +194,8 @@ def _select_module(
 
 
 def _preferences(args: argparse.Namespace) -> IdeaBuildPreferences:
-    settings = (
-        args.settings_file.expanduser().resolve(strict=True)
-        if args.settings_file is not None
-        else None
+    settings, _settings_kind = resolve_source_settings(
+        args.settings_file
     )
     repository = (
         args.local_repository.expanduser().resolve(strict=False)
@@ -244,7 +261,139 @@ def _metadata_operation(
     timeout: float,
 ) -> BuildOperationSpec:
     spec = adapter.create_compile_classpath_operation(execution)
-    return dataclasses.replace(spec, timeout_seconds=timeout)
+    artifact_manifest = _artifact_manifest_path(execution)
+    return dataclasses.replace(
+        spec,
+        argv=(
+            *spec.argv,
+            _DEPENDENCY_LIST_GOAL,
+            "-DincludeScope=compile",
+            "-DoutputAbsoluteArtifactFilename=true",
+            f"-DoutputFile={artifact_manifest}",
+            "-DappendOutput=false",
+        ),
+        timeout_seconds=timeout,
+    )
+
+
+def _artifact_manifest_path(execution: MavenExecutionPlan) -> Path:
+    return execution.compile_classpath_file.with_suffix(".compile-artifacts")
+
+
+_MAVEN_ARTIFACT_LINE = re.compile(
+    r"^\s*"
+    r"(?P<group>[^:\s]+):"
+    r"(?P<artifact>[^:\s]+):"
+    r"(?P<type>[^:\s]+):"
+    r"(?:(?P<classifier>[^:\s]+):)?"
+    r"(?P<version>[^:\s]+):"
+    r"(?P<scope>compile|provided|system):"
+    r"(?P<path>.+?)"
+    r"(?:\s+\(optional\))?\s*$"
+)
+
+
+def _parse_maven_artifact_manifest(
+    path: Path,
+) -> tuple[MavenArtifactClasspathEvidence, ...]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        raise BuildWorldError(
+            "MAVEN_ARTIFACT_METADATA_UNAVAILABLE",
+            "Maven did not produce compile artifact type metadata.",
+            suggested_next_step="Use the formal Maven build and inspect the local log.",
+            retryable=True,
+        ) from error
+    evidence: list[MavenArtifactClasspathEvidence] = []
+    for line in lines:
+        match = _MAVEN_ARTIFACT_LINE.match(line)
+        if match is None:
+            continue
+        artifact_path = Path(match.group("path"))
+        if not artifact_path.is_absolute():
+            raise BuildWorldError(
+                "MAVEN_ARTIFACT_METADATA_UNAVAILABLE",
+                "Maven compile artifact metadata contains a relative path.",
+                suggested_next_step="Use the formal Maven build and inspect the local log.",
+            )
+        evidence.append(
+            MavenArtifactClasspathEvidence(
+                path=artifact_path.resolve(strict=False),
+                artifact_type=match.group("type"),
+                classifier=match.group("classifier"),
+                scope=match.group("scope"),
+            )
+        )
+    unparsed = [
+        line.strip()
+        for line in lines
+        if line.strip()
+        and _MAVEN_ARTIFACT_LINE.match(line) is None
+        and "the following files have been resolved" not in line.casefold()
+        and line.strip().casefold() not in {"none", "no dependencies"}
+    ]
+    if not evidence and unparsed:
+        raise BuildWorldError(
+            "MAVEN_ARTIFACT_METADATA_UNAVAILABLE",
+            "Maven compile artifact type metadata is malformed.",
+            suggested_next_step="Use the formal Maven build and inspect the local log.",
+            retryable=True,
+        )
+    return tuple(evidence)
+
+
+def _maven_binary_archive_paths(
+    evidence: Sequence[MavenArtifactClasspathEvidence],
+) -> tuple[Path, ...]:
+    return tuple(
+        item.path
+        for item in evidence
+        if item.artifact_type.casefold() in _MAVEN_BINARY_CLASSPATH_TYPES
+        and (item.classifier or "").casefold()
+        not in _MAVEN_NON_BINARY_CLASSIFIERS
+    )
+
+
+def _maven_resource_archive_paths(
+    evidence: Sequence[MavenArtifactClasspathEvidence],
+) -> tuple[Path, ...]:
+    """Return artifacts whose Maven role can justify an empty class archive."""
+
+    return tuple(
+        item.path
+        for item in evidence
+        if item.artifact_type.casefold() in _MAVEN_BINARY_CLASSPATH_TYPES
+        and item.classifier is None
+    )
+
+
+def _require_maven_artifact_coverage(
+    compile_classpath: Sequence[Path],
+    evidence: Sequence[MavenArtifactClasspathEvidence],
+    *,
+    allowed_unlisted_paths: Sequence[Path] = (),
+) -> None:
+    """Distinguish a valid zero-dependency module from broken metadata."""
+
+    covered = {item.path.resolve(strict=False) for item in evidence}
+    allowed = {item.resolve(strict=False) for item in allowed_unlisted_paths}
+    missing = [
+        item.resolve(strict=False)
+        for item in compile_classpath
+        if item.resolve(strict=False).is_file()
+        and item.resolve(strict=False) not in covered
+        and item.resolve(strict=False) not in allowed
+    ]
+    if missing:
+        raise BuildWorldError(
+            "MAVEN_ARTIFACT_METADATA_UNAVAILABLE",
+            "Maven compile artifact metadata does not cover every external "
+            "file on the compile classpath.",
+            suggested_next_step="Use the formal Maven build and inspect the local log.",
+            retryable=True,
+            context={"uncovered_file_count": len(missing)},
+        )
 
 
 def _child_text(element: ET.Element, name: str) -> str | None:
@@ -477,7 +626,35 @@ def _lombok_config_files(
     }
 
 
-def _private_snapshot_payload(snapshot: BuildWorldSnapshot) -> dict[str, object]:
+def _private_snapshot_payload(
+    snapshot: BuildWorldSnapshot,
+    *,
+    artifact_evidence: Sequence[MavenArtifactClasspathEvidence] = (),
+) -> dict[str, object]:
+    evidence_by_path = {
+        item.path.resolve(strict=False): item for item in artifact_evidence
+    }
+
+    def classification(path: Path, entry_type: str) -> dict[str, object]:
+        evidence = evidence_by_path.get(path.resolve(strict=False))
+        return {
+            "entry_type": entry_type,
+            "classification_source": (
+                "maven_metadata_and_content"
+                if evidence is not None
+                else "content_or_workspace_evidence"
+            ),
+            "maven_evidence": (
+                {
+                    "artifact_type": evidence.artifact_type,
+                    "classifier": evidence.classifier,
+                    "scope": evidence.scope,
+                }
+                if evidence is not None
+                else None
+            ),
+        }
+
     return {
         "schema": "jolink.build-world-snapshot.private.v1",
         "workspace_root": str(snapshot.workspace_root),
@@ -493,8 +670,20 @@ def _private_snapshot_payload(snapshot: BuildWorldSnapshot) -> dict[str, object]
             for item in snapshot.source_roots
         ],
         "compile_classpath": [
-            {"path": str(item.path), "content_sha256": item.content_sha256}
+            {
+                "path": str(item.path),
+                "content_sha256": item.content_sha256,
+                **classification(item.path, item.entry_type),
+            }
             for item in snapshot.dependencies
+        ],
+        "excluded_classpath_inputs": [
+            {
+                "path": str(item.path),
+                "content_sha256": item.content_sha256,
+                **classification(item.path, item.entry_type),
+            }
+            for item in snapshot.excluded_classpath_inputs
         ],
         "snapshot_fingerprint": snapshot.fingerprint,
     }
@@ -515,8 +704,275 @@ def _parse_classpath(adapter: MavenBuildSystemAdapter, source: Path) -> list[Pat
     return [Path(item) for item in raw.split(os.pathsep) if item.strip()]
 
 
+def _pom_tree_fingerprint(project: Path) -> str:
+    return canonical_fingerprint(
+        [
+            (item.relative_to(project).as_posix(), sha256_file(item))
+            for item in sorted(project.rglob("pom.xml"))
+        ]
+    )
+
+
+def _absolute_path_list(value: object, *, field: str) -> list[Path]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise BuildWorldError(
+            "MAVEN_PROBE_OUTPUT_INVALID",
+            f"Maven Probe field {field} has an invalid shape.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    paths = [Path(item) for item in value]
+    if not all(path.is_absolute() for path in paths):
+        raise BuildWorldError(
+            "MAVEN_PROBE_OUTPUT_INVALID",
+            f"Maven Probe field {field} contains a relative path.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    return paths
+
+
+def _load_maven_probe_snapshot(
+    report_path: Path,
+    *,
+    workspace_root: Path,
+    module: MavenModule,
+    preferences: IdeaBuildPreferences,
+    maven_executable: Path,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Load and bind one Maven-native snapshot to this exact Phase 2A run."""
+
+    try:
+        report = json.loads(
+            report_path.expanduser().resolve(strict=True).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise BuildWorldError(
+            "MAVEN_PROBE_REPORT_INVALID",
+            "The private Maven Probe report is unavailable or malformed.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+            retryable=True,
+        ) from error
+    if report.get("schema") != "jolink.maven-probe-spike.private.v1":
+        raise BuildWorldError(
+            "MAVEN_PROBE_REPORT_INVALID",
+            "The private Maven Probe report uses an unexpected schema.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    root = workspace_root.resolve(strict=True)
+    if Path(str(report.get("project_root", ""))).resolve(strict=False) != root:
+        raise BuildWorldError(
+            "MAVEN_PROBE_PROJECT_MISMATCH",
+            "The Maven Probe report belongs to a different project.",
+            suggested_next_step="Run the Probe against this exact Maven project.",
+        )
+    if report.get("project_pom_fingerprint") != _pom_tree_fingerprint(root):
+        raise BuildWorldError(
+            "MAVEN_PROBE_PROJECT_CHANGED",
+            "Project POM inputs changed after Maven Probe export.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+            retryable=True,
+        )
+    implementation_id = report.get("probe_implementation_id")
+    if not isinstance(implementation_id, str) or re.fullmatch(
+        r"[0-9a-f]{64}", implementation_id
+    ) is None:
+        raise BuildWorldError(
+            "MAVEN_PROBE_IDENTITY_MISMATCH",
+            "The Maven Probe implementation identity is unavailable.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    invocation = report.get("invocation")
+    if not isinstance(invocation, dict):
+        raise BuildWorldError(
+            "MAVEN_PROBE_REPORT_INVALID",
+            "The Maven Probe invocation identity is unavailable.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    expected_invocation = {
+        "maven_executable": str(maven_executable.resolve(strict=True)),
+        "local_repository": (
+            str(preferences.local_repository.resolve(strict=False))
+            if preferences.local_repository is not None
+            else None
+        ),
+        "profiles": list(preferences.active_profiles),
+        "offline": False,
+    }
+    if invocation != expected_invocation:
+        raise BuildWorldError(
+            "MAVEN_PROBE_INVOCATION_MISMATCH",
+            "Phase 2A Maven options do not match the Probe invocation.",
+            suggested_next_step=(
+                "Use the same Maven executable, repository, profiles, and online mode "
+                "for Probe and Phase 2A."
+            ),
+        )
+    settings = report.get("settings")
+    if not isinstance(settings, dict):
+        raise BuildWorldError(
+            "MAVEN_PROBE_REPORT_INVALID",
+            "The Maven Probe settings identity is unavailable.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    current_settings_sha = (
+        sha256_file(preferences.user_settings_file)
+        if preferences.user_settings_file is not None
+        else None
+    )
+    if settings.get("source_settings_sha256") != current_settings_sha:
+        raise BuildWorldError(
+            "MAVEN_PROBE_SETTINGS_CHANGED",
+            "Maven settings changed after Probe export.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+            retryable=True,
+        )
+    snapshots = report.get("snapshots")
+    if not isinstance(snapshots, list):
+        raise BuildWorldError(
+            "MAVEN_PROBE_REPORT_INVALID",
+            "The Maven Probe snapshots are unavailable.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    matches: list[dict[str, object]] = []
+    for item in snapshots:
+        if not isinstance(item, dict):
+            continue
+        project = item.get("project")
+        if not isinstance(project, dict):
+            continue
+        if Path(str(project.get("baseDirectory", ""))).resolve(
+            strict=False
+        ) == module.directory.resolve(strict=True):
+            matches.append(item)
+    if len(matches) != 1:
+        raise BuildWorldError(
+            "MAVEN_PROBE_MODULE_AMBIGUOUS",
+            "The Maven Probe report has no unique selected-module snapshot.",
+            suggested_next_step="Run the Probe for this reactor and select the exact module.",
+            context={"matching_snapshot_count": len(matches)},
+        )
+    snapshot = matches[0]
+    if snapshot.get("schema") != "jolink.maven-build-world-probe.v1" or snapshot.get(
+        "probeImplementationId"
+    ) != implementation_id:
+        raise BuildWorldError(
+            "MAVEN_PROBE_IDENTITY_MISMATCH",
+            "The selected Maven snapshot has a different Probe identity.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    goals = snapshot.get("requestedGoals")
+    if not isinstance(goals, list) or "compile" not in goals or not any(
+        isinstance(goal, str) and goal.endswith(":export-build-world") for goal in goals
+    ):
+        raise BuildWorldError(
+            "MAVEN_PROBE_OUTPUT_INVALID",
+            "The Maven Probe snapshot was not exported from the required compile session.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    output = Path(str(snapshot.get("outputDirectory", "")))
+    if not output.is_absolute() or output.resolve(
+        strict=False
+    ) != module.output_directory.resolve(strict=False):
+        raise BuildWorldError(
+            "MAVEN_PROBE_MODULE_MISMATCH",
+            "The Maven Probe output directory does not match the selected module.",
+            suggested_next_step="Select the same module for Probe and Phase 2A.",
+        )
+    _absolute_path_list(snapshot.get("compileSourceRoots"), field="compileSourceRoots")
+    _absolute_path_list(
+        snapshot.get("compileClasspathElements"), field="compileClasspathElements"
+    )
+    return snapshot, report
+
+
+def _probe_source_roots(
+    snapshot: dict[str, object],
+    *,
+    declared_source: Path,
+    module: MavenModule,
+    workspace_root: Path,
+) -> list[Any]:
+    generated = {
+        path.resolve(strict=False): provenance
+        for path, provenance in _generated_source_roots(module)
+    }
+    roots: list[Any] = []
+    seen: set[Path] = set()
+    for raw in _absolute_path_list(
+        snapshot.get("compileSourceRoots"), field="compileSourceRoots"
+    ):
+        path = raw.resolve(strict=False)
+        if path in seen or not path.is_dir() or not any(path.rglob("*.java")):
+            continue
+        if path == declared_source.resolve(strict=False):
+            provenance = "DECLARED_SOURCE"
+        else:
+            provenance = generated.get(path, "MAVEN_NATIVE_SOURCE_ROOT")
+        roots.append(
+            describe_source_root(
+                path,
+                provenance,
+                workspace_root=workspace_root,
+            )
+        )
+        seen.add(path)
+    if not roots or not any(item.provenance == "DECLARED_SOURCE" for item in roots):
+        raise BuildWorldError(
+            "MAVEN_PROBE_SOURCE_ROOT_UNAVAILABLE",
+            "Maven Probe did not export the selected module's declared Java source root.",
+            suggested_next_step="Inspect the private Probe snapshot and Maven project model.",
+        )
+    return roots
+
+
+def _probe_reactor_outputs(snapshot: dict[str, object], module: MavenModule) -> tuple[Path, ...]:
+    projects = snapshot.get("reactorProjects")
+    if not isinstance(projects, list):
+        raise BuildWorldError(
+            "MAVEN_PROBE_OUTPUT_INVALID",
+            "Maven Probe reactor facts have an invalid shape.",
+            suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+        )
+    outputs: list[Path] = []
+    for item in projects:
+        if not isinstance(item, dict):
+            raise BuildWorldError(
+                "MAVEN_PROBE_OUTPUT_INVALID",
+                "Maven Probe reactor facts have an invalid entry.",
+                suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+            )
+        value = item.get("outputDirectory")
+        if value is None:
+            continue
+        path = Path(str(value))
+        if not path.is_absolute():
+            raise BuildWorldError(
+                "MAVEN_PROBE_OUTPUT_INVALID",
+                "Maven Probe reactor facts contain a relative output path.",
+                suggested_next_step="Run a fresh Maven Probe attempt and retry.",
+            )
+        resolved = path.resolve(strict=False)
+        if resolved != module.output_directory.resolve(strict=False) and resolved not in outputs:
+            outputs.append(resolved)
+    return tuple(outputs)
+
+
+def _classpath_diff_summary(legacy: Sequence[Path], probe: Sequence[Path]) -> dict[str, object]:
+    legacy_values = {str(item.resolve(strict=False)) for item in legacy}
+    probe_values = {str(item.resolve(strict=False)) for item in probe}
+    return {
+        "legacy_entry_count": len(legacy_values),
+        "probe_entry_count": len(probe_values),
+        "only_legacy_count": len(legacy_values - probe_values),
+        "only_probe_count": len(probe_values - legacy_values),
+        "legacy_identity_sha256": canonical_fingerprint(sorted(legacy_values)),
+        "probe_identity_sha256": canonical_fingerprint(sorted(probe_values)),
+    }
+
+
 def _lock_for_phase2a(root: Path, explicit: Path | None) -> Path:
-    return explicit or root / "locks" / "eclipse-2021-03-lombok-anchor.json"
+    return explicit or (
+        root / "locks" / "eclipse-2021-03-lombok-anchor-diagnostics-v2.json"
+    )
 
 
 def _candidate_identity(lock: dict[str, Any], lock_path: Path) -> dict[str, object]:
@@ -556,6 +1012,28 @@ def _assert_shareable_report(
             )
 
 
+def _shareable_report_private_values(
+    *,
+    workspace: Any,
+    module: Any,
+    preferences: Any,
+    snapshot: BuildWorldSnapshot,
+    diagnostics: Sequence[str],
+) -> tuple[str, ...]:
+    """Collect every private value that must remain outside shared reports."""
+
+    return (
+        str(workspace.project_root),
+        str(module.directory),
+        str(module.output_directory),
+        str(preferences.user_settings_file or ""),
+        str(preferences.local_repository or ""),
+        *(str(item.path) for item in snapshot.dependencies),
+        *(str(item.path) for item in snapshot.excluded_classpath_inputs),
+        *diagnostics,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parent
     repository_root = root.parents[1]
@@ -563,6 +1041,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-path", type=Path, required=True)
     parser.add_argument("--module")
     parser.add_argument("--maven-executable", type=Path)
+    parser.add_argument(
+        "--maven-probe-private-report",
+        type=Path,
+        help=(
+            "Private report from run_maven_probe_spike.py. When supplied, Maven "
+            "Probe is authoritative for source roots, compile classpath, and "
+            "reactor outputs."
+        ),
+    )
     parser.add_argument("--settings-file", type=Path)
     parser.add_argument("--local-repository", type=Path)
     parser.add_argument("--profile", action="append", default=[])
@@ -600,6 +1087,9 @@ def main(argv: list[str] | None = None) -> int:
             args.maven_executable,
             project_root=workspace.project_root,
             preferences=preferences,
+        )
+        selected_maven_executable = Path(maven.argv_prefix[0]).expanduser().resolve(
+            strict=True
         )
         intent = LaunchIntent(
             source="phase2a",
@@ -669,31 +1159,77 @@ def main(argv: list[str] | None = None) -> int:
                 "The selected module has no effective main source root.",
                 suggested_next_step="Select a representative Java module.",
             )
-        source_roots = [
-            describe_source_root(
-                source_directory,
-                "DECLARED_SOURCE",
+        probe_snapshot: dict[str, object] | None = None
+        probe_report: dict[str, object] | None = None
+        if args.maven_probe_private_report is not None:
+            probe_snapshot, probe_report = _load_maven_probe_snapshot(
+                args.maven_probe_private_report,
+                workspace_root=workspace.project_root,
+                module=module,
+                preferences=preferences,
+                maven_executable=selected_maven_executable,
+            )
+            source_roots = _probe_source_roots(
+                probe_snapshot,
+                declared_source=source_directory,
+                module=module,
                 workspace_root=workspace.project_root,
             )
-        ]
-        for path, provenance in _generated_source_roots(module):
-            source_roots.append(
+        else:
+            source_roots = [
                 describe_source_root(
-                    path,
-                    provenance,
+                    source_directory,
+                    "DECLARED_SOURCE",
                     workspace_root=workspace.project_root,
                 )
-            )
+            ]
+            for path, provenance in _generated_source_roots(module):
+                source_roots.append(
+                    describe_source_root(
+                        path,
+                        provenance,
+                        workspace_root=workspace.project_root,
+                    )
+                )
         processor_model = _annotation_processor_model(adapter, effective_project)
-        compile_classpath = _parse_classpath(
+        legacy_compile_classpath = _parse_classpath(
             adapter, execution.compile_classpath_file
         )
-        for processor_artifact in _declared_lombok_artifacts(
+        compile_classpath = (
+            _absolute_path_list(
+                probe_snapshot.get("compileClasspathElements"),
+                field="compileClasspathElements",
+            )
+            if probe_snapshot is not None
+            else list(legacy_compile_classpath)
+        )
+        reactor_output_directories = (
+            _probe_reactor_outputs(probe_snapshot, module)
+            if probe_snapshot is not None
+            else tuple(
+                item.output_directory
+                for item in workspace.modules
+                if item.directory != module.directory
+            )
+        )
+        discovery_comparison = _classpath_diff_summary(
+            legacy_compile_classpath, compile_classpath
+        )
+        artifact_evidence = _parse_maven_artifact_manifest(
+            _artifact_manifest_path(execution)
+        )
+        declared_lombok_artifacts = _declared_lombok_artifacts(
             processor_model,
             local_repository=preferences.local_repository,
-        ):
+        )
+        for processor_artifact in declared_lombok_artifacts:
             if processor_artifact not in compile_classpath:
                 compile_classpath.append(processor_artifact)
+        _require_maven_artifact_coverage(
+            compile_classpath,
+            artifact_evidence,
+            allowed_unlisted_paths=declared_lombok_artifacts,
+        )
         project_inputs_before = _project_inputs_fingerprint(
             workspace.project_root, [item.path for item in source_roots]
         )
@@ -714,6 +1250,16 @@ def main(argv: list[str] | None = None) -> int:
             current_module_coordinate=adapter._effective_coordinate(  # noqa: SLF001
                 effective_project
             ),
+            reactor_output_directories=reactor_output_directories,
+            maven_artifact_paths=tuple(
+                item.path for item in artifact_evidence
+            ),
+            maven_binary_archive_paths=_maven_binary_archive_paths(
+                artifact_evidence
+            ),
+            maven_resource_archive_paths=_maven_resource_archive_paths(
+                artifact_evidence
+            ),
             declared_processor_identities=processor_model["identities"],
             declared_processor_kinds=processor_model["kinds"],
             processor_option_identities=processor_model["option_identities"],
@@ -725,7 +1271,13 @@ def main(argv: list[str] | None = None) -> int:
                 suggested_next_step="Discard the attempt and inspect discovery.",
             )
         private_snapshot_path = attempt / "build-world.private.json"
-        _write_private_json(private_snapshot_path, _private_snapshot_payload(snapshot))
+        _write_private_json(
+            private_snapshot_path,
+            _private_snapshot_payload(
+                snapshot,
+                artifact_evidence=artifact_evidence,
+            ),
+        )
 
         worker_attempt = attempt / "worker"
         private_source = worker_attempt / "workspace" / "plain-fixture" / "src"
@@ -873,6 +1425,28 @@ def main(argv: list[str] | None = None) -> int:
             "attempt_id": attempt_id,
             "evidence_scope": "private_real_maven_build_world_phase2a",
             "candidate": _candidate_identity(lock, lock_path),
+            "build_world_provider": {
+                "source_roots": (
+                    "maven_probe_v1" if probe_snapshot is not None else "legacy_effective_pom"
+                ),
+                "compile_classpath": (
+                    "maven_probe_v1"
+                    if probe_snapshot is not None
+                    else "legacy_dependency_plugin"
+                ),
+                "reactor_outputs": (
+                    "maven_probe_v1" if probe_snapshot is not None else "legacy_workspace_model"
+                ),
+                "compiler_configuration": "legacy_effective_pom",
+                "annotation_processor_configuration": "legacy_effective_pom_and_classpath_inspection",
+                "artifact_type_provenance": "legacy_dependency_list",
+                "probe_implementation_id": (
+                    probe_report.get("probe_implementation_id")
+                    if probe_report is not None
+                    else None
+                ),
+                "hybrid_model": probe_snapshot is not None,
+            },
             "build_world": snapshot.redacted_summary(),
             "maven_baseline": {
                 "status": "passed",
@@ -886,6 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 ),
                 "target_tree_fingerprint": baseline_target_fingerprint,
+                "probe_vs_legacy_classpath": discovery_comparison,
             },
             "private_materialization": materialization,
             "lombok_configuration": lombok_config,
@@ -900,6 +1475,14 @@ def main(argv: list[str] | None = None) -> int:
                 "actual_build_kind": full.get("actual_build_kind"),
                 "error_count": full.get("error_count"),
                 "warning_count": full.get("warning_count"),
+                "info_count": full.get("info_count"),
+                "returned_error_count": full.get("returned_error_count"),
+                "returned_warning_count": full.get("returned_warning_count"),
+                "returned_info_count": full.get("returned_info_count"),
+                "diagnostics_truncated": full.get("diagnostics_truncated"),
+                "diagnostic_selection_policy": full.get(
+                    "diagnostic_selection_policy"
+                ),
                 "worker_start_duration_ms": round(worker_start_seconds * 1000, 1),
                 "build_duration_ms": round(jdt_seconds * 1000, 1),
                 "diagnostics": diagnostic_summary,
@@ -923,6 +1506,10 @@ def main(argv: list[str] | None = None) -> int:
                 "are not a Phase 2A gate.",
                 "Unknown compile-time annotation processors block Phase 2B "
                 "even when this full build succeeds.",
+                "Maven Probe v1 is authoritative only for source roots, compile "
+                "classpath, output directories, and reactor facts; compiler and "
+                "annotation-processor configuration still come from the legacy "
+                "effective-POM model.",
                 "No incremental mutation, HotSwap, target JVM, HTTP, or "
                 "product integration is exercised.",
             ],
@@ -930,14 +1517,12 @@ def main(argv: list[str] | None = None) -> int:
         }
         _assert_shareable_report(
             report,
-            private_values=(
-                str(workspace.project_root),
-                str(module.directory),
-                str(module.output_directory),
-                str(preferences.user_settings_file or ""),
-                str(preferences.local_repository or ""),
-                *(str(item.path) for item in snapshot.dependencies),
-                *diagnostics,
+            private_values=_shareable_report_private_values(
+                workspace=workspace,
+                module=module,
+                preferences=preferences,
+                snapshot=snapshot,
+                diagnostics=diagnostics,
             ),
         )
         report_path = _report_path(args.cache_root, attempt_id)

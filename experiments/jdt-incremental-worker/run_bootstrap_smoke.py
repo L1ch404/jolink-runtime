@@ -1129,6 +1129,91 @@ def diagnostics_identity(frame: dict[str, Any]) -> list[str]:
     return sorted(diagnostics)
 
 
+def require_diagnostics_contract(frame: dict[str, Any]) -> None:
+    """Validate the Worker's bounded, error-first diagnostic projection."""
+
+    max_error_diagnostics = 128
+    max_other_diagnostics = 32
+    counts: dict[str, int] = {}
+    for name in (
+        "error_count",
+        "warning_count",
+        "info_count",
+        "returned_error_count",
+        "returned_warning_count",
+        "returned_info_count",
+    ):
+        value = frame.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise SmokeError(f"Worker diagnostic field {name} is invalid.")
+        counts[name] = value
+    if frame.get("diagnostic_selection_policy") != (
+        "errors_first_then_warnings_then_info"
+    ):
+        raise SmokeError("Worker diagnostic selection policy is unsupported.")
+    diagnostics = frame.get("diagnostics")
+    details = frame.get("diagnostic_details")
+    if not isinstance(diagnostics, list) or not isinstance(details, list):
+        raise SmokeError("Worker diagnostic projections are unavailable.")
+    returned = sum(
+        counts[name]
+        for name in (
+            "returned_error_count",
+            "returned_warning_count",
+            "returned_info_count",
+        )
+    )
+    total = sum(
+        counts[name] for name in ("error_count", "warning_count", "info_count")
+    )
+    if len(diagnostics) != returned or len(details) != returned:
+        raise SmokeError("Worker returned diagnostic counts are inconsistent.")
+    if not all(isinstance(detail, dict) for detail in details):
+        raise SmokeError("Worker diagnostic details are malformed.")
+    if any(
+        counts[returned_name] > counts[total_name]
+        for returned_name, total_name in (
+            ("returned_error_count", "error_count"),
+            ("returned_warning_count", "warning_count"),
+            ("returned_info_count", "info_count"),
+        )
+    ):
+        raise SmokeError("Worker returned more diagnostics than were observed.")
+    expected_returned_errors = min(counts["error_count"], max_error_diagnostics)
+    if counts["returned_error_count"] != expected_returned_errors:
+        raise SmokeError("Worker did not prioritize ERROR diagnostics.")
+    if (
+        counts["returned_warning_count"] + counts["returned_info_count"]
+        > max_other_diagnostics
+    ):
+        raise SmokeError("Worker exceeded the non-error diagnostic budget.")
+    expected_returned_warnings = min(
+        counts["warning_count"], max_other_diagnostics
+    )
+    expected_returned_info = min(
+        counts["info_count"],
+        max_other_diagnostics - expected_returned_warnings,
+    )
+    if (
+        counts["returned_warning_count"] != expected_returned_warnings
+        or counts["returned_info_count"] != expected_returned_info
+    ):
+        raise SmokeError("Worker diagnostic severity ordering is inconsistent.")
+    if frame.get("diagnostics_truncated") is not (returned < total):
+        raise SmokeError("Worker diagnostic truncation flag is inconsistent.")
+    expected_severities = (
+        ["ERROR"] * counts["returned_error_count"]
+        + ["WARNING"] * counts["returned_warning_count"]
+        + ["INFO"] * counts["returned_info_count"]
+    )
+    observed_severities = [detail.get("severity_name") for detail in details]
+    if observed_severities != expected_severities:
+        raise SmokeError(
+            "Worker diagnostic details do not follow the declared "
+            "error-first severity ordering."
+        )
+
+
 def build_operation_identity(
     operation_kind: str, *, compile_ok: bool | None
 ) -> tuple[str, bool | None, str]:
@@ -1155,6 +1240,7 @@ def require_build_operation_contract(
     )
     if frame.get("terminal_status") != expected[2]:
         raise SmokeError("Worker terminal status is inconsistent.")
+    require_diagnostics_contract(frame)
 
 
 def gc_counts(metrics: dict[str, Any]) -> dict[str, int]:
@@ -1834,7 +1920,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--lock",
         type=Path,
-        default=root / "locks" / "eclipse-4.40-current.json",
+        default=root / "locks" / "eclipse-4.40-current-diagnostics-v2.json",
     )
     parser.add_argument(
         "--cache-root",

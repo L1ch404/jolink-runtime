@@ -555,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--lock",
         type=Path,
-        default=root / "locks" / "eclipse-4.40-current.json",
+        default=root / "locks" / "eclipse-4.40-current-diagnostics-v2.json",
     )
     parser.add_argument(
         "--lombok-lock",

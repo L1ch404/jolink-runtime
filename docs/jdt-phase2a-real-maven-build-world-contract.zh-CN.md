@@ -32,9 +32,11 @@ Maven 仍是 Build World 权威来源。实验先使用指定的 Maven、JDK、s
 原始 Maven 日志、effective POM、classpath 文件、绝对路径、源码、settings 和
 凭证只保留在权限收紧的本地 attempt 目录，不能进入可分享报告。
 
-首个 P0 只支持一个有代表性的 Java 8 模块，继续复用已通过 Phase 1 验证的
-Eclipse 2021-03 / JDT 3.25 候选与其冻结的 Java 8 project model。若真实模块不是
-Java 8 source/target，实验会明确拒绝，不能偷偷用 Java 8 参数编译。
+首个 P0 只支持一个有代表性的 Java 8 模块，继续复用 Eclipse 2021-03 / JDT
+3.25 技术栈与其冻结的 Java 8 project model。旧 anchor lock 保留此前 Phase 1
+证据；当前 `diagnostics-v2` lock 是独立的 Worker/protocol candidate，在重新执行前
+不得继承旧 A9、A10 或 Phase 1B 结论。若真实模块不是 Java 8 source/target，实验
+会明确拒绝，不能偷偷用 Java 8 参数编译。
 
 ## BuildWorldSnapshot v1
 
@@ -43,6 +45,7 @@ Java 8 source/target，实验会明确拒绝，不能偷偷用 Java 8 参数编�
 - 主源码根；
 - 实际存在且包含 Java 源码的 generated source root；
 - compile scope 依赖及内容指纹；
+- Maven 发现的 classpath entry 的内容验证分类；
 - Target JDK system libraries；
 - Maven source/target/encoding；
 - effective configuration 指纹；
@@ -52,6 +55,26 @@ Java 8 source/target，实验会明确拒绝，不能偷偷用 Java 8 参数编�
 
 可分享摘要只输出数量和 SHA-256 身份，不得输出公司目录、仓库路径、依赖坐标、
 源码、Maven 日志、编译诊断原文、token/header 或 settings 内容。
+
+Maven 输出某个路径，不等于已经证明该路径是 Java 二进制输入。Worker 启动前必须
+按以下边界分类：
+
+```text
+包含 Java class 的 archive      -> Maven type 无相反证据时加入
+已知可进 classpath 的 Maven type -> 加入（包括纯资源 JAR）
+class 目录                       -> 加入
+其他 Reactor 模块输出            -> 带 Reactor provenance 加入
+可识别的 Maven 项目描述文件       -> 记录指纹并排除
+未知文件或 entry                  -> fail closed
+```
+
+仅能作为 ZIP 打开不能证明 artifact 是 Java 编译输入；没有 Maven type 支持的
+sources JAR 或任意资源 ZIP 必须 fail closed。Maven 项目描述文件必须根据有大小上限、modelVersion 正确的 XML
+内容识别，不能只看 `.pom` 后缀。已知非二进制 artifact 仍属于 Build World 身份和
+共享计数的一部分，但绝不能进入 JDT classpath。Phase 2A 当前会组合 Maven
+Dependency Plugin 的 compile-scope 路径输出、`dependency:list` 的 type/scope/path
+证据以及有界的可进 classpath artifact type 白名单；以后仍应直接捕获 Maven
+`compileClasspathElements`/artifact-handler 语义，在此之前不能猜测未知文件类型。
 
 ## 禁止偷吃当前模块旧 class
 
@@ -92,9 +115,10 @@ Phase 2A 结果，但必须返回：
 phase2b_incremental_eligible = false
 ```
 
-Lombok 只复用 Phase 1B 已验证的精确机制：锁定 JDT 3.25 候选、
-`-javaagent:<lombok>=ECJ` 和必要的 Worker JVM module opening。这不代表已支持
-MapStruct、QueryDSL、Dagger、Hibernate enhancement、AspectJ 或任意 Processor。
+Lombok 只复用旧 JDT 3.25 candidate 已验证的精确机制：
+`-javaagent:<lombok>=ECJ` 和必要的 Worker JVM module opening。复用机制不等于
+把旧 Phase 1B 证据转移给 diagnostics-v2 Worker，也不代表已支持 MapStruct、
+QueryDSL、Dagger、Hibernate enhancement、AspectJ 或任意 Processor。
 
 ## 私有工作区与隔离
 
@@ -151,6 +175,32 @@ phase2a_structural_or_isolation_gap
 
 已知实验结果会生成报告；基础设施或模型失败返回结构化错误并保留本地 attempt。
 诊断原文只留在本地，分享报告只有分类数量和 message fingerprint。
+
+Worker 诊断使用有界的 error-first 投影。协议同时返回完整的 ERROR/WARNING/INFO
+计数、实际返回计数、截断状态和
+`errors_first_then_warnings_then_info` 策略。先最多返回 128 条 ERROR，再使用独立的
+32 条 WARNING/INFO 预算，避免大量 warning 把真正解释编译失败的 error 遮住。
+
+跨编译器源码兼容性必须与 Build World 缺口分开。版本化的
+`cross-compiler-compatibility` fixture 固化了一个 Java 8 raw `ArrayList` + 双括号
+匿名类表达式：javac 会带 unchecked warning 通过，而锁定的 ECJ 3.25 会因泛型推断
+拒绝。此类结果属于源码可移植性证据；joLink 不应修改业务源码，也不能把它误报成
+依赖缺失。独立的 `run_cross_compiler_compatibility.py` 会验证这一预期分歧，不把它
+混入普通 Phase 2A PASS fixture。
+
+## Maven-native Probe 迁移实验
+
+独立 Maven-native Probe Spike 的详细边界见
+`maven-build-world-probe-contract.zh-CN.md`。目前已经证明：随 joLink 携带的普通
+Mojo 可以在目标 Maven Session 中导出源码根、compile classpath、output 身份和
+实时 Reactor output，不需要修改项目 POM；同时已通过 Maven 3.3.9/JDK 8、
+`mirrorOf=*` 和显式严格离线注入。
+
+Phase 2A 现在提供显式混合入口：传入私有 Probe 报告后，source roots、compile
+classpath 和 reactor outputs 以 Probe 为权威；compiler/Processor 配置与 artifact type
+仍来自 effective POM/dependency metadata。报告必须逐项标出 provider，不得把混合模型
+表述成完整 Maven compiler invocation。旧链路只保留为回归/私有差分，Probe 缺失或
+冲突时不能静默成为可信 fallback。
 
 ## Phase 2A Go gate
 

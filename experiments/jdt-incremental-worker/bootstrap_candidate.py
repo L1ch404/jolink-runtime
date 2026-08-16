@@ -780,7 +780,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--bootstrap",
         type=Path,
-        default=Path(__file__).with_name("candidate-bootstrap.json"),
+        default=Path(__file__).with_name(
+            "candidate-bootstrap-diagnostics-v2.json"
+        ),
     )
     parser.add_argument(
         "--cache-root",
@@ -790,7 +792,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--lock",
         type=Path,
-        default=Path(__file__).with_name("locks") / "eclipse-4.40-current.json",
+        default=(
+            Path(__file__).with_name("locks")
+            / "eclipse-4.40-current-diagnostics-v2.json"
+        ),
     )
     parser.add_argument(
         "--resolve-only",

@@ -1,0 +1,576 @@
+{
+  "schema_version": 2,
+  "candidate_id": "eclipse-4.40-current-diagnostics-v2",
+  "evidence_status": "locked_phase_1a_candidate_pending_case_evidence",
+  "repository": {
+    "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713",
+    "content_metadata": {
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/content.jar",
+      "sha256": "202644cbfd59c52c7cc3aa5666ebee9a67dd2c79b7e650032fa67ab2b7526057",
+      "bytes": 481424
+    }
+  },
+  "worker_java_minimum": 17,
+  "execution_environment": {
+    "worker_java_major": 17,
+    "p2_capability_unit_java_major": 17,
+    "worker_java_satisfies_p2_profile": true,
+    "status": "satisfied",
+    "source": "official-p2-requiredProperties-osgi.ee",
+    "requirements": [
+      {
+        "bundle": "com.sun.jna",
+        "bundle_version": "5.18.1.v20251001-0800",
+        "filter": "(&(osgi.ee=JavaSE)(version=1.6))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "1.6.0"
+        }
+      },
+      {
+        "bundle": "com.sun.jna.platform",
+        "bundle_version": "5.18.1",
+        "filter": "(&(osgi.ee=JavaSE)(version=1.4))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "1.4.0"
+        }
+      },
+      {
+        "bundle": "org.apache.felix.scr",
+        "bundle_version": "2.2.18",
+        "filter": "(|(&(osgi.ee=JavaSE)(version=1.7))(&(osgi.ee=JavaSE/compact1)(version=1.8)))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "1.7.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.commands",
+        "bundle_version": "3.12.500.v20251103-0733",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.contenttype",
+        "bundle_version": "3.9.800.v20251105-1620",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.expressions",
+        "bundle_version": "3.9.600.v20260514-2026",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.filesystem",
+        "bundle_version": "1.11.400.v20251107-0507",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.jobs",
+        "bundle_version": "3.15.800.v20260325-1353",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.resources",
+        "bundle_version": "3.24.0.v20260518-1150",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.core.runtime",
+        "bundle_version": "3.34.200.v20251220-0953",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.equinox.app",
+        "bundle_version": "1.7.600.v20251211-1038",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.equinox.common",
+        "bundle_version": "3.20.400.v20260512-1534",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.equinox.launcher",
+        "bundle_version": "1.7.100.v20251111-0406",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.equinox.preferences",
+        "bundle_version": "3.12.100.v20251111-0704",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.equinox.registry",
+        "bundle_version": "3.12.600.v20250906-0651",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.jdt.core",
+        "bundle_version": "3.46.0.v20260520-1003",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.jdt.core.compiler.batch",
+        "bundle_version": "3.46.0.v20260528-0407",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.osgi",
+        "bundle_version": "3.24.200.v20260515-1403",
+        "filter": "(&(version=1.8)(|(osgi.ee=JavaSE)(osgi.ee=JavaSE/compact1)))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "1.8.0"
+        }
+      },
+      {
+        "bundle": "org.eclipse.text",
+        "bundle_version": "3.14.700.v20260326-1107",
+        "filter": "(&(osgi.ee=JavaSE)(version=17))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE",
+          "version": "17.0.0"
+        }
+      },
+      {
+        "bundle": "org.osgi.service.component",
+        "bundle_version": "1.5.1.202212101352",
+        "filter": "(&(osgi.ee=JavaSE/compact1)(version=1.8))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE/compact1",
+          "version": "1.8.0"
+        }
+      },
+      {
+        "bundle": "org.osgi.service.prefs",
+        "bundle_version": "1.1.2.202109301733",
+        "filter": "(&(osgi.ee=JavaSE/compact1)(version=1.8))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE/compact1",
+          "version": "1.8.0"
+        }
+      },
+      {
+        "bundle": "org.osgi.util.function",
+        "bundle_version": "1.2.0.202109301733",
+        "filter": "(&(osgi.ee=JavaSE/compact1)(version=1.8))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE/compact1",
+          "version": "1.8.0"
+        }
+      },
+      {
+        "bundle": "org.osgi.util.promise",
+        "bundle_version": "1.3.0.202212101352",
+        "filter": "(&(osgi.ee=JavaSE/compact1)(version=1.8))",
+        "status": "satisfied",
+        "matched_capability": {
+          "name": "JavaSE/compact1",
+          "version": "1.8.0"
+        }
+      }
+    ]
+  },
+  "root_installable_units": [
+    "org.eclipse.osgi",
+    "org.eclipse.equinox.launcher",
+    "org.eclipse.equinox.app",
+    "org.eclipse.core.runtime",
+    "org.eclipse.core.resources",
+    "org.eclipse.jdt.core"
+  ],
+  "equinox": {
+    "application_id": "net.jolink.runtime.jdt.worker",
+    "configuration_identity": "generated-from-this-lock",
+    "default_start_level": 4,
+    "configuration_sha256": "6f7f24db40344ee3fb678c93d3f83ca264de9a6c987a558c3e628bbe6a0a15c8",
+    "launcher_filename": "org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
+    "configuration_materialization": "replace file:plugins/ with the verified candidate plugins file URI"
+  },
+  "artifacts": [
+    {
+      "symbolic_name": "com.sun.jna",
+      "version": "5.18.1.v20251001-0800",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna_5.18.1.v20251001-0800.jar",
+      "sha256": "db89e4a3c622d97f2f4e1bdda2f243adad8f19edde83a29185d12675b8d00c15",
+      "license_identity": "Apache-2.0 OR LGPL-2.1-or-later",
+      "compressed_bytes": 2017745,
+      "installed_bytes": 2017745,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "com.sun.jna_5.18.1.v20251001-0800.jar"
+    },
+    {
+      "symbolic_name": "com.sun.jna.platform",
+      "version": "5.18.1",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.platform_5.18.1.jar",
+      "sha256": "ad14c1b1ec4f43d396231219dfa635ebf828f738eac9f890ea1bc07795892d9a",
+      "license_identity": "Apache-2.0 OR LGPL-2.1-or-later",
+      "compressed_bytes": 1380744,
+      "installed_bytes": 1380744,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "com.sun.jna.platform_5.18.1.jar"
+    },
+    {
+      "symbolic_name": "org.apache.felix.scr",
+      "version": "2.2.18",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr_2.2.18.jar",
+      "sha256": "c5bd887c8fd5ec4cd563249e7552bb1a1a1ca57e05a1f1ef8425a7b7b7bd2fbe",
+      "license_identity": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "compressed_bytes": 409468,
+      "installed_bytes": 409468,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.apache.felix.scr_2.2.18.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.commands",
+      "version": "3.12.500.v20251103-0733",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.commands_3.12.500.v20251103-0733.jar",
+      "sha256": "44713362e55ed28e6db5d2c31bf67524fef087645a44dc3239dac60ece017cb9",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 122155,
+      "installed_bytes": 122155,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.eclipse.core.commands_3.12.500.v20251103-0733.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.contenttype",
+      "version": "3.9.800.v20251105-1620",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.contenttype_3.9.800.v20251105-1620.jar",
+      "sha256": "e0c2db96600d519ce36a75f9b7c971afd2870d2d059eee4bf2436d9b33aa0b8d",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 108005,
+      "installed_bytes": 108005,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.core.contenttype_3.9.800.v20251105-1620.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.expressions",
+      "version": "3.9.600.v20260514-2026",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.expressions_3.9.600.v20260514-2026.jar",
+      "sha256": "eff84cfc8f20e235448c3a64fa4c2fa65f97e0ed08d26302f331b677dff77a66",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 99317,
+      "installed_bytes": 99317,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.core.expressions_3.9.600.v20260514-2026.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.filesystem",
+      "version": "1.11.400.v20251107-0507",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.filesystem_1.11.400.v20251107-0507.jar",
+      "sha256": "6f70b95d14b90ec57b94c5e3dba7e1d189679cf9a4bc4526e9c91beed7d6a0ef",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 79139,
+      "installed_bytes": 79139,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.core.filesystem_1.11.400.v20251107-0507.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.jobs",
+      "version": "3.15.800.v20260325-1353",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.jobs_3.15.800.v20260325-1353.jar",
+      "sha256": "0497acb909d5cbe12080e78845f280d9292838721592b508c85cbfbdc7b2d7fe",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 120975,
+      "installed_bytes": 120975,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.core.jobs_3.15.800.v20260325-1353.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.resources",
+      "version": "3.24.0.v20260518-1150",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.resources_3.24.0.v20260518-1150.jar",
+      "sha256": "e26702d817d6c26e83e4d6e7e6ff4761a53774487a247b1faf7c975d395683fe",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 964311,
+      "installed_bytes": 964311,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.core.resources_3.24.0.v20260518-1150.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.runtime",
+      "version": "3.34.200.v20251220-0953",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.runtime_3.34.200.v20251220-0953.jar",
+      "sha256": "b4f36a0acb08f03d0b3db54b21fc5638c820c447446a410ba496a5070fa34363",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 90520,
+      "installed_bytes": 90520,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.core.runtime_3.34.200.v20251220-0953.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.app",
+      "version": "1.7.600.v20251211-1038",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app_1.7.600.v20251211-1038.jar",
+      "sha256": "fd353398835107608f554779a6e91891725efb94e0f57559d0ab3cea4b6156c7",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 93212,
+      "installed_bytes": 93212,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.equinox.app_1.7.600.v20251211-1038.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.common",
+      "version": "3.20.400.v20260512-1534",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.common_3.20.400.v20260512-1534.jar",
+      "sha256": "423b58613a4e9bbbe6ec2239690ff329f13d69ebb28406a5f9d70516a6643a24",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 164849,
+      "installed_bytes": 164849,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.equinox.common_3.20.400.v20260512-1534.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.launcher",
+      "version": "1.7.100.v20251111-0406",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
+      "sha256": "0209ecc491bdb20a0f09661e11696a8e0cdbd60cf14e2c55dbcb633d5fdd10bf",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 52574,
+      "installed_bytes": 52574,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.preferences",
+      "version": "3.12.100.v20251111-0704",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar",
+      "sha256": "fd04e81a28ab32b6bb073286eb293c44b760176fcf1e35ef15614d62df820f86",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 130382,
+      "installed_bytes": 130382,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy; exclude:=\"org.eclipse.core.internal.preferences.exchange\"",
+      "filename": "org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.registry",
+      "version": "3.12.600.v20250906-0651",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar",
+      "sha256": "4f8cd72681446b598390a8c24ee9b9996f6e4c5fabed022b50bd26f6f5a0bf6c",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 206425,
+      "installed_bytes": 206425,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.jdt.core",
+      "version": "3.46.0.v20260520-1003",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core_3.46.0.v20260520-1003.jar",
+      "sha256": "52b3c3d995bd67f9c1445500d4597299ddcfab7d585e208eec3db3d102239a5f",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 4510431,
+      "installed_bytes": 4510431,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.jdt.core_3.46.0.v20260520-1003.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.jdt.core.compiler.batch",
+      "version": "3.46.0.v20260528-0407",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.compiler.batch_3.46.0.v20260528-0407.jar",
+      "sha256": "d0d43f8e2d7003e5efed612e2cbb5f01870043397d8f1bbe536fd9128f4fcbf7",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 3370586,
+      "installed_bytes": 3370586,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.jdt.core.compiler.batch_3.46.0.v20260528-0407.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.osgi",
+      "version": "3.24.200.v20260515-1403",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi_3.24.200.v20260515-1403.jar",
+      "sha256": "bfe83fcd1fa034eb9a986b3cb6e5e2b18dbbacb67eabdaad2da32804ecd8c65a",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 1615534,
+      "installed_bytes": 1615534,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.eclipse.osgi_3.24.200.v20260515-1403.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.text",
+      "version": "3.14.700.v20260326-1107",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.text_3.14.700.v20260326-1107.jar",
+      "sha256": "4075f7aa3a19f2ce6ffd1f555ebc0884e065cc40b59f71d774da0928c1423555",
+      "license_identity": "EPL-2.0",
+      "compressed_bytes": 363943,
+      "installed_bytes": 363943,
+      "bundle_start_level": 4,
+      "activation_policy": "lazy",
+      "filename": "org.eclipse.text_3.14.700.v20260326-1107.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.service.component",
+      "version": "1.5.1.202212101352",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component_1.5.1.202212101352.jar",
+      "sha256": "0653852deab5c6f6e9c84e3aa8f72e72b9ce7dfaf7a6431f3d80f6f9d7a433ad",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "compressed_bytes": 66447,
+      "installed_bytes": 66447,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.osgi.service.component_1.5.1.202212101352.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.service.prefs",
+      "version": "1.1.2.202109301733",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs_1.1.2.202109301733.jar",
+      "sha256": "43c7c870710e363405d422da653cce0d798a4537f76e4930f79bceadd3a55345",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "compressed_bytes": 20165,
+      "installed_bytes": 20165,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.osgi.service.prefs_1.1.2.202109301733.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.util.function",
+      "version": "1.2.0.202109301733",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function_1.2.0.202109301733.jar",
+      "sha256": "208819c7c71690c15a6bb8b187474e7f9d0147946b680182a62b9f222ae014ec",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "compressed_bytes": 23641,
+      "installed_bytes": 23641,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.osgi.util.function_1.2.0.202109301733.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.util.promise",
+      "version": "1.3.0.202212101352",
+      "origin_url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise_1.3.0.202212101352.jar",
+      "sha256": "7053c57e7d7d88fec6b90979a3af125e1d2bb847268a328a2f1ed65ad0a4c185",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "compressed_bytes": 85659,
+      "installed_bytes": 85659,
+      "bundle_start_level": 4,
+      "activation_policy": "eager_when_started",
+      "filename": "org.osgi.util.promise_1.3.0.202212101352.jar"
+    }
+  ],
+  "worker_artifact": {
+    "symbolic_name": "net.jolink.runtime.jdt.worker",
+    "version": "0.1.0",
+    "origin_url": "workspace://experiments/jdt-incremental-worker/worker",
+    "sha256": "a2caf72394912d34022bd5e2f87bcf218dc886579c7ad8519e7fc2190b0eb2ed",
+    "license_identity": "MIT",
+    "compressed_bytes": 24650,
+    "installed_bytes": 24650,
+    "bundle_start_level": 4,
+    "activation_policy": "lazy",
+    "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar"
+  },
+  "worker_build": {
+    "source_fingerprint": "c764144bafbbbf548fad6af6187dbf5b86d0c3c142280d41ceb6431062e7e572",
+    "java_home_identity": {
+      "java_binary_sha256": "f671624e7f4fdc15a5913be61b36b5410f58ffc18d9ccda082b7e0ff58591596",
+      "javac_binary_sha256": "ad9bfde64121361606c4051e208638c4a979b1eaaa875c2df1ef3585a702788d"
+    },
+    "source_level": "17",
+    "target_level": "17",
+    "instrumentation": {
+      "extension_id": "net.jolink.runtime.jdt.compilationObserver",
+      "modifies_environment": false,
+      "creates_problems": false,
+      "annotation_processor": false,
+      "post_processor": false,
+      "evidence_mode": "enabled_with_required_off_on_parity"
+    }
+  }
+}

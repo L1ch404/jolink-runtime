@@ -33,9 +33,12 @@ log, effective POM, classpath file, absolute paths, source, settings, and
 credentials remain in a mode-private attempt directory.
 
 The first P0 supports one representative Java 8 module. It intentionally uses
-the already validated Eclipse 2021-03 / JDT 3.25 candidate and its frozen
-Java-8 project model. A non-Java-8 source/target model is rejected explicitly;
-the runner must not silently compile it with Java 8 options.
+the Eclipse 2021-03 / JDT 3.25 stack and its frozen Java-8 project model. The
+historical anchor lock preserves the earlier Phase 1 evidence; the active
+`diagnostics-v2` lock is a distinct Worker/protocol candidate and inherits no
+A9, A10, or Phase 1B result until rerun. A non-Java-8 source/target model is
+rejected explicitly; the runner must not silently compile it with Java 8
+options.
 
 ## BuildWorldSnapshot v1
 
@@ -44,6 +47,7 @@ The private snapshot freezes:
 - declared main source root;
 - discovered generated source roots that contain Java input;
 - compile-scope dependency entries and content fingerprints;
+- content-verified classification of Maven-discovered classpath entries;
 - target JDK system libraries;
 - Maven source level, target level, and source encoding;
 - effective configuration fingerprint;
@@ -55,6 +59,31 @@ The shareable summary contains counts and SHA-256 identities only. It must not
 contain workspace paths, repository paths, dependency coordinates, source
 contents, Maven log text, compiler diagnostic text, header/token values, or
 settings content.
+
+Maven classpath discovery is not treated as proof that every emitted path is
+a Java binary input. Before the Worker starts, each entry is classified as:
+
+```text
+archive containing Java class files -> include when Maven type does not contradict
+known classpath-capable Maven type   -> include (including resource-only JARs)
+class directory                     -> include
+other Reactor module output         -> include with Reactor provenance
+recognized Maven project descriptor -> fingerprint and exclude
+unknown file or entry               -> fail closed
+```
+
+ZIP compatibility alone does not prove that an artifact is a Java compiler
+input; a sources JAR or arbitrary resource ZIP with no supporting Maven type
+therefore fails closed.
+Recognition of a Maven project descriptor is based on bounded XML content with
+the expected model version, not a `.pom` filename suffix. Known non-binary
+artifacts remain part of the Build World fingerprint and shareable counts, but
+never enter the JDT raw classpath. Phase 2A currently combines the Maven
+Dependency Plugin's compile-scope path output with its `dependency:list`
+type/scope/path evidence and a bounded allowlist of classpath-capable artifact
+types. Adopting Maven's direct `compileClasspathElements`/artifact-handler
+projection remains the authoritative discovery improvement rather than a
+reason to guess unknown file types.
 
 ## No stale self-output invariant
 
@@ -99,10 +128,12 @@ compile-time annotation Processor may be observed in Phase 2A but sets:
 phase2b_incremental_eligible = false
 ```
 
-Lombok is handled only through the exact Phase 1B mechanism already validated
-for the locked JDT 3.25 candidate: `-javaagent:<lombok>=ECJ` plus the required
-Worker JVM module opening. This does not generalize support to MapStruct,
-QueryDSL, Dagger, Hibernate enhancement, AspectJ, or arbitrary Processors.
+Lombok is handled only through the exact mechanism previously validated on the
+historical JDT 3.25 candidate: `-javaagent:<lombok>=ECJ` plus the required
+Worker JVM module opening. Reusing that mechanism does not transfer the old
+Phase 1B evidence to the diagnostics-v2 Worker. It also does not generalize
+support to MapStruct, QueryDSL, Dagger, Hibernate enhancement, AspectJ, or
+arbitrary Processors.
 
 ## Private materialization
 
@@ -169,6 +200,37 @@ phase2a_structural_or_isolation_gap
 Known experiment outcomes return a report. Infrastructure/model failures use a
 structured error and retain the private attempt. Raw diagnostics remain local;
 the shareable report carries bucket counts and message fingerprints only.
+
+Worker diagnostics use a bounded error-first projection. The protocol reports
+the complete ERROR/WARNING/INFO counts, returned counts, truncation state, and
+the `errors_first_then_warnings_then_info` selection policy. Up to 128 errors
+are returned before a separate budget of 32 warnings/information markers, so a
+warning-heavy project cannot hide the compile errors that explain failure.
+
+Cross-compiler source incompatibility is distinct from a Build World gap. The
+versioned `cross-compiler-compatibility` fixture records one Java-8 raw,
+double-brace anonymous `ArrayList` expression that javac accepts with unchecked
+warnings while the locked ECJ 3.25 compiler rejects its generic inference. Such
+a result is source-portability evidence; joLink must not rewrite the source or
+misreport it as a missing dependency. The dedicated
+`run_cross_compiler_compatibility.py` probe gates that exact expected
+divergence independently from normal Phase 2A PASS fixtures.
+
+## Maven-native Probe migration experiment
+
+The standalone Maven-native Probe spike is specified in
+`maven-build-world-probe-contract.md`. It proves that a bundled normal Mojo can
+export source roots, compile classpath, output identity, and live Reactor
+outputs in the target Maven session without editing project POMs. It has also
+passed Maven 3.3.9/JDK 8, `mirrorOf=*`, and explicit strict-offline injection.
+
+Phase 2A now has an explicit hybrid entry: with a private Probe report, Probe is
+authoritative for source roots, compile classpath, and reactor outputs, while
+compiler/Processor configuration and artifact type still come from effective
+POM/dependency metadata. Reports identify every provider and must not describe
+this hybrid as a complete Maven compiler invocation. The legacy path remains
+for regression/private differential evidence and must not silently become a
+trusted fallback when Probe evidence is absent or conflicting.
 
 ## Phase 2A Go gate
 

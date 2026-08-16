@@ -1,6 +1,6 @@
 # Headless JDT Incremental Worker Experiment
 
-Status: `A1-A8 plus A9-S/M and cooperative A9-L passed on the current review candidate; forced-shutdown settlement, canonical A9 rerun, and A10 remain open`
+Status: `diagnostics-v2 candidates have local functional A1-A8 and Phase 2A evidence; clean-worktree canonical evidence plus A9/A10/Phase 1B remain pending, while prior results stay attached to the previous exact Worker artifacts`
 
 Contract:
 
@@ -75,28 +75,39 @@ status          = a9_evidence_passed
 evidence_status = partial_phase_1a_evidence_a1_through_a9
 ```
 
-The previously recorded A1-A9 result is canonical evidence for its exact
-committed candidate. The current review candidate has also passed A1-A9
-functional runs, including company-environment dogfood, but still carries the
-deferred forced-shutdown settlement blocker described in the contract. Any
-Worker/protocol change creates a new candidate and requires a new clean-
-worktree canonical run before the canonical claim is renewed. This is not yet
-a complete Phase 1A Go decision: the forced fallback is not verified, and A10
-Windows/path-boundary evidence (including spaces and non-ASCII paths) remains
-outstanding.
+The previously recorded A1-A10, A9-S/M/L, and Phase 1B results remain evidence
+only for the exact Worker artifacts frozen in the original
+`eclipse-4.40-current` and `eclipse-2021-03-lombok-anchor` locks. The bounded
+error-first diagnostics protocol changed the Worker artifact, so active
+development now uses separate `*-diagnostics-v2` candidate identities and
+locks. No historical A9, A10, or Phase 1B conclusion is inherited by those new
+candidates. Both diagnostics-v2 stacks have passed a local A1-A8 functional
+run, and the anchor has passed the 16-source Spring Boot Phase 2A zero gate;
+those dirty-worktree development runs are not canonical evidence. A clean-
+worktree canonical rerun is required before each stronger claim is renewed.
 
 ## Files
 
 ```text
-candidate-bootstrap.json
-    fixed repository, roots, and bootstrap identity
+candidate-bootstrap.json / candidate-bootstrap-eclipse-2021-03.json
+    preserved bootstrap identities for the historical Worker protocol
+
+candidate-bootstrap-diagnostics-v2.json /
+candidate-bootstrap-eclipse-2021-03-diagnostics-v2.json
+    active bootstrap identities for the bounded error-first diagnostics protocol
 
 bootstrap_candidate.py
     p2 metadata parser, capability resolver, artifact downloader, lock writer
 
-locks/eclipse-4.40-current.json
-    exact bundle URLs, versions, SHA-256, licenses, sizes, start policy,
-    Worker artifact/config identity
+locks/eclipse-4.40-current.json /
+locks/eclipse-2021-03-lombok-anchor.json
+    preserved exact locks for historical evidence; current runners do not
+    mutate or silently reuse them
+
+locks/eclipse-4.40-current-diagnostics-v2.json /
+locks/eclipse-2021-03-lombok-anchor-diagnostics-v2.json
+    active exact bundle and Worker identities; currently only newly rerun
+    evidence may be attributed to them
 
 build_worker.py
     verifies the lock, compiles the Worker with javac 17, builds the OSGi
@@ -145,8 +156,31 @@ run_lombok_experiment.py
 run_real_maven_build_world.py
     private Phase 2A experiment: runs the real Maven clean-compile baseline,
     freezes one representative Java 8 module as BuildWorldSnapshot v1,
-    excludes the module's old output from the JDT classpath, executes a private
-    JDT FULL build, and records tiered cross-compiler structural evidence
+    classifies Maven-discovered binary/non-binary classpath entries, excludes
+    the module's old output from the JDT classpath, executes a private JDT FULL
+    build, and records tiered cross-compiler structural evidence. Supplying a
+    private Maven Probe report makes Maven-native source/classpath/reactor facts
+    authoritative while compiler/Processor metadata remains an explicitly
+    reported legacy effective-POM layer
+
+fixtures/cross-compiler-compatibility
+    versioned Java 8 source-portability fixture: javac accepts the raw
+    double-brace anonymous collection with unchecked warnings, while the
+    locked ECJ 3.25 compiler rejects its generic inference. This is not a
+    Build World dependency-gap fixture.
+
+run_cross_compiler_compatibility.py
+    expected-divergence probe: target JDK 8 javac must accept the versioned raw
+    collection fixture with an unchecked warning, while locked ECJ 3.25 must
+    reject it with the known type-mismatch family
+
+maven-probe/ and run_maven_probe_spike.py
+    experimental Maven-native Build World exporter. A dependency-light normal
+    Mojo is staged in a content-addressed local file repository, injected via
+    an attempt-private settings file, and executed in the target reactor/session
+    without changing project POMs. Strict offline mode explicitly seeds the
+    selected Maven local repository. Its private report can feed the explicit
+    Phase 2A hybrid path; this does not authorize Phase 2B or Runtime publication.
 ```
 
 ## Reproduce on macOS/POSIX
@@ -181,21 +215,48 @@ uv run python experiments/jdt-incremental-worker/run_lombok_experiment.py \
   --target-java-home /path/to/jdk-8 \
   --keep-attempt
 
+# Expected javac-8 / locked ECJ-3.25 portability divergence:
+uv run python experiments/jdt-incremental-worker/run_cross_compiler_compatibility.py \
+  --worker-java-home /path/to/jdk-17 \
+  --target-java-home /path/to/jdk-8
+
 # Bounded current/anchor compatibility probe (select either lock):
 uv run python experiments/jdt-incremental-worker/run_lombok_experiment.py \
-  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor.json \
+  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-lombok-anchor-diagnostics-v2.json \
   --worker-java-home /path/to/jdk-17 \
   --target-java-home /path/to/jdk-8 \
   --compatibility-probes-only \
   --keep-attempt
 
-# Phase 2A real Maven module (use the Maven/JDK/settings from the project):
+# Maven-native Probe spike (online/default file-repository injection):
+uv run python experiments/jdt-incremental-worker/run_maven_probe_spike.py \
+  --project-root /path/to/maven-project \
+  --maven-executable /path/to/mvn \
+  --settings-file /path/to/settings.xml \
+  --local-repository /path/to/maven-local-repository \
+  --java-home /path/to/jdk-8 \
+  --keep-attempt
+
+# Phase 2A real Maven module. Pass private_report_path from the Probe stdout;
+# use the same Maven/JDK/settings/repository/profiles in both commands:
 uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py \
   --project-path /path/to/maven-project \
   --maven-executable /path/to/mvn \
+  --settings-file /path/to/settings.xml \
+  --local-repository /path/to/maven-local-repository \
+  --maven-probe-private-report /path/to/probe/report.private.json \
   --build-java-home /path/to/jdk-8 \
   --target-java-home /path/to/jdk-8 \
   --worker-java-home /path/to/locked-jdk-17 \
+  --keep-attempt
+
+# Strict offline requires the exact local repository Maven will use. joLink
+# seeds only its own verified Probe coordinate before invoking Maven offline:
+uv run python experiments/jdt-incremental-worker/run_maven_probe_spike.py \
+  --project-root /path/to/maven-project \
+  --maven-executable /path/to/mvn \
+  --local-repository /path/to/maven-local-repository \
+  --offline \
   --keep-attempt
 ```
 
@@ -218,7 +279,7 @@ Artifacts and attempts stay outside the repository by default:
 The candidate lock is committed; downloaded Eclipse JARs and attempt workspaces
 are not.
 
-## Latest observed A1-A8 evidence
+## Historical A1-A8 evidence (previous Worker artifact)
 
 On macOS a real run produced:
 
@@ -259,7 +320,7 @@ overall elapsed            about 4.8 seconds
 
 Those are partial Phase 1A facts, not a complete Phase 1A Go decision.
 
-## Latest observed A9 canonical evidence
+## Historical A9 canonical evidence (previous Worker artifact)
 
 On macOS, a clean committed worktree and its locked Worker artifact completed
 the frozen A9 workload. The canonical report records the exact Git revision,
@@ -285,7 +346,7 @@ owned Worker residue            none
 These are tiny-fixture implementation facts. They do not claim company-project,
 Lombok, HotSwap, or production publication performance.
 
-## Current Phase 1B exploratory result
+## Historical Phase 1B result (previous Worker artifact)
 
 The Phase 1B runner is intentionally labelled `exploratory_non_canonical`
 until the complete Phase 1A Go gate is recorded. On the current macOS
@@ -339,8 +400,11 @@ maintenance/security review remain external gates.
 
 ## Next implementation boundary
 
-The experiment may proceed with A10 Windows, spaces, and non-ASCII path
-evidence while the forced-shutdown settlement P1 remains explicitly recorded.
+The diagnostics-v2 candidates must first receive fresh A1-A8 and Phase 2A
+evidence. Their A9, A10, and Phase 1B gates remain pending and must not be
+inferred from the historical sections above. The experiment may then proceed
+with A10 Windows, spaces, and non-ASCII path evidence while the forced-shutdown
+settlement P1 remains explicitly recorded.
 Before a complete Phase 1A decision, deterministic lifecycle tests must prove
 that a live-Worker EOF and a shutdown deadline expiry force-settle the exact
 identity-bound process tree under one five-second budget and publish exactly

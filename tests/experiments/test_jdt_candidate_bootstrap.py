@@ -4,11 +4,14 @@ import base64
 import importlib.util
 import io
 import json
+import os
 import queue
 import shutil
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +42,10 @@ smoke = _load_module(
     EXPERIMENT / "run_bootstrap_smoke.py",
 )
 sys.modules["run_bootstrap_smoke"] = smoke
+cross_compiler = _load_module(
+    "jolink_jdt_cross_compiler_compatibility",
+    EXPERIMENT / "run_cross_compiler_compatibility.py",
+)
 a9 = _load_module(
     "jolink_jdt_a9_experiment",
     EXPERIMENT / "run_a9_experiment.py",
@@ -47,9 +54,100 @@ phase1b = _load_module(
     "jolink_jdt_phase1b_lombok_experiment",
     EXPERIMENT / "run_lombok_experiment.py",
 )
+phase2a = _load_module(
+    "jolink_jdt_phase2a_real_maven_build_world",
+    EXPERIMENT / "run_real_maven_build_world.py",
+)
+maven_probe_spike = _load_module(
+    "jolink_jdt_maven_probe_spike",
+    EXPERIMENT / "run_maven_probe_spike.py",
+)
 
 
 from jolink_runtime.experiments import jdt_build_world as build_world
+from jolink_runtime.experiments import maven_probe
+
+
+def test_cross_compiler_fixture_is_wired_to_expected_divergence_probe() -> None:
+    import subprocess
+
+    result = cross_compiler.require_expected_divergence(
+        subprocess.CompletedProcess(
+            args=["javac"],
+            returncode=0,
+            stdout="",
+            stderr="warning: unchecked conversion",
+        ),
+        subprocess.CompletedProcess(
+            args=["ecj"],
+            returncode=1,
+            stdout="Type mismatch: cannot convert from ArrayList to List<T>",
+            stderr="",
+        ),
+    )
+
+    assert result == {
+        "javac_8_accepted": True,
+        "javac_unchecked_warning_observed": True,
+        "ecj_3_25_rejected": True,
+        "ecj_type_mismatch_observed": True,
+    }
+
+
+def test_cross_compiler_probe_rejects_missing_expected_divergence() -> None:
+    import subprocess
+
+    with pytest.raises(
+        cross_compiler.CompatibilityProbeError,
+        match="unexpectedly accepted",
+    ):
+        cross_compiler.require_expected_divergence(
+            subprocess.CompletedProcess(
+                args=["javac"],
+                returncode=0,
+                stdout="warning: unchecked conversion",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["ecj"], returncode=0, stdout="", stderr=""
+            ),
+        )
+
+
+def test_cross_compiler_probe_requires_an_actual_jdk8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    java_home = tmp_path / "jdk"
+    bin_dir = java_home / "bin"
+    bin_dir.mkdir(parents=True)
+    for name in ("java", "javac"):
+        (bin_dir / name).write_bytes(name.encode("ascii"))
+    monkeypatch.setattr(
+        cross_compiler.common,
+        "worker_java_identity",
+        lambda _home: {
+            "vendor": "fixture",
+            "version": "17.0.10",
+            "vm_name": "fixture",
+            "architecture": "fixture",
+            "java_binary_sha256": "java-sha",
+        },
+    )
+    monkeypatch.setattr(
+        cross_compiler,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="javac 17.0.10",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(
+        cross_compiler.CompatibilityProbeError,
+        match="complete JDK 8",
+    ):
+        cross_compiler.target_jdk8_identity(java_home)
 
 
 def _compile_java_tree(root: Path, *, value: str = "one") -> Path:
@@ -111,6 +209,832 @@ def test_phase2a_filters_current_module_outputs(tmp_path: Path) -> None:
         "self_output_on_compile_classpath": False,
         "stale_candidate_output_on_classpath": False,
     }
+
+
+def test_phase2a_excludes_content_verified_maven_descriptor_from_jdt(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    module = workspace / "app"
+    source = module / "src" / "main" / "java"
+    source.mkdir(parents=True)
+    (source / "Api.java").write_text("class Api {}\n", encoding="utf-8")
+    output = module / "target" / "classes"
+    output.mkdir(parents=True)
+    descriptor = tmp_path / "repository" / "artifact-without-pom-suffix"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_text(
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">"
+        "<modelVersion>4.0.0</modelVersion>"
+        "<groupId>example</groupId><artifactId>descriptor</artifactId>"
+        "<version>1</version></project>\n",
+        encoding="utf-8",
+    )
+
+    snapshot = build_world.create_snapshot(
+        workspace_root=workspace,
+        module_root=module,
+        maven_output=output,
+        source_roots=(
+            build_world.describe_source_root(
+                source, "DECLARED_SOURCE", workspace_root=workspace
+            ),
+        ),
+        compile_classpath=(descriptor,),
+        private_candidate_output=tmp_path / "private-bin",
+        source_level=8,
+        target_level=8,
+        encoding="UTF-8",
+        configuration_fingerprint="config",
+    )
+
+    assert snapshot.dependencies == ()
+    assert len(snapshot.excluded_classpath_inputs) == 1
+    excluded = snapshot.excluded_classpath_inputs[0]
+    assert excluded.entry_type == "maven_project_descriptor"
+    summary = snapshot.redacted_summary()
+    assert summary["compile_classpath_entry_count"] == 0
+    assert summary["excluded_non_binary_classpath_entry_count"] == 1
+    assert summary["excluded_non_binary_classpath_entry_types"] == [
+        "maven_project_descriptor"
+    ]
+    assert str(descriptor) not in json.dumps(summary)
+
+
+def test_phase2a_redaction_guard_includes_excluded_classpath_paths(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    descriptor = tmp_path / "private-repository" / "descriptor.pom"
+    excluded = build_world.ExcludedClasspathInput(
+        path=descriptor,
+        content_sha256="descriptor-sha",
+        entry_type="maven_project_descriptor",
+    )
+    snapshot = SimpleNamespace(
+        dependencies=(),
+        excluded_classpath_inputs=(excluded,),
+    )
+    private_values = phase2a._shareable_report_private_values(
+        workspace=SimpleNamespace(project_root=tmp_path / "workspace"),
+        module=SimpleNamespace(
+            directory=tmp_path / "module",
+            output_directory=tmp_path / "module" / "target" / "classes",
+        ),
+        preferences=SimpleNamespace(
+            user_settings_file=None,
+            local_repository=tmp_path / "private-repository",
+        ),
+        snapshot=snapshot,
+        diagnostics=(),
+    )
+
+    assert str(descriptor) in private_values
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        phase2a._assert_shareable_report(
+            {"excluded_path": str(descriptor)},
+            private_values=private_values,
+        )
+    assert raised.value.error_code == "REPORT_REDACTION_FAILED"
+
+
+def test_phase2a_unknown_non_binary_classpath_entry_fails_closed(
+    tmp_path: Path,
+) -> None:
+    unknown = tmp_path / "repository" / "opaque-artifact"
+    unknown.parent.mkdir(parents=True)
+    unknown.write_text("not a Java archive or Maven descriptor\n", encoding="utf-8")
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        build_world.inspect_dependency(unknown)
+
+    assert raised.value.error_code == "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED"
+    assert str(unknown) not in json.dumps(raised.value.as_dict())
+
+
+def test_phase2a_zip_without_classes_fails_closed(tmp_path: Path) -> None:
+    sources = tmp_path / "repository" / "example-sources.jar"
+    sources.parent.mkdir(parents=True)
+    with zipfile.ZipFile(sources, "w") as archive:
+        archive.writestr("example/Api.java", "package example; class Api {}\n")
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        build_world.inspect_dependency(sources)
+
+    assert raised.value.error_code == "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED"
+    assert str(sources) not in json.dumps(raised.value.as_dict())
+
+
+def test_phase2a_zip_with_class_is_a_java_binary_archive(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "repository" / "example.jar"
+    binary.parent.mkdir(parents=True)
+    with zipfile.ZipFile(binary, "w") as archive:
+        archive.writestr("example/Api.class", b"fixture")
+
+    dependency = build_world.inspect_dependency(binary)
+
+    assert isinstance(dependency, build_world.DependencyInput)
+    assert dependency.entry_type == "java_binary_archive"
+
+
+def test_phase2a_maven_jar_evidence_accepts_resource_only_archive(
+    tmp_path: Path,
+) -> None:
+    resource_jar = tmp_path / "repository" / "starter.jar"
+    resource_jar.parent.mkdir(parents=True)
+    with zipfile.ZipFile(resource_jar, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+        archive.writestr("META-INF/NOTICE.txt", "fixture\n")
+
+    dependency = build_world.inspect_dependency(
+        resource_jar,
+        maven_artifact_paths=(resource_jar,),
+        maven_binary_archive_paths=(resource_jar,),
+        maven_resource_archive_paths=(resource_jar,),
+    )
+
+    assert isinstance(dependency, build_world.DependencyInput)
+    assert dependency.entry_type == "java_binary_archive"
+
+
+def test_phase2a_unknown_maven_archive_type_fails_closed_even_with_classes(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "repository" / "opaque.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("example/Api.class", b"fixture")
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        build_world.inspect_dependency(
+            archive_path,
+            maven_artifact_paths=(archive_path,),
+            maven_binary_archive_paths=(),
+        )
+
+    assert raised.value.error_code == "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED"
+
+
+def test_phase2a_parses_maven_artifact_types_without_exposing_coordinates(
+    tmp_path: Path,
+) -> None:
+    jar = tmp_path / "repository" / "starter.jar"
+    pom = tmp_path / "repository" / "descriptor.pom"
+    manifest = tmp_path / "compile-artifacts.txt"
+    manifest.write_text(
+        "The following files have been resolved:\n"
+        f"   example:starter:jar:1.0:compile:{jar}\n"
+        f"   example:descriptor:pom:1.0:compile:{pom}\n",
+        encoding="utf-8",
+    )
+
+    evidence = phase2a._parse_maven_artifact_manifest(manifest)
+
+    assert [(item.artifact_type, item.scope) for item in evidence] == [
+        ("jar", "compile"),
+        ("pom", "compile"),
+    ]
+    assert phase2a._maven_binary_archive_paths(evidence) == (jar.resolve(),)
+    assert phase2a._maven_resource_archive_paths(evidence) == (jar.resolve(),)
+
+
+def test_phase2a_sources_classifier_cannot_authorize_resource_archive(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "repository" / "example-sources.jar"
+    sources.parent.mkdir(parents=True)
+    with zipfile.ZipFile(sources, "w") as archive:
+        archive.writestr("example/Api.java", "package example; class Api {}\n")
+    evidence = (
+        phase2a.MavenArtifactClasspathEvidence(
+            path=sources,
+            artifact_type="jar",
+            classifier="sources",
+            scope="compile",
+        ),
+    )
+
+    assert phase2a._maven_binary_archive_paths(evidence) == ()
+    assert phase2a._maven_resource_archive_paths(evidence) == ()
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        build_world.inspect_dependency(
+            sources,
+            maven_artifact_paths=(sources,),
+            maven_binary_archive_paths=(),
+            maven_resource_archive_paths=(),
+        )
+    assert raised.value.error_code == "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED"
+
+
+def test_phase2a_unknown_classifier_requires_class_content(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "repository" / "custom.jar"
+    archive_path.parent.mkdir(parents=True)
+    evidence = (
+        phase2a.MavenArtifactClasspathEvidence(
+            path=archive_path,
+            artifact_type="jar",
+            classifier="custom",
+            scope="provided",
+        ),
+    )
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("META-INF/NOTICE", "fixture")
+
+    assert phase2a._maven_binary_archive_paths(evidence) == (
+        archive_path.resolve(),
+    )
+    assert phase2a._maven_resource_archive_paths(evidence) == ()
+    with pytest.raises(build_world.BuildWorldError):
+        build_world.inspect_dependency(
+            archive_path,
+            maven_artifact_paths=(archive_path,),
+            maven_binary_archive_paths=phase2a._maven_binary_archive_paths(
+                evidence
+            ),
+            maven_resource_archive_paths=(),
+        )
+
+    archive_path.unlink()
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("example/Api.class", b"fixture")
+    dependency = build_world.inspect_dependency(
+        archive_path,
+        maven_artifact_paths=(archive_path,),
+        maven_binary_archive_paths=phase2a._maven_binary_archive_paths(evidence),
+        maven_resource_archive_paths=(),
+    )
+    assert isinstance(dependency, build_world.DependencyInput)
+
+
+def test_phase2a_accepts_confirmed_empty_artifact_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "compile-artifacts.txt"
+    manifest.write_text(
+        "The following files have been resolved:\nnone\n",
+        encoding="utf-8",
+    )
+
+    evidence = phase2a._parse_maven_artifact_manifest(manifest)
+    phase2a._require_maven_artifact_coverage((), evidence)
+
+    assert evidence == ()
+
+
+def test_phase2a_empty_artifact_manifest_rejects_uncovered_external_file(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / "repository" / "dependency.jar"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"fixture")
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        phase2a._require_maven_artifact_coverage((dependency,), ())
+
+    assert raised.value.error_code == "MAVEN_ARTIFACT_METADATA_UNAVAILABLE"
+    assert raised.value.context == {"uncovered_file_count": 1}
+
+
+def test_phase2a_private_snapshot_records_classification_provenance(
+    tmp_path: Path,
+) -> None:
+    dependency_path = tmp_path / "repository" / "dependency.jar"
+    dependency = build_world.DependencyInput(
+        path=dependency_path,
+        content_sha256="dependency-sha",
+        entry_type="java_binary_archive",
+    )
+    snapshot = SimpleNamespace(
+        workspace_root=tmp_path / "workspace",
+        module_root=tmp_path / "workspace" / "app",
+        maven_output=tmp_path / "workspace" / "app" / "target" / "classes",
+        source_roots=(),
+        dependencies=(dependency,),
+        excluded_classpath_inputs=(),
+        fingerprint="snapshot-sha",
+    )
+    evidence = (
+        phase2a.MavenArtifactClasspathEvidence(
+            path=dependency_path,
+            artifact_type="jar",
+            classifier=None,
+            scope="compile",
+        ),
+    )
+
+    payload = phase2a._private_snapshot_payload(
+        snapshot,
+        artifact_evidence=evidence,
+    )
+
+    assert payload["compile_classpath"] == [
+        {
+            "path": str(dependency_path),
+            "content_sha256": "dependency-sha",
+            "entry_type": "java_binary_archive",
+            "classification_source": "maven_metadata_and_content",
+            "maven_evidence": {
+                "artifact_type": "jar",
+                "classifier": None,
+                "scope": "compile",
+            },
+        }
+    ]
+
+
+def _probe_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+    jar = tmp_path / "probe.jar"
+    pom = tmp_path / "probe.pom"
+    jar.write_bytes(b"probe-jar")
+    pom.write_text("<project/>\n", encoding="utf-8")
+    return jar, pom
+
+
+def test_maven_probe_stages_content_addressed_file_repository(
+    tmp_path: Path,
+) -> None:
+    jar, pom = _probe_artifacts(tmp_path)
+
+    staged = maven_probe.stage_probe_repository(
+        probe_jar=jar,
+        probe_pom=pom,
+        repository_root=tmp_path / "repo",
+    )
+
+    artifact = (
+        staged.root
+        / "io/jolink/jolink-maven-probe"
+        / maven_probe.PROBE_VERSION
+    )
+    staged_jar = artifact / (
+        f"jolink-maven-probe-{maven_probe.PROBE_VERSION}.jar"
+    )
+    staged_pom = artifact / (
+        f"jolink-maven-probe-{maven_probe.PROBE_VERSION}.pom"
+    )
+    assert staged_jar.read_bytes() == b"probe-jar"
+    assert staged_pom.read_text(encoding="utf-8") == "<project/>\n"
+    assert staged_jar.with_suffix(".jar.sha1").is_file()
+    assert staged.jar_sha256[:16] in staged.root.parts
+    assert staged.goal.endswith(":export-build-world")
+
+
+def test_maven_probe_can_seed_explicit_local_repository_for_offline(
+    tmp_path: Path,
+) -> None:
+    jar, pom = _probe_artifacts(tmp_path)
+    local_repository = tmp_path / "offline-local-repository"
+
+    facts = maven_probe.stage_probe_in_local_repository(
+        probe_jar=jar,
+        probe_pom=pom,
+        local_repository=local_repository,
+    )
+
+    artifact = (
+        local_repository
+        / "io/jolink/jolink-maven-probe"
+        / maven_probe.PROBE_VERSION
+    )
+    staged_jar = artifact / (
+        f"jolink-maven-probe-{maven_probe.PROBE_VERSION}.jar"
+    )
+    assert staged_jar.read_bytes() == b"probe-jar"
+    assert facts["coordinate"] == (
+        f"io.jolink:jolink-maven-probe:{maven_probe.PROBE_VERSION}"
+    )
+
+
+def test_maven_probe_settings_preserve_user_values_and_bypass_star_mirror(
+    tmp_path: Path,
+) -> None:
+    jar, pom = _probe_artifacts(tmp_path)
+    staged = maven_probe.stage_probe_repository(
+        probe_jar=jar,
+        probe_pom=pom,
+        repository_root=tmp_path / "repo with spaces",
+    )
+    original = tmp_path / "settings.xml"
+    original.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <localRepository>/private/company-repository</localRepository>
+  <servers><server><id>company</id><password>{encrypted}</password></server></servers>
+  <mirrors><mirror><id>company</id><url>https://repo.invalid</url><mirrorOf>*</mirrorOf></mirror></mirrors>
+  <profiles><profile><id>existing</id></profile></profiles>
+  <activeProfiles><activeProfile>existing</activeProfile></activeProfiles>
+</settings>
+""",
+        encoding="utf-8",
+    )
+    original_sha = build_world.sha256_file(original)
+    destination = tmp_path / "attempt" / "settings.private.xml"
+
+    facts = maven_probe.create_probe_settings(
+        source_settings=original,
+        destination=destination,
+        repository=staged,
+    )
+
+    assert build_world.sha256_file(original) == original_sha
+    assert b"ns0:" not in destination.read_bytes()
+    root = ET.parse(destination).getroot()
+    namespace = {"m": "http://maven.apache.org/SETTINGS/1.0.0"}
+    assert root.findtext("m:localRepository", namespaces=namespace) == (
+        "/private/company-repository"
+    )
+    assert root.findtext(
+        "m:servers/m:server/m:password", namespaces=namespace
+    ) == "{encrypted}"
+    mirror_of = root.findtext(
+        "m:mirrors/m:mirror/m:mirrorOf", namespaces=namespace
+    )
+    assert mirror_of == f"*,!{staged.repository_id}"
+    repositories = root.findall(
+        "m:profiles/m:profile/m:pluginRepositories/m:pluginRepository",
+        namespace,
+    )
+    assert len(repositories) == 1
+    assert repositories[0].findtext("m:url", namespaces=namespace) == (
+        staged.root.as_uri()
+    )
+    active = [
+        item.text
+        for item in root.findall(
+            "m:activeProfiles/m:activeProfile", namespace
+        )
+    ]
+    assert active == ["existing", staged.repository_id]
+    assert facts["wildcard_mirror_adjustment_count"] == 1
+
+
+def test_maven_probe_resolves_default_user_settings(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    default = home / ".m2" / "settings.xml"
+    default.parent.mkdir(parents=True)
+    default.write_text("<settings><mirrors/></settings>\n", encoding="utf-8")
+
+    selected, kind = maven_probe.resolve_source_settings(None, user_home=home)
+
+    assert selected == default.resolve()
+    assert kind == "maven_user_default"
+
+
+def test_maven_probe_explicit_settings_win_over_user_default(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    default = home / ".m2" / "settings.xml"
+    default.parent.mkdir(parents=True)
+    default.write_text("<settings/>\n", encoding="utf-8")
+    explicit = tmp_path / "company-settings.xml"
+    explicit.write_text("<settings><servers/></settings>\n", encoding="utf-8")
+
+    selected, kind = maven_probe.resolve_source_settings(
+        explicit, user_home=home
+    )
+
+    assert selected == explicit.resolve()
+    assert kind == "explicit"
+
+
+def test_maven_probe_rejects_stale_cached_plugin_identity(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "schema": "jolink.maven-build-world-probe.v1",
+                "probeImplementationId": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        maven_probe_spike._load_snapshots(
+            output, expected_probe_implementation_id="a" * 64
+        )
+
+    assert raised.value.error_code == "MAVEN_PROBE_IDENTITY_MISMATCH"
+
+
+def test_maven_probe_summary_recognizes_reactor_output_reference() -> None:
+    snapshots = [
+        {
+            "schema": "jolink.maven-build-world-probe.v1",
+            "outputDirectory": "/workspace/app/target/classes",
+            "compileSourceRoots": ["/workspace/app/src/main/java"],
+            "compileClasspathElements": [
+                "/workspace/app/target/classes",
+                "/workspace/common/target/classes",
+            ],
+            "reactorProjects": [
+                {"outputDirectory": "/workspace/common/target/classes"},
+                {"outputDirectory": "/workspace/app/target/classes"},
+            ],
+        }
+    ]
+
+    summary = maven_probe_spike._summary(
+        snapshots, project_unchanged=True
+    )
+
+    assert summary["reactor_output_classpath_reference_count"] == 1
+    assert summary["project_poms_unchanged"] is True
+
+
+def test_maven_probe_spike_does_not_echo_private_path_on_os_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    private_missing_path = tmp_path / "company-secret-project"
+
+    exit_code = maven_probe_spike.main(
+        [
+            "--project-root",
+            str(private_missing_path),
+            "--maven-executable",
+            str(tmp_path / "missing-maven"),
+            "--cache-root",
+            str(tmp_path / "cache"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "MAVEN_PROBE_SPIKE_FAILED" in captured.err
+    assert str(private_missing_path) not in captured.err
+
+
+def test_maven_probe_keep_attempt_removes_credential_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    probe_project = tmp_path / "probe-project"
+    probe_project.mkdir()
+    probe_pom = probe_project / "pom.xml"
+    probe_pom.write_text("<project/>\n", encoding="utf-8")
+    probe_jar = probe_project / "probe.jar"
+    probe_jar.write_bytes(b"probe")
+    maven = tmp_path / "mvn"
+    maven.write_text("fixture\n", encoding="utf-8")
+    settings = tmp_path / "settings.xml"
+    settings.write_text(
+        "<settings><servers><server><password>company-secret</password>"
+        "</server></servers></settings>\n",
+        encoding="utf-8",
+    )
+    implementation_id = "a" * 64
+    monkeypatch.setattr(
+        maven_probe_spike,
+        "_capture_maven_identity",
+        lambda *_args, **_kwargs: {
+            "maven_version": "3.3.9",
+            "maven_executable_sha256": "maven-sha",
+            "version_output_sha256": "version-sha",
+            "host_java_version": "1.8.0_451",
+            "host_java_vendor": "fixture",
+            "host_java_home_identity_sha256": "java-home-sha",
+            "private": {},
+        },
+    )
+    monkeypatch.setattr(
+        maven_probe_spike,
+        "_build_probe",
+        lambda **_kwargs: (probe_jar, probe_pom, 0.01, implementation_id),
+    )
+
+    def fake_run(command, **_kwargs):
+        output_arg = next(
+            item
+            for item in command
+            if item.startswith("-Djolink.probe.outputDirectory=")
+        )
+        output = Path(output_arg.partition("=")[2])
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "snapshot.json").write_text(
+            json.dumps(
+                {
+                    "schema": "jolink.maven-build-world-probe.v1",
+                    "probeImplementationId": implementation_id,
+                    "compileSourceRoots": [],
+                    "compileClasspathElements": [],
+                    "outputDirectory": str(project / "target" / "classes"),
+                    "reactorProjects": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0.01
+
+    monkeypatch.setattr(maven_probe_spike, "_run", fake_run)
+    cache = tmp_path / "cache"
+
+    exit_code = maven_probe_spike.main(
+        [
+            "--project-root",
+            str(project),
+            "--maven-executable",
+            str(maven),
+            "--settings-file",
+            str(settings),
+            "--probe-project",
+            str(probe_project),
+            "--cache-root",
+            str(cache),
+            "--keep-attempt",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
+    private_report = Path(payload["private_report_path"])
+    assert exit_code == 0
+    assert private_report.is_file()
+    assert not (private_report.parent / "settings.private.xml").exists()
+    assert "company-secret" not in private_report.read_text(encoding="utf-8")
+
+
+def test_phase2a_binds_private_probe_report_to_exact_invocation(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    module_root = workspace / "app"
+    source = module_root / "src" / "main" / "java"
+    output = module_root / "target" / "classes"
+    reactor_output = workspace / "shared" / "target" / "classes"
+    dependency = tmp_path / "repository" / "dependency.jar"
+    for directory in (source, output, reactor_output):
+        directory.mkdir(parents=True)
+    (source / "App.java").write_text("class App {}\n", encoding="utf-8")
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"not-inspected-by-loader")
+    (workspace / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    (module_root / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    settings = tmp_path / "settings.xml"
+    settings.write_text("<settings/>\n", encoding="utf-8")
+    maven = tmp_path / "mvn"
+    maven.write_text("fixture\n", encoding="utf-8")
+    module = SimpleNamespace(
+        directory=module_root,
+        output_directory=output,
+    )
+    implementation_id = "a" * 64
+    snapshot = {
+        "schema": "jolink.maven-build-world-probe.v1",
+        "probeImplementationId": implementation_id,
+        "project": {"baseDirectory": str(module_root)},
+        "requestedGoals": [
+            "compile",
+            "io.jolink:jolink-maven-probe:0.1.0-spike1:export-build-world",
+        ],
+        "compileSourceRoots": [str(source)],
+        "compileClasspathElements": [str(output), str(reactor_output), str(dependency)],
+        "outputDirectory": str(output),
+        "reactorProjects": [
+            {"outputDirectory": str(output)},
+            {"outputDirectory": str(reactor_output)},
+        ],
+    }
+    report = {
+        "schema": "jolink.maven-probe-spike.private.v1",
+        "project_root": str(workspace),
+        "project_pom_fingerprint": phase2a._pom_tree_fingerprint(workspace),
+        "probe_implementation_id": implementation_id,
+        "invocation": {
+            "maven_executable": str(maven.resolve()),
+            "local_repository": None,
+            "profiles": ["company"],
+            "offline": False,
+        },
+        "settings": {
+            "source_settings_sha256": build_world.sha256_file(settings),
+        },
+        "snapshots": [snapshot],
+    }
+    report_path = tmp_path / "probe.private.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    preferences = SimpleNamespace(
+        user_settings_file=settings,
+        local_repository=None,
+        active_profiles=("company",),
+    )
+
+    selected, loaded_report = phase2a._load_maven_probe_snapshot(
+        report_path,
+        workspace_root=workspace,
+        module=module,
+        preferences=preferences,
+        maven_executable=maven,
+    )
+    roots = phase2a._probe_source_roots(
+        selected,
+        declared_source=source,
+        module=module,
+        workspace_root=workspace,
+    )
+    reactors = phase2a._probe_reactor_outputs(selected, module)
+
+    assert selected is snapshot or selected == snapshot
+    assert loaded_report["probe_implementation_id"] == implementation_id
+    assert [item.provenance for item in roots] == ["DECLARED_SOURCE"]
+    assert reactors == (reactor_output.resolve(),)
+
+
+def test_phase2a_rejects_probe_report_after_pom_change(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    module_root = workspace / "app"
+    output = module_root / "target" / "classes"
+    output.mkdir(parents=True)
+    pom = workspace / "pom.xml"
+    pom.write_text("<project/>\n", encoding="utf-8")
+    maven = tmp_path / "mvn"
+    maven.write_text("fixture\n", encoding="utf-8")
+    report_path = tmp_path / "probe.private.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema": "jolink.maven-probe-spike.private.v1",
+                "project_root": str(workspace),
+                "project_pom_fingerprint": phase2a._pom_tree_fingerprint(workspace),
+                "probe_implementation_id": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pom.write_text("<project><name>changed</name></project>\n", encoding="utf-8")
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        phase2a._load_maven_probe_snapshot(
+            report_path,
+            workspace_root=workspace,
+            module=SimpleNamespace(directory=module_root, output_directory=output),
+            preferences=SimpleNamespace(
+                user_settings_file=None,
+                local_repository=None,
+                active_profiles=(),
+            ),
+            maven_executable=maven,
+        )
+
+    assert raised.value.error_code == "MAVEN_PROBE_PROJECT_CHANGED"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows artifact-path parsing")
+def test_phase2a_parses_classifier_and_windows_artifact_path(tmp_path: Path) -> None:
+    manifest = tmp_path / "compile-artifacts.txt"
+    manifest.write_text(
+        "   example:fixture:test-jar:tests:1.0:provided:"
+        "C:\\repo\\fixture-1.0-tests.jar\n",
+        encoding="utf-8",
+    )
+
+    evidence = phase2a._parse_maven_artifact_manifest(manifest)
+
+    assert len(evidence) == 1
+    assert evidence[0].artifact_type == "test-jar"
+    assert evidence[0].classifier == "tests"
+    assert evidence[0].scope == "provided"
+
+
+def test_phase2a_rejects_pom_like_xml_with_invalid_model_version(
+    tmp_path: Path,
+) -> None:
+    descriptor = tmp_path / "repository" / "pom-like.xml"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_text(
+        "<project><modelVersion>banana</modelVersion></project>\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        build_world.inspect_dependency(descriptor)
+
+    assert raised.value.error_code == "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED"
+
+
+def test_phase2a_classifies_other_workspace_directory_as_reactor_output(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    module = workspace / "app"
+    reactor_output = workspace / "shared" / "target" / "classes"
+    reactor_output.mkdir(parents=True)
+    (reactor_output / "Shared.class").write_bytes(b"fixture")
+
+    dependency = build_world.inspect_dependency(
+        reactor_output,
+        reactor_output_directories=(reactor_output,),
+    )
+
+    assert isinstance(dependency, build_world.DependencyInput)
+    assert dependency.entry_type == "reactor_output"
 
 
 def test_phase2a_materialization_rejects_conflicting_roots(tmp_path: Path) -> None:
@@ -211,6 +1135,91 @@ def test_phase2a_diagnostic_summary_contains_no_raw_messages() -> None:
     assert "TokenValue" not in rendered
 
 
+def test_phase2a_diagnostic_classifier_does_not_treat_unused_import_as_gap() -> None:
+    summary = build_world.classify_diagnostics(
+        [
+            "src/example/Api.java:8:1:The import example.Value is never used",
+            "src/example/Service.java:9:2:The import example.Missing cannot be resolved",
+            "src/example/Other.java:10:2:MissingType cannot be resolved to a type",
+        ]
+    )
+
+    assert summary["buckets"] == {
+        "missing_dependency": 2,
+        "missing_generated_source": 0,
+        "processor_or_generated_api_mismatch": 0,
+        "language_or_compiler_incompatibility": 0,
+        "other": 1,
+    }
+
+
+def test_worker_diagnostic_contract_accepts_error_first_projection() -> None:
+    smoke.require_diagnostics_contract(
+        {
+            "error_count": 260,
+            "warning_count": 64,
+            "info_count": 0,
+            "returned_error_count": 128,
+            "returned_warning_count": 32,
+            "returned_info_count": 0,
+            "diagnostic_selection_policy": (
+                "errors_first_then_warnings_then_info"
+            ),
+            "diagnostics": ["diagnostic"] * 160,
+            "diagnostic_details": (
+                [{"severity_name": "ERROR"}] * 128
+                + [{"severity_name": "WARNING"}] * 32
+            ),
+            "diagnostics_truncated": True,
+        }
+    )
+
+
+def test_worker_diagnostic_contract_rejects_hidden_errors() -> None:
+    with pytest.raises(smoke.SmokeError, match="prioritize ERROR"):
+        smoke.require_diagnostics_contract(
+            {
+                "error_count": 1,
+                "warning_count": 64,
+                "info_count": 0,
+                "returned_error_count": 0,
+                "returned_warning_count": 32,
+                "returned_info_count": 0,
+                "diagnostic_selection_policy": (
+                    "errors_first_then_warnings_then_info"
+                ),
+                "diagnostics": ["warning"] * 32,
+                "diagnostic_details": [
+                    {"severity_name": "WARNING"}
+                ] * 32,
+                "diagnostics_truncated": True,
+            }
+        )
+
+
+def test_worker_diagnostic_contract_rejects_mislabelled_projection() -> None:
+    with pytest.raises(smoke.SmokeError, match="error-first severity ordering"):
+        smoke.require_diagnostics_contract(
+            {
+                "error_count": 1,
+                "warning_count": 1,
+                "info_count": 0,
+                "returned_error_count": 1,
+                "returned_warning_count": 1,
+                "returned_info_count": 0,
+                "diagnostic_selection_policy": (
+                    "errors_first_then_warnings_then_info"
+                ),
+                "diagnostics": ["error", "warning"],
+                "diagnostic_details": [
+                    {"severity_name": "WARNING"},
+                    {"severity_name": "ERROR"},
+                ],
+                "diagnostics_truncated": False,
+            }
+        )
+
+
 def test_phase2a_unknown_processor_blocks_incremental_only(
     tmp_path: Path,
 ) -> None:
@@ -244,6 +1253,47 @@ def test_phase2a_unknown_processor_blocks_incremental_only(
     assert snapshot.phase2b_incremental_eligible is False
     assert snapshot.phase2b_blockers == (
         "unknown_declared_annotation_processor",
+    )
+
+
+def test_phase2a_maven_native_extra_source_root_blocks_incremental_only(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    module = workspace / "app"
+    declared = module / "src" / "main" / "java"
+    extra = module / "target" / "custom-generated"
+    output = module / "target" / "classes"
+    for directory in (declared, extra, output):
+        directory.mkdir(parents=True)
+    (declared / "App.java").write_text("class App {}\n", encoding="utf-8")
+    (extra / "Generated.java").write_text(
+        "class Generated {}\n", encoding="utf-8"
+    )
+
+    snapshot = build_world.create_snapshot(
+        workspace_root=workspace,
+        module_root=module,
+        maven_output=output,
+        source_roots=(
+            build_world.describe_source_root(
+                declared, "DECLARED_SOURCE", workspace_root=workspace
+            ),
+            build_world.describe_source_root(
+                extra, "MAVEN_NATIVE_SOURCE_ROOT", workspace_root=workspace
+            ),
+        ),
+        compile_classpath=(),
+        private_candidate_output=tmp_path / "private-bin",
+        source_level=8,
+        target_level=8,
+        encoding="UTF-8",
+        configuration_fingerprint="config",
+    )
+
+    assert snapshot.phase2b_incremental_eligible is False
+    assert snapshot.phase2b_blockers == (
+        "maven_native_source_root_refresh_unverified",
     )
 
 
@@ -895,6 +1945,18 @@ def test_a9_build_operation_contract(
             "operation_ok": True,
             "compile_ok": compile_ok,
             "terminal_status": terminal_status,
+            "error_count": 0,
+            "warning_count": 0,
+            "info_count": 0,
+            "returned_error_count": 0,
+            "returned_warning_count": 0,
+            "returned_info_count": 0,
+            "diagnostic_selection_policy": (
+                "errors_first_then_warnings_then_info"
+            ),
+            "diagnostics": [],
+            "diagnostic_details": [],
+            "diagnostics_truncated": False,
         },
         operation_kind=operation_kind,
     )
@@ -1180,6 +2242,17 @@ def test_phase1b_compile_failure_accepts_worker_failure_semantics() -> None:
             "compile_ok": False,
             "terminal_status": "FAILED_COMPILE",
             "error_count": 1,
+            "warning_count": 0,
+            "info_count": 0,
+            "returned_error_count": 1,
+            "returned_warning_count": 0,
+            "returned_info_count": 0,
+            "diagnostic_selection_policy": (
+                "errors_first_then_warnings_then_info"
+            ),
+            "diagnostics": ["src/example/LombokConsumer.java:1:2:error"],
+            "diagnostic_details": [{"severity_name": "ERROR"}],
+            "diagnostics_truncated": False,
             "generation_publishable": False,
             "build_outcome": "COMPILED",
             "compiled_source_units": ["src/example/LombokConsumer.java"],

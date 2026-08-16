@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import stat
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,7 @@ from jolink_runtime.adapters.java.classfile import (
 
 _PROCESSOR_SERVICE = "META-INF/services/javax.annotation.processing.Processor"
 _MAX_SERVICE_BYTES = 64 * 1024
+_MAX_NON_BINARY_DESCRIPTOR_BYTES = 2 * 1024 * 1024
 _MAX_SOURCE_FILES = 50_000
 _MAX_SOURCE_BYTES = 1024 * 1024 * 1024
 _MAX_CLASS_FILES = 100_000
@@ -118,12 +120,28 @@ class DependencyInput:
 
 
 @dataclass(frozen=True)
+class ExcludedClasspathInput:
+    """Known non-Java input emitted by Maven classpath discovery."""
+
+    path: Path = field(repr=False)
+    content_sha256: str
+    entry_type: str
+
+    def redacted_summary(self) -> dict[str, object]:
+        return {
+            "entry_type": self.entry_type,
+            "content_sha256": self.content_sha256,
+        }
+
+
+@dataclass(frozen=True)
 class BuildWorldSnapshot:
     workspace_root: Path = field(repr=False)
     module_root: Path = field(repr=False)
     maven_output: Path = field(repr=False)
     source_roots: tuple[SourceRootInput, ...]
     dependencies: tuple[DependencyInput, ...]
+    excluded_classpath_inputs: tuple[ExcludedClasspathInput, ...]
     source_level: int
     target_level: int
     encoding: str
@@ -163,7 +181,22 @@ class BuildWorldSnapshot:
             "generated_source_roots": generated,
             "compile_classpath_entry_count": len(self.dependencies),
             "compile_classpath_fingerprint": canonical_fingerprint(
-                [item.content_sha256 for item in self.dependencies]
+                [
+                    (item.entry_type, item.content_sha256)
+                    for item in self.dependencies
+                ]
+            ),
+            "excluded_non_binary_classpath_entry_count": len(
+                self.excluded_classpath_inputs
+            ),
+            "excluded_non_binary_classpath_entry_types": sorted(
+                {item.entry_type for item in self.excluded_classpath_inputs}
+            ),
+            "excluded_non_binary_classpath_fingerprint": canonical_fingerprint(
+                [
+                    (item.entry_type, item.content_sha256)
+                    for item in self.excluded_classpath_inputs
+                ]
             ),
             "annotation_processor_artifact_count": sum(
                 bool(item.processor_providers) for item in self.dependencies
@@ -303,15 +336,115 @@ def filter_self_outputs(
     }
 
 
-def inspect_dependency(path: Path) -> DependencyInput:
+def _is_maven_project_descriptor(path: Path) -> bool:
+    """Recognize a Maven POM by bounded content, not by its filename."""
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size > _MAX_NON_BINARY_DESCRIPTOR_BYTES:
+        return False
+    try:
+        data = path.read_bytes()
+        lowered = data.lower()
+        if b"<!doctype" in lowered or b"<!entity" in lowered:
+            return False
+        root = ET.fromstring(data)
+    except (ET.ParseError, OSError):
+        return False
+    local_name = root.tag.rsplit("}", 1)[-1]
+    if local_name != "project":
+        return False
+    return any(
+        child.tag.rsplit("}", 1)[-1] == "modelVersion"
+        and (child.text or "").strip() == "4.0.0"
+        for child in root
+    )
+
+
+def inspect_dependency(
+    path: Path,
+    *,
+    reactor_output_directories: Sequence[Path] = (),
+    maven_artifact_paths: Sequence[Path] = (),
+    maven_binary_archive_paths: Sequence[Path] = (),
+    maven_resource_archive_paths: Sequence[Path] = (),
+) -> DependencyInput | ExcludedClasspathInput:
+    """Classify one Maven-discovered entry before adding it to JDT.
+
+    Archives containing Java class files and Maven artifacts with a bounded,
+    classpath-capable type are Java classpath inputs. Maven project descriptors
+    are known non-binary artifacts: they are frozen in the Build World identity
+    but deliberately excluded from JDT. Every other regular file, including a
+    ZIP container with no class files and no Maven type evidence, is unknown
+    and therefore fails closed.
+    """
+
     resolved = path.resolve(strict=True)
+    maven_artifacts = {
+        item.resolve(strict=False) for item in maven_artifact_paths
+    }
+    maven_binary_archives = {
+        item.resolve(strict=False) for item in maven_binary_archive_paths
+    }
+    maven_resource_archives = {
+        item.resolve(strict=False) for item in maven_resource_archive_paths
+    }
     providers: tuple[str, ...] = ()
     lombok_version: str | None = None
     if resolved.is_file():
-        entry_type = "archive"
+        if not zipfile.is_zipfile(resolved):
+            if _is_maven_project_descriptor(resolved):
+                return ExcludedClasspathInput(
+                    path=resolved,
+                    content_sha256=sha256_file(resolved),
+                    entry_type="maven_project_descriptor",
+                )
+            raise BuildWorldError(
+                "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED",
+                "A Maven-discovered compile classpath entry is neither a "
+                "Java archive, a class directory, nor a recognized "
+                "non-binary artifact.",
+                suggested_next_step=(
+                    "Use the formal Maven build and inspect the private "
+                    "Build World classpath evidence."
+                ),
+            )
+        entry_type = "java_binary_archive"
         try:
             with zipfile.ZipFile(resolved) as archive:
                 names = set(archive.namelist())
+                contains_classes = any(
+                    not name.endswith("/") and name.endswith(".class")
+                    for name in names
+                )
+                if (
+                    resolved in maven_artifacts
+                    and resolved not in maven_binary_archives
+                ):
+                    raise BuildWorldError(
+                        "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED",
+                        "A Maven artifact type is not proven to participate in "
+                        "the Java compiler classpath.",
+                        suggested_next_step=(
+                            "Use the formal Maven build and inspect the private "
+                            "Build World artifact-type evidence."
+                        ),
+                    )
+                if (
+                    not contains_classes
+                    and resolved not in maven_resource_archives
+                ):
+                    raise BuildWorldError(
+                        "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED",
+                        "A Maven-discovered ZIP entry without class files is "
+                        "not proven to be a Java resource archive.",
+                        suggested_next_step=(
+                            "Use the formal Maven build and inspect the private "
+                            "Build World classpath evidence."
+                        ),
+                    )
                 if _PROCESSOR_SERVICE in names:
                     info = archive.getinfo(_PROCESSOR_SERVICE)
                     if info.file_size > _MAX_SERVICE_BYTES:
@@ -346,6 +479,11 @@ def inspect_dependency(path: Path) -> DependencyInput:
             ) from error
     elif resolved.is_dir():
         entry_type = "class_directory"
+        reactor_outputs = {
+            item.resolve(strict=False) for item in reactor_output_directories
+        }
+        if resolved in reactor_outputs:
+            entry_type = "reactor_output"
         service = resolved / _PROCESSOR_SERVICE
         if service.is_file():
             if service.stat().st_size > _MAX_SERVICE_BYTES:
@@ -430,6 +568,10 @@ def create_snapshot(
     encoding: str,
     configuration_fingerprint: str,
     current_module_coordinate: tuple[str, str, str] | None = None,
+    reactor_output_directories: Sequence[Path] = (),
+    maven_artifact_paths: Sequence[Path] = (),
+    maven_binary_archive_paths: Sequence[Path] = (),
+    maven_resource_archive_paths: Sequence[Path] = (),
     declared_processor_identities: Sequence[str] = (),
     declared_processor_kinds: Sequence[str] = (),
     processor_option_identities: Sequence[str] = (),
@@ -451,7 +593,24 @@ def create_snapshot(
         private_candidate_output=private_candidate_output,
         current_module_coordinate=current_module_coordinate,
     )
-    dependencies = tuple(inspect_dependency(path) for path in filtered)
+    classified = tuple(
+        inspect_dependency(
+            path,
+            reactor_output_directories=reactor_output_directories,
+            maven_artifact_paths=maven_artifact_paths,
+            maven_binary_archive_paths=maven_binary_archive_paths,
+            maven_resource_archive_paths=maven_resource_archive_paths,
+        )
+        for path in filtered
+    )
+    dependencies = tuple(
+        item for item in classified if isinstance(item, DependencyInput)
+    )
+    excluded_classpath_inputs = tuple(
+        item
+        for item in classified
+        if isinstance(item, ExcludedClasspathInput)
+    )
     providers = {
         provider
         for dependency in dependencies
@@ -471,6 +630,8 @@ def create_snapshot(
         blockers.append("unknown_declared_annotation_processor")
     if compile_time_generated:
         blockers.append("compile_time_generated_source_refresh_unverified")
+    if any(root.provenance == "MAVEN_NATIVE_SOURCE_ROOT" for root in source_roots):
+        blockers.append("maven_native_source_root_refresh_unverified")
     material = {
         "source_roots": [
             (
@@ -481,7 +642,13 @@ def create_snapshot(
             )
             for item in source_roots
         ],
-        "dependencies": [item.content_sha256 for item in dependencies],
+        "dependencies": [
+            (item.entry_type, item.content_sha256) for item in dependencies
+        ],
+        "excluded_classpath_inputs": [
+            (item.entry_type, item.content_sha256)
+            for item in excluded_classpath_inputs
+        ],
         "source_level": source_level,
         "target_level": target_level,
         "encoding": encoding,
@@ -498,6 +665,7 @@ def create_snapshot(
         maven_output=maven_output.resolve(strict=False),
         source_roots=tuple(source_roots),
         dependencies=dependencies,
+        excluded_classpath_inputs=excluded_classpath_inputs,
         source_level=source_level,
         target_level=target_level,
         encoding=encoding,
@@ -636,13 +804,11 @@ def classify_diagnostics(diagnostics: Sequence[str]) -> dict[str, object]:
     identities: list[str] = []
     for diagnostic in diagnostics:
         lowered = diagnostic.casefold()
-        if any(
-            token in lowered
-            for token in (
-                "the import ",
-                "cannot be resolved to a type",
-                "indirectly referenced from required .class files",
-            )
+        if (
+            re.search(r"\bthe import .+ cannot be resolved\b", lowered)
+            is not None
+            or "cannot be resolved to a type" in lowered
+            or "indirectly referenced from required .class files" in lowered
         ):
             bucket = "missing_dependency"
         elif any(
@@ -806,6 +972,7 @@ __all__ = [
     "BuildWorldError",
     "BuildWorldSnapshot",
     "DependencyInput",
+    "ExcludedClasspathInput",
     "SourceRootInput",
     "canonical_fingerprint",
     "classify_diagnostics",

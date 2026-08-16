@@ -4,7 +4,7 @@ Contract-Version: `0.1`
 
 Design-Status: `approved for Phase 1A experiment`
 
-Implementation-Status: `A1-A8 plus A9-S/M and cooperative A9-L passed on the current review candidate; forced-shutdown settlement, a clean-worktree canonical A9 rerun, and A10 remain open`
+Implementation-Status: `historical exact Worker artifacts retain their recorded A1-A10/A9/Phase 1B evidence; the distinct diagnostics-v2 candidates have local functional A1-A8 and Phase 2A evidence only, with clean-worktree canonical evidence and A9/A10/Phase 1B pending`
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 

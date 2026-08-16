@@ -890,7 +890,11 @@ def run_abnormal_exit_case(
 def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lock", type=Path, default=root / "locks/eclipse-4.40-current.json")
+    parser.add_argument(
+        "--lock",
+        type=Path,
+        default=root / "locks/eclipse-4.40-current-diagnostics-v2.json",
+    )
     parser.add_argument("--cache-root", type=Path, default=Path.home() / ".cache/jolink-runtime/jdt-poc")
     parser.add_argument("--worker-java-home", type=Path, required=True)
     parser.add_argument("--target-java-home", type=Path, required=True)
