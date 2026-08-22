@@ -126,6 +126,14 @@ QueryDSL、Dagger、Hibernate enhancement、AspectJ 或任意 Processor。
 一个 Java source entry，因此会在 Java package 边界合并各 root。同一路径出现不同
 内容时返回 `SOURCE_ROOT_COLLISION`，不猜 Maven root 优先级。
 
+`BuildWorldSnapshot.encoding` 必须通过 Worker 启动参数进入 Eclipse Resources
+model。只设置 JDT compiler options 不够，因为 JavaBuilder 通过 `IFile` 读取源码并
+使用 Resource charset。Worker READY 必须回报 raw requested、Java canonical、Eclipse
+effective 和 verified 状态，Runner 确认证据闭环后才允许 FULL。编码合法性和 alias
+等价关系以 Java Charset / Eclipse Resources 为权威，不允许用 Python codec registry
+重新定义。encoding 改变属于 Build World identity 改变，不能复用旧 generation。
+实现不得硬编码 UTF-8。
+
 源码链接/reparse point、超限输入、配置冲突、无法忠实映射的 Lombok import 布局、
 多份 Lombok artifact 都会 fail closed。JDT 输出始终位于用户项目之外。
 
@@ -217,3 +225,26 @@ classpath 和 reactor outputs 以 Probe 为权威；compiler/Processor 配置与
 
 即使 Phase 2A FULL 成功，Processor blocker 仍可能让 Phase 2B 不具备资格。
 Phase 2A 输出绝不能发布给目标 JVM。
+
+## 公司真实项目 canonical evidence
+
+截至 2026-08-21，公司环境已经保存 canonical Phase 2A JSON。脱敏结论为：
+
+```text
+4201 Java sources
+297 compile classpath entries
+JDT FULL / 0 errors
+Maven-vs-JDT Tier 1 compatible
+status   = phase2a_passed_with_incremental_blockers
+decision = PHASE2B_BLOCKED_BY_BUILD_WORLD
+```
+
+当前唯一 Phase 2B blocker 是：
+
+```text
+unknown_compile_time_annotation_processor
+```
+
+这份证据正式关闭“真实企业项目能否完成 JDT FULL”的 Phase 2A 问题，但不批准
+跳过 Processor gate。详细脱敏记录见
+`jdt-phase2a-company-evidence.zh-CN.md`。

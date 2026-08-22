@@ -1030,6 +1030,7 @@ def start_worker(
     system_libraries_file: Path,
     instrumentation: str,
     timeout: float,
+    source_encoding: str = "UTF-8",
     reuse_existing: bool = False,
     java_agents: tuple[str, ...] = (),
     extra_jvm_arguments: tuple[str, ...] = (),
@@ -1073,6 +1074,8 @@ def start_worker(
         "net.jolink.runtime.jdt.worker",
         "--system-libraries",
         str(system_libraries_file),
+        "--source-encoding",
+        source_encoding,
         "--instrumentation",
         instrumentation,
     ]
@@ -1096,6 +1099,11 @@ def start_worker(
     if ready.get("ok") is not True or ready.get("status") != "ready":
         client.close()
         raise SmokeError(f"Worker did not become ready: {ready}")
+    try:
+        require_ready_source_encoding(ready, requested=source_encoding)
+    except SmokeError:
+        client.close()
+        raise
     if ready.get("java_builder_count") != 1:
         client.close()
         raise SmokeError("Worker project does not have exactly one Java Builder.")
@@ -1107,6 +1115,31 @@ def start_worker(
         )
     client.ready = ready
     return client
+
+
+def require_ready_source_encoding(
+    ready: dict[str, Any], *, requested: str
+) -> str:
+    """Require Java/Eclipse proof that Resources applied Build World encoding."""
+
+    observed_request = ready.get("source_encoding_requested")
+    canonical = ready.get("source_encoding_requested_canonical")
+    effective = ready.get("source_encoding_effective")
+    verified = ready.get("source_encoding_verified")
+    if observed_request != requested:
+        raise SmokeError("Worker did not report the requested source encoding.")
+    if (
+        not isinstance(canonical, str)
+        or not canonical
+        or not isinstance(effective, str)
+        or not effective
+        or verified is not True
+        or canonical != effective
+    ):
+        raise SmokeError(
+            "Eclipse Resources source encoding does not match Build World."
+        )
+    return effective
 
 
 def output_hashes(output: Path) -> dict[str, str]:

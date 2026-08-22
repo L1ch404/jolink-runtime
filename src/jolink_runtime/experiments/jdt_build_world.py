@@ -928,7 +928,23 @@ def _is_declared_class(name: str, parsed: ParsedClassFile) -> bool:
 
 
 def _metadata_subset(metadata: Sequence[tuple[str, Any]]) -> tuple[tuple[str, Any], ...]:
-    return tuple((name, value) for name, value in metadata if name in _API_METADATA)
+    selected = (
+        (name, value) for name, value in metadata if name in _API_METADATA
+    )
+    return tuple(
+        sorted(
+            selected,
+            key=lambda item: (
+                item[0],
+                json.dumps(
+                    item[1],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+    )
 
 
 def _api_shape(parsed: ParsedClassFile) -> object:

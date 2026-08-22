@@ -1,10 +1,12 @@
 # JDT Phase 2A：开源项目阶梯验证计划
 
-状态：测试路线已冻结，具体项目清单待筛选。
+状态：历史隔离测试路线保留；公司项目已于 2026-08-21 取得 canonical Phase 2A
+PASS，阶梯项目继续用于扩大兼容覆盖，不再是公司项目回归的前置条件。
 
 ## 目的
 
-公司项目已经证明 Phase 2A 能进入真实企业 Maven Build World，也暴露了 classpath
+公司项目已经证明 Phase 2A 能进入真实企业 Maven Build World，并在 4201-source
+模块上完成 JDT FULL 0 errors、Tier 1 compatible；同时暴露了 classpath
 非二进制 artifact、诊断截断、跨编译器源码兼容和未知 Processor 等真实边界。但它
 同时包含 4200+ 源码、数百依赖、旧版 Lombok、未知 Processor 和公司 Maven 配置，
 不适合继续承担底层问题隔离。
@@ -142,7 +144,10 @@ PROJECT_SPECIFIC_HIGH_ORDER_BOUNDARY
 其中 `CROSS_COMPILER_SOURCE_COMPATIBILITY` 不允许通过修改项目源码或放宽 Build
 World 可信边界来“修复”。未知 Processor 继续 fail closed。
 
-## 回到公司项目的条件
+## 历史：回到公司项目的条件
+
+下面是公司项目取得 canonical PASS 之前冻结的回归条件。它们解释了为什么当时先做
+开源 staircase；现在不再代表尚未满足的待办。
 
 至少满足以下条件后，公司项目才重新作为 enterprise acceptance：
 

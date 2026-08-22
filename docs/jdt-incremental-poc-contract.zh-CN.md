@@ -8,6 +8,10 @@
 
 产品状态：`仅实验 / 不改变 MCP 或 Runtime 行为`
 
+公司 Phase 2A 证据：`4201 个 Java source 的 canonical PASS；JDT FULL 0 errors，
+Maven/JDT Tier 1 structural compatible；Phase 2B 当前仅被
+unknown_compile_time_annotation_processor 阻止`
+
 英文版：[`jdt-incremental-poc-contract.md`](jdt-incremental-poc-contract.md)
 
 本文与同一提交中的英文版是同步契约。两者出现语义差异时，应把它

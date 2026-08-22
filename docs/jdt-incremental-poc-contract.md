@@ -8,6 +8,10 @@ Implementation-Status: `historical exact Worker artifacts retain their recorded 
 
 Product-Status: `experiment only / no MCP or Runtime behavior`
 
+Company Phase 2A Evidence: `canonical PASS on 4201 Java sources; JDT FULL
+completed with 0 errors and Maven-vs-JDT Tier 1 structural compatibility;
+Phase 2B remains blocked only by unknown_compile_time_annotation_processor`
+
 Chinese edition:
 [`jdt-incremental-poc-contract.zh-CN.md`](jdt-incremental-poc-contract.zh-CN.md)
 

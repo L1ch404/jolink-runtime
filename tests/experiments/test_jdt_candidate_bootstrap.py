@@ -66,6 +66,7 @@ maven_probe_spike = _load_module(
 
 from jolink_runtime.experiments import jdt_build_world as build_world
 from jolink_runtime.experiments import maven_probe
+from jolink_runtime.launch.maven import MavenBuildSystemAdapter
 
 
 def test_cross_compiler_fixture_is_wired_to_expected_divergence_probe() -> None:
@@ -429,7 +430,7 @@ def test_phase2a_sources_classifier_cannot_authorize_resource_archive(
     assert raised.value.error_code == "COMPILE_CLASSPATH_ENTRY_UNSUPPORTED"
 
 
-def test_phase2a_unknown_classifier_requires_class_content(
+def test_phase2a_maven_classpath_custom_classifier_can_be_resource_only(
     tmp_path: Path,
 ) -> None:
     archive_path = tmp_path / "repository" / "custom.jar"
@@ -448,25 +449,16 @@ def test_phase2a_unknown_classifier_requires_class_content(
     assert phase2a._maven_binary_archive_paths(evidence) == (
         archive_path.resolve(),
     )
-    assert phase2a._maven_resource_archive_paths(evidence) == ()
-    with pytest.raises(build_world.BuildWorldError):
-        build_world.inspect_dependency(
-            archive_path,
-            maven_artifact_paths=(archive_path,),
-            maven_binary_archive_paths=phase2a._maven_binary_archive_paths(
-                evidence
-            ),
-            maven_resource_archive_paths=(),
-        )
-
-    archive_path.unlink()
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr("example/Api.class", b"fixture")
+    assert phase2a._maven_resource_archive_paths(evidence) == (
+        archive_path.resolve(),
+    )
     dependency = build_world.inspect_dependency(
         archive_path,
         maven_artifact_paths=(archive_path,),
         maven_binary_archive_paths=phase2a._maven_binary_archive_paths(evidence),
-        maven_resource_archive_paths=(),
+        maven_resource_archive_paths=phase2a._maven_resource_archive_paths(
+            evidence
+        ),
     )
     assert isinstance(dependency, build_world.DependencyInput)
 
@@ -1122,6 +1114,64 @@ def test_phase2a_structural_comparison_ignores_method_body_bytes(
     assert comparison["class_loading_or_initialization_used"] is False
     assert comparison["tier1"]["status"] == "compatible"
     assert comparison["tier1"]["api_mismatch_count"] == 0
+
+
+def test_phase2a_api_metadata_comparison_ignores_attribute_order() -> None:
+    first = (
+        ("RuntimeVisibleAnnotations", ["Lexample/First;"]),
+        ("Signature", "Ljava/util/List<Ljava/lang/String;>;"),
+        ("SourceFile", "Api.java"),
+    )
+    second = tuple(reversed(first))
+
+    first_subset = build_world._metadata_subset(first)  # noqa: SLF001
+    second_subset = build_world._metadata_subset(second)  # noqa: SLF001
+
+    assert first_subset == second_subset
+
+
+def test_worker_ready_requires_build_world_source_encoding() -> None:
+    ready = {
+        "source_encoding_requested": "utf8",
+        "source_encoding_requested_canonical": "UTF-8",
+        "source_encoding_effective": "UTF-8",
+        "source_encoding_verified": True,
+    }
+
+    assert smoke.require_ready_source_encoding(
+        ready, requested="utf8"
+    ) == "UTF-8"
+
+    with pytest.raises(smoke.SmokeError, match="does not match Build World"):
+        smoke.require_ready_source_encoding(
+            {
+                "source_encoding_requested": "UTF-8",
+                "source_encoding_requested_canonical": "UTF-8",
+                "source_encoding_effective": "GBK",
+                "source_encoding_verified": True,
+            },
+            requested="UTF-8",
+        )
+
+    with pytest.raises(smoke.SmokeError, match="did not report"):
+        smoke.require_ready_source_encoding({}, requested="UTF-8")
+
+
+def test_phase2a_defers_encoding_authority_to_java_charset() -> None:
+    project = ET.fromstring(
+        """
+        <project xmlns="http://maven.apache.org/POM/4.0.0">
+          <properties>
+            <project.build.sourceEncoding>IBM01140</project.build.sourceEncoding>
+          </properties>
+        </project>
+        """
+    )
+
+    assert MavenBuildSystemAdapter()._source_encoding(  # noqa: SLF001
+        project,
+        require_host_codec=False,
+    ) == "IBM01140"
 
 
 def test_phase2a_diagnostic_summary_contains_no_raw_messages() -> None:

@@ -358,14 +358,14 @@ def _maven_binary_archive_paths(
 def _maven_resource_archive_paths(
     evidence: Sequence[MavenArtifactClasspathEvidence],
 ) -> tuple[Path, ...]:
-    """Return artifacts whose Maven role can justify an empty class archive."""
+    """Return Maven classpath archives that may legitimately contain no classes.
 
-    return tuple(
-        item.path
-        for item in evidence
-        if item.artifact_type.casefold() in _MAVEN_BINARY_CLASSPATH_TYPES
-        and item.classifier is None
-    )
+    Membership still comes from the Maven compile classpath.  A classifier does
+    not invalidate that fact unless it identifies a known non-binary artifact
+    such as sources or javadoc.
+    """
+
+    return _maven_binary_archive_paths(evidence)
 
 
 def _require_maven_artifact_coverage(
@@ -1151,7 +1151,10 @@ def main(argv: list[str] | None = None) -> int:
             build_jdk=build_jdk,
             runtime_jdk=target_jdk,
         )
-        encoding = adapter._source_encoding(effective_project)  # noqa: SLF001
+        encoding = adapter._source_encoding(  # noqa: SLF001
+            effective_project,
+            require_host_codec=False,
+        )
         source_directory = _effective_source_directory(effective_project, module)
         if not source_directory.is_dir():
             raise BuildWorldError(
@@ -1334,10 +1337,12 @@ def main(argv: list[str] | None = None) -> int:
             system_libraries_file=worker_classpath,
             instrumentation="enabled",
             timeout=args.worker_timeout,
+            source_encoding=snapshot.encoding,
             java_agents=java_agents,
             extra_jvm_arguments=extra_jvm,
         )
         worker_start_seconds = time.monotonic() - worker_started
+        worker_ready = dict(client.ready)
         materialization = materialize_private_sources(
             snapshot,
             destination=private_source,
@@ -1482,6 +1487,18 @@ def main(argv: list[str] | None = None) -> int:
                 "diagnostics_truncated": full.get("diagnostics_truncated"),
                 "diagnostic_selection_policy": full.get(
                     "diagnostic_selection_policy"
+                ),
+                "source_encoding_requested": worker_ready.get(
+                    "source_encoding_requested"
+                ),
+                "source_encoding_requested_canonical": worker_ready.get(
+                    "source_encoding_requested_canonical"
+                ),
+                "source_encoding_effective": worker_ready.get(
+                    "source_encoding_effective"
+                ),
+                "source_encoding_verified": worker_ready.get(
+                    "source_encoding_verified"
                 ),
                 "worker_start_duration_ms": round(worker_start_seconds * 1000, 1),
                 "build_duration_ms": round(jdt_seconds * 1000, 1),

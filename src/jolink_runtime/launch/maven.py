@@ -1689,8 +1689,18 @@ class MavenBuildSystemAdapter:
             )
         return arguments
 
-    def _source_encoding(self, project: ET.Element) -> str:
-        """Return an explicit effective compiler encoding or fail closed."""
+    def _source_encoding(
+        self,
+        project: ET.Element,
+        *,
+        require_host_codec: bool = True,
+    ) -> str:
+        """Return an explicit effective compiler encoding or fail closed.
+
+        Product fast compile keeps the historical host-codec check.  The JDT
+        experiment disables it because Java Charset and Eclipse Resources are
+        the reference implementation for that isolated build world.
+        """
         compiler = self._find_build_plugin(
             project,
             "maven-compiler-plugin",
@@ -1719,17 +1729,18 @@ class MavenBuildSystemAdapter:
                     "use the formal Maven build and restart."
                 ),
             )
-        try:
-            "".encode(value)
-        except LookupError as error:
-            raise MavenResolutionError(
-                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
-                "The Maven source encoding is not supported by this host.",
-                retryable=False,
-                suggested_next_step=(
-                    "Use the formal Maven build for this compiler setup."
-                ),
-            ) from error
+        if require_host_codec:
+            try:
+                "".encode(value)
+            except LookupError as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                    "The Maven source encoding is not supported by this host.",
+                    retryable=False,
+                    suggested_next_step=(
+                        "Use the formal Maven build for this compiler setup."
+                    ),
+                ) from error
         return value
 
     def consume_jvm_launch_plan(

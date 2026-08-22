@@ -13,6 +13,22 @@ Maven clean compile
 MCP 接口。除 Maven baseline 正常写入项目 `target` 外，JDT 全部工作都发生在 joLink
 私有 cache 中。
 
+## 当前 canonical 状态
+
+截至 2026-08-21，公司环境已经保存一份 canonical Phase 2A JSON：
+
+```text
+4201 Java sources
+JDT FULL 0 errors
+Tier 1 compatible
+status   = phase2a_passed_with_incremental_blockers
+decision = PHASE2B_BLOCKED_BY_BUILD_WORLD
+```
+
+当前唯一 Phase 2B blocker 是 `unknown_compile_time_annotation_processor`。本手册
+仍保留完整执行步骤用于复现和回归；更早 DOCX 中“大项目尚未通过”的描述只代表历史
+排查阶段。详细脱敏记录见 `jdt-phase2a-company-evidence.zh-CN.md`。
+
 ## 1. 运行前要求
 
 - joLink 仓库分支：`experiment/jdt-incremental-worker`；
@@ -197,6 +213,19 @@ source roots / compile classpath / reactor outputs
 source/target/encoding/compiler config/processor declaration/artifact type
     <- effective POM + dependency metadata（暂时）
 ```
+
+Runner 会把 effective encoding 显式传给 Worker，并要求 READY 同时回报：
+
+```text
+source_encoding_requested
+source_encoding_requested_canonical
+source_encoding_effective
+source_encoding_verified
+```
+
+raw requested 必须与 Build World 一致，Java canonical 必须与 Eclipse effective 一致，
+且 `verified=true`；否则必须在 FULL 前停止。encoding 不能只停留在 Snapshot 或 JDT
+compiler options 中，还必须 materialize 到 Eclipse Resources source folder。
 
 因此这轮能验证“基础 Maven Build World 是否忠实”，但不能宣称 Maven compiler invocation
 已被 100% 重建。

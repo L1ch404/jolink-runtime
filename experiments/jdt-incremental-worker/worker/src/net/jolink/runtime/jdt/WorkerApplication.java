@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -61,6 +62,10 @@ public final class WorkerApplication implements IApplication {
     private IJavaProject javaProject;
     private boolean instrumentationEnabled;
     private boolean projectReopened;
+    private String requestedSourceEncoding;
+    private String canonicalSourceEncoding;
+    private String effectiveSourceEncoding;
+    private boolean sourceEncodingVerified;
     private ActiveBuild activeBuild;
     private String lastTerminalRequestId;
     private String lastTerminalBuildGenerationId;
@@ -144,12 +149,23 @@ public final class WorkerApplication implements IApplication {
             emitError("MISSING_SYSTEM_LIBRARIES", "Missing --system-libraries.");
             return Integer.valueOf(2);
         }
+        String sourceEncoding = arguments.get("source-encoding");
+        if (sourceEncoding == null || sourceEncoding.isBlank()) {
+            emitError("MISSING_SOURCE_ENCODING", "Missing --source-encoding.");
+            return Integer.valueOf(2);
+        }
+        try {
+            Charset.forName(sourceEncoding);
+        } catch (IllegalArgumentException exception) {
+            emitError("INVALID_SOURCE_ENCODING", "Unsupported source encoding.");
+            return Integer.valueOf(2);
+        }
         instrumentationEnabled = !"disabled".equals(
                 arguments.getOrDefault("instrumentation", "enabled"));
         BuildObservation.setEnabled(instrumentationEnabled);
 
         try {
-            initialize(Path.of(systemLibrariesFile));
+            initialize(Path.of(systemLibrariesFile), sourceEncoding);
             emitReady();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -192,7 +208,9 @@ public final class WorkerApplication implements IApplication {
         return result;
     }
 
-    private void initialize(Path systemLibrariesFile) throws Exception {
+    private void initialize(
+            Path systemLibrariesFile,
+            String sourceEncoding) throws Exception {
         workspace = ResourcesPlugin.getWorkspace();
         IWorkspaceDescription workspaceDescription = workspace.getDescription();
         workspaceDescription.setAutoBuilding(false);
@@ -229,6 +247,21 @@ public final class WorkerApplication implements IApplication {
         }
 
         IFolder source = ensureFolder(project.getFolder("src"));
+        requestedSourceEncoding = sourceEncoding;
+        Charset requestedCharset = Charset.forName(sourceEncoding);
+        canonicalSourceEncoding = requestedCharset.name();
+        String inheritedSourceEncoding = source.getDefaultCharset(true);
+        if (!requestedCharset.equals(Charset.forName(inheritedSourceEncoding))) {
+            source.setDefaultCharset(canonicalSourceEncoding, monitor);
+        }
+        Charset effectiveCharset = Charset.forName(
+                source.getDefaultCharset(true));
+        effectiveSourceEncoding = effectiveCharset.name();
+        sourceEncodingVerified = requestedCharset.equals(effectiveCharset);
+        if (!sourceEncodingVerified) {
+            throw new IOException(
+                    "Eclipse Resources did not apply the requested source encoding.");
+        }
         IFolder output = ensureFolder(project.getFolder("bin"));
         javaProject = JavaCore.create(project);
         if (!output.getFullPath().equals(javaProject.getOutputLocation())) {
@@ -815,6 +848,14 @@ public final class WorkerApplication implements IApplication {
                 + json(instrumentationEnabled ? "enabled" : "disabled") + ","
                 + "\"workspace_project_state\":"
                 + json(projectReopened ? "reopened" : "created") + ","
+                + "\"source_encoding_requested\":"
+                + json(requestedSourceEncoding) + ","
+                + "\"source_encoding_requested_canonical\":"
+                + json(canonicalSourceEncoding) + ","
+                + "\"source_encoding_effective\":"
+                + json(effectiveSourceEncoding) + ","
+                + "\"source_encoding_verified\":"
+                + sourceEncodingVerified + ","
                 + "\"source_resource_full_path\":"
                 + json(source.getFullPath().toString()) + ","
                 + "\"source_location_uri\":"
