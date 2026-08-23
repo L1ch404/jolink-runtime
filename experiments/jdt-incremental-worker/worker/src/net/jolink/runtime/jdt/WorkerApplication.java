@@ -1,6 +1,7 @@
 package net.jolink.runtime.jdt;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
@@ -66,6 +67,17 @@ public final class WorkerApplication implements IApplication {
     private String canonicalSourceEncoding;
     private String effectiveSourceEncoding;
     private boolean sourceEncodingVerified;
+    private boolean aptEnabled;
+    private int aptFactoryPathRequestedCount;
+    private int aptFactoryPathEffectiveCount;
+    private String aptFactoryPathRequestedIdentity;
+    private String aptFactoryPathEffectiveIdentity;
+    private boolean aptFactoryPathVerified;
+    private int aptUnexpectedEnabledContainerCount;
+    private String aptUnexpectedEnabledContainerIdentity;
+    private String aptGeneratedSourceRequested;
+    private String aptGeneratedSourceEffective;
+    private boolean aptGeneratedSourceVerified;
     private ActiveBuild activeBuild;
     private String lastTerminalRequestId;
     private String lastTerminalBuildGenerationId;
@@ -165,7 +177,12 @@ public final class WorkerApplication implements IApplication {
         BuildObservation.setEnabled(instrumentationEnabled);
 
         try {
-            initialize(Path.of(systemLibrariesFile), sourceEncoding);
+            String aptProcessorsFile = arguments.get("apt-processors-file");
+            initialize(
+                    Path.of(systemLibrariesFile),
+                    sourceEncoding,
+                    aptProcessorsFile == null
+                            ? null : Path.of(aptProcessorsFile));
             emitReady();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -210,7 +227,8 @@ public final class WorkerApplication implements IApplication {
 
     private void initialize(
             Path systemLibrariesFile,
-            String sourceEncoding) throws Exception {
+            String sourceEncoding,
+            Path aptProcessorsFile) throws Exception {
         workspace = ResourcesPlugin.getWorkspace();
         IWorkspaceDescription workspaceDescription = workspace.getDescription();
         workspaceDescription.setAutoBuilding(false);
@@ -303,7 +321,134 @@ public final class WorkerApplication implements IApplication {
         if (!javaProject.getOptions(false).equals(options)) {
             javaProject.setOptions(options);
         }
+        if (aptProcessorsFile != null) {
+            configureApt(aptProcessorsFile);
+        }
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
+    }
+
+    private void configureApt(Path processorsFile) throws Exception {
+        if (!Files.isRegularFile(processorsFile)) {
+            throw new IOException("APT processor path file is unavailable.");
+        }
+        List<File> processors = new ArrayList<>();
+        for (String line : Files.readAllLines(
+                processorsFile, StandardCharsets.UTF_8)) {
+            String value = line.trim();
+            if (value.isEmpty()) {
+                continue;
+            }
+            Path path = Path.of(value).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(path)) {
+                throw new IOException("APT processor path entry is unavailable.");
+            }
+            processors.add(path.toFile());
+        }
+        if (processors.isEmpty()) {
+            throw new IOException("APT processor path is empty.");
+        }
+
+        org.osgi.framework.Bundle aptBundle = Platform.getBundle(
+                "org.eclipse.jdt.apt.core");
+        if (aptBundle == null) {
+            throw new IOException("Eclipse APT core bundle is unavailable.");
+        }
+        Class<?> aptConfig = aptBundle.loadClass(
+                "org.eclipse.jdt.apt.core.util.AptConfig");
+        Class<?> factoryPathType = aptBundle.loadClass(
+                "org.eclipse.jdt.apt.core.util.IFactoryPath");
+        aptConfig.getMethod("initialize").invoke(null);
+        aptGeneratedSourceRequested = ".apt_generated";
+        aptConfig.getMethod(
+                "setGenSrcDir", IJavaProject.class, String.class).invoke(
+                        null, javaProject, aptGeneratedSourceRequested);
+        aptConfig.getMethod(
+                "setProcessDuringReconcile",
+                IJavaProject.class,
+                boolean.class).invoke(null, javaProject, false);
+        Object factoryPath = aptConfig.getMethod(
+                "getDefaultFactoryPath", IJavaProject.class).invoke(
+                        null, javaProject);
+        for (int index = processors.size() - 1; index >= 0; index--) {
+            factoryPathType.getMethod("addExternalJar", File.class).invoke(
+                    factoryPath, processors.get(index));
+        }
+        aptConfig.getMethod(
+                "setFactoryPath", IJavaProject.class, factoryPathType).invoke(
+                        null, javaProject, factoryPath);
+        aptConfig.getMethod(
+                "setEnabled", IJavaProject.class, boolean.class).invoke(
+                        null, javaProject, true);
+        aptEnabled = (Boolean) aptConfig.getMethod(
+                "isEnabled", IJavaProject.class).invoke(null, javaProject);
+        aptGeneratedSourceEffective = (String) aptConfig.getMethod(
+                "getGenSrcDir", IJavaProject.class).invoke(null, javaProject);
+        aptGeneratedSourceVerified = aptGeneratedSourceRequested.equals(
+                aptGeneratedSourceEffective);
+
+        List<String> requestedPaths = new ArrayList<>();
+        for (File processor : processors) {
+            requestedPaths.add(
+                    processor.toPath().toRealPath().toString());
+        }
+        Object effectiveFactoryPath = aptConfig.getMethod(
+                "getFactoryPath", IJavaProject.class).invoke(null, javaProject);
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> enabledContainers = (Map<Object, Object>)
+                effectiveFactoryPath.getClass().getMethod(
+                        "getEnabledContainers").invoke(effectiveFactoryPath);
+        List<String> effectivePaths = new ArrayList<>();
+        List<String> unexpectedContainers = new ArrayList<>();
+        for (Object container : enabledContainers.keySet()) {
+            Object type = container.getClass().getMethod("getType").invoke(
+                    container);
+            String id = (String) container.getClass().getMethod("getId").invoke(
+                    container);
+            if (!"EXTJAR".equals(String.valueOf(type))) {
+                unexpectedContainers.add(String.valueOf(type) + ":" + id);
+                continue;
+            }
+            effectivePaths.add(Path.of(id).toRealPath().toString());
+        }
+        Collections.sort(unexpectedContainers);
+        aptFactoryPathRequestedCount = requestedPaths.size();
+        aptFactoryPathEffectiveCount = effectivePaths.size();
+        aptFactoryPathRequestedIdentity = stringListIdentity(requestedPaths);
+        aptFactoryPathEffectiveIdentity = stringListIdentity(effectivePaths);
+        aptUnexpectedEnabledContainerCount = unexpectedContainers.size();
+        aptUnexpectedEnabledContainerIdentity = stringListIdentity(
+                unexpectedContainers);
+        aptFactoryPathVerified = requestedPaths.equals(effectivePaths)
+                && unexpectedContainers.isEmpty();
+        if (!aptEnabled) {
+            throw new IOException("Eclipse APT did not become enabled.");
+        }
+        if (!aptGeneratedSourceVerified) {
+            throw new IOException(
+                    "Eclipse APT generated-source directory was not applied.");
+        }
+        if (!aptFactoryPathVerified) {
+            throw new IOException("Eclipse APT factory path was not applied.");
+        }
+    }
+
+    private static String stringListIdentity(List<String> values)
+            throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        for (String value : values) {
+            byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+            digest.update((byte) (encoded.length >>> 24));
+            digest.update((byte) (encoded.length >>> 16));
+            digest.update((byte) (encoded.length >>> 8));
+            digest.update((byte) encoded.length);
+            digest.update(encoded);
+        }
+        byte[] bytes = digest.digest();
+        StringBuilder result = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            result.append(String.format("%02x", value & 0xff));
+        }
+        return result.toString();
     }
 
     private static IFolder ensureFolder(IFolder folder) throws CoreException {
@@ -856,6 +1001,27 @@ public final class WorkerApplication implements IApplication {
                 + json(effectiveSourceEncoding) + ","
                 + "\"source_encoding_verified\":"
                 + sourceEncodingVerified + ","
+                + "\"apt_enabled\":" + aptEnabled + ","
+                + "\"apt_factory_path_requested_count\":"
+                + aptFactoryPathRequestedCount + ","
+                + "\"apt_factory_path_effective_count\":"
+                + aptFactoryPathEffectiveCount + ","
+                + "\"apt_factory_path_requested_identity\":"
+                + jsonNullable(aptFactoryPathRequestedIdentity) + ","
+                + "\"apt_factory_path_effective_identity\":"
+                + jsonNullable(aptFactoryPathEffectiveIdentity) + ","
+                + "\"apt_factory_path_verified\":"
+                + aptFactoryPathVerified + ","
+                + "\"apt_unexpected_enabled_container_count\":"
+                + aptUnexpectedEnabledContainerCount + ","
+                + "\"apt_unexpected_enabled_container_identity\":"
+                + jsonNullable(aptUnexpectedEnabledContainerIdentity) + ","
+                + "\"apt_generated_source_requested\":"
+                + jsonNullable(aptGeneratedSourceRequested) + ","
+                + "\"apt_generated_source_effective\":"
+                + jsonNullable(aptGeneratedSourceEffective) + ","
+                + "\"apt_generated_source_verified\":"
+                + aptGeneratedSourceVerified + ","
                 + "\"source_resource_full_path\":"
                 + json(source.getFullPath().toString()) + ","
                 + "\"source_location_uri\":"

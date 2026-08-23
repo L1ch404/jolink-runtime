@@ -58,6 +58,10 @@ phase2a = _load_module(
     "jolink_jdt_phase2a_real_maven_build_world",
     EXPERIMENT / "run_real_maven_build_world.py",
 )
+apt_spike = _load_module(
+    "jolink_jdt_apt_spike",
+    EXPERIMENT / "run_apt_spike.py",
+)
 maven_probe_spike = _load_module(
     "jolink_jdt_maven_probe_spike",
     EXPERIMENT / "run_maven_probe_spike.py",
@@ -67,6 +71,314 @@ maven_probe_spike = _load_module(
 from jolink_runtime.experiments import jdt_build_world as build_world
 from jolink_runtime.experiments import maven_probe
 from jolink_runtime.launch.maven import MavenBuildSystemAdapter
+
+
+def test_apt_spike_candidate_is_independent_and_excludes_ui() -> None:
+    bootstrap = json.loads(
+        (
+            EXPERIMENT
+            / "candidate-bootstrap-eclipse-2021-03-apt-spike.json"
+        ).read_text(encoding="utf-8")
+    )
+    apt_lock = json.loads(
+        (EXPERIMENT / "locks/eclipse-2021-03-apt-spike.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    baseline_lock = json.loads(
+        (EXPERIMENT / "locks/eclipse-2021-03-no-apt-spike.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert bootstrap["candidate_id"] == "eclipse-2021-03-apt-spike"
+    assert {
+        "org.eclipse.jdt.apt.core",
+        "org.eclipse.jdt.apt.pluggable.core",
+        "org.eclipse.jdt.compiler.apt",
+        "org.eclipse.jdt.compiler.tool",
+    }.issubset(bootstrap["root_installable_units"])
+    names = {item["symbolic_name"] for item in apt_lock["artifacts"]}
+    assert len(apt_lock["artifacts"]) - len(baseline_lock["artifacts"]) == 5
+    assert not any(
+        token in name.casefold()
+        for name in names
+        for token in ("apt.ui", "jdt.ui", "eclipse.ui", "swt", "m2e")
+    )
+
+
+def test_apt_spike_fixture_lock_has_one_resource_processor() -> None:
+    payload = json.loads(
+        (EXPERIMENT / "apt-spring-config-java8-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["processor"] == {
+        "provider": (
+            "org.springframework.boot.configurationprocessor."
+            "ConfigurationMetadataAnnotationProcessor"
+        ),
+        "execution_model": "STANDARD_JSR269",
+        "output_kind": "RESOURCE",
+        "output_path": "META-INF/spring-configuration-metadata.json",
+    }
+    assert sum(
+        item["processor_path"] is True for item in payload["artifacts"]
+    ) == 1
+
+
+def test_apt_spike_reads_metadata_semantically(tmp_path: Path) -> None:
+    metadata = tmp_path / "bin/META-INF/spring-configuration-metadata.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        json.dumps(
+            {
+                "properties": [
+                    {"name": "demo.timeout", "type": "java.lang.Integer"},
+                    {"name": "demo.name", "type": "java.lang.String"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert apt_spike.metadata_properties(tmp_path) == [
+        ("demo.name", "java.lang.String"),
+        ("demo.timeout", "java.lang.Integer"),
+    ]
+
+
+def test_apt_spike_resource_manifest_tracks_change_and_delete() -> None:
+    assert apt_spike.output_changes(
+        {"metadata.json": "old", "stale.json": "stale"},
+        {"metadata.json": "new", "created.json": "created"},
+    ) == {
+        "changed": ["created.json", "metadata.json"],
+        "deleted": ["stale.json"],
+    }
+
+
+def test_apt_spike_accepts_probe_processor_artifacts(tmp_path: Path) -> None:
+    processor = tmp_path / "processor.jar"
+    processor.write_bytes(b"processor")
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "schema": "jolink.maven-build-world-probe.v1",
+                "annotationProcessing": {
+                    "processingMode": "DEFAULT",
+                    "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+                    "compileClasspathDiscovery": True,
+                    "processorProviderArtifactPaths": [str(processor)],
+                    "providers": [
+                        "org.springframework.boot.configurationprocessor."
+                        "ConfigurationMetadataAnnotationProcessor"
+                    ],
+                    "options": [],
+                    "explicitProcessorNames": [],
+                    "executionProcessorConfigurationDetected": False,
+                    "legacyProcessorOptionsDetected": False,
+                    "legacyProcessorOptionCount": 0,
+                    "procPropertyDetected": False,
+                    "procPropertySourceCount": 0,
+                    "unmodeledProcessorCompilerArgsDetected": False,
+                    "unmodeledProcessorCompilerArgCount": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert apt_spike.load_probe_processor_provider_path(snapshot) == [
+        processor.resolve()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"options": ["-Afoo=bar"]}, "options are not materialized"),
+        (
+            {"explicitProcessorNames": ["example.Processor"]},
+            "Explicit Processor selection",
+        ),
+        ({"processingMode": "ONLY"}, "path mode is unsupported"),
+        (
+            {"executionProcessorConfigurationDetected": True},
+            "path mode is unsupported",
+        ),
+        (
+            {
+                "legacyProcessorOptionsDetected": True,
+                "legacyProcessorOptionCount": 1,
+            },
+            "path mode is unsupported",
+        ),
+        (
+            {"procPropertyDetected": True, "procPropertySourceCount": 1},
+            "path mode is unsupported",
+        ),
+        (
+            {
+                "unmodeledProcessorCompilerArgsDetected": True,
+                "unmodeledProcessorCompilerArgCount": 1,
+            },
+            "path mode is unsupported",
+        ),
+    ],
+)
+def test_apt_spike_rejects_unmaterialized_probe_processor_semantics(
+    tmp_path: Path,
+    override: dict[str, object],
+    message: str,
+) -> None:
+    processor = tmp_path / "processor.jar"
+    processor.write_bytes(b"processor")
+    facts = {
+        "processingMode": "DEFAULT",
+        "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+        "compileClasspathDiscovery": True,
+        "processorProviderArtifactPaths": [str(processor)],
+        "providers": [
+            "org.springframework.boot.configurationprocessor."
+            "ConfigurationMetadataAnnotationProcessor"
+        ],
+        "options": [],
+        "explicitProcessorNames": [],
+        "executionProcessorConfigurationDetected": False,
+        "legacyProcessorOptionsDetected": False,
+        "legacyProcessorOptionCount": 0,
+        "procPropertyDetected": False,
+        "procPropertySourceCount": 0,
+        "unmodeledProcessorCompilerArgsDetected": False,
+        "unmodeledProcessorCompilerArgCount": 0,
+    }
+    facts.update(override)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "schema": "jolink.maven-build-world-probe.v1",
+                "annotationProcessing": facts,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(apt_spike.AptSpikeError, match=message):
+        apt_spike.load_probe_processor_provider_path(snapshot)
+
+
+def test_apt_spike_rejects_processor_directory(tmp_path: Path) -> None:
+    processor = tmp_path / "processor-classes"
+    processor.mkdir()
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "schema": "jolink.maven-build-world-probe.v1",
+                "annotationProcessing": {
+                    "processingMode": "DEFAULT",
+                    "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+                    "compileClasspathDiscovery": True,
+                    "processorProviderArtifactPaths": [str(processor)],
+                    "providers": [
+                        "org.springframework.boot.configurationprocessor."
+                        "ConfigurationMetadataAnnotationProcessor"
+                    ],
+                    "options": [],
+                    "explicitProcessorNames": [],
+                    "executionProcessorConfigurationDetected": False,
+                    "legacyProcessorOptionsDetected": False,
+                    "legacyProcessorOptionCount": 0,
+                    "procPropertyDetected": False,
+                    "procPropertySourceCount": 0,
+                    "unmodeledProcessorCompilerArgsDetected": False,
+                    "unmodeledProcessorCompilerArgCount": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(apt_spike.AptSpikeError, match="directory"):
+        apt_spike.load_probe_processor_provider_path(snapshot)
+
+
+def test_phase2a_unverified_apt_preserves_probe_provider_order(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.jar"
+    second = tmp_path / "second.jar"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    snapshot = {
+        "annotationProcessing": {
+            "processingMode": "DEFAULT",
+            "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+            "compileClasspathDiscovery": True,
+            "processorProviderArtifactPaths": [str(second), str(first)],
+            "providers": ["example.Second", "example.First"],
+            "options": [],
+            "explicitProcessorNames": [],
+            "explicitPathDeclarationCount": 0,
+            "executionProcessorConfigurationDetected": False,
+            "legacyProcessorOptionsDetected": False,
+            "legacyProcessorOptionCount": 0,
+            "procPropertyDetected": False,
+            "procPropertySourceCount": 0,
+            "unmodeledProcessorCompilerArgsDetected": False,
+            "unmodeledProcessorCompilerArgCount": 0,
+        }
+    }
+
+    paths, providers = phase2a._experimental_unverified_apt_provider_paths(
+        snapshot
+    )
+
+    assert paths == (second.resolve(), first.resolve())
+    assert providers == ("example.Second", "example.First")
+
+
+def test_phase2a_unverified_apt_rejects_maven_control_semantics(
+    tmp_path: Path,
+) -> None:
+    processor = tmp_path / "processor.jar"
+    processor.write_bytes(b"processor")
+    facts = {
+        "processingMode": "DEFAULT",
+        "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+        "compileClasspathDiscovery": True,
+        "processorProviderArtifactPaths": [str(processor)],
+        "providers": ["example.Processor"],
+        "options": [],
+        "explicitProcessorNames": [],
+        "explicitPathDeclarationCount": 0,
+        "executionProcessorConfigurationDetected": False,
+        "legacyProcessorOptionsDetected": False,
+        "legacyProcessorOptionCount": 0,
+        "procPropertyDetected": True,
+        "procPropertySourceCount": 1,
+        "unmodeledProcessorCompilerArgsDetected": False,
+        "unmodeledProcessorCompilerArgCount": 0,
+    }
+
+    with pytest.raises(build_world.BuildWorldError) as raised:
+        phase2a._experimental_unverified_apt_provider_paths(
+            {"annotationProcessing": facts}
+        )
+
+    assert raised.value.error_code == "EXPERIMENTAL_APT_MODEL_UNSAFE"
+
+
+def test_phase2a_unverified_apt_uses_independent_candidate() -> None:
+    assert phase2a._lock_for_phase2a(
+        EXPERIMENT,
+        None,
+        experimental_apt=True,
+    ) == EXPERIMENT / "locks/eclipse-2021-03-apt-spike.json"
 
 
 def test_cross_compiler_fixture_is_wired_to_expected_divergence_probe() -> None:
@@ -724,6 +1036,24 @@ def test_maven_probe_summary_recognizes_reactor_output_reference() -> None:
                 "/workspace/app/target/classes",
                 "/workspace/common/target/classes",
             ],
+            "annotationProcessing": {
+                "processingMode": "DEFAULT",
+                "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+                "compileClasspathDiscovery": True,
+                "processorProviderArtifactPaths": [
+                    "/workspace/processor.jar"
+                ],
+                "providers": ["example.Processor"],
+                "options": ["-Aexample=true"],
+                "explicitProcessorNames": [],
+                "executionProcessorConfigurationDetected": False,
+                "legacyProcessorOptionsDetected": False,
+                "legacyProcessorOptionCount": 0,
+                "procPropertyDetected": False,
+                "procPropertySourceCount": 0,
+                "unmodeledProcessorCompilerArgsDetected": False,
+                "unmodeledProcessorCompilerArgCount": 0,
+            },
             "reactorProjects": [
                 {"outputDirectory": "/workspace/common/target/classes"},
                 {"outputDirectory": "/workspace/app/target/classes"},
@@ -736,6 +1066,17 @@ def test_maven_probe_summary_recognizes_reactor_output_reference() -> None:
     )
 
     assert summary["reactor_output_classpath_reference_count"] == 1
+    assert summary["annotation_processing_modes"] == [
+        "IMPLICIT_COMPILE_CLASSPATH"
+    ]
+    assert summary["annotation_processing_execution_modes"] == ["DEFAULT"]
+    assert summary["processor_provider_artifact_count"] == 1
+    assert summary["processor_provider_count"] == 1
+    assert summary["processor_option_count"] == 1
+    assert summary["execution_processor_configuration_count"] == 0
+    assert summary["legacy_processor_option_count"] == 0
+    assert summary["proc_property_source_count"] == 0
+    assert summary["unmodeled_processor_compiler_arg_count"] == 0
     assert summary["project_poms_unchanged"] is True
 
 
@@ -818,6 +1159,22 @@ def test_maven_probe_keep_attempt_removes_credential_settings(
                     "probeImplementationId": implementation_id,
                     "compileSourceRoots": [],
                     "compileClasspathElements": [],
+                    "annotationProcessing": {
+                        "processingMode": "DEFAULT",
+                        "discoveryMode": "IMPLICIT_COMPILE_CLASSPATH",
+                        "compileClasspathDiscovery": True,
+                        "processorProviderArtifactPaths": [],
+                        "providers": [],
+                        "options": [],
+                        "explicitProcessorNames": [],
+                        "executionProcessorConfigurationDetected": False,
+                        "legacyProcessorOptionsDetected": False,
+                        "legacyProcessorOptionCount": 0,
+                        "procPropertyDetected": False,
+                        "procPropertySourceCount": 0,
+                        "unmodeledProcessorCompilerArgsDetected": False,
+                        "unmodeledProcessorCompilerArgCount": 0,
+                    },
                     "outputDirectory": str(project / "target" / "classes"),
                     "reactorProjects": [],
                 }
@@ -884,7 +1241,10 @@ def test_phase2a_binds_private_probe_report_to_exact_invocation(
         "project": {"baseDirectory": str(module_root)},
         "requestedGoals": [
             "compile",
-            "io.jolink:jolink-maven-probe:0.1.0-spike1:export-build-world",
+            (
+                "io.jolink:jolink-maven-probe:"
+                f"{maven_probe.PROBE_VERSION}:export-build-world"
+            ),
         ],
         "compileSourceRoots": [str(source)],
         "compileClasspathElements": [str(output), str(reactor_output), str(dependency)],
@@ -1155,6 +1515,35 @@ def test_worker_ready_requires_build_world_source_encoding() -> None:
 
     with pytest.raises(smoke.SmokeError, match="did not report"):
         smoke.require_ready_source_encoding({}, requested="UTF-8")
+
+
+def test_worker_ready_requires_effective_apt_state() -> None:
+    identity = "a" * 64
+    ready = {
+        "apt_enabled": True,
+        "apt_factory_path_requested_count": 1,
+        "apt_factory_path_effective_count": 1,
+        "apt_factory_path_requested_identity": identity,
+        "apt_factory_path_effective_identity": identity,
+        "apt_factory_path_verified": True,
+        "apt_unexpected_enabled_container_count": 0,
+        "apt_unexpected_enabled_container_identity": identity,
+        "apt_generated_source_requested": ".apt_generated",
+        "apt_generated_source_effective": ".apt_generated",
+        "apt_generated_source_verified": True,
+    }
+
+    smoke.require_ready_apt_state(ready)
+
+    with pytest.raises(smoke.SmokeError, match="did not verify"):
+        smoke.require_ready_apt_state(
+            {**ready, "apt_factory_path_effective_count": 0}
+        )
+
+    with pytest.raises(smoke.SmokeError, match="did not verify"):
+        smoke.require_ready_apt_state(
+            {**ready, "apt_unexpected_enabled_container_count": 1}
+        )
 
 
 def test_phase2a_defers_encoding_authority_to_java_charset() -> None:

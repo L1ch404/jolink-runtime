@@ -91,6 +91,22 @@ uv run python experiments/jdt-incremental-worker/build_worker.py `
 注意：重新构建会改变 lock/Worker artifact identity。只有确实缺失时才做，不要为了
 跑实验随意重建。
 
+### 3.1 可选：未验证 Processor APT Dogfood candidate
+
+仅用于公司真实项目探索，不改变默认fail-closed语义：
+
+```powershell
+uv run python experiments/jdt-incremental-worker/bootstrap_candidate.py `
+  --bootstrap experiments/jdt-incremental-worker/candidate-bootstrap-eclipse-2021-03-apt-spike.json `
+  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-apt-spike.json
+
+uv run python experiments/jdt-incremental-worker/build_worker.py `
+  --lock experiments/jdt-incremental-worker/locks/eclipse-2021-03-apt-spike.json `
+  --java-home D:\tools\jdk-17
+```
+
+这个candidate包含标准Eclipse APT能力，但不会把未知Processor升级为可信产品能力。
+
 ## 4. 公司单模块项目命令
 
 本轮必须先由 Maven Probe 导出事实，再把同一份私有 Probe 报告交给 Phase 2A。不要只跑
@@ -167,6 +183,37 @@ uv run python experiments/jdt-incremental-worker/run_real_maven_build_world.py `
   --worker-timeout 900 `
   --keep-attempt
 ```
+
+如需探索公司项目的标准Processor FULL，可在同一命令增加：
+
+```powershell
+  --experimental-allow-unverified-apt-providers
+```
+
+该开关只放开“Provider尚未进入verified allowlist/runtime dependency closure未证明”；
+以下Maven语义仍然fail closed：
+
+```text
+-A options
+explicit Processor names
+execution-level Processor config
+maven.compiler.proc property
+raw -proc/-processor/-processorpath/-s args
+proc=only
+directory Provider
+```
+
+实验报告必须看到：
+
+```text
+trusted_for_product_decision = false
+apt_experiment.unverified_provider_fast_path = true
+apt_experiment.factory_path_verified = true
+warnings包含UNVERIFIED_APT_PROVIDER_FAST_PATH
+```
+
+这次结果只用于判断真实Processor能否在JDT FULL中运行，不能据此删除Phase 2B blocker
+或发布class/resource。
 
 如果是 reactor 多模块，在命令中增加精确选择：
 
@@ -309,8 +356,9 @@ Tier 2 compiler-generated 差异本身不是失败；Tier 1 差异不能忽略�
 - `LOMBOK_CONFIG_LAYOUT_UNREPRESENTABLE`：冻结的一根 source model 无法忠实映射配置；
 - `WORKER_JDK_IDENTITY_MISMATCH`：Worker JDK 与 lock 不一致；
 - `MAVEN_BOOTSTRAP_FAILED`：先看本地 Maven 日志。
-- `MAVEN_PROBE_IDENTITY_MISMATCH`：Maven 命中了旧 Probe，清理所选本地仓库中仅
-  `io/jolink/jolink-maven-probe/0.1.0-spike1` 的旧实验坐标后重新运行；不要清空整个仓库；
+- `MAVEN_PROBE_IDENTITY_MISMATCH`：Maven 命中了旧 Probe。当前收紧 Processor边界的
+  Probe 使用独立 `0.1.0-spike6` 坐标；保留历史 `spike1` 至 `spike5`，只清理发生冲突的精确版本，
+  不要清空整个仓库；
 - `MAVEN_PROBE_PROJECT_CHANGED`：Probe 后 POM 发生变化，重新跑 Probe；
 - `MAVEN_PROBE_INVOCATION_MISMATCH` / `MAVEN_PROBE_SETTINGS_CHANGED`：两步使用的
   Maven、settings、本地仓库或 profile 不一致。

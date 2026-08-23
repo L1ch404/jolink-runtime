@@ -101,7 +101,8 @@ Maven 版本、Core API 和 ClassLoader 风险，却没有带来本实验需要�
 
 源码构建只显式执行 compiler、plugin descriptor 和 jar 三个 goal，不走完整
 `package` 生命周期，避免 Maven 3.3.9 的 Super POM 自动引入旧 resources/Surefire
-默认插件。这只影响 Spike 的开发构建；未来发布包直接携带预编译 JAR。
+默认插件。`--offline` 现在也传递给Probe源码bootstrap，避免目标调用离线但Probe构建
+仍访问仓库。这只影响Spike的开发构建；未来发布包直接携带预编译JAR。
 
 ## v1 导出内容
 
@@ -115,16 +116,40 @@ compile source roots
 compile classpath elements
 正式 output directory
 Reactor 项目身份及其 output directory
+Annotation Processing discovery mode
+隐式 compile-classpath 中声明 Processor service 的 artifact path
+Processor provider names
+`-A` Processor options 与显式 Processor names
+显式 annotationProcessorPaths declaration count
 ```
+
+Processor-aware初版使用历史 `spike2`；收紧Provider/runtime path和fail-closed边界的
+当前收紧effective Factory Path和legacy option边界的可重复构建版本使用独立
+`0.1.0-spike6` 坐标。当前已验证：
+
+```text
+discoveryMode = IMPLICIT_COMPILE_CLASSPATH
+compileClasspathDiscovery = true
+processorProviderArtifactPaths / providers / options
+```
+
+`processorProviderArtifactPaths`只证明artifact声明了Processor provider，不宣称它已经
+包含Processor运行所需的完整dependency closure。非空options、显式Processor name、
+execution-level Processor配置、plugin-level legacy `<compilerArguments><A...>`、
+`maven.compiler.proc` property、raw processor compiler args、`proc=only`和目录型Provider
+目前均fail closed。Provider artifact顺序保留Maven compile classpath原始顺序。
+
+如果 effective compiler config 声明显式 `annotationProcessorPaths`，Probe当前返回
+`EXPLICIT_DECLARED_UNRESOLVED`，不能伪装成已解析路径。
 
 这些都是私有事实。绝对路径、坐标和 settings 副本不会进入可分享报告。每个 snapshot
 必须回显从 Probe 源码/POM 计算出的 implementation identity，防止固定 GAV 静默命中
 本地旧插件。当前可分享报告只包含数量、artifact/implementation/JDK/Maven 指纹、
 耗时、mirror 调整数、离线 seed 状态和项目未修改 gate。
 
-Probe 成为唯一 BuildWorld authority 前还要继续补：compiler options、
-artifact-handler provenance、generated-source provenance、Annotation Processor 配置、
-resources、toolchains 和精确配置指纹。
+Probe 成为唯一BuildWorld authority前还要继续补：完整compiler options、显式Processor
+artifact解析、artifact-handler provenance、generated-source provenance、resources、
+toolchains和精确配置指纹。
 
 ## 权威与回退规则
 

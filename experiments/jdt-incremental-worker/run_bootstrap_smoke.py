@@ -1031,6 +1031,7 @@ def start_worker(
     instrumentation: str,
     timeout: float,
     source_encoding: str = "UTF-8",
+    apt_processors_file: Path | None = None,
     reuse_existing: bool = False,
     java_agents: tuple[str, ...] = (),
     extra_jvm_arguments: tuple[str, ...] = (),
@@ -1079,6 +1080,10 @@ def start_worker(
         "--instrumentation",
         instrumentation,
     ]
+    if apt_processors_file is not None:
+        command.extend(
+            ["--apt-processors-file", str(apt_processors_file)]
+        )
     if not reuse_existing:
         command.insert(
             5 + len(extra_jvm_arguments) + len(java_agents), "-clean"
@@ -1104,6 +1109,12 @@ def start_worker(
     except SmokeError:
         client.close()
         raise
+    if apt_processors_file is not None:
+        try:
+            require_ready_apt_state(ready)
+        except SmokeError:
+            client.close()
+            raise
     if ready.get("java_builder_count") != 1:
         client.close()
         raise SmokeError("Worker project does not have exactly one Java Builder.")
@@ -1140,6 +1151,36 @@ def require_ready_source_encoding(
             "Eclipse Resources source encoding does not match Build World."
         )
     return effective
+
+
+def require_ready_apt_state(ready: dict[str, Any]) -> None:
+    """Require Eclipse read-back evidence for the requested APT project state."""
+
+    requested_count = ready.get("apt_factory_path_requested_count")
+    effective_count = ready.get("apt_factory_path_effective_count")
+    requested_identity = ready.get("apt_factory_path_requested_identity")
+    effective_identity = ready.get("apt_factory_path_effective_identity")
+    generated_requested = ready.get("apt_generated_source_requested")
+    generated_effective = ready.get("apt_generated_source_effective")
+    if (
+        ready.get("apt_enabled") is not True
+        or ready.get("apt_factory_path_verified") is not True
+        or ready.get("apt_unexpected_enabled_container_count") != 0
+        or not isinstance(
+            ready.get("apt_unexpected_enabled_container_identity"), str
+        )
+        or ready.get("apt_generated_source_verified") is not True
+        or not isinstance(requested_count, int)
+        or requested_count <= 0
+        or effective_count != requested_count
+        or not isinstance(requested_identity, str)
+        or not requested_identity
+        or effective_identity != requested_identity
+        or not isinstance(generated_requested, str)
+        or not generated_requested
+        or generated_effective != generated_requested
+    ):
+        raise SmokeError("Worker did not verify the requested Eclipse APT state.")
 
 
 def output_hashes(output: Path) -> dict[str, str]:

@@ -209,6 +209,7 @@ def _build_probe(
     timeout: float,
     log: Path,
     environment: dict[str, str],
+    offline: bool,
 ) -> tuple[Path, Path, float, str]:
     shutil.rmtree(project / "target", ignore_errors=True)
     implementation_id = _probe_implementation_id(project)
@@ -218,7 +219,7 @@ def _build_probe(
         settings=settings,
         local_repository=local_repository,
         profiles=(),
-        offline=False,
+        offline=offline,
     )
     # The Probe has no resources or tests. Invoke exact build goals rather than
     # instead of a Maven lifecycle so old Maven releases do not pull their
@@ -245,7 +246,7 @@ def _build_probe(
         settings=settings,
         local_repository=local_repository,
         profiles=(),
-        offline=False,
+        offline=offline,
     )
     jar_command.append("org.apache.maven.plugins:maven-jar-plugin:3.3.0:jar")
     elapsed += _run(
@@ -319,6 +320,15 @@ def _summary(
     reactor_references = 0
     source_roots = 0
     classpath_entries = 0
+    processor_artifacts = 0
+    processor_providers = 0
+    processor_options = 0
+    processor_modes: set[str] = set()
+    processing_modes: set[str] = set()
+    execution_processor_configurations = 0
+    legacy_processor_options = 0
+    proc_properties = 0
+    unmodeled_processor_compiler_args = 0
     for snapshot in snapshots:
         roots = snapshot.get("compileSourceRoots", [])
         classpath = snapshot.get("compileClasspathElements", [])
@@ -330,6 +340,54 @@ def _summary(
             )
         source_roots += len(roots)
         classpath_entries += len(classpath)
+        annotation_processing = snapshot.get("annotationProcessing", {})
+        if not isinstance(annotation_processing, dict):
+            raise BuildWorldError(
+                "MAVEN_PROBE_OUTPUT_INVALID",
+                "Maven Probe annotation-processing facts have an invalid shape.",
+                suggested_next_step="Rebuild the bundled Maven Probe.",
+            )
+        mode = annotation_processing.get("discoveryMode")
+        processing_mode = annotation_processing.get("processingMode")
+        artifacts = annotation_processing.get(
+            "processorProviderArtifactPaths", []
+        )
+        providers = annotation_processing.get("providers", [])
+        options = annotation_processing.get("options", [])
+        if (
+            not isinstance(mode, str)
+            or not isinstance(processing_mode, str)
+            or not isinstance(artifacts, list)
+            or not isinstance(providers, list)
+            or not isinstance(options, list)
+        ):
+            raise BuildWorldError(
+                "MAVEN_PROBE_OUTPUT_INVALID",
+                "Maven Probe annotation-processing facts are incomplete.",
+                suggested_next_step="Rebuild the bundled Maven Probe.",
+            )
+        processor_modes.add(mode)
+        processing_modes.add(processing_mode)
+        processor_artifacts += len(artifacts)
+        processor_providers += len(providers)
+        processor_options += len(options)
+        execution_processor_configurations += int(
+            annotation_processing.get(
+                "executionProcessorConfigurationDetected"
+            )
+            is True
+        )
+        legacy_processor_options += int(
+            annotation_processing.get("legacyProcessorOptionCount", 0)
+        )
+        proc_properties += int(
+            annotation_processing.get("procPropertySourceCount", 0)
+        )
+        unmodeled_processor_compiler_args += int(
+            annotation_processing.get(
+                "unmodeledProcessorCompilerArgCount", 0
+            )
+        )
         own_output = str(snapshot.get("outputDirectory") or "")
         reactor_outputs = {
             str(item.get("outputDirectory"))
@@ -346,6 +404,19 @@ def _summary(
         "compile_source_root_count": source_roots,
         "compile_classpath_entry_count": classpath_entries,
         "reactor_output_classpath_reference_count": reactor_references,
+        "annotation_processing_modes": sorted(processor_modes),
+        "annotation_processing_execution_modes": sorted(processing_modes),
+        "processor_provider_artifact_count": processor_artifacts,
+        "processor_provider_count": processor_providers,
+        "processor_option_count": processor_options,
+        "execution_processor_configuration_count": (
+            execution_processor_configurations
+        ),
+        "legacy_processor_option_count": legacy_processor_options,
+        "proc_property_source_count": proc_properties,
+        "unmodeled_processor_compiler_arg_count": (
+            unmodeled_processor_compiler_args
+        ),
         "project_poms_unchanged": project_unchanged,
         "probe_schema_verified": True,
     }
@@ -416,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             log=attempt / "probe-build.log",
             environment=environment,
+            offline=args.offline,
         )
         repository = stage_probe_repository(
             probe_jar=jar,

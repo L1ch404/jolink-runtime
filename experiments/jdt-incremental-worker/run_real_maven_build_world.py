@@ -969,10 +969,73 @@ def _classpath_diff_summary(legacy: Sequence[Path], probe: Sequence[Path]) -> di
     }
 
 
-def _lock_for_phase2a(root: Path, explicit: Path | None) -> Path:
-    return explicit or (
-        root / "locks" / "eclipse-2021-03-lombok-anchor-diagnostics-v2.json"
+def _experimental_unverified_apt_provider_paths(
+    snapshot: dict[str, object],
+) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    facts = snapshot.get("annotationProcessing")
+    if not isinstance(facts, dict):
+        raise BuildWorldError(
+            "EXPERIMENTAL_APT_FACTS_UNAVAILABLE",
+            "Maven Probe has no annotation-processing facts.",
+            suggested_next_step="Run the current Processor-aware Maven Probe.",
+        )
+    if (
+        facts.get("processingMode") != "DEFAULT"
+        or facts.get("discoveryMode") != "IMPLICIT_COMPILE_CLASSPATH"
+        or facts.get("compileClasspathDiscovery") is not True
+        or facts.get("executionProcessorConfigurationDetected") is not False
+        or facts.get("legacyProcessorOptionsDetected") is not False
+        or facts.get("legacyProcessorOptionCount") != 0
+        or facts.get("procPropertyDetected") is not False
+        or facts.get("procPropertySourceCount") != 0
+        or facts.get("unmodeledProcessorCompilerArgsDetected") is not False
+        or facts.get("unmodeledProcessorCompilerArgCount") != 0
+        or facts.get("explicitPathDeclarationCount") != 0
+    ):
+        raise BuildWorldError(
+            "EXPERIMENTAL_APT_MODEL_UNSAFE",
+            "Maven Processor semantics exceed the experimental APT boundary.",
+            suggested_next_step="Use the formal Maven build.",
+        )
+    options = facts.get("options")
+    explicit_names = facts.get("explicitProcessorNames")
+    providers = facts.get("providers")
+    if options != [] or explicit_names != [] or not isinstance(providers, list):
+        raise BuildWorldError(
+            "EXPERIMENTAL_APT_MODEL_UNSAFE",
+            "Maven Processor selection or options are not materialized.",
+            suggested_next_step="Use the formal Maven build.",
+        )
+    paths = _absolute_path_list(
+        facts.get("processorProviderArtifactPaths"),
+        field="annotationProcessing.processorProviderArtifactPaths",
     )
+    if not paths or not all(path.is_file() for path in paths):
+        raise BuildWorldError(
+            "EXPERIMENTAL_APT_PROVIDER_UNAVAILABLE",
+            "The experimental APT Provider path is empty or unsupported.",
+            suggested_next_step="Use the formal Maven build.",
+        )
+    if not all(isinstance(provider, str) and provider for provider in providers):
+        raise BuildWorldError(
+            "EXPERIMENTAL_APT_FACTS_UNAVAILABLE",
+            "Maven Probe Processor providers have an invalid shape.",
+            suggested_next_step="Run the current Processor-aware Maven Probe.",
+        )
+    return tuple(paths), tuple(providers)
+
+
+def _lock_for_phase2a(
+    root: Path,
+    explicit: Path | None,
+    *,
+    experimental_apt: bool = False,
+) -> Path:
+    if explicit is not None:
+        return explicit
+    if experimental_apt:
+        return root / "locks" / "eclipse-2021-03-apt-spike.json"
+    return root / "locks" / "eclipse-2021-03-lombok-anchor-diagnostics-v2.json"
 
 
 def _candidate_identity(lock: dict[str, Any], lock_path: Path) -> dict[str, object]:
@@ -1064,6 +1127,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--maven-timeout", type=float, default=900.0)
     parser.add_argument("--worker-timeout", type=float, default=600.0)
+    parser.add_argument(
+        "--experimental-allow-unverified-apt-providers",
+        action="store_true",
+        help=(
+            "Enable Provider-only Eclipse APT for dogfood evidence. This does "
+            "not verify Processor runtime dependency closure and is never "
+            "trusted for product decisions."
+        ),
+    )
     parser.add_argument("--keep-attempt", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1301,7 +1373,54 @@ def main(argv: list[str] | None = None) -> int:
             output=worker_classpath,
         )
 
-        lock_path = _lock_for_phase2a(root, args.lock)
+        apt_processors_file: Path | None = None
+        apt_provider_paths: tuple[Path, ...] = ()
+        apt_standard_provider_paths: tuple[Path, ...] = ()
+        apt_providers: tuple[str, ...] = ()
+        if args.experimental_allow_unverified_apt_providers:
+            if probe_snapshot is None:
+                raise BuildWorldError(
+                    "EXPERIMENTAL_APT_PROBE_REQUIRED",
+                    "Experimental APT requires a Maven Probe snapshot.",
+                    suggested_next_step=(
+                        "Run the Processor-aware Maven Probe and retry."
+                    ),
+                )
+            apt_provider_paths, apt_providers = (
+                _experimental_unverified_apt_provider_paths(probe_snapshot)
+            )
+            lombok_paths = {
+                item.path.resolve(strict=False)
+                for item in snapshot.lombok_dependencies
+            }
+            apt_standard_provider_paths = tuple(
+                path
+                for path in apt_provider_paths
+                if path.resolve(strict=False) not in lombok_paths
+            )
+            if not apt_standard_provider_paths:
+                raise BuildWorldError(
+                    "EXPERIMENTAL_APT_PROVIDER_UNAVAILABLE",
+                    "No standard JSR 269 Provider remains after Lombok isolation.",
+                    suggested_next_step="Use the normal Lombok-only Worker path.",
+                )
+            apt_processors_file = attempt / "apt-processors.private.txt"
+            apt_processors_file.write_text(
+                "".join(f"{path}\n" for path in apt_standard_provider_paths),
+                encoding="utf-8",
+            )
+            try:
+                apt_processors_file.chmod(0o600)
+            except OSError:
+                pass
+
+        lock_path = _lock_for_phase2a(
+            root,
+            args.lock,
+            experimental_apt=(
+                args.experimental_allow_unverified_apt_providers
+            ),
+        )
         lock = common.load_lock(lock_path)
         candidate_root = args.cache_root / "candidates" / lock["candidate_id"]
         common.verify_candidate(lock, candidate_root)
@@ -1338,6 +1457,7 @@ def main(argv: list[str] | None = None) -> int:
             instrumentation="enabled",
             timeout=args.worker_timeout,
             source_encoding=snapshot.encoding,
+            apt_processors_file=apt_processors_file,
             java_agents=java_agents,
             extra_jvm_arguments=extra_jvm,
         )
@@ -1425,6 +1545,9 @@ def main(argv: list[str] | None = None) -> int:
         report = {
             "schema": "jolink.jdt-phase2a-report.v1",
             "ok": True,
+            "trusted_for_product_decision": not (
+                args.experimental_allow_unverified_apt_providers
+            ),
             "status": status,
             "decision": decision,
             "attempt_id": attempt_id,
@@ -1453,6 +1576,29 @@ def main(argv: list[str] | None = None) -> int:
                 "hybrid_model": probe_snapshot is not None,
             },
             "build_world": snapshot.redacted_summary(),
+            "apt_experiment": {
+                "enabled": args.experimental_allow_unverified_apt_providers,
+                "unverified_provider_fast_path": (
+                    args.experimental_allow_unverified_apt_providers
+                ),
+                "provider_artifact_count": len(apt_provider_paths),
+                "standard_factory_path_entry_count": len(
+                    apt_standard_provider_paths
+                ),
+                "provider_identity_sha256": canonical_fingerprint(
+                    sorted(apt_providers)
+                ),
+                "provider_runtime_dependency_closure_verified": False,
+                "factory_path_requested_count": worker_ready.get(
+                    "apt_factory_path_requested_count"
+                ),
+                "factory_path_effective_count": worker_ready.get(
+                    "apt_factory_path_effective_count"
+                ),
+                "factory_path_verified": worker_ready.get(
+                    "apt_factory_path_verified"
+                ),
+            },
             "maven_baseline": {
                 "status": "passed",
                 "duration_ms": round(baseline_seconds * 1000, 1),
@@ -1529,7 +1675,24 @@ def main(argv: list[str] | None = None) -> int:
                 "effective-POM model.",
                 "No incremental mutation, HotSwap, target JVM, HTTP, or "
                 "product integration is exercised.",
+                *(
+                    [
+                        "Experimental APT uses Provider artifacts without a "
+                        "verified Processor runtime dependency closure; the "
+                        "result is dogfood evidence only."
+                    ]
+                    if args.experimental_allow_unverified_apt_providers
+                    else []
+                ),
             ],
+            "warnings": (
+                [
+                    "UNVERIFIED_APT_PROVIDER_FAST_PATH",
+                    "NOT_TRUSTED_FOR_PRODUCT_DECISION",
+                ]
+                if args.experimental_allow_unverified_apt_providers
+                else []
+            ),
             "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
         }
         _assert_shareable_report(

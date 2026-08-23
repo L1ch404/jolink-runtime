@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.jolink</groupId>
   <artifactId>jolink-maven-probe</artifactId>
-  <version>0.1.0-spike1</version>
+  <version>0.1.0-spike6</version>
   <packaging>maven-plugin</packaging>
 
   <name>joLink Maven Build World Probe</name>
@@ -15,6 +15,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
+    <project.build.outputTimestamp>2026-08-23T00:00:00Z</project.build.outputTimestamp>
   </properties>
 
   <dependencies>

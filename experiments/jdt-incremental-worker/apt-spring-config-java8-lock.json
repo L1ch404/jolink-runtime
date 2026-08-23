@@ -1,0 +1,61 @@
+{
+  "schema": "jolink.apt-spring-config-fixture-lock.v1",
+  "fixture": "apt-spring-config-java8",
+  "target_java": 8,
+  "processor": {
+    "provider": "org.springframework.boot.configurationprocessor.ConfigurationMetadataAnnotationProcessor",
+    "execution_model": "STANDARD_JSR269",
+    "output_kind": "RESOURCE",
+    "output_path": "META-INF/spring-configuration-metadata.json"
+  },
+  "artifacts": [
+    {
+      "relative_path": "org/springframework/boot/spring-boot/2.2.5.RELEASE/spring-boot-2.2.5.RELEASE.jar",
+      "sha256": "7831abfc5afb3baa24d5a701407caeca7339223eaa63eb3fcf145f3b69d81024",
+      "bytes": 1047892,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/spring-core/5.2.4.RELEASE/spring-core-5.2.4.RELEASE.jar",
+      "sha256": "e5e57e11606731abe1a858b25f58dc4d5b2254ddb77f33ce91cfa45d2719d5ba",
+      "bytes": 1442526,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/spring-jcl/5.2.4.RELEASE/spring-jcl-5.2.4.RELEASE.jar",
+      "sha256": "dcc3e21a7c78f2a9b98fd5e31f3e4332fc11e1ed35e3eae01ed4874de26d0efb",
+      "bytes": 23961,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/spring-context/5.2.4.RELEASE/spring-context-5.2.4.RELEASE.jar",
+      "sha256": "37a4c71e3bf1a9aab148701e30ab0117f7da050e86abcbda3556b80f85f3f3d2",
+      "bytes": 1222418,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/spring-aop/5.2.4.RELEASE/spring-aop-5.2.4.RELEASE.jar",
+      "sha256": "d977f85579a8eb49ad2451b953e2fcd408f491e02178cafea452016039592406",
+      "bytes": 372798,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/spring-beans/5.2.4.RELEASE/spring-beans-5.2.4.RELEASE.jar",
+      "sha256": "b90ec0db31c54cd72550337e239c18765afaf5d85c5a02fc0db42f0149babc53",
+      "bytes": 685134,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/spring-expression/5.2.4.RELEASE/spring-expression-5.2.4.RELEASE.jar",
+      "sha256": "c9d248e68d707d1dd3bc69e0049f4cd11923646717e01ce849402e23ef861928",
+      "bytes": 282183,
+      "processor_path": false
+    },
+    {
+      "relative_path": "org/springframework/boot/spring-boot-configuration-processor/2.2.5.RELEASE/spring-boot-configuration-processor-2.2.5.RELEASE.jar",
+      "sha256": "8a6961300c1dceee2373658b33784c16d1fdff5bebde05ff99a59f94fd029d4b",
+      "bytes": 111276,
+      "processor_path": true
+    }
+  ]
+}

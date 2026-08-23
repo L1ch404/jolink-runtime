@@ -109,6 +109,19 @@ locks/eclipse-2021-03-lombok-anchor-diagnostics-v2.json
     active exact bundle and Worker identities; currently only newly rerun
     evidence may be attributed to them
 
+candidate-bootstrap-eclipse-2021-03-no-apt-spike.json /
+candidate-bootstrap-eclipse-2021-03-apt-spike.json
+    independent Eclipse 2021-03 baseline/APT capability candidates. The APT
+    closure adds only APT core/pluggable/compiler/tool plus mandatory Ant and
+    deliberately excludes UI, SWT, M2E, and JDT LS
+
+run_apt_spike.py / apt-spring-config-java8-lock.json /
+fixtures/apt-spring-config-java8
+    bounded Spring Configuration Processor experiment: FULL resource
+    generation, field-add/delete Incremental, annotation/source native-stale
+    detection with CLEAN/FULL fallback, same-candidate clean-full oracles,
+    effective APT state readback, and relative candidate/RSS footprint
+
 build_worker.py
     verifies the lock, compiles the Worker with javac 17, builds the OSGi
     bundle, and writes the deterministic config template
@@ -213,6 +226,13 @@ uv run python experiments/jdt-incremental-worker/run_bootstrap_smoke.py \
 uv run python experiments/jdt-incremental-worker/run_lombok_experiment.py \
   --worker-java-home /path/to/jdk-17 \
   --target-java-home /path/to/jdk-8 \
+  --keep-attempt
+
+# Standard Eclipse APT resource-generation spike:
+uv run python experiments/jdt-incremental-worker/run_apt_spike.py \
+  --worker-java-home /path/to/jdk-17 \
+  --target-java-home /path/to/jdk-8 \
+  --local-repository /path/to/maven-local-repository \
   --keep-attempt
 
 # Expected javac-8 / locked ECJ-3.25 portability divergence:

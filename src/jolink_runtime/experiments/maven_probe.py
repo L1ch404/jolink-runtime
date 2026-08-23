@@ -21,7 +21,7 @@ _SETTINGS_NS = "http://maven.apache.org/SETTINGS/1.0.0"
 _MAX_SETTINGS_BYTES = 4 * 1024 * 1024
 PROBE_GROUP_ID = "io.jolink"
 PROBE_ARTIFACT_ID = "jolink-maven-probe"
-PROBE_VERSION = "0.1.0-spike1"
+PROBE_VERSION = "0.1.0-spike6"
 
 
 @dataclass(frozen=True)

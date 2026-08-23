@@ -117,7 +117,9 @@ writer. The initial compatibility floor is Maven 3.3.9 and Java 8 bytecode.
 
 The source plugin build uses explicit compiler, descriptor, and JAR goals rather
 than the full `package` lifecycle. This avoids old Maven Super-POM resource and
-Surefire defaults during the development-only Probe build.
+Surefire defaults during the development-only Probe build. `--offline` is now
+also propagated to this source bootstrap, so an offline target invocation does
+not silently perform an online Probe build.
 
 ## Exported schema v1
 
@@ -131,7 +133,30 @@ compile source roots
 compile classpath elements
 formal output directory
 reactor project identities and output directories
+annotation-processing discovery mode
+Processor-service artifact paths discovered on the implicit compile classpath
+Processor provider names
+`-A` options and explicitly selected Processor names
+explicit annotationProcessorPaths declaration count
 ```
+
+The initial Processor-aware implementation used historical `spike2`; the
+current reproducible boundary with effective factory-path and legacy-option
+guards uses the separate `0.1.0-spike6` coordinate. The
+currently verified path reports
+`IMPLICIT_COMPILE_CLASSPATH`, exact provider-bearing artifact paths, providers,
+and options. An effective compiler configuration with explicit
+`annotationProcessorPaths` is reported as `EXPLICIT_DECLARED_UNRESOLVED` rather
+than being misrepresented as a resolved path.
+
+`processorProviderArtifactPaths` proves where Processor providers are declared;
+it is not a claim that their complete runtime dependency closure has been
+resolved. Non-empty options, explicit Processor names, execution-level
+Processor configuration, `proc=only`, and directory providers currently fail
+closed at the APT runner boundary. Plugin-level legacy
+`<compilerArguments><A...>` options, `maven.compiler.proc` properties, and raw
+processor-control compiler arguments are detected separately and rejected.
+Provider artifact ordering preserves Maven's compile-classpath order.
 
 These are private facts. Absolute paths, coordinates, and the settings copy do
 not enter the shareable report. Every snapshot must echo an implementation
@@ -141,9 +166,9 @@ counts, artifact/implementation/JDK/Maven fingerprints, timing,
 mirror-adjustment count, offline seed state, and project-mutation gates.
 
 The current Probe still needs later schema work before becoming the sole
-BuildWorld authority, including compiler options, artifact-handler provenance,
-generated-source provenance, annotation Processor configuration, resources,
-toolchains, and exact configuration fingerprints.
+BuildWorld authority, including complete compiler options, explicit Processor
+artifact resolution, artifact-handler provenance, generated-source provenance,
+resources, toolchains, and exact configuration fingerprints.
 
 ## Authority and fallback rules
 
