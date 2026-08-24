@@ -54,6 +54,11 @@ phase1b = _load_module(
     "jolink_jdt_phase1b_lombok_experiment",
     EXPERIMENT / "run_lombok_experiment.py",
 )
+incremental_suite = _load_module(
+    "jolink_jdt_incremental_suite",
+    EXPERIMENT / "incremental_suite.py",
+)
+sys.modules["incremental_suite"] = incremental_suite
 phase2a = _load_module(
     "jolink_jdt_phase2a_real_maven_build_world",
     EXPERIMENT / "run_real_maven_build_world.py",
@@ -71,6 +76,513 @@ maven_probe_spike = _load_module(
 from jolink_runtime.experiments import jdt_build_world as build_world
 from jolink_runtime.experiments import maven_probe
 from jolink_runtime.launch.maven import MavenBuildSystemAdapter
+
+
+def _incremental_frame(*, compile_ok: bool = True) -> dict[str, object]:
+    return {
+        "ok": compile_ok,
+        "status": "build_finished",
+        "operation_kind": "INCREMENTAL",
+        "operation_ok": True,
+        "compile_ok": compile_ok,
+        "terminal_status": "SUCCEEDED" if compile_ok else "FAILED_COMPILE",
+        "requested_build_kind": "INCREMENTAL",
+        "actual_build_kind": "INCREMENTAL",
+        "compiled_source_units": ["private.java"],
+        "elapsed_ms": 12,
+        "error_count": 0 if compile_ok else 1,
+        "warning_count": 0,
+        "info_count": 0,
+        "returned_error_count": 0 if compile_ok else 1,
+        "returned_warning_count": 0,
+        "returned_info_count": 0,
+        "diagnostic_selection_policy": "errors_first_then_warnings_then_info",
+        "diagnostics": [] if compile_ok else ["private-error"],
+        "diagnostic_details": (
+            []
+            if compile_ok
+            else [
+                {
+                    "severity_name": "ERROR",
+                    "resource": "private.java",
+                    "line": 1,
+                    "message": "private-error",
+                }
+            ]
+        ),
+        "diagnostics_truncated": False,
+    }
+
+
+def test_incremental_suite_plan_is_private_and_ordered(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "body",
+                        "category": "method_body",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return 2;",
+                        "oracle": "forward",
+                    },
+                    {
+                        "id": "error",
+                        "category": "compile_error_recovery",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return missing;",
+                        "oracle": "recovery",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = incremental_suite.load_plan(plan_path)
+
+    assert [case.case_id for case in plan.cases] == ["body", "error"]
+    assert plan.cases[1].expect_compile_ok is False
+    assert "example/Demo.java" in incremental_suite.private_values(plan)
+    assert isinstance(plan.fingerprint, str) and len(plan.fingerprint) == 64
+
+
+def test_incremental_suite_rejects_escaping_source_path(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "escape",
+                        "category": "method_body",
+                        "operation": "replace",
+                        "source": "../Secret.java",
+                        "before": "old value",
+                        "after": "new value",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        incremental_suite.IncrementalSuiteError,
+        match="normalized relative Java path",
+    ):
+        incremental_suite.load_plan(plan_path)
+
+
+def test_incremental_suite_reuses_baseline_and_restores_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "src"
+    output = tmp_path / "bin"
+    source = source_root / "example/Demo.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Demo { int value() { return 1; } }", encoding="utf-8")
+    output.mkdir()
+    (output / "Demo.class").write_bytes(b"return 1")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "body",
+                        "category": "method_body",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return 2;",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        calls = 0
+
+        def command(self, command: str) -> dict[str, object]:
+            assert command == "BUILD\tINCREMENTAL"
+            self.calls += 1
+            (output / "Demo.class").write_bytes(
+                b"return 2" if b"return 2" in source.read_bytes() else b"return 1"
+            )
+            return _incremental_frame()
+
+    monkeypatch.setattr(
+        incremental_suite.common,
+        "require_build_operation_contract",
+        lambda frame, operation_kind: None,
+    )
+    result = incremental_suite.run_suite(
+        client=FakeClient(),
+        plan=incremental_suite.load_plan(plan_path),
+        source_root=source_root,
+        output=output,
+        source_encoding="UTF-8",
+    )
+
+    assert result["suite_completed"] is True
+    assert result["all_native_incremental_passed"] is True
+    assert result["shared_bootstrap"] is True
+    assert result["cases"][0]["capability_status"] == (
+        "native_incremental_passed"
+    )
+    assert result["cases"][0]["forward"]["output_delta"]["classes"][
+        "changed_count"
+    ] == 1
+    assert source.read_text(encoding="utf-8").endswith("return 1; } }")
+    assert (output / "Demo.class").read_bytes() == b"return 1"
+
+
+def test_incremental_suite_accepts_true_noop_without_actual_build_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "src"
+    output = tmp_path / "bin"
+    source_root.mkdir()
+    output.mkdir()
+    (output / "Demo.class").write_bytes(b"baseline")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "noop",
+                        "category": "noop",
+                        "operation": "noop",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    frame = _incremental_frame()
+    frame["actual_build_kind"] = None
+    frame["compiled_source_units"] = []
+
+    monkeypatch.setattr(
+        incremental_suite.common,
+        "require_build_operation_contract",
+        lambda result, operation_kind: None,
+    )
+    result = incremental_suite.run_suite(
+        client=SimpleNamespace(command=lambda command: dict(frame)),
+        plan=incremental_suite.load_plan(plan_path),
+        source_root=source_root,
+        output=output,
+        source_encoding="UTF-8",
+    )
+
+    assert result["suite_completed"] is True
+    assert result["all_native_incremental_passed"] is True
+    assert result["cases"][0]["capability_status"] == (
+        "native_incremental_passed"
+    )
+
+
+def test_incremental_suite_rejects_successful_mutation_without_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "src"
+    output = tmp_path / "bin"
+    source = source_root / "example/Demo.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Demo { int value() { return 1; } }", encoding="utf-8")
+    output.mkdir()
+    (output / "Demo.class").write_bytes(b"baseline")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "no-effect",
+                        "category": "lombok_field",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return 2;",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        incremental_suite.common,
+        "require_build_operation_contract",
+        lambda frame, operation_kind: None,
+    )
+
+    result = incremental_suite.run_suite(
+        client=SimpleNamespace(command=lambda command: _incremental_frame()),
+        plan=incremental_suite.load_plan(plan_path),
+        source_root=source_root,
+        output=output,
+        source_encoding="UTF-8",
+    )
+
+    case = result["cases"][0]
+    assert case["forward_effect_observed"] is False
+    assert case["capability_status"] == "failed"
+    assert result["all_native_incremental_passed"] is False
+
+
+def test_incremental_suite_classifies_forward_oracle_mismatch_as_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "src"
+    output = tmp_path / "bin"
+    source = source_root / "example/Demo.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Demo { int value() { return 1; } }", encoding="utf-8")
+    output.mkdir()
+    (output / "Demo.class").write_bytes(b"baseline")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "oracle-gap",
+                        "category": "apt_sensitive",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return 2;",
+                        "oracle": "forward",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def command(self, command: str) -> dict[str, object]:
+            return _incremental_frame()
+
+    monkeypatch.setattr(
+        incremental_suite.common,
+        "require_build_operation_contract",
+        lambda frame, operation_kind: None,
+    )
+    result = incremental_suite.run_suite(
+        client=FakeClient(),
+        plan=incremental_suite.load_plan(plan_path),
+        source_root=source_root,
+        output=output,
+        source_encoding="UTF-8",
+        oracle_runner=lambda label, root: (
+            {"compile_ok": True},
+            incremental_suite.OutputState(
+                classes={"Demo.class": "clean-full-different"},
+                resources={},
+            ),
+        ),
+    )
+
+    case = result["cases"][0]
+    assert case["forward_effect_observed"] is False
+    assert case["capability_status"] == "clean_full_fallback_candidate"
+    assert case["baseline_recovery_status"] == "restored_by_incremental"
+    assert result["capability_counts"] == {
+        "native_incremental_passed": 0,
+        "clean_full_fallback_candidate": 1,
+        "failed": 0,
+    }
+    assert result["all_native_incremental_passed"] is False
+
+
+def test_incremental_suite_recovers_baseline_then_continues_next_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "src"
+    output = tmp_path / "bin"
+    source = source_root / "example/Demo.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Demo { int value() { return 1; } }", encoding="utf-8")
+    output.mkdir()
+    class_file = output / "Demo.class"
+    class_file.write_bytes(b"baseline")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "body",
+                        "category": "method_body",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return 2;",
+                    },
+                    {"id": "noop", "category": "noop", "operation": "noop"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        calls = 0
+
+        def command(self, command: str) -> dict[str, object]:
+            self.calls += 1
+            if self.calls == 1:
+                class_file.write_bytes(b"changed")
+                return _incremental_frame()
+            if self.calls == 2:
+                return _incremental_frame(compile_ok=False)
+            if command == "BUILD\tCLEAN":
+                class_file.unlink(missing_ok=True)
+                frame = _incremental_frame()
+                frame.update(
+                    operation_kind="CLEAN",
+                    compile_ok=None,
+                    terminal_status="SUCCEEDED",
+                    compiled_source_units=[],
+                )
+                return frame
+            if command == "BUILD\tFULL":
+                class_file.write_bytes(b"baseline")
+                frame = _incremental_frame()
+                frame.update(
+                    operation_kind="FULL",
+                    actual_build_kind="FULL",
+                )
+                return frame
+            frame = _incremental_frame()
+            frame["actual_build_kind"] = None
+            frame["compiled_source_units"] = []
+            return frame
+
+    monkeypatch.setattr(
+        incremental_suite.common,
+        "require_build_operation_contract",
+        lambda frame, operation_kind: None,
+    )
+    result = incremental_suite.run_suite(
+        client=FakeClient(),
+        plan=incremental_suite.load_plan(plan_path),
+        source_root=source_root,
+        output=output,
+        source_encoding="UTF-8",
+    )
+
+    first, second = result["cases"]
+    assert first["capability_status"] == "native_incremental_passed"
+    assert first["baseline_recovery_status"] == "restored_by_clean_full"
+    assert first["baseline_recovery_fallback_used"] is True
+    assert second["capability_status"] == "native_incremental_passed"
+    assert result["suite_completed"] is True
+    assert result["all_native_incremental_passed"] is False
+
+
+def test_incremental_suite_compile_error_recovers_with_oracle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "src"
+    output = tmp_path / "bin"
+    source = source_root / "example/Demo.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Demo { int value() { return 1; } }", encoding="utf-8")
+    output.mkdir()
+    (output / "Demo.class").write_bytes(b"baseline")
+    baseline = incremental_suite.output_state(output)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema": incremental_suite.PLAN_SCHEMA,
+                "cases": [
+                    {
+                        "id": "error",
+                        "category": "compile_error_recovery",
+                        "operation": "replace",
+                        "source": "example/Demo.java",
+                        "before": "return 1;",
+                        "after": "return missing;",
+                        "oracle": "recovery",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def command(self, command: str) -> dict[str, object]:
+            if b"return missing" in source.read_bytes():
+                return _incremental_frame(compile_ok=False)
+            (output / "Demo.class").write_bytes(b"baseline")
+            return _incremental_frame()
+
+    monkeypatch.setattr(
+        incremental_suite.common,
+        "require_build_operation_contract",
+        lambda frame, operation_kind: None,
+    )
+    result = incremental_suite.run_suite(
+        client=FakeClient(),
+        plan=incremental_suite.load_plan(plan_path),
+        source_root=source_root,
+        output=output,
+        source_encoding="UTF-8",
+        oracle_runner=lambda label, root: ({"compile_ok": True}, baseline),
+    )
+
+    case = result["cases"][0]
+    assert case["capability_status"] == "native_incremental_passed"
+    assert case["baseline_recovery_status"] == "restored_by_incremental"
+    assert case["recovery_oracle"]["output_equal"] is True
+
+
+def test_incremental_suite_removes_empty_directories_created_by_add(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    case = incremental_suite.IncrementalCase(
+        case_id="source",
+        category="source_lifecycle",
+        operation="add",
+        source="new/package/Added.java",
+        before=None,
+        after=None,
+        content="package new.package; class Added {}",
+        expect_compile_ok=True,
+        oracle="none",
+    )
+
+    mutation = incremental_suite.apply_case(
+        source_root, case, encoding="UTF-8"
+    )
+    assert (source_root / "new/package/Added.java").is_file()
+
+    mutation.restore()
+
+    assert not (source_root / "new").exists()
 
 
 def test_apt_spike_candidate_is_independent_and_excludes_ui() -> None:
@@ -379,6 +891,43 @@ def test_phase2a_unverified_apt_uses_independent_candidate() -> None:
         None,
         experimental_apt=True,
     ) == EXPERIMENT / "locks/eclipse-2021-03-apt-spike.json"
+
+
+def test_incremental_suite_bypasses_only_obsolete_processor_blocker() -> None:
+    ready = {
+        "apt_enabled": True,
+        "apt_factory_path_verified": True,
+        "apt_unexpected_enabled_container_count": 0,
+    }
+
+    assert phase2a._incremental_suite_apt_override_allowed(
+        SimpleNamespace(
+            phase2b_blockers=(
+                "unknown_compile_time_annotation_processor",
+            )
+        ),
+        ready,
+        experimental_apt=True,
+    )
+    assert not phase2a._incremental_suite_apt_override_allowed(
+        SimpleNamespace(
+            phase2b_blockers=(
+                "unknown_compile_time_annotation_processor",
+                "maven_native_source_root_refresh_unverified",
+            )
+        ),
+        ready,
+        experimental_apt=True,
+    )
+    assert not phase2a._incremental_suite_apt_override_allowed(
+        SimpleNamespace(
+            phase2b_blockers=(
+                "unknown_compile_time_annotation_processor",
+            )
+        ),
+        ready,
+        experimental_apt=False,
+    )
 
 
 def test_cross_compiler_fixture_is_wired_to_expected_divergence_probe() -> None:

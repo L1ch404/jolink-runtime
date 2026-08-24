@@ -215,6 +215,106 @@ warnings包含UNVERIFIED_APT_PROVIDER_FAST_PATH
 这次结果只用于判断真实Processor能否在JDT FULL中运行，不能据此删除Phase 2B blocker
 或发布class/resource。
 
+### 4.1 共享一次 Bootstrap/FULL 的 Incremental Suite
+
+公司大项目首次 FULL 通过后，可以让同一个 warm Worker 连续执行主要 Incremental
+边界。不要为每个 Case 重新跑 Maven 或 JDT FULL。
+
+先在本机临时目录创建私有计划，例如：
+
+```powershell
+$SuitePlan = "$env:TEMP\jolink-incremental-suite.private.json"
+```
+
+计划格式很小：
+
+```json
+{
+  "schema": "jolink.jdt-incremental-suite-plan.v1",
+  "cases": [
+    {"id":"noop","category":"noop","operation":"noop"},
+    {"id":"body","category":"method_body","operation":"replace",
+     "source":"com/example/Service.java","before":"唯一的原方法体片段",
+     "after":"替换后的方法体片段","oracle":"forward"},
+    {"id":"constant","category":"compile_time_constant","operation":"replace",
+     "source":"com/example/Constants.java","before":"原常量片段",
+     "after":"新常量片段","oracle":"forward"},
+    {"id":"schema","category":"schema_change","operation":"replace",
+     "source":"com/example/Api.java","before":"原签名或字段片段",
+     "after":"新签名或字段片段"},
+    {"id":"lombok","category":"lombok_field","operation":"replace",
+     "source":"com/example/Dto.java","before":"原Lombok字段锚点",
+     "after":"增删字段后的片段"},
+    {"id":"apt","category":"apt_sensitive","operation":"replace",
+     "source":"com/example/Properties.java","before":"原Processor输入片段",
+     "after":"修改后的Processor输入片段","oracle":"forward"},
+    {"id":"source","category":"source_lifecycle","operation":"add",
+     "source":"com/example/JolinkSuiteAdded.java",
+     "content":"package com.example; public class JolinkSuiteAdded {}",
+     "oracle":"forward"},
+    {"id":"error","category":"compile_error_recovery","operation":"replace",
+     "source":"com/example/Service.java","before":"一个唯一且合法的表达式",
+     "after":"missingSuiteSymbol","oracle":"recovery"}
+  ]
+}
+```
+
+`source` 相对于 Maven source root，不要写 `src/main/java`，更不能写绝对路径。`before`
+必须在 private source 中恰好出现一次。计划会包含公司代码片段，只能留在公司电脑，不能
+提交或分享。`id` 使用上例这种通用标签，不要放公司类名或业务名。找不到合适输入的
+Case 可以省略，不要为了凑齐修改公司业务语义。
+
+在上面的 Phase 2A 命令末尾同时增加：
+
+```powershell
+  --experimental-allow-unverified-apt-providers `
+  --incremental-suite-plan $SuitePlan
+```
+
+执行模型固定为：
+
+```text
+一次 Maven Bootstrap
+-> 一次 JDT FULL
+-> Case 正向 INCREMENTAL
+-> 恢复原 source
+-> 反向 INCREMENTAL 回 baseline
+-> 下一 Case
+```
+
+只有计划中 `oracle=forward/recovery` 的少数 Case 才会启动独立 clean-full oracle。
+若反向 Incremental 没恢复 baseline，Runner 会记录并使用一次 CLEAN+FULL 恢复后再继续，
+不会让前一个 Case 污染后续 Case。所有修改只发生在 private workspace，原项目 source、
+POM 和 `target` 不会被修改。
+
+成功输出至少应包含：
+
+```text
+incremental_suite_executed = true
+incremental_suite_completed = true
+all_native_incremental_passed = true/false
+```
+
+每个 Case 分开返回：
+
+```text
+capability_status
+    native_incremental_passed
+    clean_full_fallback_candidate
+    failed
+
+baseline_recovery_status
+    not_required
+    restored_by_incremental
+    restored_by_clean_full
+    failed
+```
+
+`clean_full_fallback_candidate` 只表示正向 Incremental 与独立 clean-full oracle 不一致；
+`restored_by_clean_full` 只表示 Suite 为恢复下一 Case 的 baseline 使用了 CLEAN+FULL，二者
+不能混为一谈。分享报告只包含 Case label、计数、耗时和 fingerprint，不包含 source path
+或源码片段。
+
 如果是 reactor 多模块，在命令中增加精确选择：
 
 ```powershell

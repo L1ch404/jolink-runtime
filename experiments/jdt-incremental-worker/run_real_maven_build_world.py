@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Sequence
 
+import incremental_suite
 import run_bootstrap_smoke as common
 
 from jolink_runtime.experiments.jdt_build_world import (
@@ -1038,6 +1039,24 @@ def _lock_for_phase2a(
     return root / "locks" / "eclipse-2021-03-lombok-anchor-diagnostics-v2.json"
 
 
+def _incremental_suite_apt_override_allowed(
+    snapshot: BuildWorldSnapshot,
+    worker_ready: dict[str, object],
+    *,
+    experimental_apt: bool,
+) -> bool:
+    """Bypass only the obsolete blanket non-Lombok Processor blocker."""
+
+    return bool(
+        snapshot.phase2b_blockers
+        == ("unknown_compile_time_annotation_processor",)
+        and experimental_apt
+        and worker_ready.get("apt_enabled") is True
+        and worker_ready.get("apt_factory_path_verified") is True
+        and worker_ready.get("apt_unexpected_enabled_container_count") == 0
+    )
+
+
 def _candidate_identity(lock: dict[str, Any], lock_path: Path) -> dict[str, object]:
     return {
         "candidate_id": lock["candidate_id"],
@@ -1136,6 +1155,14 @@ def main(argv: list[str] | None = None) -> int:
             "trusted for product decisions."
         ),
     )
+    parser.add_argument(
+        "--incremental-suite-plan",
+        type=Path,
+        help=(
+            "Private mutation plan for one shared Bootstrap/FULL incremental "
+            "suite. Source paths and text are never copied into the report."
+        ),
+    )
     parser.add_argument("--keep-attempt", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1148,6 +1175,11 @@ def main(argv: list[str] | None = None) -> int:
     owner = AttemptToken(attempt_id, 1)
     started = time.monotonic()
     try:
+        suite_plan = (
+            incremental_suite.load_plan(args.incremental_suite_plan)
+            if args.incremental_suite_plan is not None
+            else None
+        )
         project = args.project_path.expanduser().resolve(strict=True)
         adapter = MavenBuildSystemAdapter()
         workspace = adapter.resolve_workspace(project)
@@ -1489,6 +1521,113 @@ def main(argv: list[str] | None = None) -> int:
                 "class_loading_or_initialization_used": False,
             }
         )
+        incremental_result: dict[str, object] | None = None
+        if suite_plan is not None:
+            tier1_ready = bool(
+                comparison.get("tier1", {}).get("status") == "compatible"
+            )
+            apt_override = _incremental_suite_apt_override_allowed(
+                snapshot,
+                worker_ready,
+                experimental_apt=(
+                    args.experimental_allow_unverified_apt_providers
+                ),
+            )
+            if not jdt_compile_ok or not tier1_ready:
+                raise BuildWorldError(
+                    "INCREMENTAL_SUITE_BASELINE_UNAVAILABLE",
+                    "Incremental suite requires a successful compatible FULL baseline.",
+                    suggested_next_step="Fix the Phase 2A FULL result first.",
+                )
+            if snapshot.phase2b_blockers and not apt_override:
+                raise BuildWorldError(
+                    "INCREMENTAL_SUITE_BLOCKED_BY_BUILD_WORLD",
+                    "Build World blockers exceed the bounded incremental suite override.",
+                    suggested_next_step="Use the formal Maven build.",
+                )
+
+            def run_clean_full_oracle(
+                label: str, current_source: Path
+            ) -> tuple[dict[str, Any], incremental_suite.OutputState]:
+                oracle_attempt = attempt / "incremental-oracles" / label
+                oracle_client: common.WorkerClient | None = None
+                try:
+                    oracle_client = common.start_worker(
+                        lock=lock,
+                        candidate_root=candidate_root,
+                        worker_java_home=args.worker_java_home,
+                        attempt=oracle_attempt,
+                        system_libraries_file=worker_classpath,
+                        instrumentation="enabled",
+                        timeout=args.worker_timeout,
+                        source_encoding=snapshot.encoding,
+                        apt_processors_file=apt_processors_file,
+                        java_agents=java_agents,
+                        extra_jvm_arguments=extra_jvm,
+                    )
+                    oracle_source = (
+                        oracle_attempt
+                        / "workspace"
+                        / "plain-fixture"
+                        / "src"
+                    )
+                    shutil.copytree(
+                        current_source, oracle_source, dirs_exist_ok=True
+                    )
+                    for config_source, relative_target in config_files:
+                        oracle_config = oracle_source.parent / relative_target
+                        oracle_config.parent.mkdir(parents=True, exist_ok=True)
+                        oracle_config.write_bytes(config_source.read_bytes())
+                    oracle_started = time.monotonic()
+                    oracle_frame = oracle_client.command("BUILD\tFULL")
+                    oracle_wall_ms = round(
+                        (time.monotonic() - oracle_started) * 1000, 1
+                    )
+                    common.require_build_operation_contract(
+                        oracle_frame, operation_kind="FULL"
+                    )
+                    oracle_output = (
+                        oracle_attempt
+                        / "workspace"
+                        / "plain-fixture"
+                        / "bin"
+                    )
+                    units = oracle_frame.get("compiled_source_units")
+                    summary: dict[str, Any] = {
+                        "compile_ok": oracle_frame.get("compile_ok"),
+                        "actual_build_kind": oracle_frame.get(
+                            "actual_build_kind"
+                        ),
+                        "build_duration_ms": oracle_frame.get("elapsed_ms"),
+                        "wall_duration_ms": oracle_wall_ms,
+                        "compiled_source_count": (
+                            len(units) if isinstance(units, list) else None
+                        ),
+                        "error_count": oracle_frame.get("error_count"),
+                        "warning_count": oracle_frame.get("warning_count"),
+                    }
+                    return summary, incremental_suite.output_state(
+                        oracle_output
+                    )
+                finally:
+                    if oracle_client is not None:
+                        oracle_client.close()
+
+            incremental_result = incremental_suite.run_suite(
+                client=client,
+                plan=suite_plan,
+                source_root=private_source,
+                output=private_output,
+                source_encoding=str(
+                    worker_ready.get("source_encoding_effective")
+                    or snapshot.encoding
+                ),
+                oracle_runner=run_clean_full_oracle,
+            )
+            incremental_result["legacy_processor_blocker_overridden"] = (
+                apt_override
+            )
+            incremental_result["product_trusted"] = False
         shutdown = client.close()
         client = None
         target_after = tree_fingerprint(module.directory / "target")
@@ -1547,6 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
             "ok": True,
             "trusted_for_product_decision": not (
                 args.experimental_allow_unverified_apt_providers
+                or incremental_result is not None
             ),
             "status": status,
             "decision": decision,
@@ -1651,6 +1791,7 @@ def main(argv: list[str] | None = None) -> int:
                 "diagnostics": diagnostic_summary,
                 "raw_diagnostics_in_report": False,
             },
+            "incremental_suite": incremental_result,
             "cross_compiler_comparison": comparison,
             "isolation": isolation,
             "worker_shutdown": shutdown,
@@ -1673,8 +1814,13 @@ def main(argv: list[str] | None = None) -> int:
                 "classpath, output directories, and reactor facts; compiler and "
                 "annotation-processor configuration still come from the legacy "
                 "effective-POM model.",
-                "No incremental mutation, HotSwap, target JVM, HTTP, or "
-                "product integration is exercised.",
+                (
+                    "No HotSwap, target JVM, HTTP, or product integration is "
+                    "exercised."
+                    if incremental_result is not None
+                    else "No incremental mutation, HotSwap, target JVM, HTTP, "
+                    "or product integration is exercised."
+                ),
                 *(
                     [
                         "Experimental APT uses Provider artifacts without a "
@@ -1685,14 +1831,24 @@ def main(argv: list[str] | None = None) -> int:
                     else []
                 ),
             ],
-            "warnings": (
-                [
-                    "UNVERIFIED_APT_PROVIDER_FAST_PATH",
-                    "NOT_TRUSTED_FOR_PRODUCT_DECISION",
-                ]
-                if args.experimental_allow_unverified_apt_providers
-                else []
-            ),
+            "warnings": [
+                *(
+                    ["UNVERIFIED_APT_PROVIDER_FAST_PATH"]
+                    if args.experimental_allow_unverified_apt_providers
+                    else []
+                ),
+                *(
+                    ["INCREMENTAL_SUITE_EXPERIMENTAL"]
+                    if incremental_result is not None
+                    else []
+                ),
+                *(
+                    ["NOT_TRUSTED_FOR_PRODUCT_DECISION"]
+                    if args.experimental_allow_unverified_apt_providers
+                    or incremental_result is not None
+                    else []
+                ),
+            ],
             "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
         }
         _assert_shareable_report(
@@ -1703,6 +1859,11 @@ def main(argv: list[str] | None = None) -> int:
                 preferences=preferences,
                 snapshot=snapshot,
                 diagnostics=diagnostics,
+            )
+            + (
+                incremental_suite.private_values(suite_plan)
+                if suite_plan is not None
+                else ()
             ),
         )
         report_path = _report_path(args.cache_root, attempt_id)
@@ -1718,6 +1879,21 @@ def main(argv: list[str] | None = None) -> int:
                     "phase2b_incremental_eligible": (
                         snapshot.phase2b_incremental_eligible
                     ),
+                    "incremental_suite_executed": (
+                        incremental_result is not None
+                    ),
+                    "incremental_suite_completed": (
+                        incremental_result.get("suite_completed")
+                        if incremental_result is not None
+                        else None
+                    ),
+                    "all_native_incremental_passed": (
+                        incremental_result.get(
+                            "all_native_incremental_passed"
+                        )
+                        if incremental_result is not None
+                        else None
+                    ),
                     "keep_attempt": args.keep_attempt,
                 },
                 ensure_ascii=False,
@@ -1726,7 +1902,13 @@ def main(argv: list[str] | None = None) -> int:
         if not args.keep_attempt:
             shutil.rmtree(attempt)
         return 0
-    except (BuildWorldError, MavenResolutionError, common.SmokeError, OSError) as error:
+    except (
+        BuildWorldError,
+        MavenResolutionError,
+        incremental_suite.IncrementalSuiteError,
+        common.SmokeError,
+        OSError,
+    ) as error:
         if isinstance(error, BuildWorldError):
             payload: dict[str, object] = error.as_dict()
         elif isinstance(error, MavenResolutionError):
@@ -1737,6 +1919,16 @@ def main(argv: list[str] | None = None) -> int:
                 "retryable": error.retryable,
                 "suggested_next_step": error.suggested_next_step,
                 **error.context,
+            }
+        elif isinstance(error, incremental_suite.IncrementalSuiteError):
+            payload = {
+                "ok": False,
+                "error_code": "INCREMENTAL_SUITE_FAILED",
+                "error": str(error),
+                "retryable": False,
+                "suggested_next_step": (
+                    "Inspect the private attempt and correct the mutation plan."
+                ),
             }
         else:
             private_failure = attempt / "failure.private.txt"
