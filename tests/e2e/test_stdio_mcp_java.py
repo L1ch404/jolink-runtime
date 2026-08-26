@@ -1188,11 +1188,11 @@ public class UpdateMcpFixture {{
                         "fast_compile_hotswap"
                     )
                     assert updated["selection_coverage"] == "caller_provided"
-                    assert updated["persistence"] == "runtime_only"
+                    assert updated["persistence"] == "committed_generation"
                     assert updated["runtime_overlay_active"] is True
                     assert updated["runtime_overlay_state"] == "active"
                     assert updated["verification_state"] == "not_verified"
-                    assert updated["restart_will_discard_overlay"] is True
+                    assert updated["restart_loses_update"] is False
                     assert updated["redefined_classes"] == [
                         "example.UpdateMcpFixture"
                     ]
@@ -1277,6 +1277,7 @@ public class UpdateMcpFixture {{
                     }))
                     assert observed["runtime_overlay_active"] is True
                     assert observed["code_revision"] == 1
+                    assert observed["generation"] == 2
 
                     source.write_text(
                         updated_source.replace(
@@ -1341,6 +1342,25 @@ public class UpdateMcpFixture {{
                     }))
                     assert reverted["status"] == "updated"
                     assert reverted["code_revision"] == 2
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "before-update"
+                    )
+
+                    restarting = assert_ok(await call_payload(session, {
+                        "action": "restart",
+                    }))
+                    assert restarting["status"] == "restarting"
+                    assert restarting["applied"] is None
+                    while True:
+                        restarted_status = assert_ok(
+                            await call_payload(session, {"action": "status"})
+                        )
+                        if restarted_status["launch_phase"] == "failed":
+                            raise AssertionError(restarted_status)
+                        if restarted_status["launch_phase"] == "runtime_active":
+                            break
+                        await anyio.sleep(0.1)
+                    assert restarted_status["generation"] == 3
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "before-update"
                     )

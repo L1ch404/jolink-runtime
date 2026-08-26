@@ -70,6 +70,15 @@ from .fast_compile import (
     FastCompiler,
     fast_compile_fingerprint,
 )
+from .project_session import (
+    BuildGeneration,
+    GenerationStore,
+    JavaProjectSession,
+    ProjectSessionError,
+    ReloadAttempt,
+    ReloadStage,
+    RuntimeGenerationState,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -116,6 +125,13 @@ __all__ = [
     "FastCompilePlan",
     "FastCompiler",
     "fast_compile_fingerprint",
+    "BuildGeneration",
+    "GenerationStore",
+    "JavaProjectSession",
+    "ProjectSessionError",
+    "ReloadAttempt",
+    "ReloadStage",
+    "RuntimeGenerationState",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

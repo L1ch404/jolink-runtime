@@ -209,14 +209,10 @@ class ProjectLaunchPipeline:
             )
         except MavenResolutionError as error:
             raise self._maven_failure(error) from error
-        command = self._commands.materialize(
+        plan, command = self.materialize_command(
             plan,
             jdwp_port=request.jdwp_port,
             attempt_directory=attempt_directory,
-        )
-        plan = replace(
-            plan,
-            command_materialization=command.materialization,
         )
         context.set_jvm_launch_plan(plan)
         fast_compile_plan: FastCompilePlan | None = None
@@ -256,6 +252,28 @@ class ProjectLaunchPipeline:
             fast_compile_unavailable_reason=(
                 fast_compile_unavailable_reason
             ),
+        )
+
+    def materialize_command(
+        self,
+        plan: JvmLaunchPlan,
+        *,
+        jdwp_port: int,
+        attempt_directory: Path,
+    ) -> tuple[JvmLaunchPlan, MaterializedJavaCommand]:
+        """Materialize a resolved plan after Generation classpath rewriting."""
+
+        command = self._commands.materialize(
+            plan,
+            jdwp_port=jdwp_port,
+            attempt_directory=attempt_directory,
+        )
+        return (
+            replace(
+                plan,
+                command_materialization=command.materialization,
+            ),
+            command,
         )
 
     @staticmethod

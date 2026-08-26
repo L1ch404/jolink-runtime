@@ -15,7 +15,9 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import struct
+import tempfile
 import threading
 import time
 import uuid
@@ -30,6 +32,7 @@ from ...launch import (
     FastCompileError,
     FastCompilePlan,
     FastCompiler,
+    JavaProjectSession,
     LaunchCancelled,
     LaunchContext,
     LaunchControlError,
@@ -39,6 +42,7 @@ from ...launch import (
     LaunchPipelineFailure,
     ProjectLaunchPipeline,
     ProjectLaunchRequest,
+    ProjectSessionError,
     RuntimeProcessState,
 )
 from ..base import Runtime
@@ -180,6 +184,10 @@ class ProjectUpdatePlan:
     fast_compile_plan: FastCompilePlan | None
     fast_compile_unavailable_reason: str | None
     attempt_directory: Path
+    project_session: JavaProjectSession | None = None
+    jvm_plan: Any | None = None
+    generation_classpath_index: int | None = None
+    request: ProjectLaunchRequest | None = None
 
 
 class JavaRuntime(Runtime):
@@ -245,6 +253,8 @@ class JavaRuntime(Runtime):
         self._project_processes: dict[str, Any] = {}
         self._project_warnings: dict[str, tuple[str, ...]] = {}
         self._project_update_plans: dict[str, ProjectUpdatePlan] = {}
+        self._project_sessions: dict[str, JavaProjectSession] = {}
+        self._preserve_project_sessions: set[str] = set()
         self._last_project_request: ProjectLaunchRequest | None = None
         self._last_direct_action: RuntimeAction | None = None
         self._fast_compiler = FastCompiler()
@@ -859,6 +869,244 @@ class JavaRuntime(Runtime):
             },
         )
 
+    def restart_current_project(
+        self,
+        action: RuntimeAction,
+    ) -> RuntimeResult:
+        """Restart the current sealed Generation without compiling sources."""
+
+        snapshot = self._launch_controller.snapshot()
+        attempt_id = snapshot.get("attempt_id")
+        if not isinstance(attempt_id, str):
+            return RuntimeResult(
+                ok=False,
+                error="No active project generation can be restarted.",
+                data={
+                    "error_code": "NO_RESTARTABLE_LAUNCH",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Launch a Maven project before calling restart."
+                    ),
+                },
+            )
+        with self._project_state_lock:
+            prepared = self._project_update_plans.get(attempt_id)
+            session = self._project_sessions.get(attempt_id)
+        if (
+            prepared is None
+            or prepared.jvm_plan is None
+            or prepared.generation_classpath_index is None
+            or prepared.request is None
+            or session is None
+            or session.generations.current is None
+        ):
+            return RuntimeResult(
+                ok=False,
+                error="The current project generation is unavailable.",
+                data={
+                    "error_code": "CURRENT_GENERATION_UNAVAILABLE",
+                    "retryable": True,
+                    "suggested_next_step": (
+                        "Launch the project again to establish a stable generation."
+                    ),
+                },
+            )
+        request = prepared.request
+        if action.ready_port > 0:
+            request = replace(
+                request,
+                ready_port=action.ready_port,
+                startup_wait_timeout_seconds=(
+                    action.startup_wait_timeout_seconds
+                ),
+            )
+        worker = lambda context: self._generation_restart_worker(
+            context,
+            request=request,
+            retained=prepared,
+            session=session,
+        )
+        with self._project_state_lock:
+            self._preserve_project_sessions.add(attempt_id)
+        try:
+            restarted = self._launch_controller.restart(
+                worker,
+                deadline=time.monotonic() + 5.0,
+            )
+        except LaunchControlError as error:
+            with self._project_state_lock:
+                self._preserve_project_sessions.discard(attempt_id)
+            return self._launch_control_result(error)
+        return RuntimeResult(
+            ok=True,
+            data={
+                "status": "restarting",
+                "applied": None,
+                **restarted,
+                "suggested_next_step": (
+                    "Call status until the current stable generation is running."
+                ),
+            },
+        )
+
+    def _generation_restart_worker(
+        self,
+        context: LaunchContext,
+        *,
+        request: ProjectLaunchRequest,
+        retained: ProjectUpdatePlan,
+        session: JavaProjectSession,
+    ) -> None:
+        attempt_directory = self._project_pipeline.create_attempt_directory(
+            context.attempt_id
+        )
+        process = None
+        runtime_active = False
+        with self._project_state_lock:
+            self._project_attempt_directories[context.attempt_id] = (
+                attempt_directory
+            )
+            self._project_sessions[context.attempt_id] = session
+        try:
+            context.transition(LaunchPhase.RESOLVING_BUILD)
+            context.transition(LaunchPhase.RESOLVING_RUNTIME)
+            current = session.generations.current
+            if current is None:
+                raise ProjectSessionError(
+                    "CURRENT_GENERATION_UNAVAILABLE",
+                    "The current generation disappeared before restart.",
+                )
+            classpath = list(retained.jvm_plan.classpath)
+            classpath[retained.generation_classpath_index] = (
+                current.output_directory
+            )
+            plan = replace(retained.jvm_plan, classpath=tuple(classpath))
+            plan, command = self._project_pipeline.materialize_command(
+                plan,
+                jdwp_port=request.jdwp_port,
+                attempt_directory=attempt_directory,
+            )
+            context.set_jvm_launch_plan(plan)
+            with self._project_state_lock:
+                self._project_update_plans[context.attempt_id] = replace(
+                    retained,
+                    attempt_directory=attempt_directory,
+                    project_session=session,
+                    jvm_plan=plan,
+                    request=request,
+                )
+            context.transition(LaunchPhase.STARTING_JVM)
+            context.check_cancelled()
+            self._reset_debug_state()
+            self._host = "127.0.0.1"
+            log_file = self._log.create(context.attempt_id)
+            startup_started = time.monotonic()
+            process = self._proc.start(
+                classpath=os.pathsep.join(str(path) for path in plan.classpath),
+                main_class=plan.main_class,
+                app_args=list(plan.program_args),
+                jdwp_port=request.jdwp_port,
+                vm_args=list(plan.jvm_args),
+                log_file=log_file,
+                ready_port=request.ready_port,
+                startup_wait_timeout_seconds=(
+                    request.startup_wait_timeout_seconds
+                ),
+                readiness_config_source=(
+                    "explicit" if request.ready_port else "not_configured"
+                ),
+                java_executable=str(plan.java_executable),
+                working_directory=plan.working_directory,
+                environment_overrides=plan.environment_overrides,
+                should_stop=lambda: context.cancel_event.is_set(),
+                on_published=lambda item: self._publish_project_process(
+                    context, item
+                ),
+                command_argv=command.argv,
+                retained_files=command.retained_files,
+            )
+            context.check_cancelled()
+            readiness = self._proc.observe_readiness(process)
+            context.set_process_observation(
+                process_state=RuntimeProcessState.RUNNING,
+                startup_state=str(readiness["startup_state"]),
+            )
+            if request.ready_port <= 0:
+                session.generations.mark_runtime_current()
+                session.record_successful_startup(
+                    (time.monotonic() - startup_started) * 1000
+                )
+                context.transition(LaunchPhase.RUNTIME_ACTIVE)
+                runtime_active = True
+                return
+            context.transition(LaunchPhase.WAITING_READINESS)
+            deadline = time.monotonic() + request.startup_wait_timeout_seconds
+            timeout_marked = False
+            while True:
+                context.check_cancelled()
+                readiness = self._proc.observe_readiness(process)
+                startup_state = str(readiness["startup_state"])
+                process_state = str(readiness.get("process_state", "running"))
+                context.set_process_observation(
+                    process_state=(
+                        RuntimeProcessState.RUNNING
+                        if process_state == "running"
+                        else RuntimeProcessState.EXITED
+                    ),
+                    startup_state=startup_state,
+                )
+                if startup_state == "ready":
+                    session.generations.mark_runtime_current()
+                    session.record_successful_startup(
+                        (time.monotonic() - startup_started) * 1000
+                    )
+                    context.transition(LaunchPhase.RUNTIME_ACTIVE)
+                    runtime_active = True
+                    return
+                if startup_state == "failed" or process_state == "exited":
+                    raise LaunchPipelineFailure(
+                        LaunchErrorCode.JVM_START_FAILED,
+                        "The current generation failed during restart.",
+                        retryable=True,
+                        suggested_next_step=(
+                            "Inspect logs, then launch the project again."
+                        ),
+                    )
+                if not timeout_marked and time.monotonic() >= deadline:
+                    process.mark_startup_wait_timed_out()
+                    timeout_marked = True
+                context.cancel_event.wait(0.2)
+        except ProcessStartCancelledError as error:
+            raise LaunchCancelled(str(error)) from error
+        except ProcessStartupError as error:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.JVM_START_FAILED,
+                str(error),
+                retryable=True,
+                suggested_next_step="Inspect logs before retrying restart.",
+                context={
+                    "failure_type": error.failure_type,
+                    "cleanup_settled": error.cleanup_settled,
+                },
+            ) from error
+        finally:
+            if process is None:
+                with self._project_state_lock:
+                    process = self._project_processes.get(context.attempt_id)
+            if not runtime_active:
+                session.generations.mark_runtime_absent()
+                if process is not None:
+                    stop_result = self._proc.stop_target(process)
+                    if (
+                        not process.is_alive()
+                        and stop_result.get("status")
+                        in {"stopped", "not_running"}
+                    ):
+                        with self._project_state_lock:
+                            self._project_processes.pop(
+                                context.attempt_id, None
+                            )
+
     def _validate_project_request(
         self,
         action: RuntimeAction,
@@ -906,6 +1154,111 @@ class JavaRuntime(Runtime):
         payload.pop("ok", None)
         return RuntimeResult(ok=False, error=message, data=payload)
 
+    @staticmethod
+    def _project_build_world_fingerprint(prepared: Any) -> str:
+        plan = prepared.fast_compile_plan
+        if plan is not None and plan.configuration_fingerprint:
+            return str(plan.configuration_fingerprint)
+        digest = hashlib.sha256()
+        for path in (
+            prepared.execution.effective_pom_file,
+            prepared.execution.classpath_file,
+            prepared.execution.compile_classpath_file,
+        ):
+            digest.update(str(path.name).encode("utf-8"))
+            try:
+                digest.update(path.read_bytes())
+            except OSError:
+                digest.update(b"<unavailable>")
+        digest.update(
+            str(prepared.runtime_jdk.java_executable).encode(
+                "utf-8", errors="surrogateescape"
+            )
+        )
+        return digest.hexdigest()
+
+    def _prepare_initial_project_generation(
+        self,
+        context: LaunchContext,
+        request: ProjectLaunchRequest,
+        prepared: Any,
+    ) -> tuple[Any, JavaProjectSession, int]:
+        session_root = Path(
+            tempfile.mkdtemp(prefix=f"jolink-project-{context.attempt_id}-")
+        )
+        session = JavaProjectSession(
+            root=session_root,
+            build_world_fingerprint=(
+                self._project_build_world_fingerprint(prepared)
+            ),
+        )
+        try:
+            module_output = (
+                prepared.execution.module.output_directory.expanduser().resolve(
+                    strict=True
+                )
+            )
+            candidate = session.generations.prepare_initial_candidate(
+                module_output,
+                build_world_fingerprint=session.build_world_fingerprint,
+            )
+            rewritten: list[Path] = []
+            replacement_count = 0
+            replacement_index = -1
+            for entry in prepared.jvm_plan.classpath:
+                normalized = entry.expanduser().resolve(strict=False)
+                if normalized == module_output:
+                    rewritten.append(candidate.output_directory)
+                    replacement_index = len(rewritten) - 1
+                    replacement_count += 1
+                else:
+                    rewritten.append(entry)
+            if replacement_count != 1:
+                raise ProjectSessionError(
+                    "GENERATION_CLASSPATH_UNREPRESENTABLE",
+                    "The module output could not be replaced exactly once.",
+                )
+            generation_plan = replace(
+                prepared.jvm_plan,
+                classpath=tuple(rewritten),
+            )
+            generation_plan, command = (
+                self._project_pipeline.materialize_command(
+                    generation_plan,
+                    jdwp_port=request.jdwp_port,
+                    attempt_directory=prepared.attempt_directory,
+                )
+            )
+            context.set_jvm_launch_plan(generation_plan)
+            return (
+                replace(
+                    prepared,
+                    jvm_plan=generation_plan,
+                    command=command,
+                ),
+                session,
+                replacement_index,
+            )
+        except Exception:
+            session.close()
+            raise
+
+    def _promote_initial_project_generation(
+        self,
+        attempt_id: str,
+        *,
+        startup_ms: float,
+    ) -> None:
+        with self._project_state_lock:
+            session = self._project_sessions.get(attempt_id)
+        if session is None:
+            raise ProjectSessionError(
+                "PROJECT_SESSION_UNAVAILABLE",
+                "The project generation session is unavailable.",
+            )
+        session.generations.promote_candidate()
+        session.record_successful_startup(startup_ms)
+
     def _project_launch_worker(
         self,
         context: LaunchContext,
@@ -920,16 +1273,25 @@ class JavaRuntime(Runtime):
             ] = attempt_directory
         process = None
         runtime_active = False
+        project_session: JavaProjectSession | None = None
         try:
             prepared = self._project_pipeline.prepare(
                 context,
                 request,
                 attempt_directory=attempt_directory,
             )
+            prepared, project_session, generation_classpath_index = (
+                self._prepare_initial_project_generation(
+                    context,
+                    request,
+                    prepared,
+                )
+            )
             with self._project_state_lock:
                 self._project_warnings[context.attempt_id] = (
                     prepared.warnings
                 )
+                self._project_sessions[context.attempt_id] = project_session
                 self._project_update_plans[context.attempt_id] = (
                     ProjectUpdatePlan(
                         fast_compile_plan=prepared.fast_compile_plan,
@@ -937,6 +1299,12 @@ class JavaRuntime(Runtime):
                             prepared.fast_compile_unavailable_reason
                         ),
                         attempt_directory=prepared.attempt_directory,
+                        project_session=project_session,
+                        jvm_plan=prepared.jvm_plan,
+                        generation_classpath_index=(
+                            generation_classpath_index
+                        ),
+                        request=request,
                     )
                 )
             context.transition(LaunchPhase.STARTING_JVM)
@@ -945,6 +1313,7 @@ class JavaRuntime(Runtime):
             self._host = "127.0.0.1"
             log_file = self._log.create(context.attempt_id)
             jvm_plan = prepared.jvm_plan
+            startup_started = time.monotonic()
             process = self._proc.start(
                 classpath=os.pathsep.join(
                     str(path) for path in jvm_plan.classpath
@@ -977,12 +1346,17 @@ class JavaRuntime(Runtime):
                 retained_files=prepared.command.retained_files,
             )
             context.check_cancelled()
+            startup_ms = (time.monotonic() - startup_started) * 1000
             readiness = self._proc.observe_readiness(process)
             context.set_process_observation(
                 process_state=RuntimeProcessState.RUNNING,
                 startup_state=str(readiness["startup_state"]),
             )
             if request.ready_port <= 0:
+                self._promote_initial_project_generation(
+                    context.attempt_id,
+                    startup_ms=startup_ms,
+                )
                 context.transition(LaunchPhase.RUNTIME_ACTIVE)
                 runtime_active = True
                 return
@@ -1008,6 +1382,12 @@ class JavaRuntime(Runtime):
                     startup_state=startup_state,
                 )
                 if startup_state == "ready":
+                    self._promote_initial_project_generation(
+                        context.attempt_id,
+                        startup_ms=(
+                            (time.monotonic() - startup_started) * 1000
+                        ),
+                    )
                     context.transition(LaunchPhase.RUNTIME_ACTIVE)
                     runtime_active = True
                     return
@@ -1104,6 +1484,14 @@ class JavaRuntime(Runtime):
                                 context.attempt_id,
                                 None,
                             )
+            if not runtime_active and project_session is not None:
+                with self._project_state_lock:
+                    if (
+                        self._project_sessions.get(context.attempt_id)
+                        is project_session
+                    ):
+                        self._project_sessions.pop(context.attempt_id, None)
+                project_session.close()
 
     def _publish_project_process(
         self,
@@ -1130,6 +1518,9 @@ class JavaRuntime(Runtime):
             directory = self._project_attempt_directories.get(
                 attempt.attempt_id
             )
+            preserve_session = (
+                attempt.attempt_id in self._preserve_project_sessions
+            )
         if process is None:
             current = self._proc.current
             if current is not None and current.is_alive():
@@ -1141,9 +1532,21 @@ class JavaRuntime(Runtime):
                         attempt.attempt_id,
                         None,
                     )
+                    session = self._project_sessions.pop(
+                        attempt.attempt_id,
+                        None,
+                    )
                     self._project_attempt_directories.pop(
                         attempt.attempt_id,
                         None,
+                    )
+                if session is not None and not preserve_session:
+                    session.close()
+                elif session is not None:
+                    session.generations.mark_runtime_absent()
+                with self._project_state_lock:
+                    self._preserve_project_sessions.discard(
+                        attempt.attempt_id
                     )
                 self._project_pipeline.cleanup_attempt_directory(directory)
                 return True
@@ -1175,9 +1578,21 @@ class JavaRuntime(Runtime):
                         attempt.attempt_id,
                         None,
                     )
+                    session = self._project_sessions.pop(
+                        attempt.attempt_id,
+                        None,
+                    )
                     self._project_attempt_directories.pop(
                         attempt.attempt_id,
                         None,
+                    )
+                if session is not None and not preserve_session:
+                    session.close()
+                elif session is not None:
+                    session.generations.mark_runtime_absent()
+                with self._project_state_lock:
+                    self._preserve_project_sessions.discard(
+                        attempt.attempt_id
                     )
                 self._project_pipeline.cleanup_attempt_directory(directory)
         return settled
@@ -1202,6 +1617,9 @@ class JavaRuntime(Runtime):
             self._project_warnings.pop(attempt_id, None)
             self._project_update_plans.pop(attempt_id, None)
             self._project_processes.pop(attempt_id, None)
+            session = self._project_sessions.pop(attempt_id, None)
+        if session is not None:
+            session.close()
         self._project_pipeline.cleanup_attempt_directory(directory)
 
     def _reconcile_project_process_exit(self) -> dict[str, Any]:
@@ -1618,7 +2036,7 @@ class JavaRuntime(Runtime):
             and not action.main_class
             and self._last_project_request is not None
         ):
-            return self.restart_project(action, self._last_project_request)
+            return self.restart_current_project(action)
         if (
             not action.jar_path
             and not action.main_class
@@ -1836,6 +2254,9 @@ class JavaRuntime(Runtime):
                 directory = self._project_attempt_directories.get(attempt_id)
                 warnings = self._project_warnings.get(attempt_id, ())
                 prepared = self._project_update_plans.get(attempt_id)
+                project_session = self._project_sessions.get(attempt_id)
+            if project_session is not None:
+                snapshot.update(project_session.public_status())
             if warnings:
                 snapshot["warnings"] = list(warnings)
             if prepared is not None:
@@ -2141,6 +2562,40 @@ class JavaRuntime(Runtime):
             return RuntimeResult(ok=False, error=data["error"])
         return RuntimeResult(ok=True, data=data)
 
+    @staticmethod
+    def _prepare_fast_compile_candidate(
+        session: JavaProjectSession,
+        staged_classes: Path,
+    ) -> None:
+        current = session.generations.current
+        if current is None:
+            raise ProjectSessionError(
+                "CURRENT_GENERATION_UNAVAILABLE",
+                "No current generation can be extended by reload.",
+            )
+        scratch = Path(
+            tempfile.mkdtemp(
+                prefix="jolink-candidate-",
+                dir=str(staged_classes.parent),
+            )
+        )
+        candidate_output = scratch / "output"
+        try:
+            shutil.copytree(current.output_directory, candidate_output)
+            for staged in sorted(
+                path for path in staged_classes.rglob("*") if path.is_file()
+            ):
+                relative = staged.relative_to(staged_classes)
+                destination = candidate_output / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(staged, destination)
+            session.generations.prepare_candidate(
+                candidate_output,
+                build_world_fingerprint=session.build_world_fingerprint,
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
     def update(self, action: RuntimeAction) -> RuntimeResult:
         """Compile explicit project sources and HotSwap compatible classes."""
         if not self._update_lock.acquire(blocking=False):
@@ -2156,6 +2611,10 @@ class JavaRuntime(Runtime):
                 },
             )
         compile_attempt = None
+        candidate_prepared = False
+        candidate_promoted = False
+        candidate_retained = False
+        candidate_session: JavaProjectSession | None = None
         try:
             context = self._project_update_context()
             if isinstance(context, RuntimeResult):
@@ -2415,6 +2874,44 @@ class JavaRuntime(Runtime):
                     },
                 )
 
+            candidate_session = prepared.project_session
+            if candidate_session is None:
+                return RuntimeResult(
+                    ok=False,
+                    error="The project Generation session is unavailable.",
+                    data={
+                        "error_code": "PROJECT_SESSION_UNAVAILABLE",
+                        "runtime_code_state": "unchanged",
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Launch the project again before retrying reload."
+                        ),
+                    },
+                )
+            try:
+                self._prepare_fast_compile_candidate(
+                    candidate_session,
+                    compile_attempt.classes_directory,
+                )
+                candidate_prepared = True
+            except (OSError, ProjectSessionError) as error:
+                return RuntimeResult(
+                    ok=False,
+                    error="A durable candidate Generation could not be prepared.",
+                    data={
+                        "error_code": getattr(
+                            error,
+                            "error_code",
+                            "CANDIDATE_PREPARE_FAILED",
+                        ),
+                        "runtime_code_state": "unchanged",
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Retry reload after local generation storage is available."
+                        ),
+                    },
+                )
+
             try:
                 jdwp = self._connect()
                 for composite in jdwp.drain_events():
@@ -2597,6 +3094,32 @@ class JavaRuntime(Runtime):
                     },
                 )
 
+            try:
+                candidate_session.generations.promote_candidate()
+                candidate_promoted = True
+            except (OSError, ProjectSessionError):
+                candidate_retained = True
+                self._runtime_overlay_state = "unknown"
+                self._runtime_overlay_sources.update(
+                    all_source_classes.keys()
+                )
+                return RuntimeResult(
+                    ok=False,
+                    error=(
+                        "HotSwap succeeded but the durable Generation could "
+                        "not be promoted."
+                    ),
+                    data={
+                        "error_code": "GENERATION_PROMOTION_FAILED",
+                        "runtime_code_state": "unknown",
+                        "applied": None,
+                        "retryable": False,
+                        "suggested_next_step": (
+                            "Restart the application before further runtime "
+                            "verification or reload attempts."
+                        ),
+                    },
+                )
             self._record_applied_updates(updates, all_source_classes)
             breakpoint_refresh = self._refresh_updated_breakpoints(
                 jdwp,
@@ -2629,16 +3152,22 @@ class JavaRuntime(Runtime):
                 ok=True,
                 data={
                     "status": "updated",
+                    "applied": True,
+                    "apply_method": "hotswap",
+                    "compile_ms": round(
+                        compile_attempt.elapsed_seconds * 1000,
+                        1,
+                    ),
+                    "compiled_source_count": len(source_files),
+                    "source_changes_pending": False,
                     "update_strategy": "fast_compile_hotswap",
                     "compiled_sources": sorted(all_source_classes),
                     "redefined_classes": sorted(
                         update.binary_name for update in updates
                     ),
                     "selection_coverage": "caller_provided",
-                    "persistence": "runtime_only",
-                    "restart_loses_update": bool(
-                        self._runtime_overlay_class_hashes
-                    ),
+                    "persistence": "committed_generation",
+                    "restart_loses_update": False,
                     "framework_state_refreshed": False,
                     "runtime_code_state": "updated",
                     "breakpoint_refresh_state": breakpoint_refresh["state"],
@@ -2664,6 +3193,13 @@ class JavaRuntime(Runtime):
                 },
             )
         finally:
+            if (
+                candidate_prepared
+                and not candidate_promoted
+                and not candidate_retained
+                and candidate_session is not None
+            ):
+                candidate_session.generations.discard_candidate()
             if compile_attempt is not None:
                 self._fast_compiler.discard(compile_attempt)
             self._update_lock.release()
@@ -2757,6 +3293,8 @@ class JavaRuntime(Runtime):
             error=str(error),
             data={
                 "error_code": error.error_code,
+                "applied": False,
+                "stage": "compile",
                 "runtime_code_state": "unchanged",
                 "staging_discarded": True,
                 **self._runtime_overlay_snapshot(),
@@ -5165,12 +5703,18 @@ class JavaRuntime(Runtime):
 
     def _runtime_overlay_snapshot(self) -> dict[str, Any]:
         active = self._runtime_overlay_state in {"active", "unknown"}
+        with self._project_state_lock:
+            committed = any(
+                session.generations.current is not None
+                and session.generations.current.ordinal > 1
+                for session in self._project_sessions.values()
+            )
         snapshot = {
             "runtime_overlay_active": active,
             "runtime_overlay_state": self._runtime_overlay_state,
             "code_revision": self._code_revision,
             "overlay_sources": sorted(self._runtime_overlay_sources),
-            "restart_will_discard_overlay": active,
+            "restart_will_discard_overlay": active and not committed,
             "verification_state": (
                 "unknown"
                 if self._runtime_overlay_state == "unknown"

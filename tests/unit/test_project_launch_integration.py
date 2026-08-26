@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -145,6 +146,7 @@ def test_sensitive_assignment_redacts_the_rest_of_the_log_line(
 class _PreparedPipeline:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.prepare_count = 0
 
     def create_attempt_directory(self, attempt_id: str) -> Path:
         directory = self.root / attempt_id
@@ -157,12 +159,16 @@ class _PreparedPipeline:
             directory.rmdir()
 
     def prepare(self, context, request, *, attempt_directory):
+        self.prepare_count += 1
         context.transition("resolving_build")
         context.transition("resolving_runtime")
         context.transition("starting_jvm")
+        output = self.root / "target/classes"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "Application.class").write_bytes(b"compiled")
         plan = JvmLaunchPlan(
             java_executable=Path("/jdk/bin/java"),
-            classpath=(self.root,),
+            classpath=(output,),
             main_class="com.example.Application",
             working_directory=self.root,
             ready_port=request.ready_port,
@@ -171,8 +177,13 @@ class _PreparedPipeline:
             ),
         )
         return PreparedProjectLaunch(
-            execution=None,  # type: ignore[arg-type]
-            runtime_jdk=None,  # type: ignore[arg-type]
+            execution=SimpleNamespace(
+                module=SimpleNamespace(output_directory=output),
+                effective_pom_file=self.root / "pom.xml",
+                classpath_file=self.root / "classpath.txt",
+                compile_classpath_file=self.root / "compile-classpath.txt",
+            ),
+            runtime_jdk=SimpleNamespace(java_executable=Path("/jdk/bin/java")),
             jvm_plan=plan,
             command=MaterializedJavaCommand(
                 argv=("/jdk/bin/java", "com.example.Application"),
@@ -180,6 +191,18 @@ class _PreparedPipeline:
             ),
             warnings=(),
             attempt_directory=attempt_directory,
+        )
+
+    @staticmethod
+    def materialize_command(plan, *, jdwp_port, attempt_directory):
+        return plan, MaterializedJavaCommand(
+            argv=(
+                "/jdk/bin/java",
+                "-cp",
+                str(plan.classpath[0]),
+                plan.main_class,
+            ),
+            materialization="direct_classpath",
         )
 
 
@@ -324,11 +347,13 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     processes: list[_FakeProcess] = []
+    launch_commands: list[tuple[str, ...]] = []
 
     runtime = JavaRuntime()
     runtime._project_pipeline = _PreparedPipeline(tmp_path)
 
     def start(**kwargs: Any) -> ProcessInfo:
+        launch_commands.append(tuple(kwargs["command_argv"]))
         process = _FakeProcess()
         processes.append(process)
         info = ProcessInfo(
@@ -387,6 +412,12 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
         lambda: runtime._launch_controller.snapshot()["launch_phase"]
         == "runtime_active"
     )
+    first_status = runtime.status(RuntimeAction(action="status"))
+    assert first_status.data["generation"] == 1
+    assert first_status.data["compile_ready"] is False
+    assert first_status.data["last_successful_startup_ms"] is not None
+    assert "generation-store" in " ".join(launch_commands[0])
+    assert "target/classes" not in " ".join(launch_commands[0])
     active = runtime.status(RuntimeAction(action="status"))
     assert active.data["launch_phase"] == "runtime_active"
     assert active.data["process_state"] == "running"
@@ -458,3 +489,75 @@ def test_project_jvm_start_failure_is_retryable_and_clears_publication(
     )
     assert failed.data["launch_error"]["exit_code"] == 7
     assert runtime._proc.current is None
+
+
+def test_project_restart_uses_current_generation_without_recompiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = JavaRuntime()
+    pipeline = _PreparedPipeline(tmp_path)
+    runtime._project_pipeline = pipeline
+    commands: list[tuple[str, ...]] = []
+
+    def start(**kwargs: Any) -> ProcessInfo:
+        process = _FakeProcess()
+        commands.append(tuple(kwargs["command_argv"]))
+        info = ProcessInfo(
+            process,
+            kwargs["jdwp_port"],
+            kwargs["main_class"],
+            ready_port=kwargs["ready_port"],
+            startup_wait_timeout_seconds=(
+                kwargs["startup_wait_timeout_seconds"]
+            ),
+        )
+        runtime._proc._publish(info)
+        kwargs["on_published"](info)
+        return info
+
+    monkeypatch.setattr(runtime._proc, "start", start)
+    monkeypatch.setattr(
+        runtime._proc,
+        "observe_readiness",
+        lambda process, refresh=True: {
+            "process_state": "running" if process.is_alive() else "exited",
+            "startup_state": "unverified" if process.is_alive() else "failed",
+            "readiness_configured": False,
+        },
+    )
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_posix",
+        staticmethod(lambda process: setattr(process, "returncode", -15)),
+    )
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_windows",
+        staticmethod(lambda process: setattr(process, "returncode", -15)),
+    )
+
+    runtime.run_project(RuntimeAction(action="run"), _request(tmp_path))
+    _wait_until(
+        lambda: runtime._launch_controller.snapshot()["launch_phase"]
+        == "runtime_active"
+    )
+    initial_status = runtime.status(RuntimeAction(action="status"))
+    assert initial_status.data["generation"] == 1
+
+    restarted = runtime.restart(RuntimeAction(action="restart"))
+    assert restarted.ok is True
+    assert restarted.data["status"] == "restarting"
+    assert restarted.data["applied"] is None
+    _wait_until(
+        lambda: runtime._launch_controller.snapshot()["launch_phase"]
+        == "runtime_active"
+    )
+
+    assert pipeline.prepare_count == 1
+    assert len(commands) == 2
+    assert "generation-store" in " ".join(commands[0])
+    assert "generation-store" in " ".join(commands[1])
+    final_status = runtime.status(RuntimeAction(action="status"))
+    assert final_status.data["generation"] == 1
+    assert runtime.stop(RuntimeAction(action="stop")).ok is True

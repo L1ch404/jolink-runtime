@@ -21,6 +21,7 @@ from jolink_runtime.launch.fast_compile import (
     FastCompilePlan,
     fast_compile_fingerprint,
 )
+from jolink_runtime.launch.project_session import JavaProjectSession
 
 
 def _compile_class(tmp_path: Path, variant: str, source: str) -> bytes:
@@ -229,6 +230,42 @@ def test_formal_output_guard_detects_external_build_change(
     assert runtime._formal_outputs_match_launch(plan) is True
     class_file.write_bytes(b"external-build-bytes")
     assert runtime._formal_outputs_match_launch(plan) is False
+
+
+def test_fast_compile_candidate_materializes_full_current_generation(
+    tmp_path: Path,
+) -> None:
+    runtime = JavaRuntime()
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    initial = tmp_path / "initial"
+    (initial / "example").mkdir(parents=True)
+    (initial / "example/Example.class").write_bytes(b"before")
+    (initial / "application.yml").write_bytes(b"stable-resource")
+    session.generations.initialize(
+        initial,
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+    staged = tmp_path / "staged"
+    (staged / "example").mkdir(parents=True)
+    (staged / "example/Example.class").write_bytes(b"after")
+
+    runtime._prepare_fast_compile_candidate(session, staged)
+
+    candidate = session.generations.candidate
+    assert candidate is not None
+    assert candidate.output_directory.joinpath(
+        "example/Example.class"
+    ).read_bytes() == b"after"
+    assert candidate.output_directory.joinpath(
+        "application.yml"
+    ).read_bytes() == b"stable-resource"
+    assert session.generations.current.output_directory.joinpath(
+        "example/Example.class"
+    ).read_bytes() == b"before"
 
 
 def test_formal_output_guard_checks_unselected_classes_and_class_set(
