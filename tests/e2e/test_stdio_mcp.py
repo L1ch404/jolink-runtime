@@ -33,12 +33,13 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown() -> None:
 
                     listed = await session.list_tools()
                     assert [tool.name for tool in listed.tools] == [
-                        "java_runtime",
-                        "java_processes",
+                        "java_application",
+                        "java_status",
+                        "java_debugger",
                     ]
 
                     result = await session.call_tool(
-                        "java_runtime",
+                        "java_status",
                         {"action": "status"},
                     )
                     assert result.isError is False

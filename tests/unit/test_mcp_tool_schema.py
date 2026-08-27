@@ -2,47 +2,52 @@ from __future__ import annotations
 
 from jolink_runtime.adapters.java.tool_schema import JAVA_RUNTIME_SCHEMA
 from jolink_runtime.server.tool_schema import (
-    JAVA_RUNTIME_DESCRIPTION,
-    PUBLIC_RUNTIME_ACTIONS,
+    JAVA_APPLICATION_DESCRIPTION,
+    PUBLIC_APPLICATION_ACTIONS,
+    PUBLIC_DEBUGGER_ACTIONS,
+    PUBLIC_STATUS_ACTIONS,
     get_mcp_tools,
 )
 
 
-def test_mcp_v01_exposes_only_two_compact_tools() -> None:
+def test_mcp_product_surface_exposes_three_focused_tools() -> None:
     tools = get_mcp_tools()
 
     assert [tool.name for tool in tools] == [
-        "java_runtime",
-        "java_processes",
+        "java_application",
+        "java_status",
+        "java_debugger",
     ]
     assert all(tool.outputSchema is None for tool in tools)
 
 
-def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
-    runtime = get_mcp_tools()[0]
-    actions = runtime.inputSchema["properties"]["action"]["enum"]
-    wait_mode = runtime.inputSchema["properties"]["wait_mode"]
-    http_trigger = runtime.inputSchema["properties"]["http_trigger"]
+def test_focused_schemas_expose_only_their_public_actions() -> None:
+    application, status, debugger = get_mcp_tools()
+    actions = application.inputSchema["properties"]["action"]["enum"]
+    wait_mode = debugger.inputSchema["properties"]["wait_mode"]
+    http_trigger = debugger.inputSchema["properties"]["http_trigger"]
 
-    assert runtime.inputSchema["additionalProperties"] is False
-    assert actions == list(PUBLIC_RUNTIME_ACTIONS)
-    assert len(actions) == 16
-    assert "wait_event" in actions
-    assert "update" in actions
-    assert "wait_breakpoint" not in actions
-    assert "skill_view" not in runtime.inputSchema["properties"]
+    assert application.inputSchema["additionalProperties"] is False
+    assert actions == list(PUBLIC_APPLICATION_ACTIONS)
+    assert status.inputSchema["properties"]["action"]["enum"] == list(
+        PUBLIC_STATUS_ACTIONS
+    )
+    assert debugger.inputSchema["properties"]["action"]["enum"] == list(
+        PUBLIC_DEBUGGER_ACTIONS
+    )
+    assert "wait_breakpoint" not in PUBLIC_DEBUGGER_ACTIONS
     assert wait_mode["enum"] == ["blocking", "arm", "await"]
     assert wait_mode["default"] == "blocking"
-    assert "wait_handle" in runtime.inputSchema["properties"]
-    assert runtime.inputSchema["properties"]["ready_port"]["maximum"] == 65535
+    assert "wait_handle" in debugger.inputSchema["properties"]
+    assert application.inputSchema["properties"]["ready_port"]["maximum"] == 65535
     assert (
-        runtime.inputSchema["properties"][
+        application.inputSchema["properties"][
             "startup_wait_timeout_seconds"
         ]["default"]
         == 30
     )
     assert (
-        runtime.inputSchema["properties"][
+        application.inputSchema["properties"][
             "startup_wait_timeout_seconds"
         ]["maximum"]
         == 60
@@ -57,58 +62,42 @@ def test_java_runtime_schema_exposes_only_public_v01_actions() -> None:
         "DELETE",
     ]
     assert "json_body" in http_trigger["properties"]
-    source_files = runtime.inputSchema["properties"]["source_files"]
+    source_files = application.inputSchema["properties"]["source_files"]
     assert source_files["minItems"] == 1
     assert source_files["maxItems"] == 16
     assert source_files["uniqueItems"] is True
 
 
-def test_mcp_v01_schemas_reject_unknown_fields_and_remote_hosts() -> None:
-    runtime, processes = get_mcp_tools()
-    host = runtime.inputSchema["properties"]["host"]
+def test_product_schemas_reject_unknown_fields_and_remote_hosts() -> None:
+    application, status, debugger = get_mcp_tools()
+    host = application.inputSchema["properties"]["host"]
 
-    assert runtime.inputSchema["additionalProperties"] is False
-    assert processes.inputSchema["additionalProperties"] is False
+    assert all(
+        tool.inputSchema["additionalProperties"] is False
+        for tool in (application, status, debugger)
+    )
     assert host["enum"] == ["127.0.0.1", "localhost"]
 
 
-def test_java_runtime_description_contains_required_selection_and_safety_signals() -> None:
+def test_java_application_description_contains_lifecycle_and_reload_signals() -> None:
     runtime_description = get_mcp_tools()[0].description or ""
-    assert runtime_description == JAVA_RUNTIME_DESCRIPTION
+    assert runtime_description == JAVA_APPLICATION_DESCRIPTION
     normalized = runtime_description.lower()
     for signal in (
-        "run, observe, and debug",
-        "local java application",
         "launch",
+        "attach",
+        "reload",
         "restart",
-        "status and logs",
-        "code changes",
-        "actual runtime behavior",
-        "runtime evidence",
-        "breakpoints",
-        "exception watches",
-        "stack frames",
-        "variables",
-        "bounded observations",
-        "observed facts",
-        "interpretations",
-        "unverified conclusions",
-        "local http request",
-        "ready_port",
-        "startup_state",
-        "tcp readiness",
         "source_files",
         "hotswap",
-        "fresh request",
-        "jdwp",
-        "resume",
-        "cleanup_debug_state",
+        "candidate",
+        "rollback",
     ):
         assert signal in normalized
 
 
 def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
-    runtime = get_mcp_tools()[0]
+    runtime = get_mcp_tools()[2]
     wait_description = (
         runtime.inputSchema["properties"]["wait_mode"]["description"].lower()
     )
@@ -139,7 +128,7 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
 
 
 def test_suspension_selectors_prefer_the_event_thread_without_rediscovery() -> None:
-    properties = get_mcp_tools()[0].inputSchema["properties"]
+    properties = get_mcp_tools()[2].inputSchema["properties"]
     thread_description = properties["thread_name"]["description"].lower()
     suspension_description = properties["suspension_id"]["description"].lower()
 
@@ -170,7 +159,7 @@ def test_legacy_lineage_schema_remains_separate_and_unchanged_in_shape() -> None
         JAVA_RUNTIME_SCHEMA["parameters"]["properties"]["action"]["enum"]
     )
     mcp_actions = (
-        get_mcp_tools()[0].inputSchema["properties"]["action"]["enum"]
+        get_mcp_tools()[2].inputSchema["properties"]["action"]["enum"]
     )
 
     assert "wait_breakpoint" in legacy_actions

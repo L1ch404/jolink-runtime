@@ -986,7 +986,11 @@ public class ProjectMcpFixture {
                         }))
                         if status["launch_phase"] == "failed":
                             raise AssertionError(status)
-                        if status["launch_phase"] == "runtime_active":
+                        if (
+                            status["launch_phase"] == "runtime_active"
+                            and status.get("fast_update", {}).get("available")
+                            is True
+                        ):
                             active = status
                             break
                         await anyio.sleep(0.1)
@@ -1176,7 +1180,11 @@ public class LazyValue {
                         }))
                         if status["launch_phase"] == "failed":
                             raise AssertionError(status)
-                        if status["launch_phase"] == "runtime_active":
+                        if (
+                            status["launch_phase"] == "runtime_active"
+                            and status.get("fast_update", {}).get("available")
+                            is True
+                        ):
                             active = status
                             break
                         await anyio.sleep(0.1)
@@ -1697,7 +1705,11 @@ public final class SharedMessage {
                         }))
                         if status["launch_phase"] == "failed":
                             raise AssertionError(status)
-                        if status["launch_phase"] == "runtime_active":
+                        if (
+                            status["launch_phase"] == "runtime_active"
+                            and status.get("fast_update", {}).get("available")
+                            is True
+                        ):
                             active = status
                             break
                         await anyio.sleep(0.1)

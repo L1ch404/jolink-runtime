@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "candidate_id": "eclipse-2021-03-apt-spike",
+  "worker_java_minimum": 17,
+  "artifacts": [
+    {
+      "filename": "org.apache.ant_1.10.9.v20201106-1946.jar",
+      "sha256": "559b23cd6edee239c009ab9140761b32a305f6522eefeab22438150429ffb9e8"
+    },
+    {
+      "filename": "org.apache.felix.scr_2.1.24.v20200924-1939.jar",
+      "sha256": "f6a6232ca3e7500cc51ffdaa742d40583d8e05e5796f3dd4bdec0a58065134a1"
+    },
+    {
+      "filename": "org.eclipse.core.commands_3.9.800.v20201021-1339.jar",
+      "sha256": "6130eed0dec2fc67b7b01fbcec72064dd6ae7ae955b00076e3105a78855f6e5c"
+    },
+    {
+      "filename": "org.eclipse.core.contenttype_3.7.900.v20210111-0918.jar",
+      "sha256": "4eee2ef1980ae94b1a639996e456a515aaf5beff6847486036a76640f78e5ff4"
+    },
+    {
+      "filename": "org.eclipse.core.expressions_3.7.100.v20210203-1000.jar",
+      "sha256": "198fba2da585b9159612efbaa111ab8b8b8cbdd84f6c20b8de390350f56222cf"
+    },
+    {
+      "filename": "org.eclipse.core.filesystem_1.7.700.v20200110-1734.jar",
+      "sha256": "205313d4829c344d70a3e331acda7c40fbdd0398bffff9312edb2805d0e3ae55"
+    },
+    {
+      "filename": "org.eclipse.core.jobs_3.10.1100.v20210111-0815.jar",
+      "sha256": "590fcf140099445f1e9ec606158ede215c63ec2dccb40dc541c8940fc2f99aa4"
+    },
+    {
+      "filename": "org.eclipse.core.resources_3.14.0.v20210215-0934.jar",
+      "sha256": "6290e92555d2b9449915ddf29c4490c563c2841e3b180610421c39a310f55b74"
+    },
+    {
+      "filename": "org.eclipse.core.runtime_3.20.100.v20210111-0815.jar",
+      "sha256": "37d076ced2251bd76547cd9dfa2aadb10ab8bac509ab3ce1c5c3a30fdda8a50c"
+    },
+    {
+      "filename": "org.eclipse.equinox.app_1.5.100.v20210212-1143.jar",
+      "sha256": "6976d37b6bdb71ae094820c4ad740f60ee08df784252f74e82fd63c64ca1b0ee"
+    },
+    {
+      "filename": "org.eclipse.equinox.common_3.14.100.v20210212-1143.jar",
+      "sha256": "0ca4fb7eabb6442e466008542c82e4bbceaff4a30c643a0a458c1f29c5e202df"
+    },
+    {
+      "filename": "org.eclipse.equinox.launcher_1.6.100.v20201223-0822.jar",
+      "sha256": "cbde54b9a2e1c31ca23716fb8960ef1080a7ffe5e2103c5d3e972411a3037e24"
+    },
+    {
+      "filename": "org.eclipse.equinox.preferences_3.8.200.v20210212-1143.jar",
+      "sha256": "6a147ff78721d0092060f05f88220ac2229381090e8d6d85478507b65b6d3b1d"
+    },
+    {
+      "filename": "org.eclipse.equinox.registry_3.10.100.v20210212-1143.jar",
+      "sha256": "496f85b7cf7149b49bf3c5eaebea1f94f5859392e9754bc2b665d7631e36dff3"
+    },
+    {
+      "filename": "org.eclipse.jdt.apt.core_3.6.800.v20200916-0645.jar",
+      "sha256": "ca3a7c5e9ef6958bb81732e1316031f38e54108971b96209c066dd8662fa82ee"
+    },
+    {
+      "filename": "org.eclipse.jdt.apt.pluggable.core_1.2.500.v20200322-1447.jar",
+      "sha256": "384fae845493df345ded086e699e07f062bf830b648e6284fec6ef92e202dc6a"
+    },
+    {
+      "filename": "org.eclipse.jdt.compiler.apt_1.3.1200.v20200916-0645.jar",
+      "sha256": "4264a0dc827c01b1e8875e2ed78f7d2137178b729cf92212dc3cb2e4f46cfa44"
+    },
+    {
+      "filename": "org.eclipse.jdt.compiler.tool_1.2.1100.v20200916-0645.jar",
+      "sha256": "e9a37e2d28f02c223eff75006251d02879c642cf4ecfbaa16da6cdc5dbc295b7"
+    },
+    {
+      "filename": "org.eclipse.jdt.core_3.25.0.v20210223-0522.jar",
+      "sha256": "1628feda9432aa63e8c646bccead0ed4b98c53764c5c6cbf952069b6e9adf611"
+    },
+    {
+      "filename": "org.eclipse.osgi_3.16.200.v20210226-1447.jar",
+      "sha256": "b2514885677c0625bc2b44a32555b0375a4b297ca7c071e19ab0dd1c74334aea"
+    },
+    {
+      "filename": "org.eclipse.osgi.services_3.10.0.v20210212-1137.jar",
+      "sha256": "5215436ccf5c62d05c3c6b11efad2243935014f8c14ddc9437006aa05de30a75"
+    },
+    {
+      "filename": "org.eclipse.osgi.util_3.6.0.v20210212-1137.jar",
+      "sha256": "6f79951344cd286dec97569eb2816eeb64f9497641bd59be91152ddcf05af37e"
+    },
+    {
+      "filename": "org.eclipse.text_3.11.0.v20210203-1022.jar",
+      "sha256": "c2eb0eda17fdb7c6b5bba44b6216d8eb3cc60294b713e4c568bc18275207db46"
+    }
+  ],
+  "worker_artifact": {
+    "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar",
+    "sha256": "9a0ebe51ac948cfad36a8d1ad4cf15881df1b6c8f19c4c1ebcd6d22da5809007"
+  },
+  "equinox": {
+    "configuration_sha256": "259cc0889a11cd5233a025290b1d5e4ee16569f76f92374d59b084611d52894a",
+    "launcher_filename": "org.eclipse.equinox.launcher_1.6.100.v20201223-0822.jar"
+  },
+  "worker_build": {
+    "java_home_identity": {
+      "java_binary_sha256": "f671624e7f4fdc15a5913be61b36b5410f58ffc18d9ccda082b7e0ff58591596"
+    }
+  }
+}

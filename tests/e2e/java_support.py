@@ -100,7 +100,19 @@ async def call_payload(
     session: ClientSession,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    result = await session.call_tool("java_runtime", arguments)
+    external = dict(arguments)
+    action = str(external.get("action", ""))
+    if action in {"run", "stop", "restart", "attach", "detach", "update"}:
+        tool_name = "java_application"
+        external["action"] = {"run": "launch", "update": "reload"}.get(
+            action,
+            action,
+        )
+    elif action in {"status", "logs"}:
+        tool_name = "java_status"
+    else:
+        tool_name = "java_debugger"
+    result = await session.call_tool(tool_name, external)
     assert result.structuredContent is not None
     assert len(result.content) == 1
     assert isinstance(result.content[0], types.TextContent)

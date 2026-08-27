@@ -331,10 +331,14 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
                 elapsed_ms=12.0,
                 source_changes_pending=False,
                 output_directory=staged,
+                candidate_changed_classes=("Example.class",),
             )
 
         def close(self) -> bool:
             return True
+
+        def mark_published(self) -> None:
+            return None
 
     compiler = object.__new__(FakeJdt)
     session.attach_compile_session(compiler)
@@ -350,6 +354,8 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
         jdt_build_world_plan=plan,
     )
     runtime = JavaRuntime()
+    process = SimpleNamespace(is_alive=lambda: True)
+    runtime._proc._process = process
     monkeypatch.setattr(
         runtime,
         "_project_update_context",
@@ -358,6 +364,12 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
 
     class FakeJdwp:
         redefined = False
+
+        def drain_events(self):
+            return []
+
+        def capabilities_new(self):
+            return SimpleNamespace(can_redefine_classes=True)
 
         def redefine_classes(self, definitions):
             assert definitions

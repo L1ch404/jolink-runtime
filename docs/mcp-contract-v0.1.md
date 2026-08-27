@@ -17,37 +17,20 @@ is frozen separately in
 
 ## Exposed tools
 
-- `java_runtime`
-- `java_processes`
+- `java_application`: `launch`, `attach`, `reload`, `restart`, `stop`, `detach`
+- `java_status`: `processes`, `status`, `logs`
+- `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
+  `stack`, `variables`, `resume`, `cleanup_debug_state`
 
 The first release exposes Java only. Future languages receive their own tools
-and adapters instead of adding a `language` union to `java_runtime`.
-
-## Public Java Runtime actions
-
-- `run`
-- `stop`
-- `restart`
-- `attach`
-- `detach`
-- `status`
-- `logs`
-- `breakpoint`
-- `exception`
-- `wait_event`
-- `threads`
-- `stack`
-- `variables`
-- `resume`
-- `cleanup_debug_state`
-- `update`
+and adapters instead of adding a `language` union to these Java tools.
 
 `wait_breakpoint` remains an internal Runtime-lineage compatibility alias. It
 is not advertised or accepted as a public MCP action.
 
 ## Application startup readiness
 
-`run` and `restart` distinguish JVM launch from optional application TCP
+`launch` and `restart` distinguish JVM launch from optional application TCP
 readiness.
 
 They support two launch forms:
@@ -63,41 +46,29 @@ background, resolves the runtime classpath, and starts the managed JVM.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
 
-`update(source_files)` is available only for the active JVM produced by a
-supported `project_path` launch. It compiles explicit Java sources from the
-selected Maven module into joLink-owned private staging, accepts only a stable
-generated-class set and method-body-compatible class shape, and applies the
-changed loaded classes as one JDWP `RedefineClasses` operation. It never
-writes Maven output or silently falls back to Maven/restart. Success is
-runtime-only evidence and returns `verification_state=not_verified`; a fresh
-business request is still required.
+`reload(source_files)` is available only for the active JVM produced by a
+supported `project_path` launch. It compiles explicit Java sources in a
+persistent private JDT Build World and seals the full output delta as an
+immutable Candidate Generation. Compatible loaded method-body changes use one
+JDWP `RedefineClasses` operation. Structural/resource/add/delete changes,
+HotSwap rejection, or `hotswap=false` use a managed Candidate restart. The
+Candidate is promoted only after readiness; startup failure restores the
+last-good Generation and reports `rolled_back=true`. It never mutates Maven
+output. Success is runtime evidence, not business-correctness proof; a fresh
+request is still required.
 
-P0 uses the resolved build JDK, the selected module's Maven compile classpath,
-the effective Maven Java target, formal class-file headers, source encoding,
-debug metadata, and the existing `MethodParameters` convention. On JDK 9 or
-newer it uses `--release`; JDK 8 fast compilation is accepted only when the
-build JDK, runtime JDK, and target are all Java 8. It fails closed when
-annotation processing or bytecode transformation may affect the formal build
-and does not claim to replay arbitrary Maven compiler-plugin executions. The
-source encoding must be explicit in the effective compiler model; joLink does
-not guess UTF-8. Unmodeled Maven executions from `validate` through `compile`,
-post-compile class processing, unresolved lifecycle phases, selected Maven
-toolchains, and an enabled or unresolved `failOnWarning` policy make fast
-update unavailable rather than producing bytecode with different semantics.
-Compiler identity/mode checks cover both plugin configuration and Maven user
-properties. Maven core/build extensions, compiler overrides in `.mvn` project
-configuration or Maven environment arguments, and later changes to those
-fingerprinted inputs also disable or stale the fast path without failing the
-managed project launch.
-`fast_update.available=true` means the launch is eligible for the bounded fast
-path; compilation can still fail safely and direct the caller to a formal
-Maven build.
+The CompileSession freezes Maven-resolved source roots, compile dependencies,
+target platform, source encoding, Lombok/JSR-269 processor inputs, and the
+configuration fingerprint. Its initial FULL build is based on the exact source
+snapshot that produced the running Generation; `compile_ready` remains false
+until that baseline succeeds. Every reload rechecks BuildWorld, Runtime,
+Generation, process identity, and selected source bytes before applying state.
+Changing those inputs requires a fresh launch rather than silently compiling
+against a different world.
 
-Because JDWP redefinition never reruns static initialization, a changed,
-added, or removed `<clinit>` is not a supported method-body update. It returns
-`STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART` before class transmission and
-keeps `runtime_code_state=unchanged`. Constructor changes remain runtime-only
-for objects created after the update; existing objects are not reinitialized.
+Static initialization, class schemas, new/deleted classes, and resources are
+not sent through JDWP HotSwap. They select the restart apply path so the new
+JVM initializes from the complete Candidate output.
 
 After a class is redefined, every logical breakpoint belonging to that class
 is retained for inspection but marked stale. joLink does not rebind the old
@@ -137,7 +108,7 @@ already accepting connections. The check runs after the previously managed
 target has been stopped or detached, so a normal `restart` does not mistake the
 old owned process for an unrelated listener.
 
-If `run` finishes its bounded wait while the process remains alive, it returns
+If `launch` finishes its bounded wait while the process remains alive, it returns
 `ok=true`, `startup_state=starting`, and `next_action=status`. A later `status`
 that observes process exit still returns `ok=true` because the observation
 succeeded; application failure is represented by `startup_state=failed`.
@@ -187,7 +158,7 @@ The compact description must tell the model:
    occur between arming and collection.
 5. A suspension returned by `wait_event` must be resumed or cleaned up after
    inspection.
-6. For an owned HTTP application, `ready_port` lets `run/status` distinguish
+6. For an owned HTTP application, `ready_port` lets `launch/status` distinguish
    `starting` from TCP `ready`; the model must not trigger HTTP while configured
    readiness is still starting.
 
@@ -219,7 +190,7 @@ Every normal Tool result contains both:
 - one JSON `TextContent`;
 - the same object in `structuredContent`.
 
-`java_processes` does not include an `ok` field. It is successful unless the
+`java_status(action="processes")` does not include an `ok` field. It is successful unless the
 boundary returns an explicit `ok=false` payload.
 
 Calling a tool name that the server does not advertise follows the official
@@ -421,7 +392,7 @@ accepted final semantics.
 
 ## Process ownership
 
-- `run` creates a Runtime-owned JVM.
+- `launch` creates a Runtime-owned JVM.
 - `attach` observes an externally managed local JVM.
 - Normal server shutdown cancels and settles an active waiter before closing
   the Runtime session.

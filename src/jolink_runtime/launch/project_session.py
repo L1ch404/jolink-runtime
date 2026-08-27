@@ -718,6 +718,7 @@ class JavaProjectSession:
                             last.source_changes_pending
                         ),
                         "rolled_back": last.rolled_back,
+                        "error_code": last.error_code,
                     }
                     if last is not None
                     else None

@@ -87,6 +87,10 @@ class LaunchContext:
         return self._record.attempt.generation
 
     @property
+    def phase(self) -> LaunchPhase:
+        return self._record.attempt.phase
+
+    @property
     def token(self) -> AttemptToken:
         return self._record.token
 

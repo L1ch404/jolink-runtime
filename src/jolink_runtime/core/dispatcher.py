@@ -75,6 +75,8 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         # MCP-only extension: keep the frozen Runtime 2.4.0 dataclass shape
         # unchanged for legacy-lineage differential contracts.
         action.source_files = arguments.get("source_files")
+    if "hotswap" in arguments:
+        action.hotswap = _bool_arg(arguments, "hotswap", True)
     action.configure_startup_readiness(
         ready_port=int(arguments.get("ready_port", 0)),
         wait_timeout_seconds=float(
@@ -99,7 +101,7 @@ class ProjectLaunchArgumentError(ValueError):
             "argument": argument,
             "retryable": True,
             "suggested_next_step": (
-                "Correct the project launch arguments and retry run/restart."
+                "Correct the project launch arguments and retry launch/restart."
             ),
         }
 
@@ -180,6 +182,26 @@ def _runtime_result_payload(result: RuntimeResult) -> dict[str, Any]:
     return json.loads(result.to_json())
 
 
+def _product_application_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Translate lineage action words at the new MCP product boundary."""
+
+    result = dict(payload)
+    suggested = result.get("suggested_next_step")
+    if isinstance(suggested, str):
+        for old, new in (
+            ("Call run ", "Call launch "),
+            ("call run ", "call launch "),
+            ("retry run", "retry launch"),
+            ("Retry run", "Retry launch"),
+            ("run/restart", "launch/restart"),
+        ):
+            suggested = suggested.replace(old, new)
+        result["suggested_next_step"] = suggested
+    if result.get("next_action") == "run":
+        result["next_action"] = "launch"
+    return result
+
+
 class Dispatcher:
     """Route standalone tool calls without depending on MCP or Hermes."""
 
@@ -195,7 +217,39 @@ class Dispatcher:
         wait_control: WaitControl | None = None,
     ) -> dict[str, Any]:
         """Dispatch a migrated tool call and return its parsed JSON object."""
-        args = arguments or {}
+        args = dict(arguments or {})
+        if tool_name == "java_application":
+            action = str(args.get("action", ""))
+            args["action"] = {
+                "launch": "run",
+                "reload": "update",
+            }.get(action, action)
+            return _product_application_payload(
+                self.dispatch_java_runtime(
+                    args,
+                    session_key=session_key,
+                    wait_control=wait_control,
+                )
+            )
+        if tool_name == "java_status":
+            if args.get("action") == "processes":
+                return discover_java_processes(
+                    filter_text=args.get("filter"),
+                    full=bool(args.get("full", False)),
+                )
+            return _product_application_payload(
+                self.dispatch_java_runtime(
+                    args,
+                    session_key=session_key,
+                    wait_control=wait_control,
+                )
+            )
+        if tool_name == "java_debugger":
+            return self.dispatch_java_runtime(
+                args,
+                session_key=session_key,
+                wait_control=wait_control,
+            )
         if tool_name == "java_runtime":
             return self.dispatch_java_runtime(
                 args,

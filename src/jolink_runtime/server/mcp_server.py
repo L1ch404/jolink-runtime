@@ -27,8 +27,11 @@ from .http_trigger import (
     parse_http_trigger,
 )
 from .tool_schema import (
+    JAVA_APPLICATION_INPUT_SCHEMA,
+    JAVA_DEBUGGER_INPUT_SCHEMA,
     JAVA_PROCESSES_INPUT_SCHEMA,
     JAVA_RUNTIME_INPUT_SCHEMA,
+    JAVA_STATUS_INPUT_SCHEMA,
     get_mcp_tools,
 )
 
@@ -45,8 +48,8 @@ _NO_ACTIVE_SUSPENSION_NEXT_STEP = (
     "returned wait_handle."
 )
 SERVER_INSTRUCTIONS = (
-    "Use java_runtime to run, observe, verify, and debug a local Java application. "
-    "Use java_processes only to discover an existing JVM for attach. "
+    "Use java_application for lifecycle and reload, java_status for process, "
+    "state, and log observations, and java_debugger for JDWP evidence. "
     "Treat runtime outputs as bounded observations, not as self-explanatory "
     "causal conclusions. "
     "Clearly separate directly observed facts, inferences, and what remains "
@@ -59,6 +62,11 @@ SERVER_INSTRUCTIONS = (
 )
 
 _TOOL_INPUT_SCHEMAS = {
+    "java_application": JAVA_APPLICATION_INPUT_SCHEMA,
+    "java_status": JAVA_STATUS_INPUT_SCHEMA,
+    "java_debugger": JAVA_DEBUGGER_INPUT_SCHEMA,
+    # Hidden lineage aliases remain accepted by the Python boundary and
+    # differential tests, but tools/list exposes only the product surface.
     "java_runtime": JAVA_RUNTIME_INPUT_SCHEMA,
     "java_processes": JAVA_PROCESSES_INPUT_SCHEMA,
 }
@@ -66,6 +74,19 @@ _TOOL_VALIDATORS = {
     name: Draft202012Validator(schema)
     for name, schema in _TOOL_INPUT_SCHEMAS.items()
 }
+
+
+def _is_runtime_tool(name: str) -> bool:
+    return name in {
+        "java_application",
+        "java_status",
+        "java_debugger",
+        "java_runtime",
+    }
+
+
+def _is_debugger_tool(name: str) -> bool:
+    return name in {"java_debugger", "java_runtime"}
 
 
 class DispatchesRuntimeTools(Protocol):
@@ -412,7 +433,7 @@ def _normalize_mcp_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     if (
-        name == "java_runtime"
+        _is_debugger_tool(name)
         and payload.get("ok") is False
         and str(payload.get("error", "")).startswith(
             "No active debug suspension."
@@ -424,7 +445,7 @@ def _normalize_mcp_payload(
         payload["retryable"] = True
         payload["suggested_next_step"] = _NO_ACTIVE_SUSPENSION_NEXT_STEP
     if (
-        name == "java_runtime"
+        _is_debugger_tool(name)
         and arguments.get("action") == "variables"
         and payload.get("ok") is True
         and "observation_state" not in payload
@@ -530,7 +551,7 @@ class RuntimeMCPBoundary:
             )
 
         if (
-            name == "java_runtime"
+            _is_debugger_tool(name)
             and args.get("http_trigger") is not None
             and args.get("action") != "wait_event"
         ):
@@ -542,7 +563,7 @@ class RuntimeMCPBoundary:
                 "wait_mode='blocking' or 'arm'.",
             ))
 
-        if name == "java_runtime" and args.get("action") == "wait_event":
+        if _is_debugger_tool(name) and args.get("action") == "wait_event":
             return await self._route_wait_event(
                 name,
                 args,
@@ -555,7 +576,7 @@ class RuntimeMCPBoundary:
                     if self._closing or self._closed:
                         return _call_tool_result(_closing_payload())
 
-                if name == "java_runtime":
+                if _is_runtime_tool(name):
                     active = self._active_background_waiter()
                     action = str(args.get("action", ""))
                     if active is not None:
@@ -606,7 +627,7 @@ class RuntimeMCPBoundary:
                     abandon_on_cancel=False,
                 )
                 if (
-                    name == "java_runtime"
+                    _is_runtime_tool(name)
                     and action in {
                         "cleanup_debug_state",
                         "stop",
@@ -859,7 +880,7 @@ class RuntimeMCPBoundary:
             resumed = False
             try:
                 resume_payload = self.dispatcher.dispatch(
-                    "java_runtime",
+                    "java_debugger",
                     {
                         "action": "resume",
                         "suspension_id": suspension_id,

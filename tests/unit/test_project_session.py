@@ -203,6 +203,7 @@ def test_project_session_serializes_reload_and_reports_source_drift(
         "startup_ms": None,
         "source_changes_pending": True,
         "rolled_back": False,
+        "error_code": None,
     }
 
 

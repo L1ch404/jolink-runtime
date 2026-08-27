@@ -957,6 +957,9 @@ class MavenBuildSystemAdapter:
             source_level=8,
             target_level=8,
             fingerprint=fingerprint,
+            configuration_inputs=tuple(configuration_inputs),
+            configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
+            javac_executable=execution.build_jdk.javac_executable,
         )
 
     def _read_effective_pom(self, source: Path) -> ET.Element:

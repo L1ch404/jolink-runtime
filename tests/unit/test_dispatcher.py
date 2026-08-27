@@ -67,6 +67,43 @@ def test_runtime_is_isolated_by_explicit_session_key() -> None:
     assert sessions.get_runtime("a") is not sessions.get_runtime("b")
 
 
+def test_product_tool_names_map_to_existing_runtime_actions(monkeypatch) -> None:
+    dispatcher = Dispatcher()
+    runtime = dispatcher.sessions.get_runtime("product-tools")
+    observed: list[str] = []
+
+    def record(action):
+        observed.append(action.action)
+        return RuntimeResult(ok=True, data={"status": action.action})
+
+    monkeypatch.setattr(runtime, "run", record)
+    monkeypatch.setattr(runtime, "update", record)
+    monkeypatch.setattr(runtime, "status", record)
+    monkeypatch.setattr(runtime, "threads", record)
+
+    assert dispatcher.dispatch(
+        "java_application",
+        {"action": "launch"},
+        session_key="product-tools",
+    )["status"] == "run"
+    assert dispatcher.dispatch(
+        "java_application",
+        {"action": "reload", "source_files": ["App.java"]},
+        session_key="product-tools",
+    )["status"] == "update"
+    assert dispatcher.dispatch(
+        "java_status",
+        {"action": "status"},
+        session_key="product-tools",
+    )["status"] == "status"
+    assert dispatcher.dispatch(
+        "java_debugger",
+        {"action": "threads"},
+        session_key="product-tools",
+    )["status"] == "threads"
+    assert observed == ["run", "update", "status", "threads"]
+
+
 def test_dispatcher_logs_lifecycle_without_argument_values(caplog) -> None:
     dispatcher = Dispatcher()
     caplog.set_level(logging.INFO)

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
+from .fast_compile import fast_compile_fingerprint
 
 
 class JdtCompileError(RuntimeError):
@@ -41,8 +43,30 @@ class JdtCandidate:
     candidate_id: str
     root: Path
     launcher: Path
-    worker_java_sha256: str
+    worker_java_sha256: str | None
     lock: dict[str, Any]
+    worker_java_minimum: int = 17
+
+    @classmethod
+    def load_product(cls) -> "JdtCandidate":
+        """Load the frozen product candidate, accepting the pre-product cache.
+
+        Candidate acquisition is still performed by the repository bootstrap;
+        this method owns the product path policy so Runtime code never embeds
+        experiment/cache layout details.
+        """
+
+        lock_path = Path(__file__).with_name("jdt-product-candidate.json")
+        cache_base = Path.home() / ".cache/jolink-runtime"
+        roots = (cache_base / "jdt-worker", cache_base / "jdt-poc")
+        last_error: JdtCompileError | None = None
+        for cache_root in roots:
+            try:
+                return cls.load(lock_path, cache_root)
+            except JdtCompileError as error:
+                last_error = error
+        assert last_error is not None
+        raise last_error
 
     @classmethod
     def load(cls, lock_path: Path, cache_root: Path) -> "JdtCandidate":
@@ -51,11 +75,16 @@ class JdtCandidate:
             candidate_id = str(lock["candidate_id"])
             artifacts = [*lock["artifacts"], lock["worker_artifact"]]
             equinox = lock["equinox"]
-            worker_java_sha256 = str(
-                lock["worker_build"]["java_home_identity"][
-                    "java_binary_sha256"
-                ]
+            worker_java_sha256 = (
+                str(
+                    lock["worker_build"]["java_home_identity"][
+                        "java_binary_sha256"
+                    ]
+                )
+                if int(lock.get("schema_version", 0)) >= 2
+                else None
             )
+            worker_java_minimum = int(lock.get("worker_java_minimum", 17))
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
             raise JdtCompileError(
                 "JDT_CANDIDATE_LOCK_INVALID",
@@ -91,19 +120,57 @@ class JdtCandidate:
             launcher=launcher,
             worker_java_sha256=worker_java_sha256,
             lock=lock,
+            worker_java_minimum=worker_java_minimum,
         )
 
     def verify_worker_java(self, java_home: Path) -> Path:
         executable = java_home.expanduser().resolve(strict=True) / "bin" / (
             "java.exe" if os.name == "nt" else "java"
         )
-        if (
-            not executable.is_file()
-            or _sha256_file(executable) != self.worker_java_sha256
-        ):
+        if not executable.is_file():
             raise JdtCompileError(
                 "JDT_WORKER_JDK_IDENTITY_MISMATCH",
-                "The JDT Worker JDK does not match the locked candidate.",
+                "The JDT Worker Java executable is unavailable.",
+            )
+        if self.worker_java_sha256 is not None:
+            if _sha256_file(executable) != self.worker_java_sha256:
+                raise JdtCompileError(
+                    "JDT_WORKER_JDK_IDENTITY_MISMATCH",
+                    "The JDT Worker JDK does not match the locked candidate.",
+                )
+            return executable
+        try:
+            observed = subprocess.run(
+                [str(executable), "-version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise JdtCompileError(
+                "JDT_WORKER_JDK_IDENTITY_MISMATCH",
+                "The JDT Worker JDK version could not be verified.",
+            ) from error
+        first_line = (observed.stderr or observed.stdout).splitlines()
+        match = re.search(
+            r'version\s+"(?P<first>\d+)(?:\.(?P<second>\d+))?',
+            first_line[0] if first_line else "",
+        )
+        if match is None:
+            raise JdtCompileError(
+                "JDT_WORKER_JDK_IDENTITY_MISMATCH",
+                "The JDT Worker JDK version output is unrecognized.",
+            )
+        major = int(match.group("first"))
+        if major == 1 and match.group("second") is not None:
+            major = int(match.group("second"))
+        if major < self.worker_java_minimum:
+            raise JdtCompileError(
+                "JDT_WORKER_JDK_IDENTITY_MISMATCH",
+                "The JDT Worker JDK is older than the locked minimum.",
             )
         return executable
 
@@ -289,6 +356,10 @@ class JdtCompileResult:
     elapsed_ms: float
     source_changes_pending: bool
     output_directory: Path
+    candidate_changed_classes: tuple[str, ...] = ()
+    candidate_deleted_classes: tuple[str, ...] = ()
+    candidate_changed_resources: tuple[str, ...] = ()
+    candidate_deleted_resources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -304,6 +375,19 @@ class JdtBuildWorldPlan:
     source_level: int
     target_level: int
     fingerprint: str
+    configuration_inputs: tuple[Path, ...]
+    configuration_environment_names: tuple[str, ...]
+    javac_executable: Path
+
+    def is_fresh(self) -> bool:
+        return self.fingerprint == fast_compile_fingerprint(
+            configuration_inputs=self.configuration_inputs,
+            configuration_environment_names=(
+                self.configuration_environment_names
+            ),
+            javac_executable=self.javac_executable,
+            compile_classpath=self.dependency_entries,
+        )
 
 
 def discover_java8_system_entries(java_home: Path) -> tuple[Path, ...]:
@@ -356,6 +440,7 @@ class PersistentJdtCompileSession:
         candidate: JdtCandidate,
         worker_java_home: Path,
         source_roots: Sequence[Path],
+        baseline_source_roots: Sequence[Path] | None = None,
         classpath_entries: Sequence[Path],
         source_encoding: str,
         processor_entries: Sequence[Path] = (),
@@ -369,6 +454,15 @@ class PersistentJdtCompileSession:
         self.source_roots = tuple(
             path.expanduser().resolve(strict=True) for path in source_roots
         )
+        self.baseline_source_roots = tuple(
+            path.expanduser().resolve(strict=True)
+            for path in (baseline_source_roots or source_roots)
+        )
+        if len(self.baseline_source_roots) != len(self.source_roots):
+            raise JdtCompileError(
+                "JDT_SOURCE_SNAPSHOT_INVALID",
+                "The frozen source snapshot does not match source roots.",
+            )
         self.classpath_entries = tuple(
             path.expanduser().resolve(strict=True) for path in classpath_entries
         )
@@ -386,6 +480,8 @@ class PersistentJdtCompileSession:
         self._client: JdtWorkerClient | None = None
         self._poisoned = False
         self._poison_reason = ""
+        self._baseline_ready = False
+        self._published_output_manifest: dict[str, str] = {}
         self._state_lock = threading.RLock()
         self._operation_lock = threading.Lock()
 
@@ -396,6 +492,7 @@ class PersistentJdtCompileSession:
                 self._client is not None
                 and self._client.process.poll() is None
                 and not self._poisoned
+                and self._baseline_ready
             )
 
     def start(self) -> JdtCompileResult:
@@ -430,7 +527,14 @@ class PersistentJdtCompileSession:
                 )
                 with self._state_lock:
                     self._client = client
-                return self._build("FULL", source_changes_pending=False)
+                result = self._build("FULL", source_changes_pending=False)
+                with self._state_lock:
+                    self._baseline_ready = result.compile_ok
+                    if result.compile_ok:
+                        self._published_output_manifest = (
+                            self._complete_output_manifest()
+                        )
+                return result
             except Exception:
                 with self._state_lock:
                     self._client = None
@@ -504,7 +608,25 @@ class PersistentJdtCompileSession:
                 != hashlib.sha256(content).hexdigest()
                 for source, (_private, content, _original) in snapshots.items()
             )
-            return replace(result, source_changes_pending=pending)
+            return replace(
+                result,
+                source_changes_pending=pending,
+                **self._publication_delta(),
+            )
+
+    def mark_published(self) -> None:
+        """Advance the Runtime publication baseline after a confirmed apply."""
+
+        with self._operation_lock:
+            with self._state_lock:
+                if self._poisoned or not self._baseline_ready:
+                    raise JdtCompileError(
+                        "JDT_SESSION_NOT_READY",
+                        "The JDT publication baseline cannot be advanced.",
+                    )
+                self._published_output_manifest = (
+                    self._complete_output_manifest()
+                )
 
     def close(self) -> bool:
         with self._state_lock:
@@ -512,25 +634,30 @@ class PersistentJdtCompileSession:
             self._client = None
             self._poisoned = True
             self._poison_reason = "SESSION_CLOSED"
+            self._baseline_ready = False
         settled = client.force_close() if client is not None else True
         with self._operation_lock:
             shutil.rmtree(self.root, ignore_errors=True)
             self._source_map.clear()
+            self._published_output_manifest.clear()
         return settled
 
     def _materialize_sources(self) -> None:
         self.private_source.mkdir(parents=True, exist_ok=False)
         mapped: dict[str, str] = {}
-        for source_root in self.source_roots:
-            for source in sorted(source_root.rglob("*.java")):
-                if source.is_symlink():
+        for source_root, baseline_root in zip(
+            self.source_roots, self.baseline_source_roots
+        ):
+            for baseline_source in sorted(baseline_root.rglob("*.java")):
+                if baseline_source.is_symlink():
                     raise JdtCompileError(
                         "SOURCE_LINK_UNSUPPORTED",
                         "CompileSession source roots may not contain links.",
                     )
-                relative = source.relative_to(source_root)
+                relative = baseline_source.relative_to(baseline_root)
+                source = source_root / relative
                 key = relative.as_posix()
-                digest = _sha256_file(source)
+                digest = _sha256_file(baseline_source)
                 if key in mapped and mapped[key] != digest:
                     raise JdtCompileError(
                         "SOURCE_ROOT_COLLISION",
@@ -539,8 +666,8 @@ class PersistentJdtCompileSession:
                 mapped[key] = digest
                 destination = self.private_source / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, destination)
-                self._source_map[source] = destination
+                shutil.copyfile(baseline_source, destination)
+                self._source_map[source.resolve(strict=False)] = destination
 
     def _start_worker(
         self,
@@ -730,12 +857,47 @@ class PersistentJdtCompileSession:
             if path.is_file() and path.suffix != ".class"
         }
 
+    def _complete_output_manifest(self) -> dict[str, str]:
+        if not self.output_directory.is_dir():
+            return {}
+        return {
+            path.relative_to(self.output_directory).as_posix(): _sha256_file(path)
+            for path in sorted(self.output_directory.rglob("*"))
+            if path.is_file()
+        }
+
+    def _publication_delta(self) -> dict[str, tuple[str, ...]]:
+        current = self._complete_output_manifest()
+        with self._state_lock:
+            published = dict(self._published_output_manifest)
+        changed = sorted(
+            path
+            for path, digest in current.items()
+            if published.get(path) != digest
+        )
+        deleted = sorted(path for path in published if path not in current)
+        return {
+            "candidate_changed_classes": tuple(
+                path for path in changed if path.endswith(".class")
+            ),
+            "candidate_deleted_classes": tuple(
+                path for path in deleted if path.endswith(".class")
+            ),
+            "candidate_changed_resources": tuple(
+                path for path in changed if not path.endswith(".class")
+            ),
+            "candidate_deleted_resources": tuple(
+                path for path in deleted if not path.endswith(".class")
+            ),
+        }
+
     def _poison(self, reason: str) -> None:
         with self._state_lock:
             if self._poisoned:
                 return
             self._poisoned = True
             self._poison_reason = reason
+            self._baseline_ready = False
             client = self._client
             self._client = None
         if client is not None:

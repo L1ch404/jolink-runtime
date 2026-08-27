@@ -65,7 +65,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "classpath": {
             "type": "string",
             "description": (
-                "Classpath for direct run/restart with main_class; omit with "
+                "Classpath for direct launch/restart with main_class; omit with "
                 "project_path."
             ),
         },
@@ -79,13 +79,13 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "jar_path": {
             "type": "string",
             "description": (
-                "Executable JAR for direct run/restart; omit with project_path."
+                "Executable JAR for direct launch/restart; omit with project_path."
             ),
         },
         "project_path": {
             "type": "string",
             "description": (
-                "Local Maven project root for run/restart. joLink imports an "
+                "Local Maven project root for launch/restart. joLink imports an "
                 "IntelliJ IDEA Application or Spring Boot launch, uses the "
                 "project's Maven/JDK settings, compiles in the background, "
                 "then starts the resolved classpath. Do not combine with "
@@ -103,7 +103,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "app_args": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Application arguments for run/restart.",
+            "description": "Application arguments for launch/restart.",
         },
         "jdwp_port": {
             "type": "integer",
@@ -115,7 +115,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "vm_args": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Additional JVM arguments for run/restart.",
+            "description": "Additional JVM arguments for launch/restart.",
         },
         "pid": {
             "type": "integer",
@@ -133,7 +133,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "minimum": 1,
             "maximum": 65535,
             "description": (
-                "Optional local application TCP port for run/restart readiness; "
+                "Optional local application TCP port for launch/restart readiness; "
                 "must differ from jdwp_port."
             ),
         },
@@ -351,10 +351,18 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "minLength": 1,
             },
             "description": (
-                "Required for update: explicit Java source paths in the selected "
-                "Maven module. joLink compiles them to private staging and "
-                "HotSwaps compatible method-body changes into the current "
-                "JVM. The update is runtime-only and is lost on restart."
+                "Required for reload: explicit Java source paths in the selected "
+                "Maven module. joLink compiles them in a persistent private JDT "
+                "session, seals a durable Candidate, and applies it by HotSwap "
+                "or managed restart."
+            ),
+        },
+        "hotswap": {
+            "type": "boolean",
+            "default": True,
+            "description": (
+                "For reload, try HotSwap first when true. Set false to apply "
+                "the compiled Candidate by managed restart with rollback."
             ),
         },
     },
@@ -381,28 +389,154 @@ JAVA_PROCESSES_INPUT_SCHEMA = {
     },
 }
 
+PUBLIC_APPLICATION_ACTIONS = (
+    "launch",
+    "attach",
+    "reload",
+    "restart",
+    "stop",
+    "detach",
+)
+PUBLIC_STATUS_ACTIONS = ("processes", "status", "logs")
+PUBLIC_DEBUGGER_ACTIONS = (
+    "breakpoint",
+    "exception",
+    "wait_event",
+    "threads",
+    "stack",
+    "variables",
+    "resume",
+    "cleanup_debug_state",
+)
+
+
+def _schema_for_actions(
+    actions: tuple[str, ...],
+    properties: tuple[str, ...],
+) -> dict:
+    selected = {
+        name: deepcopy(JAVA_RUNTIME_INPUT_SCHEMA["properties"][name])
+        for name in ("action", *properties)
+    }
+    selected["action"]["enum"] = list(actions)
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": selected,
+        "required": ["action"],
+    }
+
+
+JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
+    PUBLIC_APPLICATION_ACTIONS,
+    (
+        "classpath",
+        "main_class",
+        "jar_path",
+        "project_path",
+        "launch_name",
+        "app_args",
+        "jdwp_port",
+        "vm_args",
+        "pid",
+        "host",
+        "ready_port",
+        "startup_wait_timeout_seconds",
+        "source_files",
+        "hotswap",
+    ),
+)
+JAVA_STATUS_INPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": list(PUBLIC_STATUS_ACTIONS),
+            "description": "Status operation to perform.",
+        },
+        "filter": deepcopy(JAVA_PROCESSES_INPUT_SCHEMA["properties"]["filter"]),
+        "full": deepcopy(JAVA_PROCESSES_INPUT_SCHEMA["properties"]["full"]),
+        "tail": deepcopy(JAVA_RUNTIME_INPUT_SCHEMA["properties"]["tail"]),
+    },
+    "required": ["action"],
+}
+JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
+    PUBLIC_DEBUGGER_ACTIONS,
+    tuple(
+        name
+        for name in JAVA_RUNTIME_INPUT_SCHEMA["properties"]
+        if name
+        not in {
+            "action",
+            "classpath",
+            "main_class",
+            "jar_path",
+            "project_path",
+            "launch_name",
+            "app_args",
+            "vm_args",
+            "pid",
+            "ready_port",
+            "startup_wait_timeout_seconds",
+            "tail",
+            "source_files",
+            "hotswap",
+        }
+    ),
+)
+
+JAVA_APPLICATION_DESCRIPTION = (
+    "Launch, attach, reload, restart, stop, or detach a local Java application. "
+    "For Maven project launches, reload compiles explicit source_files in the "
+    "persistent JDT session, uses HotSwap when safe, and otherwise restarts the "
+    "Candidate with automatic rollback."
+)
+JAVA_STATUS_DESCRIPTION = (
+    "Discover local Java processes, inspect joLink application/build state, or "
+    "read a bounded captured-log tail."
+)
+JAVA_DEBUGGER_DESCRIPTION = (
+    "Observe executed paths and runtime state with JDWP breakpoints, exception "
+    "events, stacks, and variables. Always resume or clean up every suspension."
+)
+
 
 def get_mcp_tools() -> list[types.Tool]:
     """Build fresh MCP tool models from the compact v0.1 schemas."""
     return [
         types.Tool(
-            name="java_runtime",
-            description=JAVA_RUNTIME_DESCRIPTION,
-            inputSchema=deepcopy(JAVA_RUNTIME_INPUT_SCHEMA),
+            name="java_application",
+            description=JAVA_APPLICATION_DESCRIPTION,
+            inputSchema=deepcopy(JAVA_APPLICATION_INPUT_SCHEMA),
         ),
         types.Tool(
-            name="java_processes",
-            description=JAVA_PROCESSES_DESCRIPTION,
-            inputSchema=deepcopy(JAVA_PROCESSES_INPUT_SCHEMA),
+            name="java_status",
+            description=JAVA_STATUS_DESCRIPTION,
+            inputSchema=deepcopy(JAVA_STATUS_INPUT_SCHEMA),
+        ),
+        types.Tool(
+            name="java_debugger",
+            description=JAVA_DEBUGGER_DESCRIPTION,
+            inputSchema=deepcopy(JAVA_DEBUGGER_INPUT_SCHEMA),
         ),
     ]
 
 
 __all__ = [
+    "JAVA_APPLICATION_DESCRIPTION",
+    "JAVA_APPLICATION_INPUT_SCHEMA",
+    "JAVA_DEBUGGER_DESCRIPTION",
+    "JAVA_DEBUGGER_INPUT_SCHEMA",
     "JAVA_PROCESSES_DESCRIPTION",
     "JAVA_PROCESSES_INPUT_SCHEMA",
     "JAVA_RUNTIME_DESCRIPTION",
     "JAVA_RUNTIME_INPUT_SCHEMA",
+    "JAVA_STATUS_DESCRIPTION",
+    "JAVA_STATUS_INPUT_SCHEMA",
+    "PUBLIC_APPLICATION_ACTIONS",
+    "PUBLIC_DEBUGGER_ACTIONS",
     "PUBLIC_RUNTIME_ACTIONS",
+    "PUBLIC_STATUS_ACTIONS",
     "get_mcp_tools",
 ]

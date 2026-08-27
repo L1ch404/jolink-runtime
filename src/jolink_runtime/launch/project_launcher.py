@@ -62,6 +62,7 @@ class PreparedProjectLaunch:
     fast_compile_unavailable_reason: str | None = None
     jdt_build_world_plan: JdtBuildWorldPlan | None = None
     jdt_unavailable_reason: str | None = None
+    jdt_source_snapshot_roots: tuple[Path, ...] = ()
 
 
 class ProjectLaunchPipeline:

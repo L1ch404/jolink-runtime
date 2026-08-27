@@ -25,6 +25,7 @@ from jolink_runtime.launch import (
     PreparedProjectLaunch,
     ProjectLaunchRequest,
 )
+from jolink_runtime.launch.project_session import ReloadStage
 
 
 class _FakeProcess:
@@ -564,4 +565,118 @@ def test_project_restart_uses_current_generation_without_recompiling(
     assert "generation-store" in " ".join(commands[1])
     final_status = runtime.status(RuntimeAction(action="status"))
     assert final_status.data["generation"] == 1
+    assert runtime.stop(RuntimeAction(action="stop")).ok is True
+
+
+@pytest.mark.parametrize(
+    "candidate_outcome",
+    ["success", "start_failure", "promotion_failure"],
+)
+def test_candidate_restart_promotes_or_rolls_back_last_good_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_outcome: str,
+) -> None:
+    runtime = JavaRuntime()
+    pipeline = _PreparedPipeline(tmp_path)
+    runtime._project_pipeline = pipeline
+    start_count = 0
+
+    def start(**kwargs: Any) -> ProcessInfo:
+        nonlocal start_count
+        start_count += 1
+        process = _FakeProcess()
+        info = ProcessInfo(
+            process,
+            kwargs["jdwp_port"],
+            kwargs["main_class"],
+            ready_port=kwargs["ready_port"],
+            startup_wait_timeout_seconds=(
+                kwargs["startup_wait_timeout_seconds"]
+            ),
+        )
+        runtime._proc._publish(info)
+        kwargs["on_published"](info)
+        if start_count == 2 and candidate_outcome == "start_failure":
+            process.returncode = 7
+            raise ProcessStartupError(
+                "candidate failed",
+                failure_type="process_exited_before_jdwp",
+                exit_code=7,
+                cleanup_settled=True,
+            )
+        return info
+
+    monkeypatch.setattr(runtime._proc, "start", start)
+    monkeypatch.setattr(
+        runtime._proc,
+        "observe_readiness",
+        lambda process, refresh=True: {
+            "process_state": "running" if process.is_alive() else "exited",
+            "startup_state": "unverified" if process.is_alive() else "failed",
+            "readiness_configured": False,
+        },
+    )
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_posix",
+        staticmethod(lambda process: setattr(process, "returncode", -15)),
+    )
+    monkeypatch.setattr(
+        ProcessManager,
+        "_stop_windows",
+        staticmethod(lambda process: setattr(process, "returncode", -15)),
+    )
+
+    runtime.run_project(RuntimeAction(action="run"), _request(tmp_path))
+    _wait_until(
+        lambda: runtime._launch_controller.snapshot()["launch_phase"]
+        == "runtime_active"
+    )
+    old_attempt = runtime._launch_controller.snapshot()["attempt_id"]
+    session = runtime._project_sessions[old_attempt]
+    candidate_output = tmp_path / "candidate-output"
+    candidate_output.mkdir()
+    (candidate_output / "Application.class").write_bytes(b"candidate")
+    session.generations.prepare_candidate(
+        candidate_output,
+        build_world_fingerprint=session.build_world_fingerprint,
+    )
+    session.begin_reload("source-v2")
+    session.transition_reload(ReloadStage.PREPARING_CANDIDATE)
+    session.transition_reload(ReloadStage.RESTARTING)
+    if candidate_outcome == "promotion_failure":
+        monkeypatch.setattr(
+            session.generations,
+            "promote_candidate",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                OSError("state persistence unavailable")
+            ),
+        )
+
+    result = runtime._restart_candidate_project(RuntimeAction(action="update"))
+    assert result.ok is True
+    _wait_until(
+        lambda: runtime._launch_controller.snapshot()["launch_phase"]
+        == "runtime_active"
+    )
+
+    status = runtime.status(RuntimeAction(action="status"))
+    if candidate_outcome == "success":
+        assert status.data["generation"] == 2
+        assert session.generations.current.output_directory.joinpath(
+            "Application.class"
+        ).read_bytes() == b"candidate"
+        assert session.public_status()["last_reload"]["applied"] is True
+        assert start_count == 2
+    else:
+        assert status.data["generation"] == 1
+        assert session.generations.candidate is None
+        assert session.public_status()["last_reload"]["applied"] is False
+        assert session.public_status()["last_reload"]["rolled_back"] is True
+        assert start_count == 3
+        if candidate_outcome == "promotion_failure":
+            assert session.public_status()["last_reload"]["error_code"] == (
+                "GENERATION_PROMOTION_FAILED"
+            )
     assert runtime.stop(RuntimeAction(action="stop")).ok is True

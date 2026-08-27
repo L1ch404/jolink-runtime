@@ -65,22 +65,21 @@ Debug deeper only when necessary.
 
 ## What it can do
 
-joLink currently exposes two MCP tools:
+joLink exposes three focused MCP tools:
 
-- `java_runtime` — run, operate, observe, and debug one local Java application;
-- `java_processes` — discover an already-running local JVM when attach is
-  needed.
+- `java_application` — lifecycle, project launch, reload, restart, and attach;
+- `java_status` — Java process discovery, application/build status, and logs;
+- `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
 
-The Java Runtime currently provides 16 public actions:
+The public actions are:
 
 ```text
-run
+launch
 stop
 restart
 attach
 detach
-status
-logs
+reload
 breakpoint
 exception
 wait_event
@@ -89,7 +88,7 @@ stack
 variables
 resume
 cleanup_debug_state
-update
+processes / status / logs
 ```
 
 These actions support:
@@ -99,9 +98,9 @@ These actions support:
   project, compiling it, resolving its runtime classpath, and launching it
   without first packaging a fat JAR;
 - stopping or restarting an application after code changes;
-- compiling explicit method-body edits into private staging and HotSwapping
-  them into a JVM started through `project_path`, without writing
-  `target/classes`;
+- compiling explicit edits in a persistent private JDT session, sealing a
+  durable Candidate, and applying it by HotSwap or managed restart with
+  automatic rollback;
 - inspecting application status and logs;
 - attaching to an already-running local JVM;
 - setting semantic breakpoints and exception watches;
@@ -210,8 +209,9 @@ Restart the MCP client after changing its configuration.
 After the MCP server is connected, confirm that these tools are available:
 
 ```text
-java_runtime
-java_processes
+java_application
+java_status
+java_debugger
 ```
 
 Open a local Java project and ask the coding agent:
@@ -248,28 +248,20 @@ For a method-body edit in an application launched with `project_path`, the
 agent can avoid a full Maven rebuild/restart:
 
 ```text
-status (confirm runtime_active and fast_update.available=true)
--> update(source_files=[the explicit edited Java files])
+java_status(action=status; confirm runtime_active and compile_ready=true)
+-> java_application(action=reload, source_files=[the explicit edited Java files])
 -> trigger a fresh request
 -> verify the new runtime behavior
 ```
 
-`update` compiles only to private staging and applies a runtime-only HotSwap.
-It rejects class-structure and metadata changes and never silently falls back
-to a full Maven build. A successful HotSwap is not proof of business
-correctness, so the fresh verification request is required. P0 uses the
-selected module's Maven compile classpath and a verified Java target model; it
-fails closed when annotation processing or bytecode transformation may affect
-the selected build. It also requires an explicit source encoding and rejects
-unmodeled early-lifecycle Maven executions, toolchain selection, and
-`failOnWarning` policies that its private `javac` call cannot reproduce.
-Compiler user properties, Maven project/environment configuration, and build
-extensions are part of the same fail-closed model. Static-initializer changes
-require a formal rebuild and restart because HotSwap does not rerun `<clinit>`.
-Breakpoints in redefined classes become stale and must be set again against
-the current source. `fast_update.available=true` means the launch is eligible
-to try this bounded path, not that every Maven compiler plugin or source edit
-is supported.
+`reload` updates a private persistent JDT Build World and seals its complete
+output delta as a durable Candidate. Compatible loaded method-body changes use
+HotSwap. Structural changes, resources, additions/deletions, an unsupported
+JVM, or `hotswap=false` use a managed Candidate restart. If the Candidate does
+not become ready, joLink automatically restores the last-good Generation and
+reports `rolled_back=true`. A successful apply is still not proof of business
+correctness, so a fresh verification request is required. Breakpoints in
+redefined classes become stale and must be set again against current source.
 
 ## Typical workflow
 
@@ -278,9 +270,9 @@ A normal verification flow looks like this:
 ```text
 read the code
 -> change the code
--> java_runtime(run or restart, ready_port=<application port>)
--> if startup_state=starting, call java_runtime(status) until ready
--> if startup_state=failed, inspect java_runtime(logs)
+-> java_application(launch or restart, ready_port=<application port>)
+-> if startup_state=starting, call java_status(status) until ready
+-> if startup_state=failed, inspect java_status(logs)
 -> trigger a test or endpoint
 -> inspect the actual result
 -> update the diagnosis
@@ -328,7 +320,7 @@ startup from application TCP readiness:
 
 ```json
 {
-  "action": "run",
+  "action": "launch",
   "jar_path": "target/app.jar",
   "jdwp_port": 5005,
   "ready_port": 8080,
@@ -336,7 +328,7 @@ startup from application TCP readiness:
 }
 ```
 
-`startup_wait_timeout_seconds` limits only how long that `run` call waits.
+`startup_wait_timeout_seconds` limits only how long that `launch` call waits.
 It defaults to 30 seconds and is capped at 60 seconds so the MCP call remains
 bounded.
 If the process is alive but the application port is not accepting connections,
@@ -474,7 +466,7 @@ It performs:
 ```text
 initialize
 -> tools/list
--> java_runtime(status)
+-> java_status(status)
 -> close the stdio client
 -> wait for the server process to exit
 ```
