@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -225,6 +226,29 @@ def test_nonterminal_reload_keeps_applied_unknown_and_active(
     assert session.public_status()["active_operation"]["stage"] == (
         "waiting_readiness"
     )
+
+
+def test_project_session_owns_one_compile_session(tmp_path: Path) -> None:
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    closed: list[bool] = []
+    compiler = SimpleNamespace(
+        ready=True,
+        close=lambda: closed.append(True),
+    )
+
+    session.attach_compile_session(compiler)
+
+    assert session.compile_ready is True
+    with pytest.raises(ProjectSessionError) as duplicate:
+        session.attach_compile_session(compiler)
+    assert duplicate.value.error_code == "COMPILE_SESSION_ALREADY_ATTACHED"
+
+    session.close()
+    assert closed == [True]
+    assert session.compile_ready is False
 
 
 def test_compile_failure_creates_no_candidate_generation(

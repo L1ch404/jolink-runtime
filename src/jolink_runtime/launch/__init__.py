@@ -79,6 +79,13 @@ from .project_session import (
     ReloadStage,
     RuntimeGenerationState,
 )
+from .jdt_compile_session import (
+    JdtCandidate,
+    JdtCompileError,
+    JdtCompileResult,
+    JdtWorkerClient,
+    PersistentJdtCompileSession,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -132,6 +139,11 @@ __all__ = [
     "ReloadAttempt",
     "ReloadStage",
     "RuntimeGenerationState",
+    "JdtCandidate",
+    "JdtCompileError",
+    "JdtCompileResult",
+    "JdtWorkerClient",
+    "PersistentJdtCompileSession",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

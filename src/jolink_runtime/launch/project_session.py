@@ -579,6 +579,7 @@ class JavaProjectSession:
         self.build_world_fingerprint = build_world_fingerprint
         self.generations = GenerationStore(root / "generation-store")
         self.compile_ready = False
+        self.compile_session: Any | None = None
         self._active_reload: ReloadAttempt | None = None
         self._last_reload: ReloadAttempt | None = None
         self._last_successful_startup_ms: float | None = None
@@ -647,6 +648,16 @@ class JavaProjectSession:
         with self._lock:
             self._last_successful_startup_ms = max(0.0, float(duration_ms))
 
+    def attach_compile_session(self, compile_session: Any) -> None:
+        with self._lock:
+            if self.compile_session is not None:
+                raise ProjectSessionError(
+                    "COMPILE_SESSION_ALREADY_ATTACHED",
+                    "A CompileSession is already attached to this project.",
+                )
+            self.compile_session = compile_session
+            self.compile_ready = bool(getattr(compile_session, "ready", False))
+
     def retain_directory(self, directory: Path) -> None:
         """Keep launch metadata used by the active compile plan until close."""
 
@@ -699,6 +710,14 @@ class JavaProjectSession:
         with self._lock:
             retained = tuple(self._retained_directories)
             self._retained_directories.clear()
+            compile_session = self.compile_session
+            self.compile_session = None
+            self.compile_ready = False
+        if compile_session is not None:
+            try:
+                compile_session.close()
+            except Exception:
+                pass
         if cleanup_retained:
             for directory in retained:
                 shutil.rmtree(directory, ignore_errors=True)
