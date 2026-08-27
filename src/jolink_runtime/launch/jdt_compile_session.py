@@ -107,6 +107,46 @@ class JdtCandidate:
             )
         return executable
 
+    def select_worker_java_home(
+        self,
+        preferred: Iterable[Path] = (),
+    ) -> Path:
+        candidates: list[Path] = [
+            path.expanduser().resolve(strict=False) for path in preferred
+        ]
+        java_on_path = shutil.which("java")
+        if java_on_path:
+            candidates.append(Path(java_on_path).resolve().parent.parent)
+        candidates.extend(Path.home().glob(".jdks/*"))
+        candidates.extend(
+            Path.home().glob(
+                "Library/Java/JavaVirtualMachines/*/Contents/Home"
+            )
+        )
+        candidates.extend(
+            Path("/Library/Java/JavaVirtualMachines").glob("*/Contents/Home")
+        )
+        candidates.extend(Path("/usr/lib/jvm").glob("*"))
+        for environment_name in ("JAVA_HOME",):
+            value = os.environ.get(environment_name)
+            if value:
+                candidates.append(Path(value))
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(str(candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                self.verify_worker_java(candidate)
+            except (OSError, JdtCompileError):
+                continue
+            return candidate
+        raise JdtCompileError(
+            "JDT_WORKER_JDK_UNAVAILABLE",
+            "The JDT Worker JDK used by the locked candidate was not found.",
+        )
+
 
 class JdtWorkerClient:
     def __init__(
@@ -249,6 +289,61 @@ class JdtCompileResult:
     elapsed_ms: float
     source_changes_pending: bool
     output_directory: Path
+
+
+@dataclass(frozen=True)
+class JdtBuildWorldPlan:
+    project_root: Path
+    module_root: Path
+    source_roots: tuple[Path, ...]
+    dependency_entries: tuple[Path, ...]
+    processor_entries: tuple[Path, ...]
+    lombok_entries: tuple[Path, ...]
+    target_java_home: Path
+    source_encoding: str
+    source_level: int
+    target_level: int
+    fingerprint: str
+
+
+def discover_java8_system_entries(java_home: Path) -> tuple[Path, ...]:
+    """Return the Java 8 boot/ext archives needed by the frozen JDT model."""
+
+    home = java_home.expanduser().resolve(strict=True)
+    runtime = home / "jre" if (home / "jre").is_dir() else home
+    candidates = [
+        runtime / "lib" / name
+        for name in (
+            "resources.jar",
+            "rt.jar",
+            "jsse.jar",
+            "jce.jar",
+            "charsets.jar",
+            "jfr.jar",
+        )
+    ]
+    for directory in (
+        runtime / "lib" / "ext",
+        runtime / "lib" / "endorsed",
+        home / "lib" / "endorsed",
+    ):
+        if directory.is_dir():
+            candidates.extend(sorted(directory.glob("*.jar")))
+    entries: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        key = os.path.normcase(str(resolved))
+        if not resolved.is_file() or key in seen:
+            continue
+        seen.add(key)
+        entries.append(resolved)
+    if not any(path.name == "rt.jar" for path in entries):
+        raise JdtCompileError(
+            "JDT_TARGET_PLATFORM_UNAVAILABLE",
+            "The frozen product JDT model requires a Java 8 rt.jar platform.",
+        )
+    return tuple(entries)
 
 
 class PersistentJdtCompileSession:
@@ -658,6 +753,8 @@ __all__ = [
     "JdtCandidate",
     "JdtCompileError",
     "JdtCompileResult",
+    "JdtBuildWorldPlan",
     "JdtWorkerClient",
     "PersistentJdtCompileSession",
+    "discover_java8_system_entries",
 ]

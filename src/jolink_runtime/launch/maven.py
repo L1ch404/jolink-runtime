@@ -21,6 +21,7 @@ from .contracts import (
 )
 from .idea_environment import IdeaBuildPreferences
 from .fast_compile import FastCompilePlan, fast_compile_fingerprint
+from .jdt_compile_session import JdtBuildWorldPlan
 from .toolchain import (
     JavaToolchainCandidate,
     JavaToolchainResolver,
@@ -783,6 +784,179 @@ class MavenBuildSystemAdapter:
             configuration_fingerprint=fingerprint,
             baseline_class_hashes=baseline_class_hashes,
             target_module=execution.module.relative_path,
+        )
+
+    def consume_jdt_build_world_plan(
+        self,
+        *,
+        execution: MavenExecutionPlan,
+        runtime_jdk: JavaToolchainCandidate,
+    ) -> JdtBuildWorldPlan:
+        """Create the Java-8 single-module Build World for persistent JDT."""
+
+        source_root = execution.module.directory / "src/main/java"
+        if not source_root.is_dir() or execution.module.packaging != "jar":
+            raise MavenResolutionError(
+                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                "Persistent JDT currently supports one standard Maven jar module.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build for this layout.",
+            )
+        if (source_root / "module-info.java").is_file():
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The first JDT product model does not support JPMS modules.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build and restart.",
+            )
+        effective_root = self._read_effective_pom(execution.effective_pom_file)
+        effective_project = self._select_effective_project(
+            effective_root, execution.module
+        )
+        compiler = self._find_build_plugin(
+            effective_project, "maven-compiler-plugin"
+        )
+        configurations = self._compiler_configurations(compiler)
+        for configuration in configurations:
+            if (
+                configuration.find("./{*}annotationProcessorPaths") is not None
+                or configuration.find("./{*}annotationProcessors") is not None
+                or configuration.find("./{*}compilerArguments") is not None
+                or self._config_text(configuration, "compilerArgument")
+            ):
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "Explicit annotation Processor configuration is not yet modeled.",
+                    retryable=False,
+                    suggested_next_step="Use the formal Maven build and restart.",
+                )
+            compiler_args = configuration.find("./{*}compilerArgs")
+            if compiler_args is not None:
+                values = [
+                    (item.text or "").strip()
+                    for item in compiler_args.findall("./{*}arg")
+                    if (item.text or "").strip()
+                ]
+                if any(not value.startswith("-J-") for value in values):
+                    raise MavenResolutionError(
+                        LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                        "Maven compiler arguments cannot be reproduced by JDT.",
+                        retryable=False,
+                        suggested_next_step="Use the formal Maven build and restart.",
+                    )
+        proc_values = self._compiler_declared_values(
+            effective_project,
+            configurations,
+            config_name="proc",
+            property_name="maven.compiler.proc",
+        )
+        if any(value.casefold() != "full" for value in proc_values):
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The Maven annotation-processing mode is not supported by JDT reload.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build and restart.",
+            )
+
+        compiler_model = self._compiler_model(
+            effective_project,
+            build_jdk=execution.build_jdk,
+            runtime_jdk=runtime_jdk,
+        )
+        if (
+            compiler_model["source_level"] != 8
+            or compiler_model["target_level"] != 8
+        ):
+            raise MavenResolutionError(
+                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
+                "The frozen product JDT candidate currently supports Java 8 only.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build for this Java level.",
+            )
+
+        classpath_text = self._read_classpath_file(
+            execution.compile_classpath_file
+        )
+        dependencies: list[tuple[Path, tuple[str, ...], bool]] = []
+        seen: set[str] = set()
+        module_output = execution.module.output_directory.resolve(strict=False)
+        for raw_entry in classpath_text.split(os.pathsep):
+            if not raw_entry.strip():
+                continue
+            raw_path = Path(raw_entry)
+            if not raw_path.is_absolute():
+                raw_path = execution.module.directory / raw_path
+            resolved = raw_path.expanduser().resolve(strict=False)
+            if resolved == module_output:
+                continue
+            key = os.path.normcase(str(resolved))
+            if key in seen:
+                continue
+            seen.add(key)
+            included, providers, lombok = self._jdt_dependency_facts(resolved)
+            if not included:
+                continue
+            dependencies.append((resolved, providers, lombok))
+        if not dependencies:
+            raise MavenResolutionError(
+                LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
+                "Maven produced no usable JDT compile dependencies.",
+                retryable=True,
+                suggested_next_step="Refresh Maven dependencies and retry launch.",
+            )
+
+        self._ensure_no_unverified_maven_extensions(
+            effective_project,
+            maven_project_inputs=tuple(
+                execution.workspace.build_root / ".mvn" / name
+                for name in _MAVEN_PROJECT_CONFIG_NAMES
+            ),
+        )
+        self._ensure_no_unverified_build_transforms(
+            effective_project,
+            tuple(item[0] for item in dependencies),
+            allow_lombok_processor=True,
+        )
+        lombok_entries = tuple(
+            item[0]
+            for item in dependencies
+            if item[2]
+            or any(
+                provider.startswith("lombok.")
+                for provider in item[1]
+            )
+        )
+        processor_entries = tuple(
+            item[0]
+            for item in dependencies
+            if any(
+                not provider.startswith("lombok.")
+                for provider in item[1]
+            )
+        )
+        configuration_inputs = (
+            *(module.pom_file for module in execution.workspace.modules),
+            execution.compile_classpath_file,
+            execution.effective_pom_file,
+        )
+        fingerprint = fast_compile_fingerprint(
+            configuration_inputs=configuration_inputs,
+            configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
+            javac_executable=execution.build_jdk.javac_executable,
+            compile_classpath=tuple(item[0] for item in dependencies),
+        )
+        return JdtBuildWorldPlan(
+            project_root=execution.workspace.project_root,
+            module_root=execution.module.directory,
+            source_roots=(source_root.resolve(strict=True),),
+            dependency_entries=tuple(item[0] for item in dependencies),
+            processor_entries=processor_entries,
+            lombok_entries=lombok_entries,
+            target_java_home=runtime_jdk.home,
+            source_encoding=self._source_encoding(effective_project),
+            source_level=8,
+            target_level=8,
+            fingerprint=fingerprint,
         )
 
     def _read_effective_pom(self, source: Path) -> ET.Element:
@@ -1569,6 +1743,112 @@ class MavenBuildSystemAdapter:
             if cls._child_text(plugin, "artifactId") == artifact_id
         ]
         return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _jdt_dependency_facts(
+        path: Path,
+    ) -> tuple[bool, tuple[str, ...], bool]:
+        """Classify one Maven-authoritative compile classpath entry."""
+
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "The Maven compile classpath contains a missing entry.",
+                retryable=True,
+                suggested_next_step="Refresh Maven dependencies and retry launch.",
+            ) from error
+        if resolved.is_dir():
+            service = resolved / _PROCESSOR_SERVICE
+            providers = (
+                MavenBuildSystemAdapter._parse_processor_service(
+                    service.read_bytes()
+                )
+                if service.is_file()
+                else ()
+            )
+            return True, providers, (resolved / "lombok").is_dir()
+        if not resolved.is_file():
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "A Maven compile classpath entry is unsupported.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build and restart.",
+            )
+        if not zipfile.is_zipfile(resolved):
+            try:
+                root = ET.fromstring(resolved.read_bytes())
+            except (OSError, ET.ParseError) as error:
+                raise MavenResolutionError(
+                    LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                    "A non-binary Maven classpath entry is not recognized.",
+                    retryable=False,
+                    suggested_next_step="Use the formal Maven build and restart.",
+                ) from error
+            if root.tag.rsplit("}", 1)[-1] == "project":
+                return False, (), False
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "A non-binary Maven classpath entry is not recognized.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build and restart.",
+            )
+        try:
+            with zipfile.ZipFile(resolved) as archive:
+                names = set(archive.namelist())
+                try:
+                    service = archive.read(_PROCESSOR_SERVICE)
+                except KeyError:
+                    service = b""
+                providers = (
+                    MavenBuildSystemAdapter._parse_processor_service(service)
+                    if service
+                    else ()
+                )
+                try:
+                    manifest = archive.read("META-INF/MANIFEST.MF")
+                except KeyError:
+                    manifest = b""
+        except (OSError, zipfile.BadZipFile) as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "A Maven compile archive is invalid.",
+                retryable=True,
+                suggested_next_step="Refresh Maven dependencies and retry launch.",
+            ) from error
+        lombok = bool(
+            re.search(rb"(?im)^Lombok-Version:\s*", manifest)
+            or any(name.startswith("lombok/") for name in names)
+            or any(provider.startswith("lombok.") for provider in providers)
+        )
+        return True, providers, lombok
+
+    @staticmethod
+    def _parse_processor_service(data: bytes) -> tuple[str, ...]:
+        if len(data) > 64 * 1024:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "An annotation Processor declaration is too large.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build and restart.",
+            )
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as error:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "An annotation Processor declaration is not UTF-8.",
+                retryable=False,
+                suggested_next_step="Use the formal Maven build and restart.",
+            ) from error
+        return tuple(
+            dict.fromkeys(
+                value
+                for line in text.splitlines()
+                if (value := line.partition("#")[0].strip())
+            )
+        )
 
     @staticmethod
     def _contains_annotation_processor(path: Path) -> bool:

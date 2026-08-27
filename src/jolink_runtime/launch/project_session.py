@@ -576,14 +576,16 @@ class JavaProjectSession:
         root: Path,
         build_world_fingerprint: str,
     ) -> None:
+        self.root = root.expanduser().resolve(strict=False)
         self.build_world_fingerprint = build_world_fingerprint
-        self.generations = GenerationStore(root / "generation-store")
+        self.generations = GenerationStore(self.root / "generation-store")
         self.compile_ready = False
         self.compile_session: Any | None = None
         self._active_reload: ReloadAttempt | None = None
         self._last_reload: ReloadAttempt | None = None
         self._last_successful_startup_ms: float | None = None
         self._retained_directories: set[Path] = set()
+        self._closed = False
         self._lock = threading.RLock()
 
     @property
@@ -650,6 +652,11 @@ class JavaProjectSession:
 
     def attach_compile_session(self, compile_session: Any) -> None:
         with self._lock:
+            if self._closed:
+                raise ProjectSessionError(
+                    "PROJECT_SESSION_CLOSED",
+                    "The Java project session is already closed.",
+                )
             if self.compile_session is not None:
                 raise ProjectSessionError(
                     "COMPILE_SESSION_ALREADY_ATTACHED",
@@ -657,6 +664,20 @@ class JavaProjectSession:
                 )
             self.compile_session = compile_session
             self.compile_ready = bool(getattr(compile_session, "ready", False))
+
+    def refresh_compile_ready(self) -> bool:
+        with self._lock:
+            self.compile_ready = bool(
+                self.compile_session is not None
+                and getattr(self.compile_session, "ready", False)
+            )
+            return self.compile_ready
+
+    def clear_compile_session(self, expected: Any) -> None:
+        with self._lock:
+            if self.compile_session is expected:
+                self.compile_session = None
+                self.compile_ready = False
 
     def retain_directory(self, directory: Path) -> None:
         """Keep launch metadata used by the active compile plan until close."""
@@ -708,6 +729,7 @@ class JavaProjectSession:
 
     def close(self, *, cleanup_retained: bool = True) -> None:
         with self._lock:
+            self._closed = True
             retained = tuple(self._retained_directories)
             self._retained_directories.clear()
             compile_session = self.compile_session

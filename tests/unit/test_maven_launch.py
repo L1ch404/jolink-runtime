@@ -572,6 +572,76 @@ def test_fast_compile_rejects_processor_service_on_compile_classpath(
     assert captured.value.retryable is False
 
 
+def test_jdt_build_world_accepts_classpath_processors_and_separates_lombok(
+    tmp_path: Path,
+) -> None:
+    processor_jar = tmp_path / "processor.jar"
+    with zipfile.ZipFile(processor_jar, "w") as archive:
+        archive.writestr("example/Processor.class", b"class")
+        archive.writestr(
+            "META-INF/services/javax.annotation.processing.Processor",
+            "example.ConfigurationProcessor\n",
+        )
+    lombok_jar = tmp_path / "lombok.jar"
+    with zipfile.ZipFile(lombok_jar, "w") as archive:
+        archive.writestr("lombok/Launcher.class", b"class")
+        archive.writestr(
+            "META-INF/services/javax.annotation.processing.Processor",
+            "lombok.launch.AnnotationProcessorHider$AnnotationProcessor\n",
+        )
+    descriptor = tmp_path / "descriptor.pom"
+    descriptor.write_text(
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+        encoding="utf-8",
+    )
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        compile_entries=(processor_jar, lombok_jar, descriptor),
+    )
+
+    plan = adapter.consume_jdt_build_world_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.processor_entries == (processor_jar.resolve(),)
+    assert plan.lombok_entries == (lombok_jar.resolve(),)
+    assert descriptor.resolve() not in plan.dependency_entries
+    assert plan.source_level == 8
+    assert plan.target_level == 8
+
+
+def test_jdt_build_world_rejects_explicit_processor_selection(
+    tmp_path: Path,
+) -> None:
+    effective = _effective_pom(
+        "app",
+        compiler_configuration=(
+            "<annotationProcessors>"
+            "<annotationProcessor>example.Processor</annotationProcessor>"
+            "</annotationProcessors>"
+        ),
+    )
+    dependency = tmp_path / "dependency.jar"
+    with zipfile.ZipFile(dependency, "w") as archive:
+        archive.writestr("example/Dependency.class", b"class")
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=effective,
+        compile_entries=(dependency,),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_jdt_build_world_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
 def test_fast_compile_rejects_explicit_processor_or_transform_plugin(
     tmp_path: Path,
 ) -> None:

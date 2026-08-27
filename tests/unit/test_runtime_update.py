@@ -12,6 +12,7 @@ import pytest
 from jolink_runtime.adapters.java.classfile import parse_class_file
 from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
+    ProjectUpdatePlan,
     SuspensionSnapshot,
 )
 from jolink_runtime.adapters.java.jdwp_client import EventKind
@@ -22,6 +23,10 @@ from jolink_runtime.launch.fast_compile import (
     fast_compile_fingerprint,
 )
 from jolink_runtime.launch.project_session import JavaProjectSession
+from jolink_runtime.launch.jdt_compile_session import (
+    JdtCompileResult,
+    PersistentJdtCompileSession,
+)
 
 
 def _compile_class(tmp_path: Path, variant: str, source: str) -> bytes:
@@ -266,6 +271,121 @@ def test_fast_compile_candidate_materializes_full_current_generation(
     assert session.generations.current.output_directory.joinpath(
         "example/Example.class"
     ).read_bytes() == b"before"
+
+
+def test_jdt_reload_hotswap_promotes_durable_generation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    baseline_raw = _compile_class(
+        tmp_path,
+        "jdt-before",
+        "public class Example { public int value() { return 1; } }",
+    )
+    staged_raw = _compile_class(
+        tmp_path,
+        "jdt-after",
+        "public class Example { public int value() { return 2; } }",
+    )
+    project = tmp_path / "project"
+    source = project / "src/main/java/Example.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "public class Example { public int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    initial = tmp_path / "initial"
+    initial.mkdir()
+    (initial / "Example.class").write_bytes(baseline_raw)
+    staged = tmp_path / "jdt-output"
+    staged.mkdir()
+    (staged / "Example.class").write_bytes(staged_raw)
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    session.generations.initialize(
+        initial,
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+
+    class FakeJdt(PersistentJdtCompileSession):
+        @property
+        def ready(self) -> bool:
+            return True
+
+        def compile(self, _sources):
+            return JdtCompileResult(
+                compile_ok=True,
+                actual_build_kind="INCREMENTAL",
+                compiled_source_count=1,
+                changed_classes=("Example.class",),
+                deleted_classes=(),
+                changed_resources=(),
+                deleted_resources=(),
+                error_count=0,
+                warning_count=0,
+                diagnostics=(),
+                diagnostics_truncated=False,
+                elapsed_ms=12.0,
+                source_changes_pending=False,
+                output_directory=staged,
+            )
+
+        def close(self) -> bool:
+            return True
+
+    compiler = object.__new__(FakeJdt)
+    session.attach_compile_session(compiler)
+    plan = SimpleNamespace(
+        project_root=project,
+        source_roots=(project / "src/main/java",),
+    )
+    prepared = ProjectUpdatePlan(
+        fast_compile_plan=None,
+        fast_compile_unavailable_reason="DIRECT_DISABLED",
+        attempt_directory=tmp_path,
+        project_session=session,
+        jdt_build_world_plan=plan,
+    )
+    runtime = JavaRuntime()
+    monkeypatch.setattr(
+        runtime,
+        "_project_update_context",
+        lambda: ("launch_1", 1, prepared),
+    )
+
+    class FakeJdwp:
+        redefined = False
+
+        def redefine_classes(self, definitions):
+            assert definitions
+            self.redefined = True
+
+    jdwp = FakeJdwp()
+    monkeypatch.setattr(runtime, "_connect", lambda: jdwp)
+    monkeypatch.setattr(
+        runtime,
+        "_resolve_hotswap_definitions",
+        lambda _jdwp, updates, required_class_names: {
+            1: updates[0].class_bytes
+        },
+    )
+    action = RuntimeAction(action="update")
+    action.source_files = ["src/main/java/Example.java"]
+
+    result = runtime.update(action)
+
+    assert result.ok is True
+    assert result.data["status"] == "reloaded"
+    assert result.data["apply_method"] == "hotswap"
+    assert jdwp.redefined is True
+    assert session.generations.current.ordinal == 2
+    assert session.generations.current.output_directory.joinpath(
+        "Example.class"
+    ).read_bytes() == staged_raw
+    assert session.generations.candidate is None
 
 
 def test_formal_output_guard_checks_unselected_classes_and_class_set(

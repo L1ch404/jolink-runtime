@@ -80,11 +80,13 @@ from .project_session import (
     RuntimeGenerationState,
 )
 from .jdt_compile_session import (
+    JdtBuildWorldPlan,
     JdtCandidate,
     JdtCompileError,
     JdtCompileResult,
     JdtWorkerClient,
     PersistentJdtCompileSession,
+    discover_java8_system_entries,
 )
 
 __all__ = [
@@ -140,10 +142,12 @@ __all__ = [
     "ReloadStage",
     "RuntimeGenerationState",
     "JdtCandidate",
+    "JdtBuildWorldPlan",
     "JdtCompileError",
     "JdtCompileResult",
     "JdtWorkerClient",
     "PersistentJdtCompileSession",
+    "discover_java8_system_entries",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

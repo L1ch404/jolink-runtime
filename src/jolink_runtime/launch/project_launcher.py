@@ -21,6 +21,7 @@ from .idea_importer import (
     IdeaLaunchImporter,
 )
 from .fast_compile import FastCompilePlan
+from .jdt_compile_session import JdtBuildWorldPlan
 from .java_command import (
     JavaCommandMaterializer,
     MaterializedJavaCommand,
@@ -59,6 +60,8 @@ class PreparedProjectLaunch:
     attempt_directory: Path
     fast_compile_plan: FastCompilePlan | None = None
     fast_compile_unavailable_reason: str | None = None
+    jdt_build_world_plan: JdtBuildWorldPlan | None = None
+    jdt_unavailable_reason: str | None = None
 
 
 class ProjectLaunchPipeline:
@@ -217,6 +220,8 @@ class ProjectLaunchPipeline:
         context.set_jvm_launch_plan(plan)
         fast_compile_plan: FastCompilePlan | None = None
         fast_compile_unavailable_reason: str | None = None
+        jdt_build_world_plan: JdtBuildWorldPlan | None = None
+        jdt_unavailable_reason: str | None = None
         if compile_classpath_result.succeeded:
             try:
                 fast_compile_plan = self._maven.consume_fast_compile_plan(
@@ -225,13 +230,27 @@ class ProjectLaunchPipeline:
                 )
             except MavenResolutionError as error:
                 fast_compile_unavailable_reason = error.error_code.value
+            try:
+                jdt_build_world_plan = self._maven.consume_jdt_build_world_plan(
+                    execution=execution,
+                    runtime_jdk=runtime_jdk,
+                )
+            except MavenResolutionError as error:
+                jdt_unavailable_reason = error.error_code.value
         else:
             fast_compile_unavailable_reason = "COMPILE_CLASSPATH_UNAVAILABLE"
+            jdt_unavailable_reason = "COMPILE_CLASSPATH_UNAVAILABLE"
         capability_warnings: tuple[str, ...] = ()
-        if fast_compile_plan is None:
+        if fast_compile_plan is None and jdt_build_world_plan is None:
             capability_warnings = (
                 "Fast runtime-only source update is unavailable for this "
                 "launch; formal Maven build and restart remain available.",
+            )
+        if jdt_build_world_plan is None:
+            capability_warnings = (
+                *capability_warnings,
+                "Persistent JDT reload is unavailable for this launch; "
+                "restart remains available.",
             )
         return PreparedProjectLaunch(
             execution=execution,
@@ -252,6 +271,8 @@ class ProjectLaunchPipeline:
             fast_compile_unavailable_reason=(
                 fast_compile_unavailable_reason
             ),
+            jdt_build_world_plan=jdt_build_world_plan,
+            jdt_unavailable_reason=jdt_unavailable_reason,
         )
 
     def materialize_command(
