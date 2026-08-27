@@ -15,9 +15,11 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+
+from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 
 
 class JdtCompileError(RuntimeError):
@@ -113,10 +115,17 @@ class JdtWorkerClient:
         stderr_stream: Any,
         *,
         timeout: float,
+        process_tree: ProcessTreeHandle | None = None,
     ) -> None:
         self.process = process
         self._stderr_stream = stderr_stream
         self.timeout = timeout
+        self._process_tree = process_tree or ProcessTreeHandle.from_process(
+            process  # type: ignore[arg-type]
+        )
+        self._terminator = ProcessTreeTerminator()
+        self._close_lock = threading.Lock()
+        self._closed = False
         self._frames: queue.Queue[str | None] = queue.Queue()
         self._reader = threading.Thread(target=self._read_stdout, daemon=True)
         self._reader.start()
@@ -158,7 +167,12 @@ class JdtWorkerClient:
             )
         return frame
 
-    def command(self, command: str) -> dict[str, Any]:
+    def command(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         if self.process.stdin is None:
             raise JdtCompileError(
                 "JDT_WORKER_EXITED",
@@ -172,13 +186,17 @@ class JdtWorkerClient:
                 "JDT_WORKER_EXITED",
                 "The JDT Worker input stream closed unexpectedly.",
             ) from error
-        return self.receive()
+        return self.receive(timeout=timeout)
 
     def close(self) -> bool:
+        with self._close_lock:
+            if self._closed:
+                return self.process.poll() is not None
+            self._closed = True
         try:
             if self.process.poll() is None:
                 try:
-                    frame = self.command("STOP")
+                    frame = self.command("STOP", timeout=5.0)
                     acknowledged = (
                         frame.get("ok") is True
                         and frame.get("status") == "stopped"
@@ -197,7 +215,22 @@ class JdtWorkerClient:
                 return acknowledged and self.process.poll() is not None
             return True
         finally:
+            if not self._stderr_stream.closed:
+                self._stderr_stream.close()
+
+    def force_close(self) -> bool:
+        with self._close_lock:
+            if self._closed:
+                return self.process.poll() is not None
+            self._closed = True
+        report = self._terminator.terminate(
+            self._process_tree,
+            deadline=time.monotonic() + 5.0,
+            force=True,
+        )
+        if not self._stderr_stream.closed:
             self._stderr_stream.close()
+        return report.terminated
 
 
 @dataclass(frozen=True)
@@ -207,8 +240,12 @@ class JdtCompileResult:
     compiled_source_count: int
     changed_classes: tuple[str, ...]
     deleted_classes: tuple[str, ...]
+    changed_resources: tuple[str, ...]
+    deleted_resources: tuple[str, ...]
     error_count: int
     warning_count: int
+    diagnostics: tuple[dict[str, Any], ...]
+    diagnostics_truncated: bool
     elapsed_ms: float
     source_changes_pending: bool
     output_directory: Path
@@ -252,55 +289,88 @@ class PersistentJdtCompileSession:
         self.output_directory = self.private_project / "bin"
         self._source_map: dict[Path, Path] = {}
         self._client: JdtWorkerClient | None = None
-        self._lock = threading.Lock()
+        self._poisoned = False
+        self._poison_reason = ""
+        self._state_lock = threading.RLock()
+        self._operation_lock = threading.Lock()
 
     @property
     def ready(self) -> bool:
-        return self._client is not None
+        with self._state_lock:
+            return bool(
+                self._client is not None
+                and self._client.process.poll() is None
+                and not self._poisoned
+            )
 
     def start(self) -> JdtCompileResult:
-        with self._lock:
-            if self._client is not None:
-                raise JdtCompileError(
-                    "JDT_SESSION_ALREADY_STARTED",
-                    "The JDT CompileSession is already active.",
-                )
-            self.root.mkdir(parents=True, exist_ok=False, mode=0o700)
-            self._materialize_sources()
-            classpath_file = self.root / "worker-classpath.private.txt"
-            classpath_file.write_text(
-                "".join(f"{path}\n" for path in self.classpath_entries),
-                encoding="utf-8",
-            )
-            processor_file: Path | None = None
-            if self.processor_entries:
-                processor_file = self.root / "apt-processors.private.txt"
-                processor_file.write_text(
-                    "".join(f"{path}\n" for path in self.processor_entries),
+        with self._operation_lock:
+            with self._state_lock:
+                if self._poisoned:
+                    raise self._poisoned_error()
+                if self._client is not None:
+                    raise JdtCompileError(
+                        "JDT_SESSION_ALREADY_STARTED",
+                        "The JDT CompileSession is already active.",
+                    )
+            client: JdtWorkerClient | None = None
+            try:
+                self.root.mkdir(parents=True, exist_ok=False, mode=0o700)
+                self._materialize_sources()
+                classpath_file = self.root / "worker-classpath.private.txt"
+                classpath_file.write_text(
+                    "".join(f"{path}\n" for path in self.classpath_entries),
                     encoding="utf-8",
                 )
-            self._client = self._start_worker(
-                classpath_file=classpath_file,
-                processor_file=processor_file,
-            )
-            return self._build("FULL", source_changes_pending=False)
+                processor_file: Path | None = None
+                if self.processor_entries:
+                    processor_file = self.root / "apt-processors.private.txt"
+                    processor_file.write_text(
+                        "".join(f"{path}\n" for path in self.processor_entries),
+                        encoding="utf-8",
+                    )
+                client = self._start_worker(
+                    classpath_file=classpath_file,
+                    processor_file=processor_file,
+                )
+                with self._state_lock:
+                    self._client = client
+                return self._build("FULL", source_changes_pending=False)
+            except Exception:
+                with self._state_lock:
+                    self._client = None
+                if client is not None:
+                    client.force_close()
+                self._source_map.clear()
+                shutil.rmtree(self.root, ignore_errors=True)
+                raise
 
     def compile(self, source_files: Iterable[Path]) -> JdtCompileResult:
-        with self._lock:
-            if self._client is None:
-                raise JdtCompileError(
-                    "JDT_SESSION_NOT_READY",
-                    "The JDT CompileSession is not active.",
+        with self._operation_lock:
+            with self._state_lock:
+                if self._poisoned:
+                    raise self._poisoned_error()
+                if self._client is None:
+                    raise JdtCompileError(
+                        "JDT_SESSION_NOT_READY",
+                        "The JDT CompileSession is not active.",
+                    )
+            try:
+                selected = tuple(
+                    path.expanduser().resolve(strict=True)
+                    for path in source_files
                 )
-            selected = tuple(
-                path.expanduser().resolve(strict=True) for path in source_files
-            )
+            except OSError as error:
+                raise JdtCompileError(
+                    "SOURCE_LIFECYCLE_UNSUPPORTED",
+                    "Adding or deleting Java sources is not supported yet.",
+                ) from error
             if not selected:
                 raise JdtCompileError(
                     "INVALID_ARGUMENT",
                     "reload requires at least one Java source file.",
                 )
-            before: dict[Path, str] = {}
+            snapshots: dict[Path, tuple[Path, bytes, bytes]] = {}
             for source in selected:
                 private = self._source_map.get(source)
                 if private is None:
@@ -309,27 +379,49 @@ class PersistentJdtCompileSession:
                         "A reload source is outside this CompileSession.",
                     )
                 content = source.read_bytes()
-                before[source] = hashlib.sha256(content).hexdigest()
-                private.parent.mkdir(parents=True, exist_ok=True)
-                private.write_bytes(content)
+                snapshots[source] = (private, content, private.read_bytes())
+            replaced: list[tuple[Path, bytes]] = []
+            try:
+                for private, content, original in snapshots.values():
+                    temporary = private.with_name(
+                        f".{private.name}.{time.time_ns()}.tmp"
+                    )
+                    temporary.write_bytes(content)
+                    temporary.replace(private)
+                    replaced.append((private, original))
+            except Exception as error:
+                rollback_ok = True
+                for private, original in reversed(replaced):
+                    try:
+                        private.write_bytes(original)
+                    except OSError:
+                        rollback_ok = False
+                if not rollback_ok:
+                    self._poison("SOURCE_MIRROR_ROLLBACK_FAILED")
+                raise JdtCompileError(
+                    "SOURCE_MIRROR_UPDATE_FAILED",
+                    "The private source mirror could not be updated atomically.",
+                ) from error
             result = self._build("INCREMENTAL", source_changes_pending=False)
             pending = any(
                 not source.is_file()
-                or _sha256_file(source) != expected
-                for source, expected in before.items()
+                or _sha256_file(source)
+                != hashlib.sha256(content).hexdigest()
+                for source, (_private, content, _original) in snapshots.items()
             )
-            return JdtCompileResult(
-                **{
-                    **result.__dict__,
-                    "source_changes_pending": pending,
-                }
-            )
+            return replace(result, source_changes_pending=pending)
 
     def close(self) -> bool:
-        with self._lock:
+        with self._state_lock:
             client = self._client
             self._client = None
-        return client.close() if client is not None else True
+            self._poisoned = True
+            self._poison_reason = "SESSION_CLOSED"
+        settled = client.force_close() if client is not None else True
+        with self._operation_lock:
+            shutil.rmtree(self.root, ignore_errors=True)
+            self._source_map.clear()
+        return settled
 
     def _materialize_sources(self) -> None:
         self.private_source.mkdir(parents=True, exist_ok=False)
@@ -402,6 +494,13 @@ class PersistentJdtCompileSession:
         if processor_file is not None:
             command.extend(["--apt-processors-file", str(processor_file)])
         try:
+            process_options: dict[str, Any] = {}
+            if os.name == "nt":
+                process_options["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                )
+            else:
+                process_options["start_new_session"] = True
             process = subprocess.Popen(
                 command,
                 cwd=self.candidate.root,
@@ -412,12 +511,17 @@ class PersistentJdtCompileSession:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **process_options,
             )
         except Exception:
             stderr_stream.close()
             raise
         client = JdtWorkerClient(process, stderr_stream, timeout=self.timeout)
-        ready = client.receive()
+        try:
+            ready = client.receive()
+        except Exception:
+            client.force_close()
+            raise
         if (
             ready.get("ok") is not True
             or ready.get("status") != "ready"
@@ -441,11 +545,25 @@ class PersistentJdtCompileSession:
         *,
         source_changes_pending: bool,
     ) -> JdtCompileResult:
-        assert self._client is not None
+        with self._state_lock:
+            if self._poisoned:
+                raise self._poisoned_error()
+            client = self._client
+        if client is None:
+            raise JdtCompileError(
+                "JDT_SESSION_NOT_READY",
+                "The JDT CompileSession is not active.",
+            )
+        resources_before = self._resource_manifest()
         started = time.monotonic()
-        frame = self._client.command(f"BUILD\t{kind}")
+        try:
+            frame = client.command(f"BUILD\t{kind}")
+        except JdtCompileError as error:
+            self._poison(error.error_code)
+            raise
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         if frame.get("operation_ok") is not True:
+            self._poison("JDT_BUILD_ABORTED")
             raise JdtCompileError(
                 "JDT_BUILD_ABORTED",
                 "The JDT build operation did not complete.",
@@ -454,10 +572,39 @@ class PersistentJdtCompileSession:
         changed = frame.get("changed_classes")
         deleted = frame.get("deleted_classes")
         if not all(isinstance(value, list) for value in (compiled, changed, deleted)):
+            self._poison("JDT_WORKER_PROTOCOL_ERROR")
             raise JdtCompileError(
                 "JDT_WORKER_PROTOCOL_ERROR",
                 "The JDT build result omitted output delta fields.",
             )
+        resources_after = self._resource_manifest()
+        changed_resources = tuple(
+            sorted(
+                path
+                for path, digest in resources_after.items()
+                if resources_before.get(path) != digest
+            )
+        )
+        deleted_resources = tuple(
+            sorted(path for path in resources_before if path not in resources_after)
+        )
+        raw_diagnostics = frame.get("diagnostic_details", [])
+        if not isinstance(raw_diagnostics, list) or not all(
+            isinstance(value, dict) for value in raw_diagnostics
+        ):
+            self._poison("JDT_WORKER_PROTOCOL_ERROR")
+            raise JdtCompileError(
+                "JDT_WORKER_PROTOCOL_ERROR",
+                "The JDT build result contains invalid diagnostics.",
+            )
+        diagnostics = tuple(
+            {
+                key: value
+                for key, value in diagnostic.items()
+                if key in {"resource", "line", "severity_name", "message"}
+            }
+            for diagnostic in raw_diagnostics
+        )
         return JdtCompileResult(
             compile_ok=frame.get("compile_ok") is True,
             actual_build_kind=(
@@ -468,11 +615,42 @@ class PersistentJdtCompileSession:
             compiled_source_count=len(compiled),
             changed_classes=tuple(str(value) for value in changed),
             deleted_classes=tuple(str(value) for value in deleted),
+            changed_resources=changed_resources,
+            deleted_resources=deleted_resources,
             error_count=int(frame.get("error_count", 0)),
             warning_count=int(frame.get("warning_count", 0)),
+            diagnostics=diagnostics,
+            diagnostics_truncated=frame.get("diagnostics_truncated") is True,
             elapsed_ms=elapsed_ms,
             source_changes_pending=source_changes_pending,
             output_directory=self.output_directory,
+        )
+
+    def _resource_manifest(self) -> dict[str, str]:
+        if not self.output_directory.is_dir():
+            return {}
+        return {
+            path.relative_to(self.output_directory).as_posix(): _sha256_file(path)
+            for path in sorted(self.output_directory.rglob("*"))
+            if path.is_file() and path.suffix != ".class"
+        }
+
+    def _poison(self, reason: str) -> None:
+        with self._state_lock:
+            if self._poisoned:
+                return
+            self._poisoned = True
+            self._poison_reason = reason
+            client = self._client
+            self._client = None
+        if client is not None:
+            client.force_close()
+
+    def _poisoned_error(self) -> JdtCompileError:
+        return JdtCompileError(
+            "JDT_SESSION_POISONED",
+            "The JDT CompileSession cannot be reused after an unconfirmed "
+            f"Worker outcome ({self._poison_reason or 'unknown'}).",
         )
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -19,8 +21,16 @@ class _FakeWorker:
         self.closed = False
         self.fail_compile = False
         self.on_build = None
+        self.command_error: JdtCompileError | None = None
+        self.command_count = 0
+        self.resource_value: bytes | None = None
+        self.diagnostics = []
+        self.diagnostics_truncated = False
 
     def command(self, command: str):
+        self.command_count += 1
+        if self.command_error is not None:
+            raise self.command_error
         assert command in {"BUILD\tFULL", "BUILD\tINCREMENTAL"}
         if self.on_build is not None:
             self.on_build()
@@ -30,6 +40,10 @@ class _FakeWorker:
         before = output.read_bytes() if output.exists() else None
         if not self.fail_compile:
             output.write_bytes(hashlib.sha256(source.read_bytes()).digest())
+        if self.resource_value is not None:
+            resource = self.session.output_directory / "META-INF/generated.json"
+            resource.parent.mkdir(parents=True, exist_ok=True)
+            resource.write_bytes(self.resource_value)
         after = output.read_bytes() if output.exists() else None
         return {
             "operation_ok": True,
@@ -44,11 +58,16 @@ class _FakeWorker:
             "deleted_classes": [],
             "error_count": 1 if self.fail_compile else 0,
             "warning_count": 0,
+            "diagnostic_details": list(self.diagnostics),
+            "diagnostics_truncated": self.diagnostics_truncated,
         }
 
     def close(self) -> bool:
         self.closed = True
         return True
+
+    def force_close(self) -> bool:
+        return self.close()
 
 
 def _candidate(tmp_path: Path) -> JdtCandidate:
@@ -163,14 +182,145 @@ def test_source_outside_frozen_build_world_is_rejected(
     monkeypatch,
 ) -> None:
     (tmp_path / "dependency.jar").write_bytes(b"dependency")
-    session, _source, _worker = _session(tmp_path, monkeypatch)
+    session, source, _worker = _session(tmp_path, monkeypatch)
     session.start()
+    private = session.private_source / "example/App.java"
+    private_before = private.read_bytes()
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
     outside = tmp_path / "Outside.java"
     outside.write_text("class Outside {}", encoding="utf-8")
 
     with pytest.raises(JdtCompileError) as captured:
-        session.compile((outside,))
+        session.compile((source, outside))
     assert captured.value.error_code == "SOURCE_OUTSIDE_BUILD_WORLD"
+    assert private.read_bytes() == private_before
+
+
+def test_timeout_poisons_session_and_rejects_later_build(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    worker.command_error = JdtCompileError(
+        "JDT_WORKER_TIMEOUT", "late result"
+    )
+
+    with pytest.raises(JdtCompileError) as timed_out:
+        session.compile((source,))
+    assert timed_out.value.error_code == "JDT_WORKER_TIMEOUT"
+    calls_after_timeout = worker.command_count
+
+    worker.command_error = None
+    with pytest.raises(JdtCompileError) as poisoned:
+        session.compile((source,))
+    assert poisoned.value.error_code == "JDT_SESSION_POISONED"
+    assert worker.command_count == calls_after_timeout
+    assert worker.closed is True
+    assert session.ready is False
+
+
+def test_start_aborted_closes_worker_and_removes_failed_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, _source, worker = _session(tmp_path, monkeypatch)
+    original = worker.command
+
+    def aborted(command: str):
+        frame = original(command)
+        frame["operation_ok"] = False
+        return frame
+
+    worker.command = aborted
+
+    with pytest.raises(JdtCompileError) as captured:
+        session.start()
+    assert captured.value.error_code == "JDT_BUILD_ABORTED"
+    assert session.ready is False
+    assert worker.closed is True
+    assert not session.root.exists()
+
+
+def test_compile_reports_resource_delta_and_bounded_diagnostics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    worker.resource_value = b"one"
+    session.start()
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    worker.resource_value = b"two"
+    worker.diagnostics = [
+        {
+            "resource": "example/App.java",
+            "line": 1,
+            "severity_name": "WARNING",
+            "message": "bounded warning",
+            "private": "not returned",
+        }
+    ]
+    worker.diagnostics_truncated = True
+
+    result = session.compile((source,))
+
+    assert result.changed_resources == ("META-INF/generated.json",)
+    assert result.deleted_resources == ()
+    assert result.diagnostics == (
+        {
+            "resource": "example/App.java",
+            "line": 1,
+            "severity_name": "WARNING",
+            "message": "bounded warning",
+        },
+    )
+    assert result.diagnostics_truncated is True
+
+
+def test_close_force_cancels_inflight_compile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    entered = threading.Event()
+    released = threading.Event()
+
+    def blocked(_command: str):
+        entered.set()
+        released.wait(5)
+        raise JdtCompileError("JDT_WORKER_EXITED", "closed")
+
+    worker.command = blocked
+    worker.force_close = lambda: (released.set() or worker.close())
+    errors: list[str] = []
+
+    def compile_in_thread() -> None:
+        try:
+            session.compile((source,))
+        except JdtCompileError as error:
+            errors.append(error.error_code)
+
+    thread = threading.Thread(target=compile_in_thread)
+    thread.start()
+    assert entered.wait(1)
+    started = time.monotonic()
+    assert session.close() is True
+    thread.join(1)
+
+    assert time.monotonic() - started < 1
+    assert errors == ["JDT_WORKER_EXITED"]
+    assert not thread.is_alive()
 
 
 def test_candidate_lock_verifies_every_artifact(tmp_path: Path) -> None:
