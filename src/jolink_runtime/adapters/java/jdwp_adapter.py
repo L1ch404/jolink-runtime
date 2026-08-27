@@ -977,6 +977,7 @@ class JavaRuntime(Runtime):
                     "CURRENT_GENERATION_UNAVAILABLE",
                     "The current generation disappeared before restart.",
                 )
+            session.generations.verify_generation(current)
             classpath = list(retained.jvm_plan.classpath)
             classpath[retained.generation_classpath_index] = (
                 current.output_directory
@@ -1034,6 +1035,8 @@ class JavaRuntime(Runtime):
             )
             if request.ready_port <= 0:
                 session.generations.mark_runtime_current()
+                if session.generations.candidate is not None:
+                    session.generations.discard_candidate()
                 session.record_successful_startup(
                     (time.monotonic() - startup_started) * 1000
                 )
@@ -1058,6 +1061,8 @@ class JavaRuntime(Runtime):
                 )
                 if startup_state == "ready":
                     session.generations.mark_runtime_current()
+                    if session.generations.candidate is not None:
+                        session.generations.discard_candidate()
                     session.record_successful_startup(
                         (time.monotonic() - startup_started) * 1000
                     )
@@ -1313,6 +1318,13 @@ class JavaRuntime(Runtime):
                 )
             context.transition(LaunchPhase.STARTING_JVM)
             context.check_cancelled()
+            initial_candidate = project_session.generations.candidate
+            if initial_candidate is None:
+                raise ProjectSessionError(
+                    "CANDIDATE_UNAVAILABLE",
+                    "The initial Generation candidate is unavailable.",
+                )
+            project_session.generations.verify_generation(initial_candidate)
             self._reset_debug_state()
             self._host = "127.0.0.1"
             log_file = self._log.create(context.attempt_id)
