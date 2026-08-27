@@ -1043,9 +1043,12 @@ public class UpdateMcpFixture {{
         )) {{
             while (true) {{
                 try (Socket socket = server.accept()) {{
-                    socket.getInputStream().read();
+                    int request = socket.getInputStream().read();
+                    String response = request == 'L'
+                        ? LazyValue.value()
+                        : message();
                     socket.getOutputStream().write(
-                        message().getBytes(StandardCharsets.UTF_8)
+                        response.getBytes(StandardCharsets.UTF_8)
                     );
                 }}
             }}
@@ -1060,6 +1063,33 @@ public class UpdateMcpFixture {{
 
     initial_source = source_text("before-update")
     source.write_text(initial_source, encoding="utf-8")
+    (source.parent / "LazyValue.java").write_text(
+        """\
+package example;
+
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+public class LazyValue {
+    public static String value() throws Exception {
+        try (InputStream stream = LazyValue.class.getResourceAsStream(
+            "/lazy-value.txt"
+        )) {
+            if (stream == null) throw new IllegalStateException("missing resource");
+            byte[] data = new byte[64];
+            int count = stream.read(data);
+            return new String(data, 0, count, StandardCharsets.UTF_8);
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    resources = project / "src/main/resources"
+    resources.mkdir(parents=True)
+    (resources / "lazy-value.txt").write_text(
+        "lazy-value", encoding="utf-8"
+    )
     breakpoint_line = next(
         index
         for index, line in enumerate(initial_source.splitlines(), start=1)
@@ -1068,6 +1098,10 @@ public class UpdateMcpFixture {{
     updated_source = source_text("after-update").replace(
         'return "after-update";',
         'String value = "after-update";\n        return value;',
+    )
+    second_updated_source = source_text("second-update").replace(
+        'return "second-update";',
+        'String value = "second-update";\n        return value;',
     )
     updated_breakpoint_line = next(
         index
@@ -1114,12 +1148,12 @@ public class UpdateMcpFixture {{
         encoding="utf-8",
     )
 
-    def request_value() -> str:
+    def request_value(payload: bytes = b"?") -> str:
         with socket.create_connection(
             ("127.0.0.1", ready_port),
             timeout=3,
         ) as client:
-            client.sendall(b"?")
+            client.sendall(payload)
             return client.recv(256).decode("utf-8")
 
     async def scenario() -> None:
@@ -1279,8 +1313,27 @@ public class UpdateMcpFixture {{
                     assert observed["code_revision"] == 1
                     assert observed["generation"] == 2
 
+                    source.write_text(second_updated_source, encoding="utf-8")
+                    second_update = assert_ok(await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    }))
+                    assert second_update["status"] == "updated"
+                    second_status = assert_ok(await call_payload(session, {
+                        "action": "status",
+                    }))
+                    assert second_status["generation"] == 3
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "second-update"
+                    )
+                    assert await anyio.to_thread.run_sync(
+                        request_value, b"L"
+                    ) == "lazy-value"
+
                     source.write_text(
-                        updated_source.replace(
+                        second_updated_source.replace(
                             "public class UpdateMcpFixture {",
                             (
                                 "public class UpdateMcpFixture {\n"
@@ -1299,14 +1352,14 @@ public class UpdateMcpFixture {{
                     assert rejected["error_code"] == "CLASS_SCHEMA_CHANGED"
                     assert rejected["runtime_code_state"] == "unchanged"
                     assert rejected["runtime_overlay_active"] is True
-                    assert rejected["code_revision"] == 1
+                    assert rejected["code_revision"] == 2
                     assert formal_class.read_bytes() == formal_bytes
                     assert await anyio.to_thread.run_sync(request_value) == (
-                        "after-update"
+                        "second-update"
                     )
 
                     source.write_text(
-                        updated_source.replace(
+                        second_updated_source.replace(
                             'STATIC_VALUE = "stable"',
                             'STATIC_VALUE = "changed"',
                         ),
@@ -1324,28 +1377,13 @@ public class UpdateMcpFixture {{
                     )
                     assert static_rejected["runtime_code_state"] == "unchanged"
                     assert static_rejected["restart_required"] is True
-                    assert static_rejected["code_revision"] == 1
+                    assert static_rejected["code_revision"] == 2
                     assert formal_class.read_bytes() == formal_bytes
                     assert await anyio.to_thread.run_sync(request_value) == (
-                        "after-update"
+                        "second-update"
                     )
 
-                    source.write_text(
-                        source_text("before-update"),
-                        encoding="utf-8",
-                    )
-                    reverted = assert_ok(await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    }))
-                    assert reverted["status"] == "updated"
-                    assert reverted["code_revision"] == 2
-                    assert await anyio.to_thread.run_sync(request_value) == (
-                        "before-update"
-                    )
-
+                    source.write_text(second_updated_source, encoding="utf-8")
                     restarting = assert_ok(await call_payload(session, {
                         "action": "restart",
                     }))
@@ -1361,6 +1399,39 @@ public class UpdateMcpFixture {{
                             break
                         await anyio.sleep(0.1)
                     assert restarted_status["generation"] == 3
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "second-update"
+                    )
+
+                    unchanged_after_restart = assert_ok(
+                        await call_payload(session, {
+                            "action": "update",
+                            "source_files": [
+                                "src/main/java/example/UpdateMcpFixture.java",
+                            ],
+                        })
+                    )
+                    assert unchanged_after_restart["status"] == "no_changes"
+                    unchanged_status = assert_ok(
+                        await call_payload(session, {"action": "status"})
+                    )
+                    assert unchanged_status["generation"] == 3
+
+                    source.write_text(
+                        source_text("before-update"),
+                        encoding="utf-8",
+                    )
+                    reverted = assert_ok(await call_payload(session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/UpdateMcpFixture.java",
+                        ],
+                    }))
+                    assert reverted["status"] == "updated"
+                    reverted_status = assert_ok(
+                        await call_payload(session, {"action": "status"})
+                    )
+                    assert reverted_status["generation"] == 4
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "before-update"
                     )

@@ -967,6 +967,7 @@ class JavaRuntime(Runtime):
                 attempt_directory
             )
             self._project_sessions[context.attempt_id] = session
+        session.retain_directory(attempt_directory)
         try:
             context.transition(LaunchPhase.RESOLVING_BUILD)
             context.transition(LaunchPhase.RESOLVING_RUNTIME)
@@ -1192,6 +1193,7 @@ class JavaRuntime(Runtime):
                 self._project_build_world_fingerprint(prepared)
             ),
         )
+        session.retain_directory(prepared.attempt_directory)
         try:
             module_output = (
                 prepared.execution.module.output_directory.expanduser().resolve(
@@ -1240,7 +1242,7 @@ class JavaRuntime(Runtime):
                 replacement_index,
             )
         except Exception:
-            session.close()
+            session.close(cleanup_retained=False)
             raise
 
     def _promote_initial_project_generation(
@@ -1256,7 +1258,9 @@ class JavaRuntime(Runtime):
                 "PROJECT_SESSION_UNAVAILABLE",
                 "The project generation session is unavailable.",
             )
-        session.generations.promote_candidate()
+        session.generations.promote_candidate(
+            runtime_classpath_changed=True
+        )
         session.record_successful_startup(startup_ms)
 
     def _project_launch_worker(
@@ -1491,7 +1495,7 @@ class JavaRuntime(Runtime):
                         is project_session
                     ):
                         self._project_sessions.pop(context.attempt_id, None)
-                project_session.close()
+                project_session.close(cleanup_retained=False)
 
     def _publish_project_process(
         self,
@@ -1548,7 +1552,8 @@ class JavaRuntime(Runtime):
                     self._preserve_project_sessions.discard(
                         attempt.attempt_id
                     )
-                self._project_pipeline.cleanup_attempt_directory(directory)
+                if not preserve_session:
+                    self._project_pipeline.cleanup_attempt_directory(directory)
                 return True
         try:
             self._disconnect()
@@ -1594,7 +1599,8 @@ class JavaRuntime(Runtime):
                     self._preserve_project_sessions.discard(
                         attempt.attempt_id
                     )
-                self._project_pipeline.cleanup_attempt_directory(directory)
+                if not preserve_session:
+                    self._project_pipeline.cleanup_attempt_directory(directory)
         return settled
 
     def _discard_terminal_project_attempt(self) -> None:
@@ -1641,6 +1647,16 @@ class JavaRuntime(Runtime):
         with self._project_state_lock:
             if self._project_processes.get(attempt_id) is process:
                 self._project_processes.pop(attempt_id, None)
+            session = self._project_sessions.get(attempt_id)
+        if session is not None:
+            try:
+                session.generations.mark_runtime_absent()
+            except (OSError, ProjectSessionError):
+                logger.exception(
+                    "java_runtime.generation.natural_exit_persist_failed "
+                    "attempt_id=%s",
+                    attempt_id,
+                )
         self._launch_controller.mark_runtime_exited(
             attempt_id=attempt_id,
             exit_code=exit_code,
@@ -2573,6 +2589,7 @@ class JavaRuntime(Runtime):
                 "CURRENT_GENERATION_UNAVAILABLE",
                 "No current generation can be extended by reload.",
             )
+        session.generations.verify_generation(current)
         scratch = Path(
             tempfile.mkdtemp(
                 prefix="jolink-candidate-",
@@ -2689,12 +2706,59 @@ class JavaRuntime(Runtime):
                     },
                 )
 
+            candidate_session = getattr(prepared, "project_session", None)
+            if candidate_session is None:
+                return RuntimeResult(
+                    ok=False,
+                    error="The project Generation session is unavailable.",
+                    data={
+                        "error_code": "PROJECT_SESSION_UNAVAILABLE",
+                        "runtime_code_state": "unchanged",
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Launch the project again before retrying reload."
+                        ),
+                    },
+                )
+            current_generation = candidate_session.generations.current
+            if current_generation is None:
+                return RuntimeResult(
+                    ok=False,
+                    error="The current Generation is unavailable.",
+                    data={
+                        "error_code": "CURRENT_GENERATION_UNAVAILABLE",
+                        "runtime_code_state": "unchanged",
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Launch the project again before retrying reload."
+                        ),
+                    },
+                )
+            try:
+                candidate_session.generations.verify_generation(
+                    current_generation
+                )
+            except ProjectSessionError as error:
+                return RuntimeResult(
+                    ok=False,
+                    error=str(error),
+                    data={
+                        "error_code": error.error_code,
+                        "runtime_code_state": "unchanged",
+                        "retryable": False,
+                        "suggested_next_step": (
+                            "Launch the project again to rebuild a trusted "
+                            "Generation."
+                        ),
+                    },
+                )
+
             try:
                 baseline_by_source = self._collect_source_classes(
                     plan,
                     source_files,
-                    classes_root=plan.output_root,
-                    require_launch_baseline=True,
+                    classes_root=current_generation.output_directory,
+                    require_launch_baseline=False,
                 )
             except FastCompileError as error:
                 return self._fast_compile_error_result(error, plan)
@@ -2874,20 +2938,6 @@ class JavaRuntime(Runtime):
                     },
                 )
 
-            candidate_session = prepared.project_session
-            if candidate_session is None:
-                return RuntimeResult(
-                    ok=False,
-                    error="The project Generation session is unavailable.",
-                    data={
-                        "error_code": "PROJECT_SESSION_UNAVAILABLE",
-                        "runtime_code_state": "unchanged",
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Launch the project again before retrying reload."
-                        ),
-                    },
-                )
             try:
                 self._prepare_fast_compile_candidate(
                     candidate_session,

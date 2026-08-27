@@ -422,6 +422,8 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
     assert active.data["launch_phase"] == "runtime_active"
     assert active.data["process_state"] == "running"
     assert active.data["startup_state"] == "unverified"
+    attempt_id = runtime._launch_controller.snapshot()["attempt_id"]
+    project_session = runtime._project_sessions[attempt_id]
 
     processes[0].returncode = 9
     exited = runtime.status(RuntimeAction(action="status"))
@@ -429,6 +431,8 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
     assert exited.data["process_state"] == "absent"
     assert exited.data["launch_error"]["error_code"] == "JVM_EXITED"
     assert exited.data["launch_error"]["exit_code"] == 9
+    assert project_session.generations.runtime_state.value == "absent"
+    assert project_session.generations.runtime is None
 
     second = runtime.run_project(
         RuntimeAction(action="run"),

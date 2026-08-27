@@ -165,6 +165,7 @@ def test_store_persists_only_generation_ids_and_state(
 
     assert state["current_generation_id"] == current.generation_id
     assert state["runtime_generation_id"] == current.generation_id
+    assert state["runtime_classpath_generation_id"] == current.generation_id
     assert state["candidate_generation_id"] is None
     assert state["runtime_state"] == "known"
 
@@ -297,4 +298,105 @@ def test_store_keeps_only_current_and_one_previous_after_promotions(
 
     assert store.current == third
     assert store.previous == second
+    assert store.runtime_classpath == first
+    assert first_root.exists()
+
+    store.mark_runtime_current()
+
+    assert store.runtime_classpath == third
     assert not first_root.exists()
+
+
+def test_generation_integrity_is_checked_before_promotion_and_restart(
+    tmp_path: Path,
+) -> None:
+    store = GenerationStore(tmp_path / "store")
+    store.initialize(
+        _output(tmp_path / "initial", {"App.class": b"one"}),
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+    candidate = store.prepare_candidate(
+        _output(tmp_path / "candidate", {"App.class": b"two"}),
+        build_world_fingerprint="world",
+    )
+    candidate.output_directory.joinpath("App.class").write_bytes(b"tampered")
+
+    with pytest.raises(ProjectSessionError) as promoted:
+        store.promote_candidate()
+    assert promoted.value.error_code == "GENERATION_INTEGRITY_MISMATCH"
+    assert store.candidate == candidate
+
+    store.discard_candidate()
+    current = store.current
+    assert current is not None
+    current.output_directory.joinpath("App.class").write_bytes(b"tampered")
+    with pytest.raises(ProjectSessionError) as restarted:
+        store.mark_runtime_current()
+    assert restarted.value.error_code == "GENERATION_INTEGRITY_MISMATCH"
+
+
+def test_prepare_candidate_persist_failure_rolls_back_memory_and_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GenerationStore(tmp_path / "store")
+    current = store.initialize(
+        _output(tmp_path / "initial", {"App.class": b"one"}),
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+    monkeypatch.setattr(
+        store,
+        "_persist_state",
+        lambda: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError):
+        store.prepare_candidate(
+            _output(tmp_path / "candidate", {"App.class": b"two"}),
+            build_world_fingerprint="world",
+        )
+
+    assert store.current == current
+    assert store.candidate is None
+    assert sorted(path.name for path in (store.root / "generations").iterdir()) == [
+        current.generation_id
+    ]
+
+
+def test_promote_and_discard_persist_failures_restore_previous_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GenerationStore(tmp_path / "store")
+    current = store.initialize(
+        _output(tmp_path / "initial", {"App.class": b"one"}),
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+    candidate = store.prepare_candidate(
+        _output(tmp_path / "candidate", {"App.class": b"two"}),
+        build_world_fingerprint="world",
+    )
+    original_persist = store._persist_state
+    monkeypatch.setattr(
+        store,
+        "_persist_state",
+        lambda: (_ for _ in ()).throw(OSError("readonly")),
+    )
+
+    with pytest.raises(OSError):
+        store.promote_candidate()
+    assert store.current == current
+    assert store.runtime == current
+    assert store.candidate == candidate
+
+    with pytest.raises(OSError):
+        store.discard_candidate()
+    assert store.candidate == candidate
+    assert candidate.output_directory.is_dir()
+
+    monkeypatch.setattr(store, "_persist_state", original_persist)
+    store.discard_candidate()
+    assert store.candidate is None

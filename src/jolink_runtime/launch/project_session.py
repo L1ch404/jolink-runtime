@@ -148,7 +148,13 @@ class ReloadAttempt:
 
 
 class GenerationStore:
-    """Own current/previous/candidate immutable module outputs."""
+    """Own immutable outputs for one live joLink server session.
+
+    Generations survive managed JVM restart and are independent from Maven or
+    JDT working output.  They are intentionally deleted when this server-side
+    project session closes; crash recovery across MCP server processes is not
+    part of the first productization slice.
+    """
 
     _STATE_SCHEMA = "jolink.generation-store.v1"
 
@@ -163,6 +169,7 @@ class GenerationStore:
         self._previous_id: str | None = None
         self._candidate_id: str | None = None
         self._runtime_id: str | None = None
+        self._runtime_classpath_id: str | None = None
         self._runtime_state = RuntimeGenerationState.ABSENT
         self._ordinal = 0
         self._generations.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -193,6 +200,11 @@ class GenerationStore:
         with self._lock:
             return self._runtime_state
 
+    @property
+    def runtime_classpath(self) -> BuildGeneration | None:
+        with self._lock:
+            return self._item(self._runtime_classpath_id)
+
     def initialize(
         self,
         output_directory: Path,
@@ -206,6 +218,7 @@ class GenerationStore:
                     "GENERATION_ALREADY_INITIALIZED",
                     "The project generation store is already initialized.",
                 )
+            old_ordinal = self._ordinal
             generation = self._materialize(
                 output_directory,
                 build_world_fingerprint=build_world_fingerprint,
@@ -214,8 +227,18 @@ class GenerationStore:
             self._current_id = generation.generation_id
             if runtime_active:
                 self._runtime_id = generation.generation_id
+                self._runtime_classpath_id = generation.generation_id
                 self._runtime_state = RuntimeGenerationState.KNOWN
-            self._persist_state()
+            try:
+                self._persist_state()
+            except Exception:
+                self._current_id = None
+                self._runtime_id = None
+                self._runtime_classpath_id = None
+                self._runtime_state = RuntimeGenerationState.ABSENT
+                self._ordinal = old_ordinal
+                self._remove_generation(generation)
+                raise
             return generation
 
     def prepare_initial_candidate(
@@ -232,13 +255,20 @@ class GenerationStore:
                     "GENERATION_ALREADY_INITIALIZED",
                     "The project generation store is already initialized.",
                 )
+            old_ordinal = self._ordinal
             generation = self._materialize(
                 output_directory,
                 build_world_fingerprint=build_world_fingerprint,
                 parent_generation_id=None,
             )
             self._candidate_id = generation.generation_id
-            self._persist_state()
+            try:
+                self._persist_state()
+            except Exception:
+                self._candidate_id = None
+                self._ordinal = old_ordinal
+                self._remove_generation(generation)
+                raise
             return generation
 
     def prepare_candidate(
@@ -260,16 +290,34 @@ class GenerationStore:
                     "CANDIDATE_ALREADY_EXISTS",
                     "A candidate generation is already pending.",
                 )
+            current = self._item(self._current_id)
+            if current is None:
+                raise ProjectSessionError(
+                    "CURRENT_GENERATION_UNAVAILABLE",
+                    "No current generation exists.",
+                )
+            self.verify_generation(current)
+            old_ordinal = self._ordinal
             generation = self._materialize(
                 output_directory,
                 build_world_fingerprint=build_world_fingerprint,
                 parent_generation_id=self._current_id,
             )
             self._candidate_id = generation.generation_id
-            self._persist_state()
+            try:
+                self._persist_state()
+            except Exception:
+                self._candidate_id = None
+                self._ordinal = old_ordinal
+                self._remove_generation(generation)
+                raise
             return generation
 
-    def promote_candidate(self) -> BuildGeneration:
+    def promote_candidate(
+        self,
+        *,
+        runtime_classpath_changed: bool = False,
+    ) -> BuildGeneration:
         """Promote only after Runtime application success is known."""
 
         with self._lock:
@@ -279,31 +327,39 @@ class GenerationStore:
                     "CANDIDATE_UNAVAILABLE",
                     "No candidate generation is ready to promote.",
                 )
+            self.verify_generation(candidate)
+            old_state = self._state_tuple()
             obsolete_previous = self._previous_id
             old_current = self._current_id
             self._previous_id = old_current
             self._current_id = candidate.generation_id
             self._runtime_id = candidate.generation_id
+            if runtime_classpath_changed:
+                self._runtime_classpath_id = candidate.generation_id
             self._runtime_state = RuntimeGenerationState.KNOWN
             self._candidate_id = None
-            self._persist_state()
-            if obsolete_previous not in {None, old_current}:
-                obsolete = self._items.pop(obsolete_previous, None)
-                if obsolete is not None:
-                    shutil.rmtree(
-                        obsolete.output_directory.parent,
-                        ignore_errors=True,
-                    )
+            try:
+                self._persist_state()
+            except Exception:
+                self._restore_state_tuple(old_state)
+                raise
+            self._prune_unreferenced(
+                preferred=(obsolete_previous,)
+            )
             return candidate
 
     def discard_candidate(self) -> None:
         with self._lock:
             candidate = self._item(self._candidate_id)
+            old_state = self._state_tuple()
             self._candidate_id = None
+            try:
+                self._persist_state()
+            except Exception:
+                self._restore_state_tuple(old_state)
+                raise
             if candidate is not None:
-                self._items.pop(candidate.generation_id, None)
-                shutil.rmtree(candidate.output_directory.parent, ignore_errors=True)
-            self._persist_state()
+                self._remove_generation(candidate)
 
     def mark_runtime_current(self) -> BuildGeneration:
         with self._lock:
@@ -313,22 +369,42 @@ class GenerationStore:
                     "CURRENT_GENERATION_UNAVAILABLE",
                     "No current generation can be marked as running.",
                 )
+            self.verify_generation(current)
+            old_state = self._state_tuple()
             self._runtime_id = current.generation_id
+            self._runtime_classpath_id = current.generation_id
             self._runtime_state = RuntimeGenerationState.KNOWN
-            self._persist_state()
+            try:
+                self._persist_state()
+            except Exception:
+                self._restore_state_tuple(old_state)
+                raise
+            self._prune_unreferenced()
             return current
 
     def mark_runtime_absent(self) -> None:
         with self._lock:
+            old_state = self._state_tuple()
             self._runtime_id = None
+            self._runtime_classpath_id = None
             self._runtime_state = RuntimeGenerationState.ABSENT
-            self._persist_state()
+            try:
+                self._persist_state()
+            except Exception:
+                self._restore_state_tuple(old_state)
+                raise
+            self._prune_unreferenced()
 
     def mark_runtime_unknown(self) -> None:
         with self._lock:
+            old_state = self._state_tuple()
             self._runtime_id = None
             self._runtime_state = RuntimeGenerationState.UNKNOWN
-            self._persist_state()
+            try:
+                self._persist_state()
+            except Exception:
+                self._restore_state_tuple(old_state)
+                raise
 
     def public_summary(self) -> dict[str, object]:
         with self._lock:
@@ -346,6 +422,20 @@ class GenerationStore:
     def close(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def verify_generation(self, generation: BuildGeneration) -> None:
+        """Reject mutation of a sealed output before it is trusted or copied."""
+
+        manifest = _output_manifest(generation.output_directory)
+        if (
+            len(manifest) != generation.artifact_count
+            or _manifest_fingerprint(manifest)
+            != generation.output_fingerprint
+        ):
+            raise ProjectSessionError(
+                "GENERATION_INTEGRITY_MISMATCH",
+                "A sealed generation output changed unexpectedly.",
+            )
+
     def _item(self, generation_id: str | None) -> BuildGeneration | None:
         return self._items.get(generation_id) if generation_id else None
 
@@ -357,6 +447,10 @@ class GenerationStore:
         parent_generation_id: str | None,
     ) -> BuildGeneration:
         source = source.expanduser().resolve(strict=True)
+        for generation in self._items.values():
+            if generation.output_directory == source:
+                self.verify_generation(generation)
+                break
         manifest = _output_manifest(source)
         output_fingerprint = _manifest_fingerprint(manifest)
         self._ordinal += 1
@@ -412,10 +506,65 @@ class GenerationStore:
                 "previous_generation_id": self._previous_id,
                 "candidate_generation_id": self._candidate_id,
                 "runtime_generation_id": self._runtime_id,
+                "runtime_classpath_generation_id": (
+                    self._runtime_classpath_id
+                ),
                 "runtime_state": self._runtime_state.value,
                 "ordinal": self._ordinal,
             },
         )
+
+    def _state_tuple(self) -> tuple[object, ...]:
+        return (
+            self._current_id,
+            self._previous_id,
+            self._candidate_id,
+            self._runtime_id,
+            self._runtime_classpath_id,
+            self._runtime_state,
+            self._ordinal,
+        )
+
+    def _restore_state_tuple(self, state: tuple[object, ...]) -> None:
+        (
+            self._current_id,
+            self._previous_id,
+            self._candidate_id,
+            self._runtime_id,
+            self._runtime_classpath_id,
+            self._runtime_state,
+            self._ordinal,
+        ) = state  # type: ignore[assignment]
+
+    def _remove_generation(self, generation: BuildGeneration) -> None:
+        self._items.pop(generation.generation_id, None)
+        shutil.rmtree(generation.output_directory.parent, ignore_errors=True)
+
+    def _prune_unreferenced(
+        self,
+        *,
+        preferred: Iterable[str | None] = (),
+    ) -> None:
+        retained = {
+            value
+            for value in (
+                self._current_id,
+                self._previous_id,
+                self._candidate_id,
+                self._runtime_id,
+                self._runtime_classpath_id,
+            )
+            if value is not None
+        }
+        ordered = [
+            value for value in preferred if value is not None
+        ] + sorted(set(self._items) - retained)
+        for generation_id in ordered:
+            if generation_id in retained:
+                continue
+            generation = self._items.get(generation_id)
+            if generation is not None:
+                self._remove_generation(generation)
 
 
 class JavaProjectSession:
@@ -433,6 +582,7 @@ class JavaProjectSession:
         self._active_reload: ReloadAttempt | None = None
         self._last_reload: ReloadAttempt | None = None
         self._last_successful_startup_ms: float | None = None
+        self._retained_directories: set[Path] = set()
         self._lock = threading.RLock()
 
     @property
@@ -497,6 +647,14 @@ class JavaProjectSession:
         with self._lock:
             self._last_successful_startup_ms = max(0.0, float(duration_ms))
 
+    def retain_directory(self, directory: Path) -> None:
+        """Keep launch metadata used by the active compile plan until close."""
+
+        with self._lock:
+            self._retained_directories.add(
+                directory.expanduser().resolve(strict=False)
+            )
+
     def public_status(self) -> dict[str, object]:
         with self._lock:
             active = self._active_reload
@@ -537,7 +695,13 @@ class JavaProjectSession:
                 ),
             }
 
-    def close(self) -> None:
+    def close(self, *, cleanup_retained: bool = True) -> None:
+        with self._lock:
+            retained = tuple(self._retained_directories)
+            self._retained_directories.clear()
+        if cleanup_retained:
+            for directory in retained:
+                shutil.rmtree(directory, ignore_errors=True)
         self.generations.close()
 
     def _require_active_reload(self) -> ReloadAttempt:
