@@ -28,6 +28,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["jolink_runtime.experiments*"]
+
+[tool.setuptools]
+include-package-data = false
 
 [tool.setuptools.package-data]
 jolink_runtime = [
