@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import subprocess
@@ -145,8 +146,10 @@ def test_persistent_jdt_session_full_then_incremental(
     dependency = tmp_path / "dependency.jar"
     dependency.write_bytes(b"dependency")
     session, source, worker = _session(tmp_path, monkeypatch)
+    assert session.max_heap_mb == 2048
 
     full = session.start()
+    session.accept_baseline()
     source.write_text(
         "package example; class App { int value() { return 2; } }",
         encoding="utf-8",
@@ -190,6 +193,8 @@ def test_compile_ready_is_false_until_initial_full_build_completes(
     thread.join(5)
     assert not thread.is_alive()
     assert result
+    assert session.ready is False
+    session.accept_baseline()
     assert session.ready is True
 
 
@@ -223,6 +228,7 @@ def test_initial_full_uses_frozen_launch_sources_then_incremental_reads_live_edi
     monkeypatch.setattr(session, "_start_worker", lambda **_kwargs: worker)
 
     full = session.start()
+    session.accept_baseline()
     full_bytes = (session.output_directory / "example/App.class").read_bytes()
     incremental = session.compile((source,))
     incremental_bytes = (
@@ -244,6 +250,7 @@ def test_publication_delta_accumulates_until_runtime_apply_is_confirmed(
     dependency.write_bytes(b"dependency")
     session, source, _worker = _session(tmp_path, monkeypatch)
     session.start()
+    session.accept_baseline()
 
     source.write_text(
         "package example; class App { int value() { return 2; } }",
@@ -272,6 +279,7 @@ def test_compile_failure_keeps_mutable_output_non_publishable(
     (tmp_path / "dependency.jar").write_bytes(b"dependency")
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()
+    session.accept_baseline()
     baseline = (
         session.output_directory / "example/App.class"
     ).read_bytes()
@@ -302,6 +310,7 @@ def test_source_drift_is_reported_after_incremental_build(
     (tmp_path / "dependency.jar").write_bytes(b"dependency")
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()
+    session.accept_baseline()
     source.write_text(
         "package example; class App { int value() { return 2; } }",
         encoding="utf-8",
@@ -324,6 +333,7 @@ def test_source_outside_frozen_build_world_is_rejected(
     (tmp_path / "dependency.jar").write_bytes(b"dependency")
     session, source, _worker = _session(tmp_path, monkeypatch)
     session.start()
+    session.accept_baseline()
     private = session.private_source / "example/App.java"
     private_before = private.read_bytes()
     source.write_text(
@@ -346,6 +356,7 @@ def test_timeout_poisons_session_and_rejects_later_build(
     (tmp_path / "dependency.jar").write_bytes(b"dependency")
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()
+    session.accept_baseline()
     worker.command_error = JdtCompileError(
         "JDT_WORKER_TIMEOUT", "late result"
     )
@@ -395,6 +406,7 @@ def test_compile_reports_resource_delta_and_bounded_diagnostics(
     session, source, worker = _session(tmp_path, monkeypatch)
     worker.resource_value = b"one"
     session.start()
+    session.accept_baseline()
     source.write_text(
         "package example; class App { int value() { return 2; } }",
         encoding="utf-8",
@@ -433,6 +445,7 @@ def test_close_force_cancels_inflight_compile(
     (tmp_path / "dependency.jar").write_bytes(b"dependency")
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()
+    session.accept_baseline()
     entered = threading.Event()
     released = threading.Event()
 
@@ -506,3 +519,71 @@ def test_candidate_lock_verifies_every_artifact(tmp_path: Path) -> None:
     with pytest.raises(JdtCompileError) as captured:
         JdtCandidate.load(lock_path, cache)
     assert captured.value.error_code == "JDT_CANDIDATE_INTEGRITY_MISMATCH"
+    assert captured.value.context == {"artifact": "worker.jar"}
+
+
+def test_product_candidate_installs_bundles_worker_and_config_atomically(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module_root = Path(__file__).resolve().parents[2] / (
+        "src/jolink_runtime/launch"
+    )
+    worker = base64.b64decode(
+        "".join(
+            module_root.joinpath(
+                "jdt-product-worker.jar.b64"
+            ).read_text(encoding="ascii").split()
+        ),
+        validate=True,
+    )
+    config = module_root.joinpath("jdt-product-config.ini").read_bytes()
+    bundle = b"official-bundle"
+    lock = {
+        "schema_version": 1,
+        "candidate_id": "product-test",
+        "worker_java_minimum": 17,
+        "repository_url": "https://example.invalid/eclipse",
+        "artifacts": [
+            {
+                "filename": "launcher.jar",
+                "sha256": hashlib.sha256(bundle).hexdigest(),
+            }
+        ],
+        "worker_artifact": {
+            "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar",
+            "sha256": hashlib.sha256(worker).hexdigest(),
+        },
+        "equinox": {
+            "launcher_filename": "launcher.jar",
+            "configuration_sha256": hashlib.sha256(config).hexdigest(),
+        },
+    }
+    downloads: list[str] = []
+
+    def download(url: str, destination: Path, *, artifact: str) -> None:
+        downloads.append(url)
+        assert artifact == "launcher.jar"
+        destination.write_bytes(bundle)
+
+    monkeypatch.setattr(
+        JdtCandidate,
+        "_download_product_artifact",
+        staticmethod(download),
+    )
+    product_root = tmp_path / "content-addressed/product-test/lock-sha"
+
+    JdtCandidate._install_product_candidate(
+        lock,
+        product_root=product_root,
+        legacy_roots=(),
+    )
+    candidate = JdtCandidate._load_root(lock, product_root)
+
+    assert candidate.root == product_root
+    assert downloads == [
+        "https://example.invalid/eclipse/plugins/launcher.jar"
+    ]
+    assert product_root.joinpath(
+        "plugins/net.jolink.runtime.jdt.worker_0.1.0.jar"
+    ).read_bytes() == worker

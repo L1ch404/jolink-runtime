@@ -121,10 +121,13 @@ def parse_project_launch_request(
         return None
 
     action = str(arguments.get("action", "status"))
-    if action not in {"run", "restart"}:
+    if action != "run":
         raise ProjectLaunchArgumentError(
             argument="project_path",
-            message="project_path is only valid for run or restart.",
+            message=(
+                "project_path is only valid for launch. Restart reuses the "
+                "current sealed Generation without rebuilding the project."
+            ),
         )
     raw_project_path = arguments.get("project_path")
     if not isinstance(raw_project_path, str) or not raw_project_path.strip():

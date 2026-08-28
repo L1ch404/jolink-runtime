@@ -52,7 +52,8 @@ persistent private JDT Build World and seals the full output delta as an
 immutable Candidate Generation. Compatible loaded method-body changes use one
 JDWP `RedefineClasses` operation. Structural/resource/add/delete changes,
 HotSwap rejection, or `hotswap=false` use a managed Candidate restart. The
-Candidate is promoted only after readiness; startup failure restores the
+restart path requires `ready_port`. The Candidate is promoted only after
+readiness; startup failure restores the
 last-good Generation and reports `rolled_back=true`. It never mutates Maven
 output. Success is runtime evidence, not business-correctness proof; a fresh
 request is still required.
@@ -61,7 +62,10 @@ The CompileSession freezes Maven-resolved source roots, compile dependencies,
 target platform, source encoding, Lombok/JSR-269 processor inputs, and the
 configuration fingerprint. Its initial FULL build is based on the exact source
 snapshot that produced the running Generation; `compile_ready` remains false
-until that baseline succeeds. Every reload rechecks BuildWorld, Runtime,
+until that baseline succeeds and its declared type set, public API shape, and
+class-file major are compatible with the Maven Generation. Source manifests
+before Maven, after Maven, and after snapshot copy must match. Every reload
+rechecks BuildWorld, Runtime,
 Generation, process identity, and selected source bytes before applying state.
 Changing those inputs requires a fresh launch rather than silently compiling
 against a different world.
@@ -87,7 +91,17 @@ definition blocks breakpoint arming; the error returns all
 - Readiness configuration is stored with the launched process. `status`
   rechecks the same port without reading or interpreting application logs.
 - `restart` reuses the prior launched process's readiness configuration when
-  the caller does not provide a replacement.
+  the caller does not provide a replacement. It rejects `project_path` and
+  restarts only the current sealed Generation without invoking Maven.
+
+## JDT Candidate distribution
+
+The product lock identity is part of the cache path. joLink atomically installs
+the exact locked Candidate under the user cache, reuses matching Eclipse
+bundles from pre-product caches, and downloads only missing official bundles.
+The product Worker JAR and Equinox configuration ship with the Python package.
+Every file is SHA-256 verified before publication. Integrity errors may expose
+the public artifact filename, but never project paths or source content.
 
 The public startup states are:
 

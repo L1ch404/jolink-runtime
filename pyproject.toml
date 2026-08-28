@@ -30,7 +30,11 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-jolink_runtime = ["launch/jdt-product-candidate.json"]
+jolink_runtime = [
+  "launch/jdt-product-candidate.json",
+  "launch/jdt-product-config.ini",
+  "launch/jdt-product-worker.jar.b64",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

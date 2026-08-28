@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tempfile
 from dataclasses import dataclass, replace
@@ -63,6 +64,7 @@ class PreparedProjectLaunch:
     jdt_build_world_plan: JdtBuildWorldPlan | None = None
     jdt_unavailable_reason: str | None = None
     jdt_source_snapshot_roots: tuple[Path, ...] = ()
+    source_manifest_fingerprint: str | None = None
 
 
 class ProjectLaunchPipeline:
@@ -167,6 +169,10 @@ class ProjectLaunchPipeline:
         except MavenResolutionError as error:
             raise self._maven_failure(error) from error
         context.set_build_plan(execution.build_plan)
+        source_roots = (module.directory / "src/main/java",)
+        source_manifest_before = self.source_manifest_fingerprint(
+            source_roots
+        )
 
         if imported.intent.build_before_run:
             context.transition(LaunchPhase.COMPILING)
@@ -195,6 +201,16 @@ class ProjectLaunchPipeline:
                     "retry run."
                 ),
                 context={"return_code": build_result.return_code},
+            )
+        source_manifest_after = self.source_manifest_fingerprint(source_roots)
+        if source_manifest_before != source_manifest_after:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.SOURCE_CHANGED_DURING_BUILD,
+                "Project Java sources changed while Maven was building.",
+                retryable=True,
+                suggested_next_step=(
+                    "Wait for source edits to settle, then call launch again."
+                ),
             )
         compile_classpath_result = context.run_operation(
             self._maven.create_compile_classpath_operation(execution)
@@ -274,6 +290,7 @@ class ProjectLaunchPipeline:
             ),
             jdt_build_world_plan=jdt_build_world_plan,
             jdt_unavailable_reason=jdt_unavailable_reason,
+            source_manifest_fingerprint=source_manifest_after,
         )
 
     def materialize_command(
@@ -297,6 +314,56 @@ class ProjectLaunchPipeline:
             ),
             command,
         )
+
+    @staticmethod
+    def source_manifest_fingerprint(
+        source_roots: tuple[Path, ...],
+    ) -> str:
+        digest = hashlib.sha256()
+        source_count = 0
+        for index, source_root in enumerate(source_roots):
+            root = source_root.expanduser().resolve(strict=False)
+            if not root.is_dir():
+                continue
+            for source in sorted(root.rglob("*.java")):
+                if source.is_symlink():
+                    raise LaunchPipelineFailure(
+                        "SOURCE_LINK_UNSUPPORTED",
+                        "Project Java source roots may not contain links.",
+                        retryable=False,
+                        suggested_next_step=(
+                            "Replace linked Java sources with regular files."
+                        ),
+                    )
+                source_count += 1
+                if source_count > 50_000:
+                    raise LaunchPipelineFailure(
+                        "SOURCE_MANIFEST_LIMIT_EXCEEDED",
+                        "Project Java source manifest exceeds the safety limit.",
+                        retryable=False,
+                        suggested_next_step=(
+                            "Launch a smaller Maven module or use the formal "
+                            "runtime workflow without persistent reload."
+                        ),
+                    )
+                digest.update(str(index).encode("ascii"))
+                digest.update(b"\0")
+                digest.update(source.relative_to(root).as_posix().encode("utf-8"))
+                digest.update(b"\0")
+                try:
+                    digest.update(source.read_bytes())
+                except OSError as error:
+                    raise LaunchPipelineFailure(
+                        "SOURCE_MANIFEST_UNAVAILABLE",
+                        "A project Java source could not be read consistently.",
+                        retryable=True,
+                        suggested_next_step=(
+                            "Wait for source edits or file operations to finish, "
+                            "then call launch again."
+                        ),
+                    ) from error
+                digest.update(b"\0")
+        return digest.hexdigest()
 
     @staticmethod
     def cleanup_attempt_directory(directory: Path | None) -> None:

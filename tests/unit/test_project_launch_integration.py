@@ -23,6 +23,7 @@ from jolink_runtime.launch import (
     LaunchPipelineFailure,
     MaterializedJavaCommand,
     PreparedProjectLaunch,
+    ProjectLaunchPipeline,
     ProjectLaunchRequest,
 )
 from jolink_runtime.launch.project_session import ReloadStage
@@ -64,6 +65,21 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition was not observed before the deadline")
+
+
+def test_source_manifest_detects_edits_between_maven_and_snapshot(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "src/main/java"
+    source = source_root / "example/App.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class App { int value() { return 1; } }", encoding="utf-8")
+    first = ProjectLaunchPipeline.source_manifest_fingerprint((source_root,))
+
+    source.write_text("class App { int value() { return 2; } }", encoding="utf-8")
+    second = ProjectLaunchPipeline.source_manifest_fingerprint((source_root,))
+
+    assert first != second
 
 
 @pytest.mark.parametrize(
@@ -597,6 +613,8 @@ def test_candidate_restart_promotes_or_rolls_back_last_good_generation(
         )
         runtime._proc._publish(info)
         kwargs["on_published"](info)
+        if start_count == 2 and candidate_outcome == "success":
+            reload_source.write_text("source-v3", encoding="utf-8")
         if start_count == 2 and candidate_outcome == "start_failure":
             process.returncode = 7
             raise ProcessStartupError(
@@ -642,7 +660,16 @@ def test_candidate_restart_promotes_or_rolls_back_last_good_generation(
         candidate_output,
         build_world_fingerprint=session.build_world_fingerprint,
     )
-    session.begin_reload("source-v2")
+    reload_source = tmp_path / "src/App.java"
+    reload_source.parent.mkdir()
+    reload_source.write_text("source-v2", encoding="utf-8")
+    source_fingerprint = runtime._source_selection_fingerprint(
+        (reload_source,)
+    )
+    session.begin_reload(
+        source_fingerprint,
+        source_files=(reload_source,),
+    )
     session.transition_reload(ReloadStage.PREPARING_CANDIDATE)
     session.transition_reload(ReloadStage.RESTARTING)
     if candidate_outcome == "promotion_failure":
@@ -668,6 +695,9 @@ def test_candidate_restart_promotes_or_rolls_back_last_good_generation(
             "Application.class"
         ).read_bytes() == b"candidate"
         assert session.public_status()["last_reload"]["applied"] is True
+        assert session.public_status()["last_reload"][
+            "source_changes_pending"
+        ] is True
         assert start_count == 2
     else:
         assert status.data["generation"] == 1

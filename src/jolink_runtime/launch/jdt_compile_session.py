@@ -7,6 +7,7 @@ and compile result.  Mutable Worker output is never a publishable Generation.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -16,6 +17,8 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.request
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -25,9 +28,16 @@ from .fast_compile import fast_compile_fingerprint
 
 
 class JdtCompileError(RuntimeError):
-    def __init__(self, error_code: str, message: str) -> None:
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.context = dict(context or {})
 
 
 def _sha256_file(path: Path) -> str:
@@ -46,32 +56,86 @@ class JdtCandidate:
     worker_java_sha256: str | None
     lock: dict[str, Any]
     worker_java_minimum: int = 17
+    _product_install_lock = threading.Lock()
 
     @classmethod
     def load_product(cls) -> "JdtCandidate":
-        """Load the frozen product candidate, accepting the pre-product cache.
-
-        Candidate acquisition is still performed by the repository bootstrap;
-        this method owns the product path policy so Runtime code never embeds
-        experiment/cache layout details.
-        """
+        """Load or atomically install the content-addressed product candidate."""
 
         lock_path = Path(__file__).with_name("jdt-product-candidate.json")
+        try:
+            lock_raw = lock_path.read_bytes()
+            lock = json.loads(lock_raw)
+            candidate_id = str(lock["candidate_id"])
+            if Path(candidate_id).name != candidate_id:
+                raise ValueError("invalid candidate_id")
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            raise JdtCompileError(
+                "JDT_CANDIDATE_LOCK_INVALID",
+                "The JDT Worker product lock is unavailable or invalid.",
+            ) from error
+        identity = hashlib.sha256(lock_raw).hexdigest()
         cache_base = Path.home() / ".cache/jolink-runtime"
-        roots = (cache_base / "jdt-worker", cache_base / "jdt-poc")
-        last_error: JdtCompileError | None = None
-        for cache_root in roots:
+        product_root = (
+            cache_base
+            / "jdt-worker/candidates"
+            / candidate_id
+            / identity
+        )
+        try:
+            return cls._load_root(lock, product_root)
+        except JdtCompileError:
+            pass
+        with cls._product_install_lock:
             try:
-                return cls.load(lock_path, cache_root)
-            except JdtCompileError as error:
-                last_error = error
-        assert last_error is not None
-        raise last_error
+                return cls._load_root(lock, product_root)
+            except JdtCompileError:
+                cls._install_product_candidate(
+                    lock,
+                    product_root=product_root,
+                    legacy_roots=(
+                        cache_base / "jdt-worker/candidates" / candidate_id,
+                        cache_base / "jdt-poc/candidates" / candidate_id,
+                    ),
+                )
+                return cls._load_root(lock, product_root)
 
     @classmethod
     def load(cls, lock_path: Path, cache_root: Path) -> "JdtCandidate":
         try:
             lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            candidate_id = str(lock["candidate_id"])
+            if Path(candidate_id).name != candidate_id:
+                raise ValueError("invalid candidate_id")
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            raise JdtCompileError(
+                "JDT_CANDIDATE_LOCK_INVALID",
+                "The JDT Worker candidate lock is unavailable or invalid.",
+            ) from error
+        root = cache_root.expanduser().resolve(strict=False) / "candidates" / (
+            candidate_id
+        )
+        return cls._load_root(lock, root)
+
+    @classmethod
+    def _load_root(
+        cls,
+        lock: dict[str, Any],
+        root: Path,
+    ) -> "JdtCandidate":
+        try:
             candidate_id = str(lock["candidate_id"])
             artifacts = [*lock["artifacts"], lock["worker_artifact"]]
             equinox = lock["equinox"]
@@ -85,23 +149,28 @@ class JdtCandidate:
                 else None
             )
             worker_java_minimum = int(lock.get("worker_java_minimum", 17))
-        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        except (KeyError, TypeError, ValueError) as error:
             raise JdtCompileError(
                 "JDT_CANDIDATE_LOCK_INVALID",
                 "The JDT Worker candidate lock is unavailable or invalid.",
             ) from error
-        root = cache_root.expanduser().resolve(strict=False) / "candidates" / (
-            candidate_id
-        )
+        root = root.expanduser().resolve(strict=False)
         for artifact in artifacts:
-            path = root / "plugins" / str(artifact["filename"])
+            filename = str(artifact["filename"])
+            if Path(filename).name != filename:
+                raise JdtCompileError(
+                    "JDT_CANDIDATE_LOCK_INVALID",
+                    "The JDT Candidate lock contains an invalid artifact name.",
+                )
+            path = root / "plugins" / filename
             if (
                 not path.is_file()
                 or _sha256_file(path) != str(artifact["sha256"])
             ):
                 raise JdtCompileError(
                     "JDT_CANDIDATE_INTEGRITY_MISMATCH",
-                    "A locked JDT Worker artifact is missing or changed.",
+                    f"Locked JDT artifact is missing or changed: {filename}.",
+                    context={"artifact": filename},
                 )
         config = root / "configuration/config.ini"
         if (
@@ -112,6 +181,7 @@ class JdtCandidate:
             raise JdtCompileError(
                 "JDT_CANDIDATE_INTEGRITY_MISMATCH",
                 "The locked Equinox configuration is missing or changed.",
+                context={"artifact": "configuration/config.ini"},
             )
         launcher = root / "plugins" / str(equinox["launcher_filename"])
         return cls(
@@ -122,6 +192,138 @@ class JdtCandidate:
             lock=lock,
             worker_java_minimum=worker_java_minimum,
         )
+
+    @classmethod
+    def _install_product_candidate(
+        cls,
+        lock: dict[str, Any],
+        *,
+        product_root: Path,
+        legacy_roots: Sequence[Path],
+    ) -> None:
+        product_root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = product_root.parent / (
+            f".{product_root.name}.{uuid.uuid4().hex}.tmp"
+        )
+        plugins = temporary / "plugins"
+        configuration = temporary / "configuration"
+        plugins.mkdir(parents=True, mode=0o700)
+        configuration.mkdir(mode=0o700)
+        artifact_name = "candidate"
+        try:
+            repository = str(lock["repository_url"]).rstrip("/")
+            for artifact in lock["artifacts"]:
+                artifact_name = str(artifact["filename"])
+                expected = str(artifact["sha256"])
+                destination = plugins / artifact_name
+                source = next(
+                    (
+                        root / "plugins" / artifact_name
+                        for root in legacy_roots
+                        if (root / "plugins" / artifact_name).is_file()
+                        and _sha256_file(root / "plugins" / artifact_name)
+                        == expected
+                    ),
+                    None,
+                )
+                if source is not None:
+                    shutil.copyfile(source, destination)
+                else:
+                    cls._download_product_artifact(
+                        f"{repository}/plugins/{artifact_name}",
+                        destination,
+                        artifact=artifact_name,
+                    )
+                if _sha256_file(destination) != expected:
+                    raise JdtCompileError(
+                        "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                        f"Downloaded JDT artifact failed verification: {artifact_name}.",
+                        context={"artifact": artifact_name},
+                    )
+
+            worker = lock["worker_artifact"]
+            artifact_name = str(worker["filename"])
+            worker_bytes = base64.b64decode(
+                "".join(
+                    Path(__file__).with_name(
+                        "jdt-product-worker.jar.b64"
+                    ).read_text(encoding="ascii").split()
+                ),
+                validate=True,
+            )
+            worker_path = plugins / artifact_name
+            worker_path.write_bytes(worker_bytes)
+            if _sha256_file(worker_path) != str(worker["sha256"]):
+                raise JdtCompileError(
+                    "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                    "The packaged JDT Worker failed verification.",
+                    context={"artifact": artifact_name},
+                )
+
+            config_path = configuration / "config.ini"
+            shutil.copyfile(
+                Path(__file__).with_name("jdt-product-config.ini"),
+                config_path,
+            )
+            cls._load_root(lock, temporary)
+            if product_root.exists():
+                try:
+                    cls._load_root(lock, product_root)
+                except JdtCompileError:
+                    product_root.rename(
+                        product_root.with_name(
+                            f".{product_root.name}.corrupt-{uuid.uuid4().hex}"
+                        )
+                    )
+                else:
+                    return
+            temporary.rename(product_root)
+        except JdtCompileError:
+            raise
+        except Exception as error:
+            raise JdtCompileError(
+                "JDT_CANDIDATE_INSTALL_FAILED",
+                "The locked JDT Candidate could not be installed.",
+                context={
+                    "artifact": artifact_name,
+                    "retryable": True,
+                },
+            ) from error
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+
+    @staticmethod
+    def _download_product_artifact(
+        url: str,
+        destination: Path,
+        *,
+        artifact: str,
+    ) -> None:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "joLink-Runtime/0.1"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                with destination.open("wb") as stream:
+                    total = 0
+                    while chunk := response.read(1024 * 1024):
+                        total += len(chunk)
+                        if total > 64 * 1024 * 1024:
+                            raise JdtCompileError(
+                                "JDT_CANDIDATE_INSTALL_FAILED",
+                                "A JDT artifact exceeded the download limit.",
+                                context={"artifact": artifact},
+                            )
+                        stream.write(chunk)
+        except JdtCompileError:
+            raise
+        except Exception as error:
+            raise JdtCompileError(
+                "JDT_CANDIDATE_INSTALL_FAILED",
+                f"Unable to install locked JDT artifact: {artifact}.",
+                context={"artifact": artifact, "retryable": True},
+            ) from error
 
     def verify_worker_java(self, java_home: Path) -> Path:
         executable = java_home.expanduser().resolve(strict=True) / "bin" / (
@@ -378,6 +580,7 @@ class JdtBuildWorldPlan:
     configuration_inputs: tuple[Path, ...]
     configuration_environment_names: tuple[str, ...]
     javac_executable: Path
+    worker_max_heap_mb: int = 2048
 
     def is_fresh(self) -> bool:
         return self.fingerprint == fast_compile_fingerprint(
@@ -446,6 +649,7 @@ class PersistentJdtCompileSession:
         processor_entries: Sequence[Path] = (),
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
+        max_heap_mb: int = 2048,
         timeout: float = 600.0,
     ) -> None:
         self.root = root.expanduser().resolve(strict=False)
@@ -472,6 +676,12 @@ class PersistentJdtCompileSession:
         )
         self.java_agents = tuple(java_agents)
         self.extra_jvm_arguments = tuple(extra_jvm_arguments)
+        if not 256 <= int(max_heap_mb) <= 8192:
+            raise JdtCompileError(
+                "JDT_WORKER_HEAP_INVALID",
+                "JDT Worker max_heap_mb must be between 256 and 8192.",
+            )
+        self.max_heap_mb = int(max_heap_mb)
         self.timeout = timeout
         self.private_project = self.root / "workspace/plain-fixture"
         self.private_source = self.private_project / "src"
@@ -528,12 +738,6 @@ class PersistentJdtCompileSession:
                 with self._state_lock:
                     self._client = client
                 result = self._build("FULL", source_changes_pending=False)
-                with self._state_lock:
-                    self._baseline_ready = result.compile_ok
-                    if result.compile_ok:
-                        self._published_output_manifest = (
-                            self._complete_output_manifest()
-                        )
                 return result
             except Exception:
                 with self._state_lock:
@@ -553,6 +757,11 @@ class PersistentJdtCompileSession:
                     raise JdtCompileError(
                         "JDT_SESSION_NOT_READY",
                         "The JDT CompileSession is not active.",
+                    )
+                if not self._baseline_ready:
+                    raise JdtCompileError(
+                        "JDT_BASELINE_NOT_ACCEPTED",
+                        "The initial JDT FULL baseline has not passed validation.",
                     )
             try:
                 selected = tuple(
@@ -613,6 +822,21 @@ class PersistentJdtCompileSession:
                 source_changes_pending=pending,
                 **self._publication_delta(),
             )
+
+    def accept_baseline(self) -> None:
+        """Publish initial FULL only after Maven/JDT compatibility succeeds."""
+
+        with self._operation_lock:
+            with self._state_lock:
+                if self._poisoned or self._client is None:
+                    raise JdtCompileError(
+                        "JDT_SESSION_NOT_READY",
+                        "The JDT baseline cannot be accepted.",
+                    )
+                self._published_output_manifest = (
+                    self._complete_output_manifest()
+                )
+                self._baseline_ready = True
 
     def mark_published(self) -> None:
         """Advance the Runtime publication baseline after a confirmed apply."""
@@ -691,7 +915,7 @@ class PersistentJdtCompileSession:
         command = [
             str(java),
             "-Xms64m",
-            "-Xmx512m",
+            f"-Xmx{self.max_heap_mb}m",
             *self.extra_jvm_arguments,
             *(f"-javaagent:{agent}" for agent in self.java_agents),
             "-jar",

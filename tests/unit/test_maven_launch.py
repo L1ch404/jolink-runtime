@@ -642,6 +642,61 @@ def test_jdt_build_world_rejects_explicit_processor_selection(
     )
 
 
+def test_jdt_build_world_maps_safe_compiler_process_heap_argument(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / "dependency.jar"
+    with zipfile.ZipFile(dependency, "w") as archive:
+        archive.writestr("example/Dependency.class", b"class")
+    effective = _effective_pom(
+        "app",
+        compiler_configuration=(
+            "<compilerArgs><arg>-J-Xmx3g</arg></compilerArgs>"
+        ),
+    )
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=effective,
+        compile_entries=(dependency,),
+    )
+
+    plan = adapter.consume_jdt_build_world_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.worker_max_heap_mb == 3072
+
+
+def test_jdt_build_world_rejects_unmodeled_javac_process_argument(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / "dependency.jar"
+    with zipfile.ZipFile(dependency, "w") as archive:
+        archive.writestr("example/Dependency.class", b"class")
+    effective = _effective_pom(
+        "app",
+        compiler_configuration=(
+            "<compilerArgs><arg>-J-Dcustom.option=true</arg></compilerArgs>"
+        ),
+    )
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        effective_pom=effective,
+        compile_entries=(dependency,),
+    )
+
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_jdt_build_world_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
+        )
+
+    assert captured.value.error_code is (
+        LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED
+    )
+
+
 def test_fast_compile_rejects_explicit_processor_or_transform_plugin(
     tmp_path: Path,
 ) -> None:

@@ -11,6 +11,8 @@ static state are rejected before ``RedefineClasses`` is attempted.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import stat
 import struct
 from dataclasses import dataclass, field, replace
@@ -21,6 +23,24 @@ from typing import Any
 
 _CLASS_MAGIC = 0xCAFEBABE
 _MAX_CLASS_FILE_BYTES = 16 * 1024 * 1024
+_MAX_CLASS_OUTPUT_FILES = 100_000
+_DECLARED_CLASS = re.compile(r"^(?!.*\$\d+)(?!.*\$\$Lambda\$).+$")
+_PUBLIC_OR_PROTECTED = 0x0001 | 0x0004
+_SYNTHETIC = 0x1000
+_BRIDGE = 0x0040
+_CLASS_API_FLAGS = 0x0001 | 0x0010 | 0x0200 | 0x0400 | 0x2000 | 0x4000
+_API_METADATA = frozenset(
+    {
+        "Signature",
+        "RuntimeVisibleAnnotations",
+        "RuntimeVisibleParameterAnnotations",
+        "RuntimeVisibleTypeAnnotations",
+        "AnnotationDefault",
+        "Exceptions",
+        "Record",
+        "PermittedSubclasses",
+    }
+)
 
 
 class ClassFileFormatError(ValueError):
@@ -953,6 +973,114 @@ def compare_class_file_bytes(
     )
 
 
+def compare_class_output_tier1(
+    maven_output: Path,
+    jdt_output: Path,
+) -> dict[str, Any]:
+    """Compare declared types, public API shape, and class-file major."""
+
+    maven = _parse_class_output(maven_output)
+    jdt = _parse_class_output(jdt_output)
+    maven_declared = {
+        name for name, parsed in maven.items() if _is_declared(name, parsed)
+    }
+    jdt_declared = {
+        name for name, parsed in jdt.items() if _is_declared(name, parsed)
+    }
+    missing = maven_declared - jdt_declared
+    extra = jdt_declared - maven_declared
+    api_mismatches = 0
+    major_mismatches = 0
+    for name in maven_declared & jdt_declared:
+        if maven[name].major_version != jdt[name].major_version:
+            major_mismatches += 1
+        if _public_api_shape(maven[name]) != _public_api_shape(jdt[name]):
+            api_mismatches += 1
+    return {
+        "compatible": not (
+            missing or extra or api_mismatches or major_mismatches
+        ),
+        "maven_declared_type_count": len(maven_declared),
+        "jdt_declared_type_count": len(jdt_declared),
+        "missing_declared_type_count": len(missing),
+        "extra_declared_type_count": len(extra),
+        "api_mismatch_count": api_mismatches,
+        "class_major_mismatch_count": major_mismatches,
+    }
+
+
+def _parse_class_output(root: Path) -> dict[str, ParsedClassFile]:
+    paths = sorted(root.rglob("*.class")) if root.is_dir() else []
+    if len(paths) > _MAX_CLASS_OUTPUT_FILES:
+        raise ClassFileFormatError(
+            "Compiler output exceeds the class compatibility safety limit."
+        )
+    result: dict[str, ParsedClassFile] = {}
+    for path in paths:
+        parsed = parse_class_file(path.read_bytes())
+        if parsed.binary_name in result:
+            raise ClassFileFormatError(
+                "Compiler output contains duplicate binary names."
+            )
+        result[parsed.binary_name] = parsed
+    return result
+
+
+def _is_declared(name: str, parsed: ParsedClassFile) -> bool:
+    return not (parsed.access_flags & _SYNTHETIC) and bool(
+        _DECLARED_CLASS.match(name)
+    )
+
+
+def _api_metadata(
+    metadata: tuple[tuple[str, Any], ...],
+) -> tuple[tuple[str, Any], ...]:
+    return tuple(
+        sorted(
+            (
+                (name, value)
+                for name, value in metadata
+                if name in _API_METADATA
+            ),
+            key=lambda item: (
+                item[0],
+                json.dumps(
+                    item[1],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+    )
+
+
+def _public_api_shape(parsed: ParsedClassFile) -> object:
+    def members(values: tuple[ClassMember, ...]) -> list[object]:
+        return sorted(
+            (
+                item.name,
+                item.descriptor,
+                item.access_flags & ~(_SYNTHETIC | _BRIDGE),
+                _api_metadata(item.metadata),
+            )
+            for item in values
+            if item.access_flags & _PUBLIC_OR_PROTECTED
+            and not item.access_flags & (_SYNTHETIC | _BRIDGE)
+        )
+
+    return (
+        parsed.binary_name,
+        parsed.major_version,
+        parsed.access_flags & _CLASS_API_FLAGS,
+        parsed.super_binary_name,
+        parsed.interfaces,
+        _api_metadata(parsed.metadata),
+        members(parsed.fields),
+        members(parsed.methods),
+    )
+
+
 __all__ = [
     "ClassFileChangeKind",
     "ClassFileComparison",
@@ -960,6 +1088,7 @@ __all__ = [
     "ClassMember",
     "ParsedClassFile",
     "compare_class_file_bytes",
+    "compare_class_output_tier1",
     "compare_class_files",
     "parse_class_file",
     "read_class_file",

@@ -399,6 +399,61 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
     ).read_bytes() == staged_raw
     assert session.generations.candidate is None
 
+    restart_action = RuntimeAction(action="update")
+    restart_action.source_files = ["src/main/java/Example.java"]
+    restart_action.hotswap = False
+    rejected = runtime.update(restart_action)
+    assert rejected.ok is False
+    assert rejected.data["error_code"] == (
+        "RELOAD_RESTART_REQUIRES_READINESS"
+    )
+    assert session.generations.candidate is None
+
+
+def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = JavaRuntime()
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    prepared = ProjectUpdatePlan(
+        fast_compile_plan=None,
+        fast_compile_unavailable_reason="DIRECT_DISABLED",
+        attempt_directory=tmp_path,
+        project_session=session,
+        jdt_build_world_plan=SimpleNamespace(),
+        jdt_unavailable_reason="JDT_CANDIDATE_INTEGRITY_MISMATCH",
+        jdt_unavailable_details={
+            "artifact": "worker.jar",
+            "retryable": False,
+        },
+    )
+    runtime._project_update_plans["launch_1"] = prepared
+    monkeypatch.setattr(
+        runtime,
+        "_reconcile_project_process_exit",
+        lambda: {
+            "attempt_id": "launch_1",
+            "generation": 1,
+            "launch_phase": "runtime_active",
+        },
+    )
+
+    result = runtime.update(RuntimeAction(action="update"))
+
+    assert result.ok is False
+    assert result.error == (
+        "Persistent JDT reload is unavailable for this launch."
+    )
+    assert result.data["error_code"] == (
+        "JDT_CANDIDATE_INTEGRITY_MISMATCH"
+    )
+    assert result.data["artifact"] == "worker.jar"
+    assert result.data["retryable"] is False
+
 
 def test_formal_output_guard_checks_unselected_classes_and_class_set(
     tmp_path: Path,

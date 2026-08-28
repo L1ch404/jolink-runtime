@@ -129,6 +129,7 @@ class ReloadAttempt:
     stage: ReloadStage
     started_at: float
     source_fingerprint_before: str
+    source_files: tuple[Path, ...] = ()
     source_fingerprint_after: str | None = None
     compile_ms: float | None = None
     startup_ms: float | None = None
@@ -584,6 +585,9 @@ class JavaProjectSession:
         self._active_reload: ReloadAttempt | None = None
         self._last_reload: ReloadAttempt | None = None
         self._last_successful_startup_ms: float | None = None
+        self._generation_seal_ms: float | None = None
+        self._source_snapshot_ms: float | None = None
+        self._jdt_bootstrap_ms: float | None = None
         self._retained_directories: set[Path] = set()
         self._closed = False
         self._lock = threading.RLock()
@@ -593,7 +597,12 @@ class JavaProjectSession:
         with self._lock:
             return self._active_reload
 
-    def begin_reload(self, source_fingerprint: str) -> ReloadAttempt:
+    def begin_reload(
+        self,
+        source_fingerprint: str,
+        *,
+        source_files: Iterable[Path] = (),
+    ) -> ReloadAttempt:
         with self._lock:
             if self._active_reload is not None:
                 raise ProjectSessionError(
@@ -605,6 +614,7 @@ class JavaProjectSession:
                 stage=ReloadStage.PREPARING,
                 started_at=time.time(),
                 source_fingerprint_before=source_fingerprint,
+                source_files=tuple(source_files),
             )
             self._active_reload = attempt
             return attempt
@@ -649,6 +659,20 @@ class JavaProjectSession:
     def record_successful_startup(self, duration_ms: float) -> None:
         with self._lock:
             self._last_successful_startup_ms = max(0.0, float(duration_ms))
+
+    def record_generation_preparation(
+        self,
+        *,
+        generation_seal_ms: float,
+        source_snapshot_ms: float,
+    ) -> None:
+        with self._lock:
+            self._generation_seal_ms = max(0.0, float(generation_seal_ms))
+            self._source_snapshot_ms = max(0.0, float(source_snapshot_ms))
+
+    def record_jdt_bootstrap(self, duration_ms: float) -> None:
+        with self._lock:
+            self._jdt_bootstrap_ms = max(0.0, float(duration_ms))
 
     def attach_compile_session(self, compile_session: Any) -> None:
         with self._lock:
@@ -726,6 +750,11 @@ class JavaProjectSession:
                 "last_successful_startup_ms": (
                     self._last_successful_startup_ms
                 ),
+                "product_timing_ms": {
+                    "generation_seal": self._generation_seal_ms,
+                    "source_snapshot": self._source_snapshot_ms,
+                    "jdt_bootstrap": self._jdt_bootstrap_ms,
+                },
             }
 
     def close(self, *, cleanup_retained: bool = True) -> None:
@@ -745,6 +774,7 @@ class JavaProjectSession:
             for directory in retained:
                 shutil.rmtree(directory, ignore_errors=True)
         self.generations.close()
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def _require_active_reload(self) -> ReloadAttempt:
         if self._active_reload is None:

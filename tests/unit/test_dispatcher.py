@@ -361,6 +361,10 @@ def test_project_launch_routes_without_changing_runtime_action(
             "project_path",
         ),
         (
+            {"action": "restart", "project_path": "/tmp/project"},
+            "project_path",
+        ),
+        (
             {
                 "action": "run",
                 "project_path": "/tmp/project",
@@ -380,6 +384,21 @@ def test_invalid_project_arguments_fail_before_runtime_allocation(
     assert result["ok"] is False
     assert result["error_code"] == "INVALID_ARGUMENT"
     assert result["argument"] == argument
+    assert sessions.session_keys == ()
+
+
+def test_product_restart_rejects_project_path_before_runtime_allocation() -> None:
+    sessions = SessionManager(lambda: _RoutingRuntime())
+
+    result = Dispatcher(sessions).dispatch(
+        "java_application",
+        {"action": "restart", "project_path": "/tmp/project"},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+    assert result["argument"] == "project_path"
+    assert "sealed Generation" in result["error"]
     assert sessions.session_keys == ()
 
 

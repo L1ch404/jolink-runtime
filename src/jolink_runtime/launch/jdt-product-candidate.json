@@ -2,6 +2,7 @@
   "schema_version": 1,
   "candidate_id": "eclipse-2021-03-apt-spike",
   "worker_java_minimum": 17,
+  "repository_url": "https://download.eclipse.org/eclipse/updates/4.19/R-4.19-202103031800",
   "artifacts": [
     {
       "filename": "org.apache.ant_1.10.9.v20201106-1946.jar",

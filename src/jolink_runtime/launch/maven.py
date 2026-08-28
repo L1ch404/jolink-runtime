@@ -817,6 +817,7 @@ class MavenBuildSystemAdapter:
             effective_project, "maven-compiler-plugin"
         )
         configurations = self._compiler_configurations(compiler)
+        worker_max_heap_mb = 2048
         for configuration in configurations:
             if (
                 configuration.find("./{*}annotationProcessorPaths") is not None
@@ -837,13 +838,35 @@ class MavenBuildSystemAdapter:
                     for item in compiler_args.findall("./{*}arg")
                     if (item.text or "").strip()
                 ]
-                if any(not value.startswith("-J-") for value in values):
-                    raise MavenResolutionError(
-                        LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
-                        "Maven compiler arguments cannot be reproduced by JDT.",
-                        retryable=False,
-                        suggested_next_step="Use the formal Maven build and restart.",
+                for value in values:
+                    memory = re.fullmatch(
+                        r"-J-Xm(?P<kind>[sx])(?P<size>\d+)(?P<unit>[kKmMgG])",
+                        value,
                     )
+                    if memory is None:
+                        raise MavenResolutionError(
+                            LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                            "Maven compiler arguments cannot be reproduced by JDT.",
+                            retryable=False,
+                            suggested_next_step=(
+                                "Remove unsupported compilerArgs or use the "
+                                "formal Maven build and restart."
+                            ),
+                        )
+                    if memory.group("kind") == "x":
+                        size = int(memory.group("size"))
+                        unit = memory.group("unit").casefold()
+                        worker_max_heap_mb = max(
+                            256,
+                            min(
+                                8192,
+                                size // 1024
+                                if unit == "k"
+                                else size
+                                if unit == "m"
+                                else size * 1024,
+                            ),
+                        )
         proc_values = self._compiler_declared_values(
             effective_project,
             configurations,
@@ -960,6 +983,7 @@ class MavenBuildSystemAdapter:
             configuration_inputs=tuple(configuration_inputs),
             configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
             javac_executable=execution.build_jdk.javac_executable,
+            worker_max_heap_mb=worker_max_heap_mb,
         )
 
     def _read_effective_pom(self, source: Path) -> ET.Element:

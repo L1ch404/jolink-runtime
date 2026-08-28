@@ -257,11 +257,20 @@ java_status(action=status; confirm runtime_active and compile_ready=true)
 `reload` updates a private persistent JDT Build World and seals its complete
 output delta as a durable Candidate. Compatible loaded method-body changes use
 HotSwap. Structural changes, resources, additions/deletions, an unsupported
-JVM, or `hotswap=false` use a managed Candidate restart. If the Candidate does
-not become ready, joLink automatically restores the last-good Generation and
-reports `rolled_back=true`. A successful apply is still not proof of business
-correctness, so a fresh verification request is required. Breakpoints in
-redefined classes become stale and must be set again against current source.
+JVM, or `hotswap=false` use a managed Candidate restart, which requires a
+configured `ready_port`. If the Candidate does not become ready, joLink
+automatically restores the last-good Generation and reports
+`rolled_back=true`. Source edits made during restart are reported as pending.
+A successful apply is still not proof of business correctness, so a fresh
+verification request is required. Breakpoints in redefined classes become
+stale and must be set again against current source.
+
+The locked JDT Worker is installed into a content-addressed user cache on
+first use. Valid Eclipse bundles are reused from older joLink caches; missing
+bundles are downloaded and verified, while the product Worker and Equinox
+configuration ship inside the Python package. `restart` never accepts
+`project_path` and never invokes Maven: use `stop` followed by `launch` when a
+new formal project build is required.
 
 ## Typical workflow
 

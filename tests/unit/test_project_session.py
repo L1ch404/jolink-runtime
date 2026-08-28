@@ -425,3 +425,20 @@ def test_promote_and_discard_persist_failures_restore_previous_state(
     monkeypatch.setattr(store, "_persist_state", original_persist)
     store.discard_candidate()
     assert store.candidate is None
+
+
+def test_project_session_close_removes_frozen_source_snapshots(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "private-session"
+    snapshot = root / "launch-source-snapshot/0/example/App.java"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("class App {}", encoding="utf-8")
+    session = JavaProjectSession(
+        root=root,
+        build_world_fingerprint="world",
+    )
+
+    session.close()
+
+    assert not root.exists()

@@ -85,11 +85,13 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "project_path": {
             "type": "string",
             "description": (
-                "Local Maven project root for launch/restart. joLink imports an "
+                "Local Maven project root for launch only. joLink imports an "
                 "IntelliJ IDEA Application or Spring Boot launch, uses the "
                 "project's Maven/JDK settings, compiles in the background, "
                 "then starts the resolved classpath. Do not combine with "
-                "classpath, main_class, jar_path, app_args, or vm_args."
+                "classpath, main_class, jar_path, app_args, or vm_args. "
+                "Restart never accepts project_path; it reuses the current "
+                "sealed Generation without Maven."
             ),
         },
         "launch_name": {
@@ -133,7 +135,8 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "minimum": 1,
             "maximum": 65535,
             "description": (
-                "Optional local application TCP port for launch/restart readiness; "
+                "Local application TCP port for launch/restart readiness. It "
+                "is required when reload must apply a Candidate by restart; "
                 "must differ from jdwp_port."
             ),
         },

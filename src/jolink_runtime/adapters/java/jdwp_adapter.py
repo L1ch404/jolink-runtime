@@ -55,6 +55,7 @@ from .classfile import (
     ClassFileChangeKind,
     ClassFileFormatError,
     ParsedClassFile,
+    compare_class_output_tier1,
     compare_class_files,
     parse_class_file,
 )
@@ -195,6 +196,7 @@ class ProjectUpdatePlan:
     request: ProjectLaunchRequest | None = None
     jdt_build_world_plan: Any | None = None
     jdt_unavailable_reason: str | None = None
+    jdt_unavailable_details: dict[str, Any] | None = None
 
 
 class JavaRuntime(Runtime):
@@ -1129,6 +1131,19 @@ class JavaRuntime(Runtime):
                         timeout_marked = True
                     context.cancel_event.wait(0.2)
 
+            def source_fingerprint_after_restart(active: Any) -> str:
+                if active.source_files:
+                    try:
+                        return self._source_selection_fingerprint(
+                            active.source_files
+                        )
+                    except OSError:
+                        return "source-unavailable-after-restart"
+                return (
+                    active.source_fingerprint_after
+                    or active.source_fingerprint_before
+                )
+
             def rollback_to_current(
                 candidate_error: BaseException,
             ) -> tuple[Any, float]:
@@ -1178,8 +1193,7 @@ class JavaRuntime(Runtime):
                     session.finish_reload(
                         applied=False,
                         source_fingerprint_after=(
-                            active.source_fingerprint_after
-                            or active.source_fingerprint_before
+                            source_fingerprint_after_restart(active)
                         ),
                         error_code=getattr(
                             candidate_error,
@@ -1235,8 +1249,7 @@ class JavaRuntime(Runtime):
                     session.finish_reload(
                         applied=True,
                         source_fingerprint_after=(
-                            active.source_fingerprint_after
-                            or active.source_fingerprint_before
+                            source_fingerprint_after_restart(active)
                         ),
                     )
             else:
@@ -1250,8 +1263,7 @@ class JavaRuntime(Runtime):
                     session.finish_reload(
                         applied=False,
                         source_fingerprint_after=(
-                            active.source_fingerprint_after
-                            or active.source_fingerprint_before
+                            source_fingerprint_after_restart(active)
                         ),
                         error_code=(
                             active.error_code or "HOT_SWAP_OUTCOME_UNKNOWN"
@@ -1360,23 +1372,28 @@ class JavaRuntime(Runtime):
     @staticmethod
     def _project_build_world_fingerprint(prepared: Any) -> str:
         plan = prepared.fast_compile_plan
-        if plan is not None and plan.configuration_fingerprint:
-            return str(plan.configuration_fingerprint)
         digest = hashlib.sha256()
-        for path in (
-            prepared.execution.effective_pom_file,
-            prepared.execution.classpath_file,
-            prepared.execution.compile_classpath_file,
-        ):
-            digest.update(str(path.name).encode("utf-8"))
-            try:
-                digest.update(path.read_bytes())
-            except OSError:
-                digest.update(b"<unavailable>")
-        digest.update(
-            str(prepared.runtime_jdk.java_executable).encode(
-                "utf-8", errors="surrogateescape"
+        if plan is not None and plan.configuration_fingerprint:
+            digest.update(str(plan.configuration_fingerprint).encode("ascii"))
+        else:
+            for path in (
+                prepared.execution.effective_pom_file,
+                prepared.execution.classpath_file,
+                prepared.execution.compile_classpath_file,
+            ):
+                digest.update(str(path.name).encode("utf-8"))
+                try:
+                    digest.update(path.read_bytes())
+                except OSError:
+                    digest.update(b"<unavailable>")
+            digest.update(
+                str(prepared.runtime_jdk.java_executable).encode(
+                    "utf-8", errors="surrogateescape"
+                )
             )
+        digest.update(b"\0source-manifest\0")
+        digest.update(
+            str(prepared.source_manifest_fingerprint or "").encode("ascii")
         )
         return digest.hexdigest()
 
@@ -1402,10 +1419,14 @@ class JavaRuntime(Runtime):
                     strict=True
                 )
             )
+            generation_started = time.monotonic()
             candidate = session.generations.prepare_initial_candidate(
                 module_output,
                 build_world_fingerprint=session.build_world_fingerprint,
             )
+            generation_seal_ms = (
+                time.monotonic() - generation_started
+            ) * 1000
             rewritten: list[Path] = []
             replacement_count = 0
             replacement_index = -1
@@ -1435,6 +1456,7 @@ class JavaRuntime(Runtime):
             )
             context.set_jvm_launch_plan(generation_plan)
             snapshot_roots: tuple[Path, ...] = ()
+            snapshot_started = time.monotonic()
             if prepared.jdt_build_world_plan is not None:
                 frozen: list[Path] = []
                 for index, source_root in enumerate(
@@ -1457,6 +1479,27 @@ class JavaRuntime(Runtime):
                             )
                     frozen.append(destination_root)
                 snapshot_roots = tuple(frozen)
+                snapshot_fingerprint = (
+                    self._project_pipeline.source_manifest_fingerprint(
+                        snapshot_roots
+                    )
+                )
+                if (
+                    prepared.source_manifest_fingerprint is not None
+                    and snapshot_fingerprint
+                    != prepared.source_manifest_fingerprint
+                ):
+                    raise ProjectSessionError(
+                        "SOURCE_CHANGED_AFTER_BUILD",
+                        "The launch source snapshot no longer matches the "
+                        "Maven build input.",
+                    )
+            session.record_generation_preparation(
+                generation_seal_ms=generation_seal_ms,
+                source_snapshot_ms=(
+                    (time.monotonic() - snapshot_started) * 1000
+                ),
+            )
             return (
                 replace(
                     prepared,
@@ -1501,6 +1544,7 @@ class JavaRuntime(Runtime):
 
         def initialize() -> None:
             compiler: PersistentJdtCompileSession | None = None
+            bootstrap_started = time.monotonic()
             try:
                 candidate = JdtCandidate.load_product()
                 worker_java_home = candidate.select_worker_java_home(
@@ -1536,6 +1580,7 @@ class JavaRuntime(Runtime):
                         if lombok_agents
                         else ()
                     ),
+                    max_heap_mb=plan.worker_max_heap_mb,
                 )
                 session.attach_compile_session(compiler)
                 full = compiler.start()
@@ -1544,6 +1589,34 @@ class JavaRuntime(Runtime):
                         "JDT_FULL_COMPILE_FAILED",
                         "The initial persistent JDT FULL build failed.",
                     )
+                current_generation = session.generations.current
+                if current_generation is None:
+                    raise JdtCompileError(
+                        "CURRENT_GENERATION_UNAVAILABLE",
+                        "The Maven Generation disappeared before JDT validation.",
+                    )
+                try:
+                    compatibility = compare_class_output_tier1(
+                        current_generation.output_directory,
+                        full.output_directory,
+                    )
+                except (ClassFileFormatError, OSError) as error:
+                    raise JdtCompileError(
+                        "JDT_BASELINE_CLASS_UNAVAILABLE",
+                        "A Maven or JDT baseline class could not be compared.",
+                    ) from error
+                if not compatibility["compatible"]:
+                    raise JdtCompileError(
+                        "JDT_BASELINE_INCOMPATIBLE",
+                        "The JDT FULL output is not structurally compatible "
+                        "with the Maven Generation.",
+                        context={
+                            key: value
+                            for key, value in compatibility.items()
+                            if key != "compatible"
+                        },
+                    )
+                compiler.accept_baseline()
                 self._reset_runtime_overlay()
                 session.refresh_compile_ready()
             except (JdtCompileError, OSError, ProjectSessionError) as error:
@@ -1553,12 +1626,14 @@ class JavaRuntime(Runtime):
                 error_code = getattr(
                     error, "error_code", "JDT_COMPILE_SESSION_START_FAILED"
                 )
+                error_details = dict(getattr(error, "context", {}) or {})
                 with self._project_state_lock:
                     retained = self._project_update_plans.get(attempt_id)
                     if retained is not None:
                         self._project_update_plans[attempt_id] = replace(
                             retained,
                             jdt_unavailable_reason=str(error_code),
+                            jdt_unavailable_details=error_details,
                         )
                     warnings = list(
                         self._project_warnings.get(attempt_id, ())
@@ -1570,6 +1645,10 @@ class JavaRuntime(Runtime):
                     if warning not in warnings:
                         warnings.append(warning)
                     self._project_warnings[attempt_id] = tuple(warnings)
+            finally:
+                session.record_jdt_bootstrap(
+                    (time.monotonic() - bootstrap_started) * 1000
+                )
 
         threading.Thread(
             target=initialize,
@@ -1604,6 +1683,7 @@ class JavaRuntime(Runtime):
                 self._project_update_plans[attempt_id] = replace(
                     current,
                     jdt_unavailable_reason=reason,
+                    jdt_unavailable_details={},
                 )
             warnings = list(self._project_warnings.get(attempt_id, ()))
             warning = (
@@ -2678,7 +2758,11 @@ class JavaRuntime(Runtime):
                         else:
                             snapshot["fast_update"] = {
                                 "available": False,
+                                "status": "unavailable",
                                 "reason": prepared.jdt_unavailable_reason,
+                                **(
+                                    prepared.jdt_unavailable_details or {}
+                                ),
                             }
                     else:
                         snapshot["fast_update"] = {
@@ -3728,20 +3812,37 @@ class JavaRuntime(Runtime):
                     or prepared.fast_compile_plan is None
                 )
             ):
+                unavailable = prepared.jdt_unavailable_reason is not None
+                details = prepared.jdt_unavailable_details or {}
                 return RuntimeResult(
                     ok=False,
-                    error="Persistent JDT reload is still initializing.",
+                    error=(
+                        "Persistent JDT reload is unavailable for this launch."
+                        if unavailable
+                        else "Persistent JDT reload is still initializing."
+                    ),
                     data={
                         "error_code": (
                             prepared.jdt_unavailable_reason
                             or "JDT_SESSION_INITIALIZING"
                         ),
                         "applied": False,
-                        "retryable": prepared.jdt_unavailable_reason is None,
+                        **details,
+                        "retryable": (
+                            bool(details.get("retryable", False))
+                            if unavailable
+                            else True
+                        ),
                         "suggested_next_step": (
                             "Call status until compile_ready is true."
-                            if prepared.jdt_unavailable_reason is None
-                            else "Use the formal Maven build and restart."
+                            if not unavailable
+                            else (
+                                "Call launch again; joLink will reinstall the "
+                                "locked JDT Candidate before starting reload."
+                                if details.get("retryable")
+                                else "Correct the reported JDT Candidate or "
+                                "BuildWorld problem, then call launch again."
+                            )
                         ),
                     },
                 )
@@ -4017,7 +4118,10 @@ class JavaRuntime(Runtime):
                 plan, getattr(action, "source_files", None)
             )
             source_fingerprint = self._source_selection_fingerprint(source_files)
-            reload_attempt = project_session.begin_reload(source_fingerprint)
+            reload_attempt = project_session.begin_reload(
+                source_fingerprint,
+                source_files=source_files,
+            )
             project_session.transition_reload(ReloadStage.COMPILING)
             result = compiler.compile(source_files)
             reload_attempt.compile_ms = result.elapsed_ms
@@ -4172,6 +4276,29 @@ class JavaRuntime(Runtime):
                 },
             )
 
+        def restart_candidate() -> RuntimeResult:
+            configured_ready_port = int(getattr(action, "ready_port", 0) or 0)
+            if configured_ready_port <= 0 and prepared.request is not None:
+                configured_ready_port = prepared.request.ready_port
+            if configured_ready_port <= 0:
+                return RuntimeResult(
+                    ok=False,
+                    error=(
+                        "Candidate restart requires application readiness."
+                    ),
+                    data={
+                        "error_code": "RELOAD_RESTART_REQUIRES_READINESS",
+                        "applied": False,
+                        "restart_required": True,
+                        "retryable": True,
+                        "suggested_next_step": (
+                            "Retry reload with ready_port set to the local "
+                            "application service port."
+                        ),
+                    },
+                )
+            return self._restart_candidate_project(action)
+
         restart_required = bool(
             result.candidate_changed_resources
             or result.candidate_deleted_resources
@@ -4190,7 +4317,7 @@ class JavaRuntime(Runtime):
         if restart_required:
             reload_attempt.source_fingerprint_after = source_fingerprint
             project_session.transition_reload(ReloadStage.RESTARTING)
-            restarted = self._restart_candidate_project(action)
+            restarted = restart_candidate()
             if not restarted.ok:
                 project_session.generations.discard_candidate()
                 if project_session.active_reload is not None:
@@ -4250,7 +4377,7 @@ class JavaRuntime(Runtime):
             if not capabilities.can_redefine_classes:
                 reload_attempt.source_fingerprint_after = source_fingerprint
                 project_session.transition_reload(ReloadStage.RESTARTING)
-                restarted = self._restart_candidate_project(action)
+                restarted = restart_candidate()
                 if not restarted.ok:
                     project_session.generations.discard_candidate()
                     if project_session.active_reload is not None:
@@ -4338,7 +4465,7 @@ class JavaRuntime(Runtime):
         except (JDWPCommandRejected, FastCompileError) as hotswap_rejection:
             reload_attempt.source_fingerprint_after = source_fingerprint
             project_session.transition_reload(ReloadStage.RESTARTING)
-            restarted = self._restart_candidate_project(action)
+            restarted = restart_candidate()
             if not restarted.ok:
                 project_session.generations.discard_candidate()
                 if project_session.active_reload is not None:
