@@ -612,6 +612,24 @@ def test_jdt_build_world_accepts_classpath_processors_and_separates_lombok(
     assert plan.target_level == 8
 
 
+def test_jdt_build_world_accepts_jdk_only_module(
+    tmp_path: Path,
+) -> None:
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        compile_entries=(),
+    )
+
+    plan = adapter.consume_jdt_build_world_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    assert plan.dependency_entries == ()
+    assert plan.processor_entries == ()
+    assert plan.lombok_entries == ()
+
+
 def test_reload_models_reject_make_disabled_stale_maven_baseline(
     tmp_path: Path,
 ) -> None:

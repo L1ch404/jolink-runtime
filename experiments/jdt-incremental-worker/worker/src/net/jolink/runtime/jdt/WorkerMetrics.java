@@ -11,7 +11,7 @@ import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Bounded, read-only JVM metrics used by the isolated A9 experiment. */
+/** Bounded, read-only JVM metrics for product diagnostics and evidence suites. */
 final class WorkerMetrics {
     private WorkerMetrics() {
     }

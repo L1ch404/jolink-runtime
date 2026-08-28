@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import io
 import json
@@ -2906,6 +2907,41 @@ def test_worker_jar_is_reproducible(tmp_path: Path) -> None:
     worker_build._create_worker_jar(worker, classes, second)
 
     assert worker_build.sha256_file(first) == worker_build.sha256_file(second)
+
+
+def test_product_worker_is_one_reproducible_java8_artifact() -> None:
+    launch = REPO_ROOT / "src/jolink_runtime/launch"
+    lock = json.loads(
+        (launch / "jdt-product-candidate.json").read_text(encoding="utf-8")
+    )
+    raw = base64.b64decode(
+        "".join(
+            (launch / "jdt-product-worker.jar.b64")
+            .read_text(encoding="ascii")
+            .split()
+        ),
+        validate=True,
+    )
+    jar = io.BytesIO(raw)
+    majors: set[int] = set()
+    with zipfile.ZipFile(jar) as archive:
+        manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8")
+        for name in archive.namelist():
+            if name.endswith(".class"):
+                payload = archive.read(name)
+                majors.add(int.from_bytes(payload[6:8], "big"))
+
+    assert lock["worker_java_minimum"] == 8
+    assert lock["worker_class_major"] == 52
+    assert majors == {52}
+    assert "Bundle-RequiredExecutionEnvironment: JavaSE-1.8" in manifest
+    assert hashlib.sha256(raw).hexdigest() == lock["worker_artifact"]["sha256"]
+
+    source = (EXPERIMENT / "worker/src/net/jolink/runtime/jdt/WorkerApplication.java").read_text(
+        encoding="utf-8"
+    )
+    for forbidden in ("Path.of(", ".isBlank()", "HexFormat", "[]::new"):
+        assert forbidden not in source
 
 
 def test_diagnostic_identity_ignores_marker_enumeration_order() -> None:

@@ -9,6 +9,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -42,7 +43,8 @@ import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
 
 /**
- * Small protocol worker used only by the isolated Phase 1A experiment.
+ * Small headless protocol worker used by the product CompileSession and its
+ * isolated evidence suites.
  *
  * <p>The original synchronous BUILD/SAVE/STOP protocol remains available for
  * A1-A8. A9 additionally uses identity-bound asynchronous build, status,
@@ -55,6 +57,8 @@ public final class WorkerApplication implements IApplication {
     private static final int MAX_OTHER_DIAGNOSTICS = 32;
     private static final String DIAGNOSTIC_SELECTION_POLICY =
             "errors_first_then_warnings_then_info";
+    private static final char[] HEX =
+            "0123456789abcdef".toCharArray();
 
     private final NullProgressMonitor monitor = new NullProgressMonitor();
     private PrintWriter protocol;
@@ -157,12 +161,12 @@ public final class WorkerApplication implements IApplication {
                 true);
         Map<String, String> arguments = parseArguments(context);
         String systemLibrariesFile = arguments.get("system-libraries");
-        if (systemLibrariesFile == null || systemLibrariesFile.isBlank()) {
+        if (isBlank(systemLibrariesFile)) {
             emitError("MISSING_SYSTEM_LIBRARIES", "Missing --system-libraries.");
             return Integer.valueOf(2);
         }
         String sourceEncoding = arguments.get("source-encoding");
-        if (sourceEncoding == null || sourceEncoding.isBlank()) {
+        if (isBlank(sourceEncoding)) {
             emitError("MISSING_SOURCE_ENCODING", "Missing --source-encoding.");
             return Integer.valueOf(2);
         }
@@ -179,10 +183,10 @@ public final class WorkerApplication implements IApplication {
         try {
             String aptProcessorsFile = arguments.get("apt-processors-file");
             initialize(
-                    Path.of(systemLibrariesFile),
+                    Paths.get(systemLibrariesFile),
                     sourceEncoding,
                     aptProcessorsFile == null
-                            ? null : Path.of(aptProcessorsFile));
+                            ? null : Paths.get(aptProcessorsFile));
             emitReady();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -292,7 +296,7 @@ public final class WorkerApplication implements IApplication {
                 systemLibrariesFile, StandardCharsets.UTF_8)) {
             String value = line.trim();
             if (!value.isEmpty()) {
-                Path entry = Path.of(value);
+                Path entry = Paths.get(value);
                 if (!Files.exists(entry)) {
                     throw new IOException("System library entry is unavailable.");
                 }
@@ -306,7 +310,8 @@ public final class WorkerApplication implements IApplication {
         if (classpath.size() == 1) {
             throw new IOException("System library snapshot is empty.");
         }
-        IClasspathEntry[] desiredClasspath = classpath.toArray(IClasspathEntry[]::new);
+        IClasspathEntry[] desiredClasspath =
+                classpath.toArray(new IClasspathEntry[0]);
         if (!Arrays.equals(javaProject.getRawClasspath(), desiredClasspath)) {
             javaProject.setRawClasspath(desiredClasspath, monitor);
         }
@@ -338,7 +343,7 @@ public final class WorkerApplication implements IApplication {
             if (value.isEmpty()) {
                 continue;
             }
-            Path path = Path.of(value).toAbsolutePath().normalize();
+            Path path = Paths.get(value).toAbsolutePath().normalize();
             if (!Files.isRegularFile(path)) {
                 throw new IOException("APT processor path entry is unavailable.");
             }
@@ -408,7 +413,7 @@ public final class WorkerApplication implements IApplication {
                 unexpectedContainers.add(String.valueOf(type) + ":" + id);
                 continue;
             }
-            effectivePaths.add(Path.of(id).toRealPath().toString());
+            effectivePaths.add(Paths.get(id).toRealPath().toString());
         }
         Collections.sort(unexpectedContainers);
         aptFactoryPathRequestedCount = requestedPaths.size();
@@ -935,7 +940,7 @@ public final class WorkerApplication implements IApplication {
                 IPath location = file.getLocation();
                 if (location != null) {
                     try {
-                        Path path = Path.of(location.toOSString());
+                        Path path = Paths.get(location.toOSString());
                         String relative = location
                                 .makeRelativeTo(output.getLocation())
                                 .toString();
@@ -962,7 +967,29 @@ public final class WorkerApplication implements IApplication {
                 digest.update(buffer, 0, read);
             }
         }
-        return java.util.HexFormat.of().formatHex(digest.digest());
+        return hex(digest.digest());
+    }
+
+    private static boolean isBlank(String value) {
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            if (!Character.isWhitespace(value.charAt(index))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String hex(byte[] value) {
+        char[] result = new char[value.length * 2];
+        for (int index = 0; index < value.length; index++) {
+            int current = value[index] & 0xff;
+            result[index * 2] = HEX[current >>> 4];
+            result[index * 2 + 1] = HEX[current & 0x0f];
+        }
+        return new String(result);
     }
 
     private void saveWorkspace() throws CoreException {

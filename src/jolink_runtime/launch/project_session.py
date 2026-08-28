@@ -585,6 +585,8 @@ class JavaProjectSession:
         self.jdt_bootstrap_state = "not_configured"
         self.jdt_unavailable_reason: str | None = None
         self.jdt_unavailable_details: dict[str, object] = {}
+        self._jdt_worker_java_major: int | None = None
+        self._jdt_worker_data_model: int | None = None
         self._active_reload: ReloadAttempt | None = None
         self._last_reload: ReloadAttempt | None = None
         self._last_successful_startup_ms: float | None = None
@@ -702,6 +704,16 @@ class JavaProjectSession:
             self.jdt_unavailable_reason = None
             self.jdt_unavailable_details = {}
 
+    def record_jdt_worker_runtime(
+        self,
+        *,
+        java_major: int,
+        data_model: int,
+    ) -> None:
+        with self._lock:
+            self._jdt_worker_java_major = int(java_major)
+            self._jdt_worker_data_model = int(data_model)
+
     def complete_jdt_bootstrap(self, duration_ms: float) -> None:
         with self._lock:
             self._jdt_bootstrap_ms = max(0.0, float(duration_ms))
@@ -776,6 +788,14 @@ class JavaProjectSession:
             return {
                 "compile_ready": self.compile_ready,
                 "jdt_bootstrap_state": self.jdt_bootstrap_state,
+                "jdt_worker": (
+                    {
+                        "java_major": self._jdt_worker_java_major,
+                        "data_model": self._jdt_worker_data_model,
+                    }
+                    if self._jdt_worker_java_major is not None
+                    else None
+                ),
                 "generation": self.generations.public_summary().get(
                     "current_ordinal"
                 ),

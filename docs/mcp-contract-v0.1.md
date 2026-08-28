@@ -113,6 +113,14 @@ Concurrent MCP server installers revalidate an already-published winner after
 an atomic-rename race. Worker `Xms`/`Xmx` are either mapped from safe Maven
 compiler process-memory arguments or use bounded product defaults.
 
+The product ships one Java 8 bytecode Worker JAR (`class major 52`) that runs
+on 64-bit JDK 8 or newer. Worker selection prefers the Maven Build JDK so
+annotation processors execute in the same Java runtime generation as the
+formal Maven compile; it then falls back to the application/target JDK and
+other local JDKs. Lombok module `--add-opens` is supplied only when the selected
+Worker JDK is Java 9 or newer. Build-JDK binary identity is release provenance,
+not a user runtime constraint.
+
 The public startup states are:
 
 - `unverified`: no readiness port was configured;

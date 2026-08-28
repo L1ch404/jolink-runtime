@@ -807,6 +807,32 @@ Status: `inactive while the direct-javac research line is frozen`
 - Cancellation, rollback, process ownership, and readiness are bounded.
 - A failed generation never replaces the current JVM or formal output.
 
+## Product JDT Processor invalidation backlog
+
+The final Java 8 Worker passed real Spring configuration Processor FULL and
+incremental add/delete-property cases with clean-FULL class/resource oracle
+equality. Two destructive transitions remain intentionally unresolved:
+
+```text
+remove the Processor-driving annotation
+delete the complete annotated source
+```
+
+JDT 3.25 native incremental can leave generated metadata stale for those
+transitions even though class deletion is correct. A supervised CLEAN + FULL
+fallback restores exact oracle equality. Product source deletion is currently
+rejected, but annotation removal remains a potential false-success boundary.
+
+Do not fix this with a global FULL after every Processor-backed edit. Before
+thawing, choose and test one bounded design:
+
+- Processor-aware input invalidation from Maven Probe facts;
+- annotation-set change detection plus CLEAN/FULL fallback;
+- Processor-declared incremental semantics with conservative unknown fallback.
+
+Until then, Processor-sensitive destructive edits must not be advertised as a
+complete native-incremental capability.
+
 ## Open decisions
 
 - Whether a complete semantic class comparator is worth its maintenance cost.

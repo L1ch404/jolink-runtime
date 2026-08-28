@@ -272,6 +272,11 @@ configuration ship inside the Python package. `restart` never accepts
 `project_path` and never invokes Maven: use `stop` followed by `launch` when a
 new formal project build is required.
 
+The same product Worker JAR targets Java 8 bytecode and runs on a 64-bit JDK 8
+or newer. joLink prefers the Maven Build JDK, preserving the Processor runtime
+used by the formal build, and does not require Java 8 projects to install a
+separate JDK 17.
+
 Persistent reload requires the imported IDEA launch to enable Make/Build before
 run. When it is disabled, joLink still launches the existing Maven output but
 returns `JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE` rather than claiming that
@@ -490,6 +495,20 @@ The heavier real MCP/JVM suite is opt-in locally:
 ```bash
 JOLINK_RUN_MCP_JAVA_E2E=1 \
   uv run pytest -q -m mcp_java_e2e tests/e2e/test_stdio_mcp_java.py
+```
+
+The product Worker and Java 8 lifecycle have standalone deep validators:
+
+```bash
+uv run python scripts/validate_jdt_worker_matrix.py \
+  --target-java-home <jdk8> \
+  --worker-java-home <jdk8> \
+  --worker-java-home <jdk11> \
+  --worker-java-home <jdk17>
+
+uv run python scripts/validate_jdt8_product_mcp.py \
+  --jdk8-home <jdk8> \
+  --maven-home <maven-home>
 ```
 
 The canonical CI environment for the heavier suite is:

@@ -7,6 +7,7 @@ import subprocess
 import shutil
 import threading
 import time
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,8 @@ from jolink_runtime.launch.jdt_compile_session import (
     JdtCandidate,
     JdtCompileError,
     PersistentJdtCompileSession,
+    WorkerJavaRuntime,
+    lombok_worker_jvm_arguments,
 )
 
 
@@ -25,6 +28,7 @@ class _FakeWorker:
         self.process = SimpleNamespace(poll=lambda: None)
         self.closed = False
         self.fail_compile = False
+        self.omit_compilation = False
         self.on_build = None
         self.command_error: JdtCompileError | None = None
         self.command_count = 0
@@ -43,7 +47,7 @@ class _FakeWorker:
         output = self.session.output_directory / "example/App.class"
         output.parent.mkdir(parents=True, exist_ok=True)
         before = output.read_bytes() if output.exists() else None
-        if not self.fail_compile:
+        if not self.fail_compile and not self.omit_compilation:
             output.write_bytes(hashlib.sha256(source.read_bytes()).digest())
         if self.resource_value is not None:
             resource = self.session.output_directory / "META-INF/generated.json"
@@ -56,7 +60,9 @@ class _FakeWorker:
             "actual_build_kind": (
                 "FULL" if command.endswith("FULL") else "INCREMENTAL"
             ),
-            "compiled_source_units": ["example/App.java"],
+            "compiled_source_units": (
+                [] if self.omit_compilation else ["example/App.java"]
+            ),
             "changed_classes": (
                 ["example/App.class"] if before != after else []
             ),
@@ -105,12 +111,65 @@ def test_portable_product_candidate_accepts_verified_minimum_worker_jdk(
         subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(
-            stderr='openjdk version "17.0.16" 2025-07-15\n',
+            stderr=(
+                'openjdk version "17.0.16" 2025-07-15\n'
+                "    sun.arch.data.model = 64\n"
+            ),
             stdout="",
         ),
     )
 
-    assert candidate.verify_worker_java(java_home) == java
+    runtime = candidate.verify_worker_java(java_home)
+    assert runtime.executable == java
+    assert runtime.major == 17
+    assert runtime.data_model == 64
+
+
+def test_worker_selection_prefers_build_jdk_and_skips_32_bit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    build = tmp_path / "build-jdk"
+    target = tmp_path / "target-jdk"
+    fallback = tmp_path / "fallback-jdk"
+    for home in (build, target, fallback):
+        java = home / "bin/java"
+        java.parent.mkdir(parents=True)
+        java.write_bytes(b"java")
+    candidate = JdtCandidate(
+        candidate_id="product",
+        root=tmp_path / "candidate",
+        launcher=tmp_path / "launcher.jar",
+        worker_java_sha256=None,
+        lock={},
+        worker_java_minimum=8,
+        worker_class_major=52,
+    )
+    observed = {
+        build: WorkerJavaRuntime(build, build / "bin/java", 17, 64),
+        target: WorkerJavaRuntime(target, target / "bin/java", 8, 64),
+        fallback: WorkerJavaRuntime(fallback, fallback / "bin/java", 8, 64),
+    }
+    monkeypatch.setattr(
+        JdtCandidate,
+        "verify_worker_java",
+        lambda self, home: observed[home],
+    )
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv("JAVA_HOME", str(fallback))
+
+    selected = candidate.select_worker_java((build, target))
+
+    assert selected.home == build
+    assert selected.major == 17
+
+
+def test_lombok_add_opens_depends_on_worker_java_major() -> None:
+    assert lombok_worker_jvm_arguments(8, lombok_enabled=True) == ()
+    assert lombok_worker_jvm_arguments(11, lombok_enabled=True) == (
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    )
+    assert lombok_worker_jvm_arguments(17, lombok_enabled=False) == ()
 
 
 def _session(tmp_path: Path, monkeypatch) -> tuple[
@@ -328,6 +387,28 @@ def test_source_drift_is_reported_after_incremental_build(
     assert result.source_changes_pending is True
 
 
+def test_changed_source_without_worker_compilation_poisons_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    worker.omit_compilation = True
+
+    with pytest.raises(JdtCompileError) as captured:
+        session.compile((source,))
+
+    assert captured.value.error_code == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
+    assert session.ready is False
+    assert worker.closed is True
+
+
 def test_source_outside_frozen_build_world_is_rejected(
     tmp_path: Path,
     monkeypatch,
@@ -487,7 +568,12 @@ def test_candidate_lock_verifies_every_artifact(tmp_path: Path) -> None:
     configuration.mkdir()
     plugin = plugins / "worker.jar"
     launcher = plugins / "launcher.jar"
-    plugin.write_bytes(b"worker")
+    with zipfile.ZipFile(plugin, "w") as archive:
+        archive.writestr(
+            "Worker.class",
+            b"\xca\xfe\xba\xbe\x00\x00\x00=",
+        )
+    worker_bytes = plugin.read_bytes()
     launcher.write_bytes(b"launcher")
     config = configuration / "config.ini"
     config.write_bytes(b"config")
@@ -501,7 +587,7 @@ def test_candidate_lock_verifies_every_artifact(tmp_path: Path) -> None:
         ],
         "worker_artifact": {
             "filename": "worker.jar",
-            "sha256": hashlib.sha256(b"worker").hexdigest(),
+            "sha256": hashlib.sha256(worker_bytes).hexdigest(),
         },
         "worker_build": {
             "java_home_identity": {"java_binary_sha256": "java-sha"}
@@ -545,6 +631,7 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
         "schema_version": 1,
         "candidate_id": "product-test",
         "worker_java_minimum": 17,
+        "worker_class_major": 52,
         "repository_url": "https://example.invalid/eclipse",
         "artifacts": [
             {

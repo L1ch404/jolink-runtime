@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,19 @@ from pathlib import Path
 
 class WorkerBuildError(RuntimeError):
     pass
+
+
+_PRODUCT_WORKER_CLASS_MAJOR = 52
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def sha256_file(path: Path) -> str:
@@ -43,6 +58,40 @@ def _java_tool(java_home: Path, name: str) -> Path:
     if not tool.is_file():
         raise WorkerBuildError(f"Worker JDK tool is unavailable: {name}")
     return tool
+
+
+def _java8_identity(java: Path, javac: Path) -> dict[str, str]:
+    completed = subprocess.run(
+        [str(javac), "-version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+    output = (completed.stdout + "\n" + completed.stderr).strip()
+    if completed.returncode != 0 or re.search(r"\b1\.8(?:\.|\s|$)", output) is None:
+        raise WorkerBuildError(
+            "The product Worker must be compiled by a real JDK 8 javac."
+        )
+    runtime = subprocess.run(
+        [str(java), "-version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+    if runtime.returncode != 0:
+        raise WorkerBuildError("Unable to record the Worker build JDK.")
+    return {
+        "java_version_output": (runtime.stderr or runtime.stdout).splitlines()[0],
+        "javac_version_output": output.splitlines()[0],
+        "java_binary_sha256": sha256_file(java),
+        "javac_binary_sha256": sha256_file(javac),
+    }
 
 
 def _source_files(worker_root: Path) -> list[Path]:
@@ -108,6 +157,56 @@ def _create_worker_jar(worker_root: Path, classes: Path, destination: Path) -> N
                 write_entry(path.relative_to(classes).as_posix(), path.read_bytes())
 
 
+def _verify_java8_classes(classes: Path) -> None:
+    class_files = sorted(classes.rglob("*.class"))
+    if not class_files:
+        raise WorkerBuildError("Worker compilation produced no class files.")
+    for path in class_files:
+        raw = path.read_bytes()
+        if len(raw) < 8 or raw[:4] != b"\xca\xfe\xba\xbe":
+            raise WorkerBuildError("Worker output contains an invalid class file.")
+        major = int.from_bytes(raw[6:8], "big")
+        if major != _PRODUCT_WORKER_CLASS_MAJOR:
+            raise WorkerBuildError(
+                f"Worker class major must be 52, got {major}: {path.name}"
+            )
+
+
+def _update_product_artifacts(
+    *,
+    product_lock: Path,
+    product_base64: Path,
+    worker_jar: Path,
+    source_fingerprint: str,
+    build_identity: dict[str, str],
+) -> None:
+    try:
+        lock = json.loads(product_lock.read_text(encoding="utf-8"))
+        worker = lock["worker_artifact"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise WorkerBuildError("Unable to read the product Worker lock.") from exc
+    worker_sha = sha256_file(worker_jar)
+    worker["sha256"] = worker_sha
+    lock["worker_java_minimum"] = 8
+    lock["worker_class_major"] = _PRODUCT_WORKER_CLASS_MAJOR
+    lock["worker_build_provenance"] = {
+        "source_fingerprint": source_fingerprint,
+        **build_identity,
+    }
+    encoded = base64.b64encode(worker_jar.read_bytes()).decode("ascii")
+    wrapped = "\n".join(
+        encoded[index:index + 76]
+        for index in range(0, len(encoded), 76)
+    ) + "\n"
+    _atomic_write(
+        product_lock,
+        (json.dumps(lock, ensure_ascii=False, indent=2) + "\n").encode(
+            "utf-8"
+        ),
+    )
+    _atomic_write(product_base64, wrapped.encode("ascii"))
+
+
 def _config_ini(
     lock: dict[str, object], *, worker_filename: str
 ) -> str:
@@ -151,9 +250,11 @@ def main(argv: list[str] | None = None) -> int:
         default=(
             experiment_root
             / "locks"
-            / "eclipse-4.40-current-diagnostics-v2.json"
+            / "eclipse-2021-03-apt-spike.json"
         ),
     )
+    parser.add_argument("--product-lock", type=Path)
+    parser.add_argument("--product-worker-base64", type=Path)
     parser.add_argument(
         "--cache-root",
         type=Path,
@@ -176,7 +277,13 @@ def main(argv: list[str] | None = None) -> int:
         jars, launcher = _verify_bundles(lock, plugins=plugins)
         javac = _java_tool(args.java_home, "javac")
         java = _java_tool(args.java_home, "java")
+        build_identity = _java8_identity(java, javac)
         worker_root = experiment_root / "worker"
+        manifest = (worker_root / "META-INF" / "MANIFEST.MF").read_text(
+            encoding="utf-8"
+        )
+        if "Bundle-RequiredExecutionEnvironment: JavaSE-1.8" not in manifest:
+            raise WorkerBuildError("Worker manifest must require JavaSE-1.8.")
 
         with tempfile.TemporaryDirectory(prefix="jolink-jdt-worker-") as temporary:
             classes = Path(temporary) / "classes"
@@ -186,9 +293,9 @@ def main(argv: list[str] | None = None) -> int:
                 "-encoding",
                 "UTF-8",
                 "-source",
-                "17",
+                "8",
                 "-target",
-                "17",
+                "8",
                 "-classpath",
                 os.pathsep.join(str(path) for path in jars),
                 "-d",
@@ -209,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
             if completed.returncode != 0:
                 sys.stderr.write(completed.stderr[-8000:])
                 raise WorkerBuildError("Worker javac failed.")
+            _verify_java8_classes(classes)
             worker_filename = "net.jolink.runtime.jdt.worker_0.1.0.jar"
             worker_jar = plugins / worker_filename
             _create_worker_jar(worker_root, classes, worker_jar)
@@ -232,14 +340,16 @@ def main(argv: list[str] | None = None) -> int:
             "filename": worker_filename,
         }
         lock["worker_artifact"] = worker_artifact
+        lock["worker_java_minimum"] = 8
+        lock["worker_class_major"] = _PRODUCT_WORKER_CLASS_MAJOR
         lock["worker_build"] = {
             "source_fingerprint": _source_fingerprint(worker_root),
             "java_home_identity": {
-                "java_binary_sha256": sha256_file(java),
-                "javac_binary_sha256": sha256_file(javac),
+                "java_binary_sha256": build_identity["java_binary_sha256"],
+                "javac_binary_sha256": build_identity["javac_binary_sha256"],
             },
-            "source_level": "17",
-            "target_level": "17",
+            "source_level": "8",
+            "target_level": "8",
             "instrumentation": {
                 "extension_id": "net.jolink.runtime.jdt.compilationObserver",
                 "modifies_environment": False,
@@ -257,10 +367,24 @@ def main(argv: list[str] | None = None) -> int:
         lock["evidence_status"] = (
             "locked_phase_1a_candidate_pending_case_evidence"
         )
-        args.lock.write_text(
-            json.dumps(lock, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        _atomic_write(
+            args.lock,
+            (json.dumps(lock, ensure_ascii=False, indent=2) + "\n").encode(
+                "utf-8"
+            ),
         )
+        if (args.product_lock is None) != (args.product_worker_base64 is None):
+            raise WorkerBuildError(
+                "Pass both --product-lock and --product-worker-base64."
+            )
+        if args.product_lock is not None:
+            _update_product_artifacts(
+                product_lock=args.product_lock,
+                product_base64=args.product_worker_base64,
+                worker_jar=worker_jar,
+                source_fingerprint=lock["worker_build"]["source_fingerprint"],
+                build_identity=build_identity,
+            )
 
         print(
             json.dumps(

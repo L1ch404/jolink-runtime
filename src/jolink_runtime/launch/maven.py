@@ -953,14 +953,6 @@ class MavenBuildSystemAdapter:
             if not included:
                 continue
             dependencies.append((resolved, providers, lombok))
-        if not dependencies:
-            raise MavenResolutionError(
-                LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
-                "Maven produced no usable JDT compile dependencies.",
-                retryable=True,
-                suggested_next_step="Refresh Maven dependencies and retry launch.",
-            )
-
         maven_project_inputs = tuple(
             execution.workspace.build_root / ".mvn" / name
             for name in _MAVEN_PROJECT_CONFIG_NAMES

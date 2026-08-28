@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.request
 import uuid
+import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -49,6 +50,24 @@ def _sha256_file(path: Path) -> str:
 
 
 @dataclass(frozen=True)
+class WorkerJavaRuntime:
+    home: Path
+    executable: Path
+    major: int
+    data_model: int
+
+
+def lombok_worker_jvm_arguments(
+    worker_major: int,
+    *,
+    lombok_enabled: bool,
+) -> tuple[str, ...]:
+    if not lombok_enabled or worker_major < 9:
+        return ()
+    return ("--add-opens=java.base/java.lang=ALL-UNNAMED",)
+
+
+@dataclass(frozen=True)
 class JdtCandidate:
     candidate_id: str
     root: Path
@@ -56,6 +75,7 @@ class JdtCandidate:
     worker_java_sha256: str | None
     lock: dict[str, Any]
     worker_java_minimum: int = 17
+    worker_class_major: int = 61
     _product_install_lock = threading.Lock()
 
     @classmethod
@@ -149,6 +169,7 @@ class JdtCandidate:
                 else None
             )
             worker_java_minimum = int(lock.get("worker_java_minimum", 17))
+            worker_class_major = int(lock.get("worker_class_major", 61))
         except (KeyError, TypeError, ValueError) as error:
             raise JdtCompileError(
                 "JDT_CANDIDATE_LOCK_INVALID",
@@ -184,6 +205,29 @@ class JdtCandidate:
                 context={"artifact": "configuration/config.ini"},
             )
         launcher = root / "plugins" / str(equinox["launcher_filename"])
+        worker_path = root / "plugins" / str(lock["worker_artifact"]["filename"])
+        observed_majors: set[int] = set()
+        try:
+            with zipfile.ZipFile(worker_path) as archive:
+                for name in archive.namelist():
+                    if not name.endswith(".class"):
+                        continue
+                    raw = archive.read(name)
+                    if len(raw) < 8 or raw[:4] != b"\xca\xfe\xba\xbe":
+                        raise ValueError("invalid class")
+                    observed_majors.add(int.from_bytes(raw[6:8], "big"))
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            raise JdtCompileError(
+                "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                "The locked JDT Worker class version cannot be verified.",
+                context={"artifact": worker_path.name},
+            ) from error
+        if not observed_majors or observed_majors != {worker_class_major}:
+            raise JdtCompileError(
+                "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                "The locked JDT Worker class version does not match its lock.",
+                context={"artifact": worker_path.name},
+            )
         return cls(
             candidate_id=candidate_id,
             root=root,
@@ -191,6 +235,7 @@ class JdtCandidate:
             worker_java_sha256=worker_java_sha256,
             lock=lock,
             worker_java_minimum=worker_java_minimum,
+            worker_class_major=worker_class_major,
         )
 
     @classmethod
@@ -334,8 +379,9 @@ class JdtCandidate:
                 context={"artifact": artifact, "retryable": True},
             ) from error
 
-    def verify_worker_java(self, java_home: Path) -> Path:
-        executable = java_home.expanduser().resolve(strict=True) / "bin" / (
+    def verify_worker_java(self, java_home: Path) -> WorkerJavaRuntime:
+        home = java_home.expanduser().resolve(strict=True)
+        executable = home / "bin" / (
             "java.exe" if os.name == "nt" else "java"
         )
         if not executable.is_file():
@@ -349,10 +395,9 @@ class JdtCandidate:
                     "JDT_WORKER_JDK_IDENTITY_MISMATCH",
                     "The JDT Worker JDK does not match the locked candidate.",
                 )
-            return executable
         try:
             observed = subprocess.run(
-                [str(executable), "-version"],
+                [str(executable), "-XshowSettings:properties", "-version"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -365,10 +410,10 @@ class JdtCandidate:
                 "JDT_WORKER_JDK_IDENTITY_MISMATCH",
                 "The JDT Worker JDK version could not be verified.",
             ) from error
-        first_line = (observed.stderr or observed.stdout).splitlines()
+        output = (observed.stderr or observed.stdout)
         match = re.search(
             r'version\s+"(?P<first>\d+)(?:\.(?P<second>\d+))?',
-            first_line[0] if first_line else "",
+            output,
         )
         if match is None:
             raise JdtCompileError(
@@ -383,12 +428,26 @@ class JdtCandidate:
                 "JDT_WORKER_JDK_IDENTITY_MISMATCH",
                 "The JDT Worker JDK is older than the locked minimum.",
             )
-        return executable
+        data_model_match = re.search(
+            r"(?m)^\s*sun\.arch\.data\.model\s*=\s*(32|64)\s*$",
+            output,
+        )
+        if data_model_match is None:
+            raise JdtCompileError(
+                "JDT_WORKER_JDK_IDENTITY_MISMATCH",
+                "The JDT Worker JDK data model could not be verified.",
+            )
+        return WorkerJavaRuntime(
+            home=home,
+            executable=executable,
+            major=major,
+            data_model=int(data_model_match.group(1)),
+        )
 
-    def select_worker_java_home(
+    def select_worker_java(
         self,
         preferred: Iterable[Path] = (),
-    ) -> Path:
+    ) -> WorkerJavaRuntime:
         candidates: list[Path] = [
             path.expanduser().resolve(strict=False) for path in preferred
         ]
@@ -410,20 +469,38 @@ class JdtCandidate:
             if value:
                 candidates.append(Path(value))
         seen: set[str] = set()
+        compatible_32_bit = False
         for candidate in candidates:
             key = os.path.normcase(str(candidate))
             if key in seen:
                 continue
             seen.add(key)
             try:
-                self.verify_worker_java(candidate)
+                runtime = self.verify_worker_java(candidate)
             except (OSError, JdtCompileError):
                 continue
-            return candidate
+            if runtime.data_model != 64:
+                compatible_32_bit = True
+                continue
+            return runtime
+        if compatible_32_bit:
+            raise JdtCompileError(
+                "JDT_WORKER_64_BIT_JDK_UNAVAILABLE",
+                "Only a 32-bit compatible Worker JDK was found; the product "
+                "heap policy requires a 64-bit JDK.",
+            )
         raise JdtCompileError(
             "JDT_WORKER_JDK_UNAVAILABLE",
             "The JDT Worker JDK used by the locked candidate was not found.",
         )
+
+    def select_worker_java_home(
+        self,
+        preferred: Iterable[Path] = (),
+    ) -> Path:
+        """Compatibility wrapper for experiment callers."""
+
+        return self.select_worker_java(preferred).home
 
 
 class JdtWorkerClient:
@@ -811,14 +888,33 @@ class PersistentJdtCompileSession:
                 content = source.read_bytes()
                 snapshots[source] = (private, content, private.read_bytes())
             replaced: list[tuple[Path, bytes]] = []
+            changed_input_count = sum(
+                1
+                for _source, (_private, content, original) in snapshots.items()
+                if content != original
+            )
             try:
                 for private, content, original in snapshots.values():
+                    metadata = private.stat()
                     temporary = private.with_name(
                         f".{private.name}.{time.time_ns()}.tmp"
                     )
                     temporary.write_bytes(content)
                     temporary.replace(private)
                     replaced.append((private, original))
+                    if content != original:
+                        forced_mtime = max(
+                            time.time_ns(),
+                            metadata.st_mtime_ns + 2_000_000_000,
+                        )
+                        os.utime(
+                            private,
+                            ns=(metadata.st_atime_ns, forced_mtime),
+                        )
+                        if private.stat().st_mtime_ns <= metadata.st_mtime_ns:
+                            raise OSError(
+                                "private source timestamp did not advance"
+                            )
             except Exception as error:
                 rollback_ok = True
                 for private, original in reversed(replaced):
@@ -833,6 +929,12 @@ class PersistentJdtCompileSession:
                     "The private source mirror could not be updated atomically.",
                 ) from error
             result = self._build("INCREMENTAL", source_changes_pending=False)
+            if changed_input_count and result.compiled_source_count == 0:
+                self._poison("JDT_SOURCE_CHANGE_NOT_OBSERVED")
+                raise JdtCompileError(
+                    "JDT_SOURCE_CHANGE_NOT_OBSERVED",
+                    "The JDT Worker did not compile a changed source file.",
+                )
             pending = any(
                 not source.is_file()
                 or _sha256_file(source)
@@ -921,7 +1023,9 @@ class PersistentJdtCompileSession:
         classpath_file: Path,
         processor_file: Path | None,
     ) -> JdtWorkerClient:
-        java = self.candidate.verify_worker_java(self.worker_java_home)
+        java = self.candidate.verify_worker_java(
+            self.worker_java_home
+        ).executable
         configuration = self.root / "configuration"
         configuration.mkdir()
         template = (
@@ -1163,6 +1267,8 @@ __all__ = [
     "JdtCompileResult",
     "JdtBuildWorldPlan",
     "JdtWorkerClient",
+    "WorkerJavaRuntime",
+    "lombok_worker_jvm_arguments",
     "PersistentJdtCompileSession",
     "discover_java8_system_entries",
 ]

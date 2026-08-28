@@ -86,7 +86,9 @@ from .jdt_compile_session import (
     JdtCompileResult,
     JdtWorkerClient,
     PersistentJdtCompileSession,
+    WorkerJavaRuntime,
     discover_java8_system_entries,
+    lombok_worker_jvm_arguments,
 )
 
 __all__ = [
@@ -147,7 +149,9 @@ __all__ = [
     "JdtCompileResult",
     "JdtWorkerClient",
     "PersistentJdtCompileSession",
+    "WorkerJavaRuntime",
     "discover_java8_system_entries",
+    "lombok_worker_jvm_arguments",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

@@ -37,6 +37,7 @@ from ...launch import (
     JdtCompileError,
     PersistentJdtCompileSession,
     discover_java8_system_entries,
+    lombok_worker_jvm_arguments,
     LaunchCancelled,
     LaunchContext,
     LaunchControlError,
@@ -1554,12 +1555,16 @@ class JavaRuntime(Runtime):
             bootstrap_started = time.monotonic()
             try:
                 candidate = JdtCandidate.load_product()
-                worker_java_home = candidate.select_worker_java_home(
+                worker_java = candidate.select_worker_java(
                     (
-                        plan.target_java_home,
                         prepared.execution.build_jdk.home,
                         prepared.runtime_jdk.home,
+                        plan.target_java_home,
                     )
+                )
+                session.record_jdt_worker_runtime(
+                    java_major=worker_java.major,
+                    data_model=worker_java.data_model,
                 )
                 system_entries = discover_java8_system_entries(
                     plan.target_java_home
@@ -1570,7 +1575,7 @@ class JavaRuntime(Runtime):
                 compiler = PersistentJdtCompileSession(
                     root=session.root / "compile-session",
                     candidate=candidate,
-                    worker_java_home=worker_java_home,
+                    worker_java_home=worker_java.home,
                     source_roots=plan.source_roots,
                     baseline_source_roots=(
                         prepared.jdt_source_snapshot_roots
@@ -1582,10 +1587,9 @@ class JavaRuntime(Runtime):
                     source_encoding=plan.source_encoding,
                     processor_entries=plan.processor_entries,
                     java_agents=lombok_agents,
-                    extra_jvm_arguments=(
-                        ("--add-opens=java.base/java.lang=ALL-UNNAMED",)
-                        if lombok_agents
-                        else ()
+                    extra_jvm_arguments=lombok_worker_jvm_arguments(
+                        worker_java.major,
+                        lombok_enabled=bool(lombok_agents),
                     ),
                     min_heap_mb=plan.worker_min_heap_mb,
                     max_heap_mb=plan.worker_max_heap_mb,
