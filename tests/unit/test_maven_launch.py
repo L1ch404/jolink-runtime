@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -611,6 +612,32 @@ def test_jdt_build_world_accepts_classpath_processors_and_separates_lombok(
     assert plan.target_level == 8
 
 
+def test_reload_models_reject_make_disabled_stale_maven_baseline(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / "dependency.jar"
+    with zipfile.ZipFile(dependency, "w") as archive:
+        archive.writestr("example/Dependency.class", b"class")
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        compile_entries=(dependency,),
+    )
+    execution = replace(
+        execution,
+        build_plan=replace(execution.build_plan, compile_required=False),
+    )
+
+    for consume in (
+        adapter.consume_fast_compile_plan,
+        adapter.consume_jdt_build_world_plan,
+    ):
+        with pytest.raises(MavenResolutionError) as captured:
+            consume(execution=execution, runtime_jdk=_jdk(tmp_path))
+        assert captured.value.error_code is (
+            LaunchErrorCode.JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE
+        )
+
+
 def test_jdt_build_world_rejects_explicit_processor_selection(
     tmp_path: Path,
 ) -> None:
@@ -651,7 +678,9 @@ def test_jdt_build_world_maps_safe_compiler_process_heap_argument(
     effective = _effective_pom(
         "app",
         compiler_configuration=(
-            "<compilerArgs><arg>-J-Xmx3g</arg></compilerArgs>"
+            "<optimize>true</optimize>"
+            "<compilerArgs><arg>-J-Xms512m</arg>"
+            "<arg>-J-Xmx3g</arg></compilerArgs>"
         ),
     )
     adapter, execution = _fast_compile_execution(
@@ -665,7 +694,45 @@ def test_jdt_build_world_maps_safe_compiler_process_heap_argument(
         runtime_jdk=_jdk(tmp_path),
     )
 
+    assert plan.worker_min_heap_mb == 512
     assert plan.worker_max_heap_mb == 3072
+
+
+def test_jdt_freshness_includes_maven_project_and_user_configuration(
+    tmp_path: Path,
+) -> None:
+    dependency = tmp_path / "dependency.jar"
+    with zipfile.ZipFile(dependency, "w") as archive:
+        archive.writestr("example/Dependency.class", b"class")
+    adapter, execution = _fast_compile_execution(
+        tmp_path,
+        compile_entries=(dependency,),
+    )
+    settings = tmp_path / "settings.xml"
+    settings.write_text("<settings/>", encoding="utf-8")
+    execution = replace(
+        execution,
+        preferences=replace(
+            execution.preferences,
+            user_settings_file=settings,
+        ),
+    )
+
+    plan = adapter.consume_jdt_build_world_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+
+    expected = {
+        execution.workspace.build_root / ".mvn/maven.config",
+        execution.workspace.build_root / ".mvn/jvm.config",
+        execution.workspace.build_root / ".mvn/extensions.xml",
+        settings,
+    }
+    assert expected.issubset(set(plan.configuration_inputs))
+    assert plan.is_fresh() is True
+    settings.write_text("<settings><offline>true</offline></settings>", encoding="utf-8")
+    assert plan.is_fresh() is False
 
 
 def test_jdt_build_world_rejects_unmodeled_javac_process_argument(

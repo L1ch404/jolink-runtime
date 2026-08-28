@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -65,6 +66,8 @@ class PreparedProjectLaunch:
     jdt_unavailable_reason: str | None = None
     jdt_source_snapshot_roots: tuple[Path, ...] = ()
     source_manifest_fingerprint: str | None = None
+    source_manifest_before_ms: float | None = None
+    source_manifest_after_ms: float | None = None
 
 
 class ProjectLaunchPipeline:
@@ -170,9 +173,13 @@ class ProjectLaunchPipeline:
             raise self._maven_failure(error) from error
         context.set_build_plan(execution.build_plan)
         source_roots = (module.directory / "src/main/java",)
+        manifest_started = time.monotonic()
         source_manifest_before = self.source_manifest_fingerprint(
             source_roots
         )
+        source_manifest_before_ms = (
+            time.monotonic() - manifest_started
+        ) * 1000
 
         if imported.intent.build_before_run:
             context.transition(LaunchPhase.COMPILING)
@@ -202,7 +209,11 @@ class ProjectLaunchPipeline:
                 ),
                 context={"return_code": build_result.return_code},
             )
+        manifest_started = time.monotonic()
         source_manifest_after = self.source_manifest_fingerprint(source_roots)
+        source_manifest_after_ms = (
+            time.monotonic() - manifest_started
+        ) * 1000
         if source_manifest_before != source_manifest_after:
             raise LaunchPipelineFailure(
                 LaunchErrorCode.SOURCE_CHANGED_DURING_BUILD,
@@ -239,7 +250,17 @@ class ProjectLaunchPipeline:
         fast_compile_unavailable_reason: str | None = None
         jdt_build_world_plan: JdtBuildWorldPlan | None = None
         jdt_unavailable_reason: str | None = None
-        if compile_classpath_result.succeeded:
+        if (
+            compile_classpath_result.succeeded
+            and not execution.build_plan.compile_required
+        ):
+            fast_compile_unavailable_reason = (
+                "JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE"
+            )
+            jdt_unavailable_reason = (
+                "JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE"
+            )
+        elif compile_classpath_result.succeeded:
             try:
                 fast_compile_plan = self._maven.consume_fast_compile_plan(
                     execution=execution,
@@ -291,6 +312,8 @@ class ProjectLaunchPipeline:
             jdt_build_world_plan=jdt_build_world_plan,
             jdt_unavailable_reason=jdt_unavailable_reason,
             source_manifest_fingerprint=source_manifest_after,
+            source_manifest_before_ms=source_manifest_before_ms,
+            source_manifest_after_ms=source_manifest_after_ms,
         )
 
     def materialize_command(

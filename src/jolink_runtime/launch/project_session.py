@@ -582,10 +582,15 @@ class JavaProjectSession:
         self.generations = GenerationStore(self.root / "generation-store")
         self.compile_ready = False
         self.compile_session: Any | None = None
+        self.jdt_bootstrap_state = "not_configured"
+        self.jdt_unavailable_reason: str | None = None
+        self.jdt_unavailable_details: dict[str, object] = {}
         self._active_reload: ReloadAttempt | None = None
         self._last_reload: ReloadAttempt | None = None
         self._last_successful_startup_ms: float | None = None
         self._generation_seal_ms: float | None = None
+        self._source_manifest_before_ms: float | None = None
+        self._source_manifest_after_ms: float | None = None
         self._source_snapshot_ms: float | None = None
         self._jdt_bootstrap_ms: float | None = None
         self._retained_directories: set[Path] = set()
@@ -665,14 +670,67 @@ class JavaProjectSession:
         *,
         generation_seal_ms: float,
         source_snapshot_ms: float,
+        source_manifest_before_ms: float | None = None,
+        source_manifest_after_ms: float | None = None,
     ) -> None:
         with self._lock:
             self._generation_seal_ms = max(0.0, float(generation_seal_ms))
+            self._source_manifest_before_ms = (
+                max(0.0, float(source_manifest_before_ms))
+                if source_manifest_before_ms is not None
+                else None
+            )
+            self._source_manifest_after_ms = (
+                max(0.0, float(source_manifest_after_ms))
+                if source_manifest_after_ms is not None
+                else None
+            )
             self._source_snapshot_ms = max(0.0, float(source_snapshot_ms))
 
     def record_jdt_bootstrap(self, duration_ms: float) -> None:
         with self._lock:
             self._jdt_bootstrap_ms = max(0.0, float(duration_ms))
+
+    def begin_jdt_bootstrap(self) -> None:
+        with self._lock:
+            if self._closed:
+                raise ProjectSessionError(
+                    "PROJECT_SESSION_CLOSED",
+                    "The Java project session is already closed.",
+                )
+            self.jdt_bootstrap_state = "initializing"
+            self.jdt_unavailable_reason = None
+            self.jdt_unavailable_details = {}
+
+    def complete_jdt_bootstrap(self, duration_ms: float) -> None:
+        with self._lock:
+            self._jdt_bootstrap_ms = max(0.0, float(duration_ms))
+            self.jdt_bootstrap_state = "ready"
+            self.jdt_unavailable_reason = None
+            self.jdt_unavailable_details = {}
+
+    def fail_jdt_bootstrap(
+        self,
+        *,
+        reason: str,
+        details: dict[str, object] | None = None,
+        duration_ms: float | None = None,
+    ) -> None:
+        with self._lock:
+            if duration_ms is not None:
+                self._jdt_bootstrap_ms = max(0.0, float(duration_ms))
+            self.compile_ready = False
+            self.jdt_bootstrap_state = "unavailable"
+            self.jdt_unavailable_reason = str(reason)
+            self.jdt_unavailable_details = dict(details or {})
+
+    def jdt_bootstrap_snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "state": self.jdt_bootstrap_state,
+                "reason": self.jdt_unavailable_reason,
+                "details": dict(self.jdt_unavailable_details),
+            }
 
     def attach_compile_session(self, compile_session: Any) -> None:
         with self._lock:
@@ -717,6 +775,7 @@ class JavaProjectSession:
             last = self._last_reload
             return {
                 "compile_ready": self.compile_ready,
+                "jdt_bootstrap_state": self.jdt_bootstrap_state,
                 "generation": self.generations.public_summary().get(
                     "current_ordinal"
                 ),
@@ -752,6 +811,10 @@ class JavaProjectSession:
                 ),
                 "product_timing_ms": {
                     "generation_seal": self._generation_seal_ms,
+                    "source_manifest_before": (
+                        self._source_manifest_before_ms
+                    ),
+                    "source_manifest_after": self._source_manifest_after_ms,
                     "source_snapshot": self._source_snapshot_ms,
                     "jdt_bootstrap": self._jdt_bootstrap_ms,
                 },

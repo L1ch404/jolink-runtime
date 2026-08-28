@@ -149,6 +149,7 @@ _SAFE_COMPILER_CONFIGURATION = frozenset(
         "forceJavacCompilerUse",
         "forceLegacyJavacApi",
         "fork",
+        "optimize",
         "parameters",
         "proc",
         "release",
@@ -540,6 +541,16 @@ class MavenBuildSystemAdapter:
         Failure here must be handled as a capability warning by the project
         launcher; it must never invalidate an otherwise valid JVM launch plan.
         """
+        if not execution.build_plan.compile_required:
+            raise MavenResolutionError(
+                LaunchErrorCode.JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE,
+                "Source reload requires a Maven compile from the launch source state.",
+                retryable=False,
+                suggested_next_step=(
+                    "Enable Make/Build before run in the IDEA launch, then "
+                    "call launch again."
+                ),
+            )
         source_root = execution.module.directory / "src" / "main" / "java"
         if not source_root.is_dir():
             raise MavenResolutionError(
@@ -794,6 +805,17 @@ class MavenBuildSystemAdapter:
     ) -> JdtBuildWorldPlan:
         """Create the Java-8 single-module Build World for persistent JDT."""
 
+        if not execution.build_plan.compile_required:
+            raise MavenResolutionError(
+                LaunchErrorCode.JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE,
+                "Persistent JDT reload requires a fresh Maven compile baseline.",
+                retryable=False,
+                suggested_next_step=(
+                    "Enable Make/Build before run in the IDEA launch, then "
+                    "call launch again."
+                ),
+            )
+
         source_root = execution.module.directory / "src/main/java"
         if not source_root.is_dir() or execution.module.packaging != "jar":
             raise MavenResolutionError(
@@ -817,6 +839,7 @@ class MavenBuildSystemAdapter:
             effective_project, "maven-compiler-plugin"
         )
         configurations = self._compiler_configurations(compiler)
+        worker_min_heap_mb = 64
         worker_max_heap_mb = 2048
         for configuration in configurations:
             if (
@@ -853,20 +876,30 @@ class MavenBuildSystemAdapter:
                                 "formal Maven build and restart."
                             ),
                         )
+                    size = int(memory.group("size"))
+                    unit = memory.group("unit").casefold()
+                    size_mb = max(
+                        1,
+                        size // 1024
+                        if unit == "k"
+                        else size
+                        if unit == "m"
+                        else size * 1024,
+                    )
                     if memory.group("kind") == "x":
-                        size = int(memory.group("size"))
-                        unit = memory.group("unit").casefold()
-                        worker_max_heap_mb = max(
-                            256,
-                            min(
-                                8192,
-                                size // 1024
-                                if unit == "k"
-                                else size
-                                if unit == "m"
-                                else size * 1024,
-                            ),
-                        )
+                        worker_max_heap_mb = max(256, min(8192, size_mb))
+                    else:
+                        worker_min_heap_mb = max(32, min(8192, size_mb))
+        if worker_min_heap_mb > worker_max_heap_mb:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "Maven compiler Xms exceeds Xmx and cannot configure JDT.",
+                retryable=False,
+                suggested_next_step=(
+                    "Correct the Maven compiler heap arguments and call "
+                    "launch again."
+                ),
+            )
         proc_values = self._compiler_declared_values(
             effective_project,
             configurations,
@@ -928,12 +961,13 @@ class MavenBuildSystemAdapter:
                 suggested_next_step="Refresh Maven dependencies and retry launch.",
             )
 
+        maven_project_inputs = tuple(
+            execution.workspace.build_root / ".mvn" / name
+            for name in _MAVEN_PROJECT_CONFIG_NAMES
+        )
         self._ensure_no_unverified_maven_extensions(
             effective_project,
-            maven_project_inputs=tuple(
-                execution.workspace.build_root / ".mvn" / name
-                for name in _MAVEN_PROJECT_CONFIG_NAMES
-            ),
+            maven_project_inputs=maven_project_inputs,
         )
         self._ensure_no_unverified_build_transforms(
             effective_project,
@@ -957,11 +991,20 @@ class MavenBuildSystemAdapter:
                 for provider in item[1]
             )
         )
-        configuration_inputs = (
-            *(module.pom_file for module in execution.workspace.modules),
-            execution.compile_classpath_file,
-            execution.effective_pom_file,
+        configuration_inputs: list[Path] = [
+            module.pom_file for module in execution.workspace.modules
+        ]
+        configuration_inputs.extend(
+            (
+                execution.compile_classpath_file,
+                execution.effective_pom_file,
+                *maven_project_inputs,
+            )
         )
+        if execution.preferences.user_settings_file is not None:
+            configuration_inputs.append(
+                execution.preferences.user_settings_file
+            )
         fingerprint = fast_compile_fingerprint(
             configuration_inputs=configuration_inputs,
             configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
@@ -983,6 +1026,7 @@ class MavenBuildSystemAdapter:
             configuration_inputs=tuple(configuration_inputs),
             configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
             javac_executable=execution.build_jdk.javac_executable,
+            worker_min_heap_mb=worker_min_heap_mb,
             worker_max_heap_mb=worker_max_heap_mb,
         )
 

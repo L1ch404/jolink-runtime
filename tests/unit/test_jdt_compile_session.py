@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import subprocess
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -146,6 +147,7 @@ def test_persistent_jdt_session_full_then_incremental(
     dependency = tmp_path / "dependency.jar"
     dependency.write_bytes(b"dependency")
     session, source, worker = _session(tmp_path, monkeypatch)
+    assert session.min_heap_mb == 64
     assert session.max_heap_mb == 2048
 
     full = session.start()
@@ -572,6 +574,18 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
         staticmethod(download),
     )
     product_root = tmp_path / "content-addressed/product-test/lock-sha"
+    original_rename = Path.rename
+    raced = False
+
+    def publish_from_other_process(source: Path, target: Path) -> Path:
+        nonlocal raced
+        if target == product_root and not raced:
+            raced = True
+            shutil.copytree(source, target)
+            raise FileExistsError("concurrent product candidate publication")
+        return original_rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", publish_from_other_process)
 
     JdtCandidate._install_product_candidate(
         lock,
@@ -581,6 +595,7 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
     candidate = JdtCandidate._load_root(lock, product_root)
 
     assert candidate.root == product_root
+    assert raced is True
     assert downloads == [
         "https://example.invalid/eclipse/plugins/launcher.jar"
     ]

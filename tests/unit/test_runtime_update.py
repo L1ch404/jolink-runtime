@@ -4,6 +4,8 @@ import hashlib
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +26,7 @@ from jolink_runtime.launch.fast_compile import (
 )
 from jolink_runtime.launch.project_session import JavaProjectSession
 from jolink_runtime.launch.jdt_compile_session import (
+    JdtCandidate,
     JdtCompileResult,
     PersistentJdtCompileSession,
 )
@@ -374,6 +377,10 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
         def redefine_classes(self, definitions):
             assert definitions
             self.redefined = True
+            source.write_text(
+                "public class Example { public int value() { return 3; } }",
+                encoding="utf-8",
+            )
 
     jdwp = FakeJdwp()
     monkeypatch.setattr(runtime, "_connect", lambda: jdwp)
@@ -392,6 +399,7 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
     assert result.ok is True
     assert result.data["status"] == "reloaded"
     assert result.data["apply_method"] == "hotswap"
+    assert result.data["source_changes_pending"] is True
     assert jdwp.redefined is True
     assert session.generations.current.ordinal == 2
     assert session.generations.current.output_directory.joinpath(
@@ -453,6 +461,78 @@ def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
     )
     assert result.data["artifact"] == "worker.jar"
     assert result.data["retryable"] is False
+
+
+def test_jdt_bootstrap_failure_survives_attempt_migration(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = JavaRuntime()
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    plan = SimpleNamespace()
+    prepared = ProjectUpdatePlan(
+        fast_compile_plan=None,
+        fast_compile_unavailable_reason="DIRECT_DISABLED",
+        attempt_directory=tmp_path,
+        project_session=session,
+        jdt_build_world_plan=plan,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fail_after_restart(_cls):
+        entered.set()
+        assert release.wait(5)
+        raise ValueError("unexpected bootstrap failure")
+
+    monkeypatch.setattr(
+        JdtCandidate,
+        "load_product",
+        classmethod(fail_after_restart),
+    )
+    runtime._project_update_plans["launch_old"] = prepared
+    runtime._project_sessions["launch_old"] = session
+    runtime._start_jdt_compile_session_async(
+        "launch_old",
+        prepared,
+        session,
+    )
+    assert entered.wait(5)
+    runtime._project_update_plans.pop("launch_old")
+    runtime._project_sessions.pop("launch_old")
+    runtime._project_update_plans["launch_new"] = prepared
+    runtime._project_sessions["launch_new"] = session
+    release.set()
+    deadline = time.monotonic() + 5
+    while (
+        session.jdt_bootstrap_state == "initializing"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+
+    assert session.jdt_bootstrap_state == "unavailable"
+    assert session.jdt_unavailable_reason == (
+        "JDT_COMPILE_SESSION_START_FAILED"
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_reconcile_project_process_exit",
+        lambda: {
+            "attempt_id": "launch_new",
+            "generation": 2,
+            "launch_phase": "runtime_active",
+        },
+    )
+    result = runtime.update(RuntimeAction(action="update"))
+    assert result.error == (
+        "Persistent JDT reload is unavailable for this launch."
+    )
+    assert result.data["error_code"] == (
+        "JDT_COMPILE_SESSION_START_FAILED"
+    )
 
 
 def test_formal_output_guard_checks_unselected_classes_and_class_set(

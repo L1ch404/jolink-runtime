@@ -272,6 +272,11 @@ configuration ship inside the Python package. `restart` never accepts
 `project_path` and never invokes Maven: use `stop` followed by `launch` when a
 new formal project build is required.
 
+Persistent reload requires the imported IDEA launch to enable Make/Build before
+run. When it is disabled, joLink still launches the existing Maven output but
+returns `JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE` rather than claiming that
+old classes and current source share one compilation baseline.
+
 ## Typical workflow
 
 A normal verification flow looks like this:

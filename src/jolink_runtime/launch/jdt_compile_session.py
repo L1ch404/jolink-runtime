@@ -277,7 +277,16 @@ class JdtCandidate:
                     )
                 else:
                     return
-            temporary.rename(product_root)
+            try:
+                temporary.rename(product_root)
+            except OSError as error:
+                # Another MCP server may have published the same immutable
+                # lock identity after our existence check. Accept only a
+                # fully verified winner; otherwise preserve the real failure.
+                try:
+                    cls._load_root(lock, product_root)
+                except JdtCompileError:
+                    raise error
         except JdtCompileError:
             raise
         except Exception as error:
@@ -580,6 +589,7 @@ class JdtBuildWorldPlan:
     configuration_inputs: tuple[Path, ...]
     configuration_environment_names: tuple[str, ...]
     javac_executable: Path
+    worker_min_heap_mb: int = 64
     worker_max_heap_mb: int = 2048
 
     def is_fresh(self) -> bool:
@@ -649,6 +659,7 @@ class PersistentJdtCompileSession:
         processor_entries: Sequence[Path] = (),
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
+        min_heap_mb: int = 64,
         max_heap_mb: int = 2048,
         timeout: float = 600.0,
     ) -> None:
@@ -676,11 +687,22 @@ class PersistentJdtCompileSession:
         )
         self.java_agents = tuple(java_agents)
         self.extra_jvm_arguments = tuple(extra_jvm_arguments)
+        if not 32 <= int(min_heap_mb) <= 8192:
+            raise JdtCompileError(
+                "JDT_WORKER_HEAP_INVALID",
+                "JDT Worker min_heap_mb must be between 32 and 8192.",
+            )
         if not 256 <= int(max_heap_mb) <= 8192:
             raise JdtCompileError(
                 "JDT_WORKER_HEAP_INVALID",
                 "JDT Worker max_heap_mb must be between 256 and 8192.",
             )
+        if int(min_heap_mb) > int(max_heap_mb):
+            raise JdtCompileError(
+                "JDT_WORKER_HEAP_INVALID",
+                "JDT Worker min_heap_mb may not exceed max_heap_mb.",
+            )
+        self.min_heap_mb = int(min_heap_mb)
         self.max_heap_mb = int(max_heap_mb)
         self.timeout = timeout
         self.private_project = self.root / "workspace/plain-fixture"
@@ -914,7 +936,7 @@ class PersistentJdtCompileSession:
         stderr_stream = stderr_path.open("w", encoding="utf-8")
         command = [
             str(java),
-            "-Xms64m",
+            f"-Xms{self.min_heap_mb}m",
             f"-Xmx{self.max_heap_mb}m",
             *self.extra_jvm_arguments,
             *(f"-javaagent:{agent}" for agent in self.java_agents),

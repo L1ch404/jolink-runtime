@@ -1496,6 +1496,12 @@ class JavaRuntime(Runtime):
                     )
             session.record_generation_preparation(
                 generation_seal_ms=generation_seal_ms,
+                source_manifest_before_ms=(
+                    prepared.source_manifest_before_ms
+                ),
+                source_manifest_after_ms=(
+                    prepared.source_manifest_after_ms
+                ),
                 source_snapshot_ms=(
                     (time.monotonic() - snapshot_started) * 1000
                 ),
@@ -1541,6 +1547,7 @@ class JavaRuntime(Runtime):
         plan = prepared.jdt_build_world_plan
         if plan is None:
             return
+        session.begin_jdt_bootstrap()
 
         def initialize() -> None:
             compiler: PersistentJdtCompileSession | None = None
@@ -1580,6 +1587,7 @@ class JavaRuntime(Runtime):
                         if lombok_agents
                         else ()
                     ),
+                    min_heap_mb=plan.worker_min_heap_mb,
                     max_heap_mb=plan.worker_max_heap_mb,
                 )
                 session.attach_compile_session(compiler)
@@ -1619,36 +1627,38 @@ class JavaRuntime(Runtime):
                 compiler.accept_baseline()
                 self._reset_runtime_overlay()
                 session.refresh_compile_ready()
-            except (JdtCompileError, OSError, ProjectSessionError) as error:
+                session.complete_jdt_bootstrap(
+                    (time.monotonic() - bootstrap_started) * 1000
+                )
+            except Exception as error:
+                logger.exception(
+                    "java_runtime.jdt.bootstrap.failed error_type=%s",
+                    type(error).__name__,
+                )
                 if compiler is not None:
-                    compiler.close()
-                    session.clear_compile_session(compiler)
+                    try:
+                        compiler.close()
+                    finally:
+                        session.clear_compile_session(compiler)
                 error_code = getattr(
                     error, "error_code", "JDT_COMPILE_SESSION_START_FAILED"
                 )
                 error_details = dict(getattr(error, "context", {}) or {})
-                with self._project_state_lock:
-                    retained = self._project_update_plans.get(attempt_id)
-                    if retained is not None:
-                        self._project_update_plans[attempt_id] = replace(
-                            retained,
-                            jdt_unavailable_reason=str(error_code),
-                            jdt_unavailable_details=error_details,
-                        )
-                    warnings = list(
-                        self._project_warnings.get(attempt_id, ())
-                    )
-                    warning = (
-                        "Persistent JDT reload is unavailable: "
-                        f"{error_code}."
-                    )
-                    if warning not in warnings:
-                        warnings.append(warning)
-                    self._project_warnings[attempt_id] = tuple(warnings)
-            finally:
-                session.record_jdt_bootstrap(
-                    (time.monotonic() - bootstrap_started) * 1000
+                session.fail_jdt_bootstrap(
+                    reason=str(error_code),
+                    details=error_details,
+                    duration_ms=(
+                        (time.monotonic() - bootstrap_started) * 1000
+                    ),
                 )
+            finally:
+                if session.jdt_bootstrap_state == "initializing":
+                    session.fail_jdt_bootstrap(
+                        reason="JDT_COMPILE_SESSION_START_FAILED",
+                        duration_ms=(
+                            (time.monotonic() - bootstrap_started) * 1000
+                        ),
+                    )
 
         threading.Thread(
             target=initialize,
@@ -1669,30 +1679,7 @@ class JavaRuntime(Runtime):
 
         compiler.close()
         session.clear_compile_session(compiler)
-        with self._project_state_lock:
-            current = self._project_update_plans.get(attempt_id)
-            if (
-                current is prepared
-                or (
-                    current is not None
-                    and current.project_session is session
-                    and current.jdt_build_world_plan
-                    is prepared.jdt_build_world_plan
-                )
-            ):
-                self._project_update_plans[attempt_id] = replace(
-                    current,
-                    jdt_unavailable_reason=reason,
-                    jdt_unavailable_details={},
-                )
-            warnings = list(self._project_warnings.get(attempt_id, ()))
-            warning = (
-                "Persistent JDT reload requires a new baseline: "
-                f"{reason}."
-            )
-            if warning not in warnings:
-                warnings.append(warning)
-            self._project_warnings[attempt_id] = tuple(warnings)
+        session.fail_jdt_bootstrap(reason=reason)
 
     def _project_launch_worker(
         self,
@@ -2747,23 +2734,59 @@ class JavaRuntime(Runtime):
                         ),
                     }
                 elif prepared.jdt_build_world_plan is not None:
-                    if prepared.jdt_unavailable_reason is not None:
+                    bootstrap = (
+                        project_session.jdt_bootstrap_snapshot()
+                        if project_session is not None
+                        else {
+                            "state": "unavailable"
+                            if prepared.jdt_unavailable_reason
+                            else "initializing",
+                            "reason": prepared.jdt_unavailable_reason,
+                            "details": (
+                                prepared.jdt_unavailable_details or {}
+                            ),
+                        }
+                    )
+                    if (
+                        bootstrap.get("state") == "not_configured"
+                        and prepared.jdt_unavailable_reason is not None
+                    ):
+                        bootstrap = {
+                            "state": "unavailable",
+                            "reason": prepared.jdt_unavailable_reason,
+                            "details": (
+                                prepared.jdt_unavailable_details or {}
+                            ),
+                        }
+                    unavailable_reason = bootstrap.get("reason")
+                    unavailable_details = bootstrap.get("details")
+                    if bootstrap.get("state") == "unavailable":
                         if prepared.fast_compile_plan is not None:
                             snapshot["fast_update"] = (
                                 prepared.fast_compile_plan.redacted_summary()
                             )
                             snapshot["fast_update"]["fallback_reason"] = (
-                                prepared.jdt_unavailable_reason
+                                unavailable_reason
                             )
                         else:
                             snapshot["fast_update"] = {
                                 "available": False,
                                 "status": "unavailable",
-                                "reason": prepared.jdt_unavailable_reason,
+                                "reason": unavailable_reason,
                                 **(
-                                    prepared.jdt_unavailable_details or {}
+                                    unavailable_details
+                                    if isinstance(unavailable_details, dict)
+                                    else {}
                                 ),
                             }
+                        warning = (
+                            "Persistent JDT reload is unavailable: "
+                            f"{unavailable_reason}."
+                        )
+                        visible_warnings = list(snapshot.get("warnings", []))
+                        if warning not in visible_warnings:
+                            visible_warnings.append(warning)
+                        snapshot["warnings"] = visible_warnings
                     else:
                         snapshot["fast_update"] = {
                             "available": False,
@@ -3804,16 +3827,51 @@ class JavaRuntime(Runtime):
             and prepared.project_session is not None
             and prepared.project_session.refresh_compile_ready()
         )
+        bootstrap = (
+            prepared.project_session.jdt_bootstrap_snapshot()
+            if prepared is not None
+            and prepared.project_session is not None
+            else {
+                "state": "unavailable"
+                if prepared is not None and prepared.jdt_unavailable_reason
+                else "not_configured",
+                "reason": (
+                    prepared.jdt_unavailable_reason
+                    if prepared is not None
+                    else None
+                ),
+                "details": (
+                    prepared.jdt_unavailable_details or {}
+                    if prepared is not None
+                    else {}
+                ),
+            }
+        )
+        if (
+            prepared is not None
+            and bootstrap.get("state") == "not_configured"
+            and prepared.jdt_unavailable_reason is not None
+        ):
+            bootstrap = {
+                "state": "unavailable",
+                "reason": prepared.jdt_unavailable_reason,
+                "details": prepared.jdt_unavailable_details or {},
+            }
         if prepared is not None and prepared.jdt_build_world_plan is not None:
             if (
                 not jdt_ready
                 and (
-                    prepared.jdt_unavailable_reason is None
+                    bootstrap.get("state") != "unavailable"
                     or prepared.fast_compile_plan is None
                 )
             ):
-                unavailable = prepared.jdt_unavailable_reason is not None
-                details = prepared.jdt_unavailable_details or {}
+                unavailable = bootstrap.get("state") == "unavailable"
+                details = (
+                    bootstrap.get("details")
+                    if isinstance(bootstrap.get("details"), dict)
+                    else {}
+                )
+                unavailable_reason = bootstrap.get("reason")
                 return RuntimeResult(
                     ok=False,
                     error=(
@@ -3823,7 +3881,7 @@ class JavaRuntime(Runtime):
                     ),
                     data={
                         "error_code": (
-                            prepared.jdt_unavailable_reason
+                            unavailable_reason
                             or "JDT_SESSION_INITIALIZING"
                         ),
                         "applied": False,
@@ -3857,6 +3915,7 @@ class JavaRuntime(Runtime):
                     "error_code": (
                         (
                             prepared.jdt_unavailable_reason
+                            or str(bootstrap.get("reason") or "")
                             or prepared.fast_compile_unavailable_reason
                             or "FAST_COMPILE_UNSUPPORTED"
                         )
@@ -4540,10 +4599,21 @@ class JavaRuntime(Runtime):
                 "The Runtime update was applied, but persistent JDT reload "
                 "requires a new baseline before another reload."
             )
+        try:
+            source_fingerprint_after_apply = (
+                self._source_selection_fingerprint(source_files)
+            )
+        except OSError:
+            source_fingerprint_after_apply = (
+                "source-unavailable-after-hotswap"
+            )
+        source_changes_pending = (
+            source_fingerprint_after_apply != source_fingerprint
+        )
         reload_attempt.apply_method = "hotswap"
         project_session.finish_reload(
             applied=True,
-            source_fingerprint_after=source_fingerprint,
+            source_fingerprint_after=source_fingerprint_after_apply,
         )
         breakpoint_refresh = self._refresh_updated_breakpoints(
             jdwp,
@@ -4558,7 +4628,7 @@ class JavaRuntime(Runtime):
                 "apply_method": "hotswap",
                 "compile_ms": result.elapsed_ms,
                 "compiled_source_count": result.compiled_source_count,
-                "source_changes_pending": result.source_changes_pending,
+                "source_changes_pending": source_changes_pending,
                 "breakpoint_refresh_state": breakpoint_refresh["state"],
                 "stale_breakpoint_ids": breakpoint_refresh["stale"],
                 "warnings": [

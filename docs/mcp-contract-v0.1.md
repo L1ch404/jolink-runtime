@@ -70,6 +70,13 @@ Generation, process identity, and selected source bytes before applying state.
 Changing those inputs requires a fresh launch rather than silently compiling
 against a different world.
 
+Persistent reload is unavailable when the imported IDEA configuration disables
+Make/Build before run. In that mode Maven output is not proven to correspond to
+the current source manifest, so joLink returns
+`JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE` instead of risking a false
+`no_changes` result. JDT bootstrap state belongs to `JavaProjectSession` and
+therefore survives a managed `restart` attempt transition.
+
 Static initialization, class schemas, new/deleted classes, and resources are
 not sent through JDWP HotSwap. They select the restart apply path so the new
 JVM initializes from the complete Candidate output.
@@ -102,6 +109,9 @@ bundles from pre-product caches, and downloads only missing official bundles.
 The product Worker JAR and Equinox configuration ship with the Python package.
 Every file is SHA-256 verified before publication. Integrity errors may expose
 the public artifact filename, but never project paths or source content.
+Concurrent MCP server installers revalidate an already-published winner after
+an atomic-rename race. Worker `Xms`/`Xmx` are either mapped from safe Maven
+compiler process-memory arguments or use bounded product defaults.
 
 The public startup states are:
 
