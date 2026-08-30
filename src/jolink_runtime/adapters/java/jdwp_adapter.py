@@ -52,6 +52,7 @@ from ...launch import (
     RuntimeProcessState,
 )
 from ...launch.fast_test_manager import FastTestManager, FastTestManagerError
+from ...launch.test_build_world import build_input_manifest
 from ..base import Runtime
 from .classfile import (
     ClassFileChangeKind,
@@ -200,6 +201,7 @@ class ProjectUpdatePlan:
     jdt_unavailable_reason: str | None = None
     jdt_unavailable_details: dict[str, Any] | None = None
     build_system: str = "maven"
+    build_offline: bool = False
 
 
 class JavaRuntime(Runtime):
@@ -1407,7 +1409,57 @@ class JavaRuntime(Runtime):
         digest.update(
             str(prepared.source_manifest_fingerprint or "").encode("ascii")
         )
+        digest.update(b"\0resource-manifest\0")
+        for name, value in sorted(prepared.resource_input_manifest.items()):
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(value.encode("ascii"))
+            digest.update(b"\0")
         return digest.hexdigest()
+
+    @staticmethod
+    def _flat_runtime_manifest(root: Path) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                raise ProjectSessionError(
+                    "GENERATION_INPUT_LINK_UNSUPPORTED",
+                    "Runtime output roots may not contain links.",
+                )
+            if path.is_file():
+                result[path.relative_to(root).as_posix()] = hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+        return result
+
+    @classmethod
+    def _merge_runtime_roots(
+        cls,
+        destination: Path,
+        roots: tuple[Path, ...],
+        expected: dict[str, str],
+    ) -> Path:
+        destination.mkdir(parents=True, exist_ok=False, mode=0o700)
+        observed: dict[str, str] = {}
+        for root in roots:
+            current = cls._flat_runtime_manifest(root)
+            for relative, digest in current.items():
+                if relative in observed:
+                    raise ProjectSessionError(
+                        "GENERATION_INPUT_COLLISION",
+                        "Runtime classes/resources contain a path collision.",
+                    )
+                source = root / relative
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                observed[relative] = digest
+        if observed != expected or cls._flat_runtime_manifest(destination) != expected:
+            raise ProjectSessionError(
+                "GENERATION_INPUT_CHANGED",
+                "Formal Runtime output changed while the Generation was sealed.",
+            )
+        return destination
 
     def _prepare_initial_project_generation(
         self,
@@ -1426,33 +1478,71 @@ class JavaRuntime(Runtime):
         )
         session.retain_directory(prepared.attempt_directory)
         try:
-            module_output = prepared.module_output.expanduser().resolve(
-                strict=True
+            generation_roots = tuple(
+                path.expanduser().resolve(strict=True)
+                for path in prepared.generation_input_roots
             )
+            if not generation_roots:
+                raise ProjectSessionError(
+                    "GENERATION_INPUT_UNAVAILABLE",
+                    "No formal Runtime output is available for Generation sealing.",
+                )
+            generation_source = generation_roots[0]
+            if prepared.generation_input_manifest:
+                generation_source = self._merge_runtime_roots(
+                    session.root / "launch-runtime-world",
+                    generation_roots,
+                    prepared.generation_input_manifest,
+                )
             generation_started = time.monotonic()
             candidate = session.generations.prepare_initial_candidate(
-                module_output,
+                generation_source,
                 build_world_fingerprint=session.build_world_fingerprint,
             )
+            if (
+                prepared.generation_input_manifest
+                and self._flat_runtime_manifest(candidate.output_directory)
+                != prepared.generation_input_manifest
+            ):
+                raise ProjectSessionError(
+                    "GENERATION_SEAL_MISMATCH",
+                    "The sealed Generation differs from formal Runtime output.",
+                )
             generation_seal_ms = (
                 time.monotonic() - generation_started
             ) * 1000
-            rewritten: list[Path] = []
-            replacement_count = 0
-            replacement_index = -1
-            for entry in prepared.jvm_plan.classpath:
-                normalized = entry.expanduser().resolve(strict=False)
-                if normalized == module_output:
-                    rewritten.append(candidate.output_directory)
-                    replacement_index = len(rewritten) - 1
-                    replacement_count += 1
-                else:
-                    rewritten.append(entry)
-            if replacement_count != 1:
+            normalized_classpath = tuple(
+                entry.expanduser().resolve(strict=False)
+                for entry in prepared.jvm_plan.classpath
+            )
+            positions: list[int] = []
+            for root in generation_roots:
+                matches = tuple(
+                    index
+                    for index, entry in enumerate(normalized_classpath)
+                    if entry == root
+                )
+                if len(matches) != 1:
+                    raise ProjectSessionError(
+                        "GENERATION_CLASSPATH_UNREPRESENTABLE",
+                        "A formal Runtime root is not unique on the classpath.",
+                    )
+                positions.append(matches[0])
+            replacement_index = positions[0]
+            if positions != list(
+                range(replacement_index, replacement_index + len(positions))
+            ):
                 raise ProjectSessionError(
                     "GENERATION_CLASSPATH_UNREPRESENTABLE",
-                    "The module output could not be replaced exactly once.",
+                    "Formal Runtime roots are not a consecutive classpath segment.",
                 )
+            rewritten = [
+                *prepared.jvm_plan.classpath[:replacement_index],
+                candidate.output_directory,
+                *prepared.jvm_plan.classpath[
+                    replacement_index + len(positions) :
+                ],
+            ]
             generation_plan = replace(
                 prepared.jvm_plan,
                 classpath=tuple(rewritten),
@@ -1503,6 +1593,52 @@ class JavaRuntime(Runtime):
                         "SOURCE_CHANGED_AFTER_BUILD",
                         "The launch source snapshot no longer matches the "
                         "formal build input.",
+                    )
+            if prepared.resource_source_roots:
+                current_resources = build_input_manifest(
+                    (), prepared.resource_source_roots
+                )
+                if current_resources != prepared.resource_input_manifest:
+                    raise ProjectSessionError(
+                        "RESOURCE_CHANGED_AFTER_BUILD",
+                        "Project resources changed after the formal build.",
+                    )
+                frozen_resources: list[Path] = []
+                for index, resource_root in enumerate(
+                    prepared.resource_source_roots
+                ):
+                    destination_root = (
+                        session.root / "launch-resource-snapshot" / str(index)
+                    )
+                    destination_root.mkdir(parents=True, exist_ok=False)
+                    if resource_root.is_dir():
+                        for source in sorted(resource_root.rglob("*")):
+                            if source.is_symlink():
+                                raise ProjectSessionError(
+                                    "RESOURCE_LINK_UNSUPPORTED",
+                                    "Project resource roots may not contain links.",
+                                )
+                            if not source.is_file():
+                                continue
+                            destination = destination_root / source.relative_to(
+                                resource_root
+                            )
+                            destination.parent.mkdir(
+                                parents=True, exist_ok=True
+                            )
+                            shutil.copy2(source, destination)
+                    frozen_resources.append(destination_root)
+                if (
+                    build_input_manifest((), tuple(frozen_resources))
+                    != prepared.resource_input_manifest
+                    or build_input_manifest(
+                        (), prepared.resource_source_roots
+                    )
+                    != prepared.resource_input_manifest
+                ):
+                    raise ProjectSessionError(
+                        "RESOURCE_CHANGED_DURING_LAUNCH",
+                        "Project resources changed while launch input was frozen.",
                     )
             session.record_generation_preparation(
                 generation_seal_ms=generation_seal_ms,
@@ -1563,6 +1699,12 @@ class JavaRuntime(Runtime):
             compiler: PersistentJdtCompileSession | None = None
             bootstrap_started = time.monotonic()
             try:
+                is_fresh = getattr(plan, "is_fresh", lambda: True)
+                if not is_fresh():
+                    raise JdtCompileError(
+                        "JDT_BUILD_WORLD_STALE",
+                        "The formal Build World changed before JDT bootstrap.",
+                    )
                 candidate = JdtCandidate.load_product()
                 worker_java = candidate.select_worker_java(
                     (
@@ -1639,6 +1781,11 @@ class JavaRuntime(Runtime):
                             for key, value in compatibility.items()
                             if key != "compatible"
                         },
+                    )
+                if not is_fresh():
+                    raise JdtCompileError(
+                        "JDT_BUILD_WORLD_STALE",
+                        "The formal Build World changed during JDT bootstrap.",
                     )
                 compiler.accept_baseline()
                 self._reset_runtime_overlay()
@@ -1748,6 +1895,7 @@ class JavaRuntime(Runtime):
                             prepared.jdt_unavailable_reason
                         ),
                         build_system=prepared.build_system,
+                        build_offline=prepared.build_offline,
                     )
                 )
             context.transition(LaunchPhase.STARTING_JVM)
@@ -2740,6 +2888,7 @@ class JavaRuntime(Runtime):
                         "available": True,
                         "strategy": "jdt_incremental",
                         "build_system": prepared.build_system,
+                        "offline": prepared.build_offline,
                         "source_level": (
                             prepared.jdt_build_world_plan.source_level
                             if prepared.jdt_build_world_plan is not None
@@ -2792,6 +2941,7 @@ class JavaRuntime(Runtime):
                                 "status": "unavailable",
                                 "reason": unavailable_reason,
                                 "build_system": prepared.build_system,
+                                "offline": prepared.build_offline,
                                 **(
                                     unavailable_details
                                     if isinstance(unavailable_details, dict)
@@ -2812,6 +2962,7 @@ class JavaRuntime(Runtime):
                             "status": "initializing",
                             "strategy": "jdt_incremental",
                             "build_system": prepared.build_system,
+                            "offline": prepared.build_offline,
                         }
                 elif prepared.fast_compile_plan is not None:
                     snapshot["fast_update"] = (
@@ -2820,10 +2971,14 @@ class JavaRuntime(Runtime):
                     snapshot["fast_update"]["build_system"] = (
                         prepared.build_system
                     )
+                    snapshot["fast_update"]["offline"] = (
+                        prepared.build_offline
+                    )
                 else:
                     snapshot["fast_update"] = {
                         "available": False,
                         "build_system": prepared.build_system,
+                        "offline": prepared.build_offline,
                         "reason": (
                             prepared.fast_compile_unavailable_reason
                             or "FAST_COMPILE_UNSUPPORTED"

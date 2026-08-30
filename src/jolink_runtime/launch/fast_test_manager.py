@@ -725,7 +725,6 @@ class FastTestManager:
                 "GRADLE_WRAPPER_UNAVAILABLE",
                 "The Gradle Wrapper executable is unavailable.",
             )
-        prepared = probe.prepare(bootstrap)
         main_root = project / "src/main/java"
         test_root = project / "src/test/java"
         resource_roots = (
@@ -743,38 +742,41 @@ class FastTestManager:
                 "Only Gradle offline mode is supported through GRADLE_ARGS.",
             )
         offline = any(value in {"-o", "--offline"} for value in gradle_args)
-        operation = self._supervisor.run(
-            BuildOperationSpec(
-                argv=probe.command(
-                    wrapper=wrapper,
-                    prepared=prepared,
-                    offline=offline,
+        prepared = probe.prepare(bootstrap)
+        try:
+            operation = self._supervisor.run(
+                BuildOperationSpec(
+                    argv=probe.command(
+                        wrapper=wrapper,
+                        prepared=prepared,
+                        offline=offline,
+                    ),
+                    cwd=project,
+                    environment=environment,
+                    timeout_seconds=max(120.0, attempt.timeout_seconds),
+                    output_capture=log,
+                    max_output_bytes=16 * 1024 * 1024,
+                    operation_name="gradle_fast_test_bootstrap",
                 ),
-                cwd=project,
-                environment=environment,
-                timeout_seconds=max(120.0, attempt.timeout_seconds),
-                output_capture=log,
-                max_output_bytes=16 * 1024 * 1024,
-                operation_name="gradle_fast_test_bootstrap",
-            ),
-            owner=attempt.owner,
-        )
-        attempt.require_not_cancelled()
-        if operation.output_limit_exceeded:
-            raise FastTestManagerError(
-                "FAST_TEST_BOOTSTRAP_OUTPUT_LIMIT_EXCEEDED",
-                "The Gradle Fast Test Bootstrap exceeded the 16 MiB log limit.",
+                owner=attempt.owner,
             )
-        if not operation.succeeded:
-            if prepared.output_file.is_file():
-                probe.load_model(prepared)
-            raise FastTestManagerError(
-                "FAST_TEST_BOOTSTRAP_FAILED",
-                "The one-time Gradle classes/testClasses Bootstrap failed.",
-                context={"return_code": operation.return_code},
-            )
-        model = probe.load_model(prepared)
-        prepared.init_script.unlink(missing_ok=True)
+            attempt.require_not_cancelled()
+            if operation.output_limit_exceeded:
+                raise FastTestManagerError(
+                    "FAST_TEST_BOOTSTRAP_OUTPUT_LIMIT_EXCEEDED",
+                    "The Gradle Fast Test Bootstrap exceeded the 16 MiB log limit.",
+                )
+            if not operation.succeeded:
+                if prepared.output_file.is_file():
+                    probe.load_model(prepared)
+                raise FastTestManagerError(
+                    "FAST_TEST_BOOTSTRAP_FAILED",
+                    "The one-time Gradle classes/testClasses Bootstrap failed.",
+                    context={"return_code": operation.return_code},
+                )
+            model = probe.load_model(prepared)
+        finally:
+            probe.cleanup(prepared)
         configuration_inputs = gradle_configuration_inputs(project)
         configuration_environment_names = (
             gradle_configuration_environment_names()

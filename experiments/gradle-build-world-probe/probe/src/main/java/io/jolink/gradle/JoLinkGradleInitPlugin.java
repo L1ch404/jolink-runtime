@@ -41,7 +41,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-spike3";
+    private static final String VERSION = "0.1.0-spike4";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -88,9 +88,11 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     }
 
     private void configureProject(final Project project) {
-        project.getTasks().withType(Test.class).all(task ->
-                baselineEnvironments.put(
-                        task.getPath(), stringify(task.getEnvironment())));
+        if (exportScope.equals("test")) {
+            project.getTasks().withType(Test.class).all(task ->
+                    baselineEnvironments.put(
+                            task.getPath(), stringify(task.getEnvironment())));
+        }
         registerExportTask(project);
         registerSlowCompileGate(project);
     }
@@ -199,7 +201,35 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private String render(Project project) throws Exception {
         SourceSetContainer sourceSets = project.getExtensions()
                 .getByType(SourceSetContainer.class);
-        validateBoundaries(project, sourceSets);
+        if (exportScope.equals("runtime")) {
+            return renderRuntime(project, sourceSets);
+        }
+        return renderTest(project, sourceSets);
+    }
+
+    private String renderRuntime(
+            Project project, SourceSetContainer sourceSets) throws Exception {
+        validateRuntimeBoundaries(project, sourceSets);
+        SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
+        Task rawCompileJava = project.getTasks()
+                .getByName(main.getCompileJavaTaskName());
+        if (!(rawCompileJava instanceof JavaCompile)) {
+            throw boundary(
+                    "GRADLE_COMPILE_TASK_UNSUPPORTED",
+                    "Expected compileJava to be a JavaCompile task.");
+        }
+        JavaCompile compileJava = (JavaCompile) rawCompileJava;
+        Map<String, Object> root = commonModel(project);
+        root.put("main", sourceSet(main));
+        root.put("compileJava", compileTask(compileJava));
+        root.put("runtimeExecution", runtimeExecution(
+                project, main, compileJava));
+        return json(root) + "\n";
+    }
+
+    private String renderTest(
+            Project project, SourceSetContainer sourceSets) throws Exception {
+        validateTestBoundaries(project, sourceSets);
         SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
         SourceSet test = sourceSets.getByName(SourceSet.TEST_SOURCE_SET_NAME);
         Task rawCompileJava = project.getTasks()
@@ -216,6 +246,16 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         JavaCompile compileTestJava = (JavaCompile) rawCompileTestJava;
         Test testTask = (Test) project.getTasks().getByName("test");
 
+        Map<String, Object> root = commonModel(project);
+        root.put("main", sourceSet(main));
+        root.put("test", sourceSet(test));
+        root.put("compileJava", compileTask(compileJava));
+        root.put("compileTestJava", compileTask(compileTestJava));
+        root.put("testRuntime", testTask(testTask));
+        return json(root) + "\n";
+    }
+
+    private Map<String, Object> commonModel(Project project) throws Exception {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("ok", true);
         root.put("schema", SCHEMA);
@@ -234,21 +274,36 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 System.getProperty("java.home"))));
         root.put("gradleDaemonJavaVersion", System.getProperty(
                 "java.specification.version"));
-        root.put("main", sourceSet(main));
-        root.put("test", sourceSet(test));
-        root.put("compileJava", compileTask(compileJava));
-        root.put("compileTestJava", compileTask(compileTestJava));
-        root.put("testRuntime", testTask(testTask));
-        return json(root) + "\n";
+        List<String> pluginClasses = new ArrayList<>();
+        for (Plugin<?> plugin : project.getPlugins()) {
+            pluginClasses.add(plugin.getClass().getName());
+        }
+        Collections.sort(pluginClasses);
+        root.put("appliedPluginClassNames", pluginClasses);
+        return root;
     }
 
-    private static void validateBoundaries(
-            Project project, SourceSetContainer sourceSets) {
+    private static void validateProjectBoundary(Project project) {
         if (project.getRootProject().getAllprojects().size() != 1) {
             throw boundary(
                     "GRADLE_MULTI_PROJECT_UNSUPPORTED",
-                    "G1.1 requires exactly one Gradle Project.");
+                    "The product Probe requires exactly one Gradle Project.");
         }
+    }
+
+    private static void validateRuntimeBoundaries(
+            Project project, SourceSetContainer sourceSets) {
+        validateProjectBoundary(project);
+        if (sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME) == null) {
+            throw boundary(
+                    "GRADLE_SOURCE_SET_UNSUPPORTED",
+                    "Runtime scope requires the main SourceSet.");
+        }
+    }
+
+    private static void validateTestBoundaries(
+            Project project, SourceSetContainer sourceSets) {
+        validateProjectBoundary(project);
         Set<String> sourceSetNames = new LinkedHashSet<>();
         for (SourceSet sourceSet : sourceSets) {
             sourceSetNames.add(sourceSet.getName());
@@ -269,6 +324,50 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                     "GRADLE_TEST_TASK_UNSUPPORTED",
                     "G1.1 requires exactly the default test Test task.");
         }
+    }
+
+    private Map<String, Object> runtimeExecution(
+            Project project,
+            SourceSet main,
+            JavaCompile compileJava) throws IOException {
+        Map<String, Object> result = new LinkedHashMap<>();
+        Task classes = project.getTasks().getByName(main.getClassesTaskName());
+        Task processResources = project.getTasks().getByName(
+                main.getProcessResourcesTaskName());
+        List<String> executed = new ArrayList<>();
+        for (Task task : project.getGradle().getTaskGraph().getAllTasks()) {
+            if (task.getProject().equals(project)) {
+                executed.add(task.getPath());
+            }
+        }
+        Collections.sort(executed);
+        result.put("executedTaskPaths", executed);
+        result.put("compileJavaTaskPath", compileJava.getPath());
+        result.put("processResourcesTaskPath", processResources.getPath());
+        result.put("classesTaskPath", classes.getPath());
+        result.put("exportTaskPath", project.getTasks()
+                .getByName(exportTaskName).getPath());
+        result.put("compileJavaActionCount", compileJava.getActions().size());
+        result.put("processResourcesActionCount",
+                processResources.getActions().size());
+        result.put("classesActionCount", classes.getActions().size());
+        Path classOutput = compileJava.getDestinationDirectory()
+                .get().getAsFile().toPath().toAbsolutePath().normalize();
+        List<String> overlapping = new ArrayList<>();
+        for (Task task : project.getTasks()) {
+            for (File output : task.getOutputs().getFiles().getFiles()) {
+                Path candidate = output.toPath().toAbsolutePath().normalize();
+                if (candidate.equals(classOutput)
+                        || candidate.startsWith(classOutput)
+                        || classOutput.startsWith(candidate)) {
+                    overlapping.add(task.getPath());
+                    break;
+                }
+            }
+        }
+        Collections.sort(overlapping);
+        result.put("classOutputOverlappingTaskPaths", overlapping);
+        return result;
     }
 
     private static Map<String, Object> sourceSet(SourceSet sourceSet)

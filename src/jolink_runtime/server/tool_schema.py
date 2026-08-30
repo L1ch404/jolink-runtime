@@ -87,8 +87,10 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "Local Maven or supported Gradle Wrapper project root for "
-                "launch or Fast Test. joLink imports an "
-                "IntelliJ IDEA Application or Spring Boot launch, uses the "
+                "launch or Fast Test. Maven launch imports an IntelliJ IDEA "
+                "Application or Spring Boot configuration; Gradle G4 currently "
+                "accepts the verified built-in Java/Application plugin world. "
+                "joLink uses the "
                 "project's build/JDK settings, compiles in the background, "
                 "then starts the resolved classpath. Do not combine with "
                 "classpath, main_class, jar_path, app_args, or vm_args. "

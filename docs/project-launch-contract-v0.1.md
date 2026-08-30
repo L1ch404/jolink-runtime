@@ -40,7 +40,8 @@ across server-process reconnects.
 
 P0 supports:
 
-- IDEA `Application` and Spring Boot application configurations;
+- IDEA `Application` and Spring Boot application configurations on Maven;
+  Gradle G4 currently verifies the built-in Java/Application plugin world;
 - the IDEA `Make` intent, implemented by joLink through Maven or a supported
   Gradle Wrapper;
 - a single-module Maven project, a Maven reactor module that maps uniquely, or
@@ -53,7 +54,8 @@ P0 does not implement Eclipse, Gradle multi-Project/composite/custom SourceSet,
 arbitrary IDEA before-launch tasks,
 project-local `.jolink` files, parallel launch attempts, cross-module fast
 compilation, JPMS/module-path fast compilation, resource updates, annotation
-processing beyond the separately verified Maven path and Gradle Lombok,
+source updates through `reload`, annotation processing beyond the separately
+verified Maven path and Gradle Lombok,
 or structural class HotSwap.
 
 ## IDEA import boundary

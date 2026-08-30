@@ -289,15 +289,45 @@ def test_build_system_provider_dispatch_rejects_ambiguous_project(
         manager.close()
 
 
-def _runtime_world(tmp_path: Path, model: dict):
+def _prepare_runtime_model(tmp_path: Path, model: dict) -> dict:
     project = tmp_path / "project"
     model["exportScope"] = "runtime"
     main_output = model["compileJava"]["destinationDirectory"]
     model["main"]["runtimeClasspath"] = [
         main_output,
+        *(
+            [model["main"]["resourcesDirectory"]]
+            if Path(model["main"]["resourcesDirectory"]).is_dir()
+            else []
+        ),
         *model["compileJava"]["classpath"],
         str(project / "deps/runtime"),
     ]
+    model["runtimeExecution"] = {
+        "compileJavaTaskPath": ":compileJava",
+        "processResourcesTaskPath": ":processResources",
+        "classesTaskPath": ":classes",
+        "exportTaskPath": ":jolinkExportBuildWorld_fixture",
+        "executedTaskPaths": [
+            ":classes",
+            ":compileJava",
+            ":jolinkExportBuildWorld_fixture",
+            ":processResources",
+        ],
+        "classOutputOverlappingTaskPaths": [":compileJava"],
+        "compileJavaActionCount": 1,
+        "processResourcesActionCount": 1,
+        "classesActionCount": 0,
+    }
+    model["appliedPluginClassNames"] = [
+        "org.gradle.api.plugins.JavaPlugin_Decorated"
+    ]
+    return model
+
+
+def _runtime_world(tmp_path: Path, model: dict):
+    model = _prepare_runtime_model(tmp_path, model)
+    project = tmp_path / "project"
     return create_gradle_runtime_build_world(
         model=model,
         project_root=project,
@@ -346,6 +376,104 @@ def test_product_gradle_runtime_freshness_covers_resources_and_runtime_only_deps
     runtime_class.write_bytes(b"changed")
     assert world.jdt_plan.is_fresh() is False
 
+
+def test_product_gradle_runtime_seals_and_tracks_formal_resources(
+    tmp_path: Path,
+) -> None:
+    project, model = _model(tmp_path)
+    source = project / "src/main/resources/application.properties"
+    formal = project / "build/resources/main/application.properties"
+    source.parent.mkdir(parents=True)
+    formal.parent.mkdir(parents=True)
+    source.write_text("feature=v1\n", encoding="utf-8")
+    formal.write_text("feature=v1\n", encoding="utf-8")
+
+    world = _runtime_world(tmp_path, model)
+
+    assert world.generation_input_roots == (
+        world.module_output,
+        formal.parent.resolve(),
+    )
+    assert world.generation_input_manifest["application.properties"]
+    assert world.jdt_plan.is_fresh() is True
+    formal.write_text("feature=v2\n", encoding="utf-8")
+    assert world.jdt_plan.is_fresh() is False
+
+
+def test_product_gradle_runtime_rejects_class_resource_collision(
+    tmp_path: Path,
+) -> None:
+    project, model = _model(tmp_path)
+    class_file = project / "build/classes/java/main/example/App.class"
+    resource_file = project / "build/resources/main/example/App.class"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    resource_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_bytes(b"class")
+    resource_file.write_bytes(b"resource")
+
+    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
+        _runtime_world(tmp_path, model)
+
+    assert captured.value.error_code == "GRADLE_RUNTIME_OUTPUT_COLLISION"
+
+
+def test_product_gradle_runtime_rejects_transform_task(
+    tmp_path: Path,
+) -> None:
+    _project, model = _model(tmp_path)
+    _prepare_runtime_model(tmp_path, model)
+    model["runtimeExecution"]["executedTaskPaths"].append(
+        ":enhanceClasses"
+    )
+    model["runtimeExecution"]["classOutputOverlappingTaskPaths"].append(
+        ":enhanceClasses"
+    )
+
+    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
+        create_gradle_runtime_build_world(
+            model=model,
+            project_root=tmp_path / "project",
+            configuration_inputs=(),
+            configuration_environment_names=(),
+        )
+
+    assert captured.value.error_code == "GRADLE_BYTECODE_TRANSFORM_UNMODELED"
+
+
+def test_product_gradle_runtime_rejects_unverified_plugin(
+    tmp_path: Path,
+) -> None:
+    _project, model = _model(tmp_path)
+    _prepare_runtime_model(tmp_path, model)
+    model["appliedPluginClassNames"].append("example.EnhancingPlugin")
+
+    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
+        create_gradle_runtime_build_world(
+            model=model,
+            project_root=tmp_path / "project",
+            configuration_inputs=(),
+            configuration_environment_names=(),
+        )
+
+    assert captured.value.error_code == "GRADLE_BYTECODE_TRANSFORM_UNMODELED"
+
+
+def test_product_gradle_runtime_rejects_compile_action_injection(
+    tmp_path: Path,
+) -> None:
+    _project, model = _model(tmp_path)
+    _prepare_runtime_model(tmp_path, model)
+    model["runtimeExecution"]["compileJavaActionCount"] = 2
+
+    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
+        create_gradle_runtime_build_world(
+            model=model,
+            project_root=tmp_path / "project",
+            configuration_inputs=(),
+            configuration_environment_names=(),
+        )
+
+    assert captured.value.error_code == "GRADLE_BYTECODE_TRANSFORM_UNMODELED"
 
 def test_product_gradle_runtime_world_rejects_wrong_probe_scope(
     tmp_path: Path,

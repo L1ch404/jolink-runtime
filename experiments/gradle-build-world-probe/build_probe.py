@@ -61,7 +61,7 @@ def main() -> int:
     )
     if completed.returncode != 0:
         raise SystemExit(completed.stdout + completed.stderr)
-    jar = PROJECT / "build/libs/jolink-gradle-probe-0.1.0-spike3.jar"
+    jar = PROJECT / "build/libs/jolink-gradle-probe-0.1.0-spike4.jar"
     digest = hashlib.sha256(jar.read_bytes()).hexdigest()
     with zipfile.ZipFile(jar) as archive:
         majors = {

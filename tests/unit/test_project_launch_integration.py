@@ -222,8 +222,13 @@ class _PreparedPipeline:
                 compile_classpath_file=self.root / "compile-classpath.txt",
             ),
             build_system="maven",
+            build_offline=False,
             build_jdk=SimpleNamespace(home=Path("/jdk")),
             module_output=output,
+            generation_input_roots=(output,),
+            generation_input_manifest={},
+            resource_source_roots=(),
+            resource_input_manifest={},
             build_world_inputs=(
                 self.root / "pom.xml",
                 self.root / "classpath.txt",

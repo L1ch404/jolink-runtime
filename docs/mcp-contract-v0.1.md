@@ -108,7 +108,7 @@ current `launch_phase` and omits `startup_state`.
 supported `project_path` launch. It compiles explicit Java sources in a
 persistent private JDT Build World and seals the full output delta as an
 immutable Candidate Generation. Compatible loaded method-body changes use one
-JDWP `RedefineClasses` operation. Structural/resource/add/delete changes,
+JDWP `RedefineClasses` operation. Structural/JDT-generated-resource/add/delete changes,
 HotSwap rejection, or `hotswap=false` use a managed Candidate restart. The
 restart path requires `ready_port`. The Candidate is promoted only after
 readiness; startup failure restores the
@@ -116,28 +116,32 @@ last-good Generation and reports `rolled_back=true`. It never mutates formal
 output. Success is runtime evidence, not business-correctness proof; a fresh
 request is still required.
 
-The CompileSession freezes build-authority source roots, compile dependencies,
+The CompileSession freezes build-authority Java/resource roots, compile dependencies,
 target platform, source encoding, Lombok/JSR-269 processor inputs, and the
 configuration fingerprint. Its initial FULL build is based on the exact source
 snapshot that produced the running Generation; `compile_ready` remains false
 until that baseline succeeds and its declared type set, public API shape, and
-class-file major are compatible with the formal Generation. Source manifests
-before build, after build, and after snapshot copy must match. Every reload
+class-file major are compatible with the formal Generation. Java and resource
+manifests before build, after build, and after snapshot copy must match. Every reload
 rechecks BuildWorld, Runtime,
 Generation, process identity, and selected source bytes before applying state.
 Changing those inputs requires a fresh launch rather than silently compiling
 against a different world.
 
-Persistent reload is unavailable when the imported IDEA configuration disables
-Make/Build before run. In that mode Maven output is not proven to correspond to
-the current source manifest, so joLink returns
-`JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE` instead of risking a false
-`no_changes` result. JDT bootstrap state belongs to `JavaProjectSession` and
+Persistent reload requires a fresh formal build baseline. Maven launches with
+Make disabled expose `JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE`; Gradle G4
+launches currently reject Make-disabled intents before startup. This avoids a
+false `no_changes` result. JDT bootstrap state belongs to `JavaProjectSession` and
 therefore survives a managed `restart` attempt transition.
 
 Static initialization, class schemas, new/deleted classes, and resources are
 not sent through JDWP HotSwap. They select the restart apply path so the new
 JVM initializes from the complete Candidate output.
+
+For Gradle, formal classes and resources are sealed into one private,
+collision-checked Generation root. Runtime scope never reads the test world.
+A change under `src/main/resources` invalidates the current Build World and
+requires a new launch; it is not accepted as a Java-only `reload`.
 
 After a class is redefined, every logical breakpoint belonging to that class
 is retained for inspection but marked stale. joLink does not rebind the old

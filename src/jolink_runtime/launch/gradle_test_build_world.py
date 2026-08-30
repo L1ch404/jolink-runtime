@@ -371,9 +371,3 @@ __all__ = [
     "create_gradle_test_build_world",
     "javac_executable",
 ]
-
-
-__all__ = [
-    "GradleBuildWorldError",
-    "create_gradle_test_build_world",
-]

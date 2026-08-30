@@ -108,6 +108,13 @@ def test_product_gradle_probe_assets_are_content_checked(
     )
     assert "-Djolink.gradle.scope=runtime" in command
     assert "--offline" in command
+    runtime.output_file.write_text("private", encoding="utf-8")
+    started = runtime.output_file.with_name(f"{runtime.output_file.name}.started")
+    started.write_text("started", encoding="utf-8")
+    probe.cleanup(runtime)
+    assert not runtime.init_script.exists()
+    assert not runtime.output_file.exists()
+    assert not started.exists()
 
 
 def test_gradle_freshness_tracks_optional_configuration_and_environment(

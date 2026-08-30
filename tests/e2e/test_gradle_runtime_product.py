@@ -10,11 +10,23 @@ import pytest
 
 
 @pytest.mark.gradle_runtime_e2e
-def test_real_gradle_runtime_launch_reload_and_rollback() -> None:
+@pytest.mark.parametrize(
+    ("gradle_environment", "gradle_version", "target_java", "offline"),
+    (
+        ("JOLINK_GRADLE_RUNTIME_GRADLE_810", "8.10", 8, False),
+        ("JOLINK_GRADLE_RUNTIME_GRADLE_814", "8.14", 11, True),
+    ),
+)
+def test_real_gradle_runtime_launch_reload_and_rollback(
+    gradle_environment: str,
+    gradle_version: str,
+    target_java: int,
+    offline: bool,
+) -> None:
     if os.environ.get("JOLINK_RUN_GRADLE_RUNTIME_E2E") != "1":
         pytest.skip("set JOLINK_RUN_GRADLE_RUNTIME_E2E=1")
     names = {
-        "gradle": "JOLINK_GRADLE_RUNTIME_GRADLE",
+        "gradle": gradle_environment,
         "java8": "JOLINK_GRADLE_RUNTIME_JAVA8_HOME",
         "java11": "JOLINK_GRADLE_RUNTIME_JAVA11_HOME",
         "java17": "JOLINK_GRADLE_RUNTIME_JAVA17_HOME",
@@ -31,13 +43,16 @@ def test_real_gradle_runtime_launch_reload_and_rollback() -> None:
             "--gradle",
             str(values["gradle"]),
             "--gradle-version",
-            "8.14",
+            gradle_version,
             "--java8-home",
             str(values["java8"]),
             "--java11-home",
             str(values["java11"]),
             "--java17-home",
             str(values["java17"]),
+            "--target-java",
+            str(target_java),
+            *(["--offline"] if offline else []),
         ],
         cwd=root,
         capture_output=True,
@@ -52,10 +67,15 @@ def test_real_gradle_runtime_launch_reload_and_rollback() -> None:
     assert payload == {
         "ok": True,
         "build_system": "gradle",
-        "target_java": 11,
+        "target_java": target_java,
         "baseline_ready": True,
         "hotswap_passed": True,
         "candidate_restart_passed": True,
         "rollback_passed": True,
+        "resources_sealed": True,
+        "resource_drift_rejected": True,
+        "runtime_probe_ignored_test_world": True,
+        "private_model_deleted": True,
+        "bytecode_transform_rejected": True,
         "final_process_state": "absent",
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,26 @@ from .jdt_compile_session import JdtBuildWorldPlan, resource_tree_fingerprint
 
 
 _PROCESSOR_SERVICE = "META-INF/services/javax.annotation.processing.Processor"
+_VERIFIED_RUNTIME_PLUGIN_CLASSES = frozenset(
+    {
+        "org.gradle.api.distribution.plugins.DistributionBasePlugin_Decorated",
+        "org.gradle.api.distribution.plugins.DistributionPlugin_Decorated",
+        "org.gradle.api.plugins.ApplicationPlugin_Decorated",
+        "org.gradle.api.plugins.BasePlugin_Decorated",
+        "org.gradle.api.plugins.HelpTasksPlugin_Decorated",
+        "org.gradle.api.plugins.JavaBasePlugin_Decorated",
+        "org.gradle.api.plugins.JavaPlugin_Decorated",
+        "org.gradle.api.plugins.JvmEcosystemPlugin_Decorated",
+        "org.gradle.api.plugins.JvmTestSuitePlugin_Decorated",
+        "org.gradle.api.plugins.JvmToolchainsPlugin_Decorated",
+        "org.gradle.api.plugins.ReportingBasePlugin_Decorated",
+        "org.gradle.api.plugins.SoftwareReportingTasksPlugin_Decorated",
+        "org.gradle.buildinit.plugins.BuildInitPlugin_Decorated",
+        "org.gradle.buildinit.plugins.WrapperPlugin_Decorated",
+        "org.gradle.language.base.plugins.LifecycleBasePlugin_Decorated",
+        "org.gradle.testing.base.plugins.TestSuiteBasePlugin_Decorated",
+    }
+)
 
 
 class GradleRuntimeBuildWorldError(RuntimeError):
@@ -25,6 +46,10 @@ class GradleRuntimeBuildWorldError(RuntimeError):
 class GradleRuntimeBuildWorld:
     project_root: Path
     module_output: Path
+    generation_input_roots: tuple[Path, ...]
+    generation_input_manifest: dict[str, str]
+    resource_source_roots: tuple[Path, ...]
+    formal_resource_roots: tuple[Path, ...]
     runtime_classpath: tuple[Path, ...]
     jdt_plan: JdtBuildWorldPlan
     configuration_inputs: tuple[Path, ...]
@@ -89,6 +114,32 @@ def _javac(java_home: Path) -> Path:
     return (java_home / "bin" / name).resolve(strict=True)
 
 
+def _merged_runtime_manifest(roots: Sequence[Path]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                raise GradleRuntimeBuildWorldError(
+                    "GRADLE_RUNTIME_OUTPUT_LINK_UNSUPPORTED",
+                    "Gradle Runtime outputs may not contain links.",
+                )
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            parents = Path(relative).parents
+            if (
+                relative in result
+                or any(parent.as_posix() in result for parent in parents)
+                or any(key.startswith(f"{relative}/") for key in result)
+            ):
+                raise GradleRuntimeBuildWorldError(
+                    "GRADLE_RUNTIME_OUTPUT_COLLISION",
+                    "Gradle classes/resources outputs contain a path collision.",
+                )
+            result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
 def create_gradle_runtime_build_world(
     *,
     model: dict[str, Any],
@@ -101,6 +152,7 @@ def create_gradle_runtime_build_world(
     resource_root = (project / "src/main/resources").resolve(strict=False)
     main = model["main"]
     compile_task = model["compileJava"]
+    runtime_execution = model.get("runtimeExecution")
     _require(
         source_root.is_dir(),
         "GRADLE_SOURCE_LAYOUT_UNSUPPORTED",
@@ -110,6 +162,44 @@ def create_gradle_runtime_build_world(
         model.get("exportScope") == "runtime",
         "GRADLE_RUNTIME_PROBE_SCOPE_MISMATCH",
         "The Gradle Probe did not export a Runtime Build World.",
+    )
+    _require(
+        isinstance(runtime_execution, dict),
+        "GRADLE_RUNTIME_TASK_GRAPH_UNAVAILABLE",
+        "The Gradle Probe did not export the Runtime task graph.",
+    )
+    applied_plugins = set(model.get("appliedPluginClassNames", ()))
+    _require(
+        bool(applied_plugins)
+        and applied_plugins <= _VERIFIED_RUNTIME_PLUGIN_CLASSES,
+        "GRADLE_BYTECODE_TRANSFORM_UNMODELED",
+        "Gradle Runtime Bootstrap applies an unverified plugin.",
+    )
+    expected_tasks = {
+        runtime_execution.get("compileJavaTaskPath"),
+        runtime_execution.get("processResourcesTaskPath"),
+        runtime_execution.get("classesTaskPath"),
+        runtime_execution.get("exportTaskPath"),
+    }
+    _require(
+        None not in expected_tasks
+        and set(runtime_execution.get("executedTaskPaths", ()))
+        == expected_tasks,
+        "GRADLE_BYTECODE_TRANSFORM_UNMODELED",
+        "Gradle Runtime Bootstrap executed an unmodeled task.",
+    )
+    _require(
+        set(runtime_execution.get("classOutputOverlappingTaskPaths", ()))
+        <= {runtime_execution.get("compileJavaTaskPath")},
+        "GRADLE_BYTECODE_TRANSFORM_UNMODELED",
+        "A Gradle task other than compileJava owns the main class output.",
+    )
+    _require(
+        runtime_execution.get("compileJavaActionCount") == 1
+        and runtime_execution.get("processResourcesActionCount") == 1
+        and runtime_execution.get("classesActionCount") == 0,
+        "GRADLE_BYTECODE_TRANSFORM_UNMODELED",
+        "A Gradle lifecycle task has an unverified action chain.",
     )
     _require(
         _paths(main["javaSourceDirectories"]) == (source_root,),
@@ -196,6 +286,44 @@ def create_gradle_runtime_build_world(
         "GRADLE_RUNTIME_OUTPUT_UNMODELED",
         "Gradle main runtime classpath must contain its class output once.",
     )
+    raw_resource_output = main.get("resourcesDirectory")
+    resource_output = (
+        Path(raw_resource_output).resolve(strict=False)
+        if raw_resource_output
+        else None
+    )
+    formal_resource_roots = (
+        (resource_output,)
+        if resource_output is not None and resource_output.is_dir()
+        else ()
+    )
+    resource_source_has_files = resource_root.is_dir() and any(
+        path.is_file() for path in resource_root.rglob("*")
+    )
+    _require(
+        not resource_source_has_files or bool(formal_resource_roots),
+        "GRADLE_RESOURCE_OUTPUT_UNAVAILABLE",
+        "Gradle did not produce the main resource output.",
+    )
+    formal_owned = {module_output, *formal_resource_roots}
+    generation_input_roots = tuple(
+        path for path in runtime_classpath if path in formal_owned
+    )
+    _require(
+        len(generation_input_roots) == len(formal_owned)
+        and len(set(generation_input_roots)) == len(formal_owned),
+        "GRADLE_RUNTIME_OUTPUT_UNMODELED",
+        "Gradle runtime classpath omits or duplicates a formal output root.",
+    )
+    owned_positions = tuple(
+        runtime_classpath.index(path) for path in generation_input_roots
+    )
+    _require(
+        owned_positions
+        == tuple(range(owned_positions[0], owned_positions[0] + len(owned_positions))),
+        "GRADLE_RUNTIME_OUTPUT_ORDER_UNMODELED",
+        "Gradle classes/resources outputs must be a consecutive classpath segment.",
+    )
     processors = _existing_paths(compile_task["annotationProcessorPath"])
     processor_entries: list[Path] = []
     lombok_entries: list[Path] = []
@@ -226,6 +354,12 @@ def create_gradle_runtime_build_world(
     return GradleRuntimeBuildWorld(
         project_root=project,
         module_output=module_output,
+        generation_input_roots=generation_input_roots,
+        generation_input_manifest=_merged_runtime_manifest(
+            generation_input_roots
+        ),
+        resource_source_roots=(resource_root,),
+        formal_resource_roots=formal_resource_roots,
         runtime_classpath=runtime_classpath,
         configuration_inputs=configuration,
         jdt_plan=JdtBuildWorldPlan(
@@ -247,8 +381,10 @@ def create_gradle_runtime_build_world(
             javac_executable=java_compiler,
             method_parameters="-parameters" in compiler_args,
             freshness_entries=tuple(dict.fromkeys((*dependencies, *runtime_classpath))),
-            resource_roots=(resource_root,),
-            resource_fingerprint=resource_tree_fingerprint((resource_root,)),
+            resource_roots=(resource_root, *formal_resource_roots),
+            resource_fingerprint=resource_tree_fingerprint(
+                (resource_root, *formal_resource_roots)
+            ),
         ),
     )
 

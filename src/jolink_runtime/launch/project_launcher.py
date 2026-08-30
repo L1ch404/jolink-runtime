@@ -59,6 +59,7 @@ from .toolchain import (
     MavenToolCandidate,
     MavenToolResolver,
 )
+from .test_build_world import build_input_manifest
 
 
 @dataclass(frozen=True)
@@ -76,8 +77,13 @@ class ProjectLaunchRequest:
 class PreparedProjectLaunch:
     execution: MavenExecutionPlan | None
     build_system: str
+    build_offline: bool
     build_jdk: JavaToolchainCandidate
     module_output: Path
+    generation_input_roots: tuple[Path, ...]
+    generation_input_manifest: dict[str, str]
+    resource_source_roots: tuple[Path, ...]
+    resource_input_manifest: dict[str, str]
     build_world_inputs: tuple[Path, ...]
     runtime_jdk: JavaToolchainCandidate
     jvm_plan: JvmLaunchPlan
@@ -352,8 +358,13 @@ class ProjectLaunchPipeline:
         return PreparedProjectLaunch(
             execution=execution,
             build_system="maven",
+            build_offline=False,
             build_jdk=build_jdk,
             module_output=module.output_directory,
+            generation_input_roots=(module.output_directory,),
+            generation_input_manifest={},
+            resource_source_roots=(),
+            resource_input_manifest={},
             build_world_inputs=(
                 execution.effective_pom_file,
                 execution.classpath_file,
@@ -444,9 +455,6 @@ class ProjectLaunchPipeline:
                 retryable=True,
                 suggested_next_step="Restore the Gradle Wrapper and retry launch.",
             )
-        prepared_probe = probe.prepare(
-            attempt_directory / "gradle-probe", scope="runtime"
-        )
         gradle_args = shlex.split(os.environ.get("GRADLE_ARGS", ""))
         if any(value not in {"-o", "--offline"} for value in gradle_args):
             raise LaunchPipelineFailure(
@@ -456,6 +464,9 @@ class ProjectLaunchPipeline:
                 suggested_next_step="Remove unsupported GRADLE_ARGS and retry.",
             )
         offline = any(value in {"-o", "--offline"} for value in gradle_args)
+        prepared_probe = probe.prepare(
+            attempt_directory / "gradle-probe", scope="runtime"
+        )
         environment = JavaToolchainResolver.maven_environment(build_jdk)
         context.set_build_plan(
             BuildPlan(
@@ -471,44 +482,51 @@ class ProjectLaunchPipeline:
             )
         )
         source_roots = ((project / "src/main/java"),)
+        resource_roots = ((project / "src/main/resources"),)
         manifest_started = time.monotonic()
         source_before = self.source_manifest_fingerprint(source_roots)
+        resource_before = build_input_manifest((), resource_roots)
         source_before_ms = (time.monotonic() - manifest_started) * 1000
         context.transition(LaunchPhase.COMPILING)
-        operation = context.run_operation(
-            BuildOperationSpec(
-                argv=probe.command(
-                    wrapper=wrapper,
-                    prepared=prepared_probe,
-                    offline=offline,
-                ),
-                cwd=project,
-                environment=environment,
-                timeout_seconds=600.0,
-                output_capture=build_log,
-                max_output_bytes=16 * 1024 * 1024,
-                operation_name="gradle_runtime_bootstrap",
+        try:
+            operation = context.run_operation(
+                BuildOperationSpec(
+                    argv=probe.command(
+                        wrapper=wrapper,
+                        prepared=prepared_probe,
+                        offline=offline,
+                    ),
+                    cwd=project,
+                    environment=environment,
+                    timeout_seconds=600.0,
+                    output_capture=build_log,
+                    max_output_bytes=16 * 1024 * 1024,
+                    operation_name="gradle_runtime_bootstrap",
+                )
             )
-        )
-        if operation.timed_out:
-            raise LaunchPipelineFailure(
-                LaunchErrorCode.BUILD_TIMEOUT,
-                "The supervised Gradle Runtime Bootstrap timed out.",
-                retryable=True,
-                suggested_next_step="Inspect build.log_tail and retry launch.",
-            )
-        if not operation.succeeded:
-            raise LaunchPipelineFailure(
-                LaunchErrorCode.BUILD_FAILED,
-                "The supervised Gradle Runtime Bootstrap failed.",
-                retryable=True,
-                suggested_next_step="Inspect build.log_tail and retry launch.",
-                context={"return_code": operation.return_code},
-            )
-        model = probe.load_model(prepared_probe)
-        prepared_probe.init_script.unlink(missing_ok=True)
+            if operation.timed_out:
+                raise LaunchPipelineFailure(
+                    LaunchErrorCode.BUILD_TIMEOUT,
+                    "The supervised Gradle Runtime Bootstrap timed out.",
+                    retryable=True,
+                    suggested_next_step="Inspect build.log_tail and retry launch.",
+                )
+            if not operation.succeeded:
+                if prepared_probe.output_file.is_file():
+                    probe.load_model(prepared_probe)
+                raise LaunchPipelineFailure(
+                    LaunchErrorCode.BUILD_FAILED,
+                    "The supervised Gradle Runtime Bootstrap failed.",
+                    retryable=True,
+                    suggested_next_step="Inspect build.log_tail and retry launch.",
+                    context={"return_code": operation.return_code},
+                )
+            model = probe.load_model(prepared_probe)
+        finally:
+            probe.cleanup(prepared_probe)
         manifest_started = time.monotonic()
         source_after = self.source_manifest_fingerprint(source_roots)
+        resource_after = build_input_manifest((), resource_roots)
         source_after_ms = (time.monotonic() - manifest_started) * 1000
         if source_before != source_after:
             raise LaunchPipelineFailure(
@@ -516,6 +534,15 @@ class ProjectLaunchPipeline:
                 "Project Java sources changed while Gradle was building.",
                 retryable=True,
                 suggested_next_step="Wait for source edits to settle and retry.",
+            )
+        if resource_before != resource_after:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.SOURCE_CHANGED_DURING_BUILD,
+                "Project resources changed while Gradle was building.",
+                retryable=True,
+                suggested_next_step=(
+                    "Wait for resource edits to settle and retry launch."
+                ),
             )
         configuration_inputs, environment_names = self._gradle_inputs(project)
         try:
@@ -561,8 +588,13 @@ class ProjectLaunchPipeline:
         return PreparedProjectLaunch(
             execution=None,
             build_system="gradle",
+            build_offline=offline,
             build_jdk=build_jdk,
             module_output=world.module_output,
+            generation_input_roots=world.generation_input_roots,
+            generation_input_manifest=world.generation_input_manifest,
+            resource_source_roots=world.resource_source_roots,
+            resource_input_manifest=resource_after,
             build_world_inputs=world.configuration_inputs,
             runtime_jdk=runtime_jdk,
             jvm_plan=plan,

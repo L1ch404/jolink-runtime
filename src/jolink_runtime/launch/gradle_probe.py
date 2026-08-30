@@ -176,6 +176,14 @@ class ProductGradleProbe:
             )
         return model
 
+    @staticmethod
+    def cleanup(prepared: PreparedGradleProbe) -> None:
+        prepared.init_script.unlink(missing_ok=True)
+        prepared.output_file.unlink(missing_ok=True)
+        prepared.output_file.with_name(
+            f"{prepared.output_file.name}.started"
+        ).unlink(missing_ok=True)
+
 
 def wrapper_version(project: Path) -> str:
     properties = project / "gradle/wrapper/gradle-wrapper.properties"
