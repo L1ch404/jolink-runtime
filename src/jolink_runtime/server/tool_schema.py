@@ -31,7 +31,8 @@ PUBLIC_RUNTIME_ACTIONS = (
 
 JAVA_RUNTIME_DESCRIPTION = (
     "Run, observe, and debug a local Java application. "
-    "Launch directly or from an IntelliJ IDEA Maven project, restart the "
+    "Launch directly or from a supported IntelliJ IDEA Maven/Gradle project, "
+    "restart the "
     "target, inspect status and logs, and verify code "
     "changes against actual runtime behavior before making further assumptions. "
     "When repeated edits fail or a fix needs verification, obtain runtime "
@@ -44,7 +45,7 @@ JAVA_RUNTIME_DESCRIPTION = (
     "before arming an HTTP trigger. "
     "After editing existing Java method bodies in a project_path launch, "
     "update can compile explicit source_files into private staging and HotSwap "
-    "them without a full Maven restart; then verify with a fresh request. "
+    "them without a full build-tool restart; then verify with a fresh request. "
     "Treat runtime outputs as bounded observations; separate observed facts from "
     "interpretations and unverified conclusions. "
     "wait_event blocking can arm JDWP event requests, start an optional local "
@@ -85,10 +86,10 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "project_path": {
             "type": "string",
             "description": (
-                "Local Maven project root for launch, or Maven/Gradle Wrapper "
-                "project root for Fast Test. joLink imports an "
+                "Local Maven or supported Gradle Wrapper project root for "
+                "launch or Fast Test. joLink imports an "
                 "IntelliJ IDEA Application or Spring Boot launch, uses the "
-                "project's Maven/JDK settings, compiles in the background, "
+                "project's build/JDK settings, compiles in the background, "
                 "then starts the resolved classpath. Do not combine with "
                 "classpath, main_class, jar_path, app_args, or vm_args. "
                 "Fast Test can use a supported single-Project Gradle Java build, "
@@ -96,7 +97,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "selector-identified jar module in a standard Reactor and "
                 "does not require a running application. Restart never accepts "
                 "project_path; it reuses the current "
-                "sealed Generation without Maven."
+                "sealed Generation without rerunning the formal build."
             ),
         },
         "launch_name": {
@@ -365,7 +366,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "omitted on the initial unchanged baseline; paths are relative "
                 "to project_path, including a Reactor module prefix. For reload, paths are "
                 "in the selected "
-                "Maven module. joLink compiles them in a persistent private JDT "
+                "build module. joLink compiles them in a persistent private JDT "
                 "session, seals a durable Candidate, and applies it by HotSwap "
                 "or managed restart."
             ),
@@ -521,9 +522,10 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
 
 JAVA_APPLICATION_DESCRIPTION = (
     "Launch, attach, fast-test, reload, restart, stop, or detach Java code. "
-    "Fast Test uses one Maven or Gradle authority Bootstrap, persistent JDT main/test incremental "
-    "compilation, and an isolated JUnit 4/5 or TestNG Runner without changing a Runtime. "
-    "For Maven project launches, reload compiles explicit source_files in the "
+    "Fast Test uses one Maven or Gradle authority Bootstrap, persistent JDT "
+    "main/test incremental compilation, and an isolated test Runner without "
+    "changing a Runtime. For supported Maven or Gradle project launches, "
+    "reload compiles explicit source_files in the "
     "persistent JDT session, uses HotSwap when safe, and otherwise restarts the "
     "Candidate with automatic rollback."
 )

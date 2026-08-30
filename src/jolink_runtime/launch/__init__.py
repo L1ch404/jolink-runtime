@@ -88,6 +88,7 @@ from .jdt_compile_session import (
     PersistentJdtCompileSession,
     WorkerJavaRuntime,
     discover_java8_system_entries,
+    discover_target_system_entries,
     lombok_worker_jvm_arguments,
 )
 from .test_build_world import (
@@ -95,6 +96,11 @@ from .test_build_world import (
     JavaTestBuildWorld,
     MavenTestBuildWorldBootstrap,
     TestBuildWorldBootstrap,
+)
+from .gradle_runtime_build_world import (
+    GradleRuntimeBuildWorld,
+    GradleRuntimeBuildWorldError,
+    create_gradle_runtime_build_world,
 )
 
 __all__ = [
@@ -157,11 +163,15 @@ __all__ = [
     "PersistentJdtCompileSession",
     "WorkerJavaRuntime",
     "discover_java8_system_entries",
+    "discover_target_system_entries",
     "lombok_worker_jvm_arguments",
     "JavaTestBuildWorld",
     "MavenTestBuildWorldBootstrap",
     "GradleTestBuildWorldBootstrap",
     "TestBuildWorldBootstrap",
+    "GradleRuntimeBuildWorld",
+    "GradleRuntimeBuildWorldError",
+    "create_gradle_runtime_build_world",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

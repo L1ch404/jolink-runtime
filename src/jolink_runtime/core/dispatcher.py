@@ -117,7 +117,7 @@ class ProjectLaunchArgumentError(ValueError):
 def parse_project_launch_request(
     arguments: dict[str, Any],
 ) -> ProjectLaunchRequest | None:
-    """Parse the small MCP-only IDEA/Maven launch surface."""
+    """Parse the small MCP-only IDEA/build-system launch surface."""
     has_project_path = "project_path" in arguments
     has_launch_name = "launch_name" in arguments
     if not has_project_path:

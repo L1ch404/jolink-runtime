@@ -675,18 +675,54 @@ class JdtBuildWorldPlan:
     configuration_inputs: tuple[Path, ...]
     configuration_environment_names: tuple[str, ...]
     javac_executable: Path
+    method_parameters: bool = False
+    freshness_entries: tuple[Path, ...] = ()
+    resource_roots: tuple[Path, ...] = ()
+    resource_fingerprint: str = ""
     worker_min_heap_mb: int = 64
     worker_max_heap_mb: int = 2048
 
     def is_fresh(self) -> bool:
-        return self.fingerprint == fast_compile_fingerprint(
+        configuration_fresh = self.fingerprint == fast_compile_fingerprint(
             configuration_inputs=self.configuration_inputs,
             configuration_environment_names=(
                 self.configuration_environment_names
             ),
             javac_executable=self.javac_executable,
-            compile_classpath=self.dependency_entries,
+            compile_classpath=(
+                self.freshness_entries or self.dependency_entries
+            ),
         )
+        if not configuration_fresh:
+            return False
+        if not self.resource_roots:
+            return True
+        return self.resource_fingerprint == resource_tree_fingerprint(
+            self.resource_roots
+        )
+
+
+def resource_tree_fingerprint(roots: Sequence[Path]) -> str:
+    digest = hashlib.sha256()
+    for root in roots:
+        normalized = root.expanduser().resolve(strict=False)
+        digest.update(
+            str(normalized).encode("utf-8", errors="surrogateescape")
+        )
+        if not normalized.is_dir():
+            digest.update(b"<absent>")
+            continue
+        for path in sorted(normalized.rglob("*")):
+            if not path.is_file():
+                continue
+            digest.update(
+                path.relative_to(normalized).as_posix().encode("utf-8")
+            )
+            try:
+                digest.update(path.read_bytes())
+            except OSError:
+                digest.update(b"<unreadable>")
+    return digest.hexdigest()
 
 
 def discover_java8_system_entries(java_home: Path) -> tuple[Path, ...]:
@@ -1611,4 +1647,5 @@ __all__ = [
     "PersistentJdtCompileSession",
     "discover_java8_system_entries",
     "discover_target_system_entries",
+    "resource_tree_fingerprint",
 ]

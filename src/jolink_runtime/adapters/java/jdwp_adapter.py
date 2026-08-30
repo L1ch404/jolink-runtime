@@ -36,7 +36,7 @@ from ...launch import (
     JdtCandidate,
     JdtCompileError,
     PersistentJdtCompileSession,
-    discover_java8_system_entries,
+    discover_target_system_entries,
     lombok_worker_jvm_arguments,
     LaunchCancelled,
     LaunchContext,
@@ -199,6 +199,7 @@ class ProjectUpdatePlan:
     jdt_build_world_plan: Any | None = None
     jdt_unavailable_reason: str | None = None
     jdt_unavailable_details: dict[str, Any] | None = None
+    build_system: str = "maven"
 
 
 class JavaRuntime(Runtime):
@@ -786,7 +787,7 @@ class JavaRuntime(Runtime):
         action: RuntimeAction,
         request: ProjectLaunchRequest,
     ) -> RuntimeResult:
-        """Start one IDEA/Maven launch attempt without blocking the Tool call."""
+        """Start one IDEA/build-system launch without blocking the Tool call."""
         invalid = self._validate_project_request(action, request)
         if invalid is not None:
             return invalid
@@ -926,7 +927,7 @@ class JavaRuntime(Runtime):
                     "error_code": "NO_RESTARTABLE_LAUNCH",
                     "retryable": True,
                     "suggested_next_step": (
-                        "Launch a Maven project before calling restart."
+                        "Launch a supported project before calling restart."
                     ),
                 },
             )
@@ -1391,11 +1392,7 @@ class JavaRuntime(Runtime):
         if plan is not None and plan.configuration_fingerprint:
             digest.update(str(plan.configuration_fingerprint).encode("ascii"))
         else:
-            for path in (
-                prepared.execution.effective_pom_file,
-                prepared.execution.classpath_file,
-                prepared.execution.compile_classpath_file,
-            ):
+            for path in prepared.build_world_inputs:
                 digest.update(str(path.name).encode("utf-8"))
                 try:
                     digest.update(path.read_bytes())
@@ -1429,10 +1426,8 @@ class JavaRuntime(Runtime):
         )
         session.retain_directory(prepared.attempt_directory)
         try:
-            module_output = (
-                prepared.execution.module.output_directory.expanduser().resolve(
-                    strict=True
-                )
+            module_output = prepared.module_output.expanduser().resolve(
+                strict=True
             )
             generation_started = time.monotonic()
             candidate = session.generations.prepare_initial_candidate(
@@ -1507,7 +1502,7 @@ class JavaRuntime(Runtime):
                     raise ProjectSessionError(
                         "SOURCE_CHANGED_AFTER_BUILD",
                         "The launch source snapshot no longer matches the "
-                        "Maven build input.",
+                        "formal build input.",
                     )
             session.record_generation_preparation(
                 generation_seal_ms=generation_seal_ms,
@@ -1571,7 +1566,7 @@ class JavaRuntime(Runtime):
                 candidate = JdtCandidate.load_product()
                 worker_java = candidate.select_worker_java(
                     (
-                        prepared.execution.build_jdk.home,
+                        prepared.build_jdk.home,
                         prepared.runtime_jdk.home,
                         plan.target_java_home,
                     )
@@ -1580,8 +1575,9 @@ class JavaRuntime(Runtime):
                     java_major=worker_java.major,
                     data_model=worker_java.data_model,
                 )
-                system_entries = discover_java8_system_entries(
-                    plan.target_java_home
+                system_entries = discover_target_system_entries(
+                    plan.target_java_home,
+                    plan.target_level,
                 )
                 lombok_agents = tuple(
                     f"{path}=ECJ" for path in plan.lombok_entries
@@ -1599,6 +1595,8 @@ class JavaRuntime(Runtime):
                         *plan.dependency_entries,
                     ),
                     source_encoding=plan.source_encoding,
+                    source_level=plan.source_level,
+                    method_parameters=plan.method_parameters,
                     processor_entries=plan.processor_entries,
                     java_agents=lombok_agents,
                     extra_jvm_arguments=lombok_worker_jvm_arguments(
@@ -1619,7 +1617,7 @@ class JavaRuntime(Runtime):
                 if current_generation is None:
                     raise JdtCompileError(
                         "CURRENT_GENERATION_UNAVAILABLE",
-                        "The Maven Generation disappeared before JDT validation.",
+                        "The current Generation disappeared before JDT validation.",
                     )
                 try:
                     compatibility = compare_class_output_tier1(
@@ -1629,13 +1627,13 @@ class JavaRuntime(Runtime):
                 except (ClassFileFormatError, OSError) as error:
                     raise JdtCompileError(
                         "JDT_BASELINE_CLASS_UNAVAILABLE",
-                        "A Maven or JDT baseline class could not be compared.",
+                        "A formal or JDT baseline class could not be compared.",
                     ) from error
                 if not compatibility["compatible"]:
                     raise JdtCompileError(
                         "JDT_BASELINE_INCOMPATIBLE",
                         "The JDT FULL output is not structurally compatible "
-                        "with the Maven Generation.",
+                        "with the formal build Generation.",
                         context={
                             key: value
                             for key, value in compatibility.items()
@@ -1749,6 +1747,7 @@ class JavaRuntime(Runtime):
                         jdt_unavailable_reason=(
                             prepared.jdt_unavailable_reason
                         ),
+                        build_system=prepared.build_system,
                     )
                 )
             context.transition(LaunchPhase.STARTING_JVM)
@@ -2740,6 +2739,7 @@ class JavaRuntime(Runtime):
                     snapshot["fast_update"] = {
                         "available": True,
                         "strategy": "jdt_incremental",
+                        "build_system": prepared.build_system,
                         "source_level": (
                             prepared.jdt_build_world_plan.source_level
                             if prepared.jdt_build_world_plan is not None
@@ -2791,6 +2791,7 @@ class JavaRuntime(Runtime):
                                 "available": False,
                                 "status": "unavailable",
                                 "reason": unavailable_reason,
+                                "build_system": prepared.build_system,
                                 **(
                                     unavailable_details
                                     if isinstance(unavailable_details, dict)
@@ -2810,14 +2811,19 @@ class JavaRuntime(Runtime):
                             "available": False,
                             "status": "initializing",
                             "strategy": "jdt_incremental",
+                            "build_system": prepared.build_system,
                         }
                 elif prepared.fast_compile_plan is not None:
                     snapshot["fast_update"] = (
                         prepared.fast_compile_plan.redacted_summary()
                     )
+                    snapshot["fast_update"]["build_system"] = (
+                        prepared.build_system
+                    )
                 else:
                     snapshot["fast_update"] = {
                         "available": False,
+                        "build_system": prepared.build_system,
                         "reason": (
                             prepared.fast_compile_unavailable_reason
                             or "FAST_COMPILE_UNSUPPORTED"
@@ -3952,7 +3958,7 @@ class JavaRuntime(Runtime):
                     "runtime_code_state": "unchanged",
                     "retryable": False,
                     "suggested_next_step": (
-                        "Use the formal Maven build and restart the application."
+                        "Use the formal project build and restart the application."
                     ),
                 },
             )
@@ -4076,7 +4082,7 @@ class JavaRuntime(Runtime):
             ):
                 raise JdtCompileError(
                     "SOURCE_OUTSIDE_BUILD_WORLD",
-                    "A reload source is outside the selected Maven module.",
+                    "A reload source is outside the selected project module.",
                 )
             key = os.path.normcase(str(candidate))
             if key not in seen:
@@ -4164,12 +4170,23 @@ class JavaRuntime(Runtime):
             staged = parse_class_file(staged_raw)
             comparison = compare_class_files(baseline, staged)
             if comparison.kind is ClassFileChangeKind.UNSUPPORTED:
+                baseline_metadata = dict(baseline.metadata)
+                staged_metadata = dict(staged.metadata)
                 raise FastCompileError(
                     "CLASS_SCHEMA_CHANGED",
                     "The JDT output changes class structure or metadata.",
                     retryable=False,
                     suggested_next_step="Use the restart reload path.",
-                    context={"change_reasons": list(comparison.reasons)},
+                    context={
+                        "change_reasons": list(comparison.reasons),
+                        "class_metadata_delta": sorted(
+                            name
+                            for name in baseline_metadata.keys()
+                            | staged_metadata.keys()
+                            if baseline_metadata.get(name)
+                            != staged_metadata.get(name)
+                        ),
+                    },
                 )
             if baseline.byte_sha256 == staged.byte_sha256:
                 continue
@@ -4468,6 +4485,10 @@ class JavaRuntime(Runtime):
             or result.candidate_deleted_classes
             or not bool(getattr(action, "hotswap", True))
         )
+        restart_reason = (
+            "explicit_restart_or_non_class_delta" if restart_required else None
+        )
+        restart_details: dict[str, Any] = {}
         updates: list[StagedClassUpdate] = []
         if not restart_required:
             try:
@@ -4475,8 +4496,12 @@ class JavaRuntime(Runtime):
                     current_generation,
                     result,
                 )
-            except (FastCompileError, ClassFileFormatError):
+            except (FastCompileError, ClassFileFormatError) as error:
                 restart_required = True
+                restart_reason = getattr(
+                    error, "error_code", type(error).__name__
+                )
+                restart_details = dict(getattr(error, "context", {}) or {})
         if restart_required:
             reload_attempt.source_fingerprint_after = source_fingerprint
             project_session.transition_reload(ReloadStage.RESTARTING)
@@ -4500,6 +4525,8 @@ class JavaRuntime(Runtime):
                     "apply_method": "restart",
                     "compile_ms": result.elapsed_ms,
                     "compiled_source_count": result.compiled_source_count,
+                    "restart_reason": restart_reason,
+                    **restart_details,
                 }
             )
             return restarted

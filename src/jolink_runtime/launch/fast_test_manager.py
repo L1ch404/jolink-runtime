@@ -27,7 +27,13 @@ from .jdt_compile_session import (
 )
 from .maven import MavenBuildSystemAdapter, MavenResolutionError
 from .maven_probe import MavenProbeError, ProductMavenProbe
-from .gradle_probe import GradleProbeError, ProductGradleProbe, wrapper_version
+from .gradle_probe import (
+    GradleProbeError,
+    ProductGradleProbe,
+    gradle_configuration_environment_names,
+    gradle_configuration_inputs,
+    wrapper_version,
+)
 from .gradle_test_build_world import (
     GradleBuildWorldError,
     create_gradle_test_build_world,
@@ -769,46 +775,9 @@ class FastTestManager:
             )
         model = probe.load_model(prepared)
         prepared.init_script.unlink(missing_ok=True)
-        gradle_user_home = Path(
-            os.environ.get("GRADLE_USER_HOME", str(Path.home() / ".gradle"))
-        ).expanduser().resolve(strict=False)
-        configuration_candidates = [
-            project / "build.gradle",
-            project / "build.gradle.kts",
-            project / "settings.gradle",
-            project / "settings.gradle.kts",
-            project / "gradle.properties",
-            project / "gradle/libs.versions.toml",
-            project / "gradle/wrapper/gradle-wrapper.properties",
-            project / "gradle/wrapper/gradle-wrapper.jar",
-            gradle_user_home / "gradle.properties",
-            gradle_user_home / "init.gradle",
-            gradle_user_home / "init.gradle.kts",
-            Path(__file__).parent / "gradle-build-world-probe-lock.json",
-        ]
-        for root in (project, project / "gradle", gradle_user_home / "init.d"):
-            if root.is_dir():
-                configuration_candidates.extend(root.rglob("*.gradle"))
-                configuration_candidates.extend(root.rglob("*.gradle.kts"))
-        configuration_inputs = tuple(
-            dict.fromkeys(
-                path.resolve(strict=False)
-                for path in configuration_candidates
-            )
-        )
-        configuration_environment_names = tuple(
-            sorted(
-                {
-                    "GRADLE_USER_HOME",
-                    "GRADLE_OPTS",
-                    "JAVA_OPTS",
-                    *(
-                        name
-                        for name in os.environ
-                        if name.startswith("ORG_GRADLE_PROJECT_")
-                    ),
-                }
-            )
+        configuration_inputs = gradle_configuration_inputs(project)
+        configuration_environment_names = (
+            gradle_configuration_environment_names()
         )
         world = create_gradle_test_build_world(
             model=model,

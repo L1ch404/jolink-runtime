@@ -94,12 +94,12 @@ readiness.
 They support two launch forms:
 
 - direct JVM launch with `jar_path`, or `main_class` plus `classpath`;
-- IDEA/Maven project launch with `project_path` and an optional exact
+- IDEA/Maven or IDEA/Gradle project launch with `project_path` and an optional exact
   `launch_name`.
 
 Project launch imports a supported IntelliJ IDEA Application or Spring Boot
-configuration, uses the selected Maven/JDK environment, compiles in the
-background, resolves the runtime classpath, and starts the managed JVM.
+configuration, uses the selected Maven or Gradle/JDK environment, compiles in
+the background, resolves the runtime classpath, and starts the managed JVM.
 `project_path` is mutually exclusive with direct JVM launch arguments.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
@@ -112,17 +112,17 @@ JDWP `RedefineClasses` operation. Structural/resource/add/delete changes,
 HotSwap rejection, or `hotswap=false` use a managed Candidate restart. The
 restart path requires `ready_port`. The Candidate is promoted only after
 readiness; startup failure restores the
-last-good Generation and reports `rolled_back=true`. It never mutates Maven
+last-good Generation and reports `rolled_back=true`. It never mutates formal
 output. Success is runtime evidence, not business-correctness proof; a fresh
 request is still required.
 
-The CompileSession freezes Maven-resolved source roots, compile dependencies,
+The CompileSession freezes build-authority source roots, compile dependencies,
 target platform, source encoding, Lombok/JSR-269 processor inputs, and the
 configuration fingerprint. Its initial FULL build is based on the exact source
 snapshot that produced the running Generation; `compile_ready` remains false
 until that baseline succeeds and its declared type set, public API shape, and
-class-file major are compatible with the Maven Generation. Source manifests
-before Maven, after Maven, and after snapshot copy must match. Every reload
+class-file major are compatible with the formal Generation. Source manifests
+before build, after build, and after snapshot copy must match. Every reload
 rechecks BuildWorld, Runtime,
 Generation, process identity, and selected source bytes before applying state.
 Changing those inputs requires a fresh launch rather than silently compiling

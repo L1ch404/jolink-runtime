@@ -32,7 +32,11 @@ from jolink_runtime.launch.process_supervisor import (
 )
 from jolink_runtime.launch.process_tree import TerminationReport
 from jolink_runtime.launch.maven_probe import ProductMavenProbe
-from jolink_runtime.launch.gradle_probe import ProductGradleProbe
+from jolink_runtime.launch.gradle_probe import (
+    ProductGradleProbe,
+    gradle_configuration_environment_names,
+    gradle_configuration_inputs,
+)
 from jolink_runtime.server.tool_schema import JAVA_APPLICATION_INPUT_SCHEMA
 
 
@@ -97,6 +101,35 @@ def test_product_gradle_probe_assets_are_content_checked(
     assert prepared.probe_sha256 == probe.sha256
     assert prepared.task_name.endswith(probe.sha256[:12])
     assert prepared.init_script.stat().st_mode & 0o777 == 0o600
+
+    runtime = probe.prepare(tmp_path / "runtime-attempt", scope="runtime")
+    command = probe.command(
+        wrapper=tmp_path / "gradlew", prepared=runtime, offline=True
+    )
+    assert "-Djolink.gradle.scope=runtime" in command
+    assert "--offline" in command
+
+
+def test_gradle_freshness_tracks_optional_configuration_and_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("GRADLE_USER_HOME", str(tmp_path / "gradle-home"))
+    monkeypatch.setenv("ORG_GRADLE_PROJECT_privateRepo", "configured")
+
+    inputs = gradle_configuration_inputs(project)
+
+    assert (
+        project / "gradle/libs.versions.toml"
+    ).resolve(strict=False) in inputs
+    assert (project / "gradle/wrapper/gradle-wrapper.jar").resolve(
+        strict=False
+    ) in inputs
+    assert "ORG_GRADLE_PROJECT_privateRepo" in (
+        gradle_configuration_environment_names()
+    )
 
 
 def test_framework_detection_uses_project_runtime_classes(

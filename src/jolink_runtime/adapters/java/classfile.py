@@ -991,9 +991,18 @@ def compare_class_output_tier1(
     extra = jdt_declared - maven_declared
     api_mismatches = 0
     major_mismatches = 0
+    major_mismatch_examples: list[dict[str, Any]] = []
     for name in maven_declared & jdt_declared:
         if maven[name].major_version != jdt[name].major_version:
             major_mismatches += 1
+            if len(major_mismatch_examples) < 8:
+                major_mismatch_examples.append(
+                    {
+                        "binary_name": name,
+                        "formal_major": maven[name].major_version,
+                        "jdt_major": jdt[name].major_version,
+                    }
+                )
         if _public_api_shape(maven[name]) != _public_api_shape(jdt[name]):
             api_mismatches += 1
     return {
@@ -1006,6 +1015,7 @@ def compare_class_output_tier1(
         "extra_declared_type_count": len(extra),
         "api_mismatch_count": api_mismatches,
         "class_major_mismatch_count": major_mismatches,
+        "class_major_mismatch_examples": major_mismatch_examples,
     }
 
 

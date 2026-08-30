@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,10 @@ from jolink_runtime.launch.gradle_test_build_world import (
     GradleBuildWorldError,
     create_gradle_test_build_world,
     javac_executable,
+)
+from jolink_runtime.launch.gradle_runtime_build_world import (
+    GradleRuntimeBuildWorldError,
+    create_gradle_runtime_build_world,
 )
 
 
@@ -282,3 +287,99 @@ def test_build_system_provider_dispatch_rejects_ambiguous_project(
         assert captured.value.error_code == "BUILD_SYSTEM_AMBIGUOUS"
     finally:
         manager.close()
+
+
+def _runtime_world(tmp_path: Path, model: dict):
+    project = tmp_path / "project"
+    model["exportScope"] = "runtime"
+    main_output = model["compileJava"]["destinationDirectory"]
+    model["main"]["runtimeClasspath"] = [
+        main_output,
+        *model["compileJava"]["classpath"],
+        str(project / "deps/runtime"),
+    ]
+    return create_gradle_runtime_build_world(
+        model=model,
+        project_root=project,
+        configuration_inputs=(project / "build.gradle",),
+        configuration_environment_names=("GRADLE_USER_HOME",),
+    )
+
+
+def test_product_gradle_runtime_world_creates_reload_authority(
+    tmp_path: Path,
+) -> None:
+    project, model = _model(tmp_path)
+
+    world = _runtime_world(tmp_path, model)
+
+    assert world.project_root == project.resolve()
+    assert world.module_output == Path(
+        model["compileJava"]["destinationDirectory"]
+    ).resolve()
+    assert world.runtime_classpath[0] == world.module_output
+    assert world.jdt_plan.source_level == 11
+    assert world.jdt_plan.target_level == 11
+    assert world.jdt_plan.source_encoding == "UTF-8"
+    assert world.jdt_plan.configuration_environment_names == (
+        "GRADLE_USER_HOME",
+    )
+
+
+def test_product_gradle_runtime_freshness_covers_resources_and_runtime_only_deps(
+    tmp_path: Path,
+) -> None:
+    project, model = _model(tmp_path)
+    world = _runtime_world(tmp_path, model)
+    assert world.jdt_plan.is_fresh() is True
+
+    resource = project / "src/main/resources/application.properties"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("feature=true\n", encoding="utf-8")
+    assert world.jdt_plan.is_fresh() is False
+
+    resource.unlink()
+    world = _runtime_world(tmp_path, model)
+    assert world.jdt_plan.is_fresh() is True
+    runtime_class = project / "deps/runtime/example/RuntimeOnly.class"
+    runtime_class.parent.mkdir(parents=True)
+    runtime_class.write_bytes(b"changed")
+    assert world.jdt_plan.is_fresh() is False
+
+
+def test_product_gradle_runtime_world_rejects_wrong_probe_scope(
+    tmp_path: Path,
+) -> None:
+    _project, model = _model(tmp_path)
+    model["exportScope"] = "test"
+    model["main"]["runtimeClasspath"] = [
+        model["compileJava"]["destinationDirectory"]
+    ]
+
+    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
+        create_gradle_runtime_build_world(
+            model=model,
+            project_root=tmp_path / "project",
+            configuration_inputs=(),
+            configuration_environment_names=(),
+        )
+
+    assert captured.value.error_code == "GRADLE_RUNTIME_PROBE_SCOPE_MISMATCH"
+
+
+def test_product_gradle_runtime_world_rejects_non_lombok_processor(
+    tmp_path: Path,
+) -> None:
+    project, model = _model(tmp_path)
+    processor = project / "deps/processor.jar"
+    with zipfile.ZipFile(processor, "w") as archive:
+        archive.writestr(
+            "META-INF/services/javax.annotation.processing.Processor",
+            "example.Processor\n",
+        )
+    model["compileJava"]["annotationProcessorPath"] = [str(processor)]
+
+    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
+        _runtime_world(tmp_path, model)
+
+    assert captured.value.error_code == "GRADLE_RUNTIME_PROCESSOR_UNMODELED"

@@ -117,9 +117,9 @@ processes / status / logs
 These actions support:
 
 - launching a Java application as an owned JVM process;
-- importing an IntelliJ IDEA Application/Spring Boot launch from a Maven
-  project, compiling it, resolving its runtime classpath, and launching it
-  without first packaging a fat JAR;
+- importing an IntelliJ IDEA Application/Spring Boot launch from a supported
+  Maven or Gradle Wrapper project, compiling it, resolving its runtime
+  classpath, and launching it without first packaging a fat JAR;
 - stopping or restarting an application after code changes;
 - compiling explicit edits in a persistent private JDT session, sealing a
   durable Candidate, and applying it by HotSwap or managed restart with

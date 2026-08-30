@@ -5,13 +5,13 @@ Contract-Version: `0.1`
 Implementation-Status: `implemented for Alpha dogfood`
 
 The P0 contract is implemented and advertised through the existing
-`java_runtime` Tool. The first Alpha path is IDEA → Maven → JVM; Eclipse,
-Gradle and persisted launch-plan caching remain outside this scope. A bounded
+`java_application` Tool. The Alpha paths are IDEA → Maven/Gradle → JVM;
+Eclipse and persisted launch-plan caching remain outside this scope. A bounded
 runtime-only HotSwap path for explicit Java method-body edits is included
 below.
 
 This extension lets joLink import an existing IDE launch configuration,
-compile the corresponding Maven project, resolve a runtime classpath, and
+compile the corresponding Maven or Gradle project, resolve a runtime classpath, and
 launch the application without requiring a prebuilt fat JAR or writing files
 into the user's project.
 
@@ -41,16 +41,20 @@ across server-process reconnects.
 P0 supports:
 
 - IDEA `Application` and Spring Boot application configurations;
-- the IDEA `Make` intent, implemented by joLink through Maven;
-- a single-module Maven project or a reactor module that maps uniquely;
+- the IDEA `Make` intent, implemented by joLink through Maven or a supported
+  Gradle Wrapper;
+- a single-module Maven project, a Maven reactor module that maps uniquely, or
+  one standard Gradle Project on Wrapper 8.10/8.14;
 - distinct build and runtime JDKs;
 - classpath launch, including a Windows/JDK 8 pathing-JAR fallback;
 - application TCP readiness through the existing `ready_port` contract.
 
-P0 does not implement Eclipse, Gradle, arbitrary IDEA before-launch tasks,
+P0 does not implement Eclipse, Gradle multi-Project/composite/custom SourceSet,
+arbitrary IDEA before-launch tasks,
 project-local `.jolink` files, parallel launch attempts, cross-module fast
 compilation, JPMS/module-path fast compilation, resource updates, annotation
-processing, or structural class HotSwap.
+processing beyond the separately verified Maven path and Gradle Lombok,
+or structural class HotSwap.
 
 ## IDEA import boundary
 

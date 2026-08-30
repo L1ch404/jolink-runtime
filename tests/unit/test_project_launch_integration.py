@@ -67,6 +67,27 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
     raise AssertionError("condition was not observed before the deadline")
 
 
+def test_gradle_runtime_requires_make_before_run(tmp_path: Path) -> None:
+    pipeline = ProjectLaunchPipeline()
+    imported = SimpleNamespace(
+        intent=SimpleNamespace(build_before_run=False), warnings=()
+    )
+
+    with pytest.raises(LaunchPipelineFailure) as captured:
+        pipeline._prepare_gradle(
+            None,
+            _request(tmp_path),
+            imported=imported,
+            preferences=None,
+            attempt_directory=tmp_path / "attempt",
+        )
+
+    assert (
+        captured.value.error_code
+        == "GRADLE_RUNTIME_REQUIRES_BUILD_BEFORE_RUN"
+    )
+
+
 def test_source_manifest_detects_edits_between_maven_and_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -199,6 +220,14 @@ class _PreparedPipeline:
                 effective_pom_file=self.root / "pom.xml",
                 classpath_file=self.root / "classpath.txt",
                 compile_classpath_file=self.root / "compile-classpath.txt",
+            ),
+            build_system="maven",
+            build_jdk=SimpleNamespace(home=Path("/jdk")),
+            module_output=output,
+            build_world_inputs=(
+                self.root / "pom.xml",
+                self.root / "classpath.txt",
+                self.root / "compile-classpath.txt",
             ),
             runtime_jdk=SimpleNamespace(java_executable=Path("/jdk/bin/java")),
             jvm_plan=plan,

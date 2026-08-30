@@ -47,6 +47,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private String requestId;
     private String probeSha256;
     private String exportTaskName;
+    private String exportScope;
 
     private static final class BoundaryException extends RuntimeException {
         final String code;
@@ -66,6 +67,11 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         }
         exportTaskName = "jolinkExportBuildWorld_"
                 + probeSha256.substring(0, 12);
+        exportScope = System.getProperty("jolink.gradle.scope", "test");
+        if (!exportScope.equals("test") && !exportScope.equals("runtime")) {
+            throw new GradleException(
+                    "GRADLE_PROBE_SCOPE_INVALID: " + exportScope);
+        }
         final String targetPath = System.getProperty(
                 "jolink.gradle.targetProject", ":");
         gradle.beforeProject(new Action<Project>() {
@@ -127,8 +133,10 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         }
         Task task = project.getTasks().create(exportTaskName);
         task.setGroup("joLink");
-        task.setDescription("Export a private task-native Java Test Build World.");
-        task.dependsOn("classes", "testClasses");
+        task.setDescription("Export a private task-native Java Build World.");
+        task.dependsOn(exportScope.equals("runtime")
+                ? Collections.singletonList("classes")
+                : Arrays.asList("classes", "testClasses"));
         task.doLast(ignored -> export(project));
     }
 
@@ -216,6 +224,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         root.put("probeSha256", probeSha256);
         root.put("exportTaskName", exportTaskName);
         root.put("targetProjectPath", project.getPath());
+        root.put("exportScope", exportScope);
         root.put("gradleVersion", project.getGradle().getGradleVersion());
         root.put("projectPath", project.getPath());
         root.put("projectName", project.getName());

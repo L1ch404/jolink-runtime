@@ -27,6 +27,7 @@ class PreparedGradleProbe:
     request_id: str
     probe_sha256: str
     task_name: str
+    scope: str = "test"
 
 
 class ProductGradleProbe:
@@ -68,18 +69,25 @@ class ProductGradleProbe:
             ) from error
         return cls(lock, raw, init)
 
-    def prepare(self, attempt_directory: Path) -> PreparedGradleProbe:
+    def prepare(
+        self,
+        attempt_directory: Path,
+        *,
+        scope: str = "test",
+    ) -> PreparedGradleProbe:
+        if scope not in {"test", "runtime"}:
+            raise GradleProbeError(
+                "GRADLE_PROBE_SCOPE_INVALID",
+                "The Gradle Probe scope is invalid.",
+            )
         attempt_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        cache = (
-            Path.home()
-            / ".cache/jolink-runtime/gradle-probe"
-            / self.sha256
-        )
+        cache = Path.home() / ".cache/jolink-runtime/gradle-probe" / self.sha256
         cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         probe = cache / "jolink-gradle-probe.jar"
-        if not probe.is_file() or hashlib.sha256(
-            probe.read_bytes()
-        ).hexdigest() != self.sha256:
+        if (
+            not probe.is_file()
+            or hashlib.sha256(probe.read_bytes()).hexdigest() != self.sha256
+        ):
             temporary = probe.with_name(f".{probe.name}.{os.getpid()}.tmp")
             temporary.write_bytes(self.raw)
             os.replace(temporary, probe)
@@ -98,6 +106,7 @@ class ProductGradleProbe:
             request_id=request_id,
             probe_sha256=self.sha256,
             task_name=f"jolinkExportBuildWorld_{self.sha256[:12]}",
+            scope=scope,
         )
 
     def command(
@@ -106,7 +115,14 @@ class ProductGradleProbe:
         wrapper: Path,
         prepared: PreparedGradleProbe,
         offline: bool,
+        scope: str | None = None,
     ) -> tuple[str, ...]:
+        scope = prepared.scope if scope is None else scope
+        if scope not in {"test", "runtime"}:
+            raise GradleProbeError(
+                "GRADLE_PROBE_SCOPE_INVALID",
+                "The Gradle Probe scope is invalid.",
+            )
         command = [
             str(wrapper),
             "--no-configuration-cache",
@@ -119,6 +135,7 @@ class ProductGradleProbe:
             f"-Djolink.gradle.requestId={prepared.request_id}",
             f"-Djolink.gradle.probeSha256={prepared.probe_sha256}",
             "-Djolink.gradle.slowCompileMillis=0",
+            f"-Djolink.gradle.scope={scope}",
         ]
         if offline:
             command.append("--offline")
@@ -127,9 +144,7 @@ class ProductGradleProbe:
 
     def load_model(self, prepared: PreparedGradleProbe) -> dict[str, Any]:
         try:
-            model = json.loads(
-                prepared.output_file.read_text(encoding="utf-8")
-            )
+            model = json.loads(prepared.output_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise GradleProbeError(
                 "GRADLE_PROBE_OUTPUT_UNAVAILABLE",
@@ -147,6 +162,7 @@ class ProductGradleProbe:
             or model.get("requestId") != prepared.request_id
             or model.get("exportTaskName") != prepared.task_name
             or model.get("targetProjectPath") != ":"
+            or model.get("exportScope", "test") != prepared.scope
         ):
             raise GradleProbeError(
                 "GRADLE_PROBE_IDENTITY_MISMATCH",
@@ -179,9 +195,58 @@ def wrapper_version(project: Path) -> str:
     return match.group(1)
 
 
+def gradle_configuration_inputs(project: Path) -> tuple[Path, ...]:
+    root = project.expanduser().resolve(strict=True)
+    gradle_home = (
+        Path(os.environ.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
+        .expanduser()
+        .resolve(strict=False)
+    )
+    candidates = [
+        root / "build.gradle",
+        root / "build.gradle.kts",
+        root / "settings.gradle",
+        root / "settings.gradle.kts",
+        root / "gradle.properties",
+        root / "gradle/libs.versions.toml",
+        root / "gradle/wrapper/gradle-wrapper.properties",
+        root / "gradle/wrapper/gradle-wrapper.jar",
+        gradle_home / "gradle.properties",
+        gradle_home / "init.gradle",
+        gradle_home / "init.gradle.kts",
+        Path(__file__).parent / "gradle-build-world-probe-lock.json",
+    ]
+    candidates.extend(root.glob("*.gradle"))
+    candidates.extend(root.glob("*.gradle.kts"))
+    for directory in (root / "gradle", gradle_home / "init.d"):
+        if directory.is_dir():
+            candidates.extend(directory.rglob("*.gradle"))
+            candidates.extend(directory.rglob("*.gradle.kts"))
+    return tuple(dict.fromkeys(path.resolve(strict=False) for path in candidates))
+
+
+def gradle_configuration_environment_names() -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                "GRADLE_USER_HOME",
+                "GRADLE_OPTS",
+                "JAVA_OPTS",
+                *(
+                    name
+                    for name in os.environ
+                    if name.startswith("ORG_GRADLE_PROJECT_")
+                ),
+            }
+        )
+    )
+
+
 __all__ = [
     "GradleProbeError",
     "PreparedGradleProbe",
     "ProductGradleProbe",
+    "gradle_configuration_inputs",
+    "gradle_configuration_environment_names",
     "wrapper_version",
 ]

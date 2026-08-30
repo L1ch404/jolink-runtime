@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shlex
 import shutil
 import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from .controller import (
     LaunchContext,
     LaunchPipelineFailure,
 )
-from .contracts import JvmLaunchPlan, LaunchErrorCode, LaunchPhase
+from .contracts import (
+    BuildOperationSpec,
+    BuildPlan,
+    JvmLaunchPlan,
+    LaunchErrorCode,
+    LaunchPhase,
+)
 from .idea_environment import (
     IdeaBuildPreferences,
     IdeaEnvironmentImporter,
@@ -23,6 +32,17 @@ from .idea_importer import (
     IdeaLaunchImporter,
 )
 from .fast_compile import FastCompilePlan
+from .gradle_probe import (
+    GradleProbeError,
+    ProductGradleProbe,
+    gradle_configuration_environment_names,
+    gradle_configuration_inputs,
+    wrapper_version,
+)
+from .gradle_runtime_build_world import (
+    GradleRuntimeBuildWorldError,
+    create_gradle_runtime_build_world,
+)
 from .jdt_compile_session import JdtBuildWorldPlan
 from .java_command import (
     JavaCommandMaterializer,
@@ -54,7 +74,11 @@ class ProjectLaunchRequest:
 
 @dataclass(frozen=True)
 class PreparedProjectLaunch:
-    execution: MavenExecutionPlan
+    execution: MavenExecutionPlan | None
+    build_system: str
+    build_jdk: JavaToolchainCandidate
+    module_output: Path
+    build_world_inputs: tuple[Path, ...]
     runtime_jdk: JavaToolchainCandidate
     jvm_plan: JvmLaunchPlan
     command: MaterializedJavaCommand
@@ -123,6 +147,41 @@ class ProjectLaunchPipeline:
         preferences = self._idea_environment.import_preferences(
             request.project_path
         )
+        has_maven = (request.project_path / "pom.xml").is_file()
+        has_gradle = (
+            (request.project_path / "gradlew").is_file()
+            or (request.project_path / "gradlew.bat").is_file()
+        ) and any(
+            (request.project_path / name).is_file()
+            for name in ("build.gradle", "build.gradle.kts")
+        )
+        if has_maven and has_gradle:
+            raise LaunchPipelineFailure(
+                "BUILD_SYSTEM_AMBIGUOUS",
+                "The project contains both supported Maven and Gradle builds.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use a project_path containing one authoritative build."
+                ),
+            )
+        if has_gradle:
+            try:
+                return self._prepare_gradle(
+                    context,
+                    request,
+                    imported=imported,
+                    preferences=preferences,
+                    attempt_directory=attempt_directory,
+                )
+            except GradleProbeError as error:
+                raise LaunchPipelineFailure(
+                    error.error_code,
+                    str(error),
+                    retryable=False,
+                    suggested_next_step=(
+                        "Correct the Gradle Wrapper/Probe input and retry launch."
+                    ),
+                ) from error
         try:
             workspace = self._maven.resolve_workspace(
                 request.project_path
@@ -292,6 +351,14 @@ class ProjectLaunchPipeline:
             )
         return PreparedProjectLaunch(
             execution=execution,
+            build_system="maven",
+            build_jdk=build_jdk,
+            module_output=module.output_directory,
+            build_world_inputs=(
+                execution.effective_pom_file,
+                execution.classpath_file,
+                execution.compile_classpath_file,
+            ),
             runtime_jdk=runtime_jdk,
             jvm_plan=plan,
             command=command,
@@ -314,6 +381,211 @@ class ProjectLaunchPipeline:
             source_manifest_fingerprint=source_manifest_after,
             source_manifest_before_ms=source_manifest_before_ms,
             source_manifest_after_ms=source_manifest_after_ms,
+        )
+
+    def _prepare_gradle(
+        self,
+        context: LaunchContext,
+        request: ProjectLaunchRequest,
+        *,
+        imported: Any,
+        preferences: IdeaBuildPreferences,
+        attempt_directory: Path,
+    ) -> PreparedProjectLaunch:
+        project = request.project_path.expanduser().resolve(strict=True)
+        if not imported.intent.build_before_run:
+            raise LaunchPipelineFailure(
+                "GRADLE_RUNTIME_REQUIRES_BUILD_BEFORE_RUN",
+                "Gradle Runtime launch requires IDEA Make/Build before run.",
+                retryable=False,
+                suggested_next_step=(
+                    "Enable Make/Build in the IDEA launch configuration and retry."
+                ),
+            )
+        if (project / "buildSrc").exists() or (project / "build-logic").exists():
+            raise LaunchPipelineFailure(
+                "GRADLE_BUILD_LOGIC_UNSUPPORTED",
+                "Gradle buildSrc/build-logic is not supported in G4.",
+                retryable=False,
+                suggested_next_step="Use the formal Gradle launch for this project.",
+            )
+        build_log = attempt_directory / "build.log"
+        build_jdk = self._select_java(
+            context,
+            preferences=preferences,
+            explicit_reference=None,
+            for_build=True,
+            cwd=project,
+            build_log=build_log,
+        )
+        runtime_jdk = self._select_java(
+            context,
+            preferences=preferences,
+            explicit_reference=imported.intent.runtime_jdk_reference,
+            for_build=False,
+            cwd=project,
+            build_log=build_log,
+            already_probed=build_jdk,
+        )
+        probe = ProductGradleProbe.load()
+        version = wrapper_version(project)
+        if version not in probe.supported_versions:
+            raise LaunchPipelineFailure(
+                "GRADLE_VERSION_UNSUPPORTED",
+                "This Gradle Wrapper version has no product evidence.",
+                retryable=False,
+                suggested_next_step="Use Gradle 8.10 or 8.14 for G4.",
+            )
+        wrapper = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
+        if not wrapper.is_file():
+            raise LaunchPipelineFailure(
+                "GRADLE_WRAPPER_UNAVAILABLE",
+                "The Gradle Wrapper executable is unavailable.",
+                retryable=True,
+                suggested_next_step="Restore the Gradle Wrapper and retry launch.",
+            )
+        prepared_probe = probe.prepare(
+            attempt_directory / "gradle-probe", scope="runtime"
+        )
+        gradle_args = shlex.split(os.environ.get("GRADLE_ARGS", ""))
+        if any(value not in {"-o", "--offline"} for value in gradle_args):
+            raise LaunchPipelineFailure(
+                "GRADLE_ARGUMENTS_UNSUPPORTED",
+                "Only Gradle offline mode is supported through GRADLE_ARGS.",
+                retryable=False,
+                suggested_next_step="Remove unsupported GRADLE_ARGS and retry.",
+            )
+        offline = any(value in {"-o", "--offline"} for value in gradle_args)
+        environment = JavaToolchainResolver.maven_environment(build_jdk)
+        context.set_build_plan(
+            BuildPlan(
+                build_system="gradle",
+                build_root=project,
+                target_module=":",
+                build_java_executable=build_jdk.java_executable,
+                compile_required=True,
+                provider_options={
+                    "gradle_version": version,
+                    "offline": offline,
+                },
+            )
+        )
+        source_roots = ((project / "src/main/java"),)
+        manifest_started = time.monotonic()
+        source_before = self.source_manifest_fingerprint(source_roots)
+        source_before_ms = (time.monotonic() - manifest_started) * 1000
+        context.transition(LaunchPhase.COMPILING)
+        operation = context.run_operation(
+            BuildOperationSpec(
+                argv=probe.command(
+                    wrapper=wrapper,
+                    prepared=prepared_probe,
+                    offline=offline,
+                ),
+                cwd=project,
+                environment=environment,
+                timeout_seconds=600.0,
+                output_capture=build_log,
+                max_output_bytes=16 * 1024 * 1024,
+                operation_name="gradle_runtime_bootstrap",
+            )
+        )
+        if operation.timed_out:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.BUILD_TIMEOUT,
+                "The supervised Gradle Runtime Bootstrap timed out.",
+                retryable=True,
+                suggested_next_step="Inspect build.log_tail and retry launch.",
+            )
+        if not operation.succeeded:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.BUILD_FAILED,
+                "The supervised Gradle Runtime Bootstrap failed.",
+                retryable=True,
+                suggested_next_step="Inspect build.log_tail and retry launch.",
+                context={"return_code": operation.return_code},
+            )
+        model = probe.load_model(prepared_probe)
+        prepared_probe.init_script.unlink(missing_ok=True)
+        manifest_started = time.monotonic()
+        source_after = self.source_manifest_fingerprint(source_roots)
+        source_after_ms = (time.monotonic() - manifest_started) * 1000
+        if source_before != source_after:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.SOURCE_CHANGED_DURING_BUILD,
+                "Project Java sources changed while Gradle was building.",
+                retryable=True,
+                suggested_next_step="Wait for source edits to settle and retry.",
+            )
+        configuration_inputs, environment_names = self._gradle_inputs(project)
+        try:
+            world = create_gradle_runtime_build_world(
+                model=model,
+                project_root=project,
+                configuration_inputs=configuration_inputs,
+                configuration_environment_names=environment_names,
+            )
+        except GradleRuntimeBuildWorldError as error:
+            raise LaunchPipelineFailure(
+                error.error_code,
+                str(error),
+                retryable=False,
+                suggested_next_step="Use the formal Gradle launch for this project.",
+            ) from error
+        runtime_major = runtime_jdk.major_version
+        if runtime_major is not None and runtime_major < world.jdt_plan.target_level:
+            raise LaunchPipelineFailure(
+                LaunchErrorCode.JAVA_TOOLCHAIN_NOT_FOUND,
+                "The selected Runtime JDK is older than Gradle compile target.",
+                retryable=True,
+                suggested_next_step="Select a compatible IDEA Runtime JDK.",
+            )
+        plan = JvmLaunchPlan(
+            java_executable=runtime_jdk.java_executable,
+            classpath=world.runtime_classpath,
+            main_class=imported.intent.main_class,
+            working_directory=imported.intent.working_directory,
+            jvm_args=imported.intent.jvm_args,
+            program_args=imported.intent.program_args,
+            environment_overrides=imported.intent.environment,
+            ready_port=request.ready_port,
+            startup_wait_timeout_seconds=request.startup_wait_timeout_seconds,
+        )
+        plan, command = self.materialize_command(
+            plan,
+            jdwp_port=request.jdwp_port,
+            attempt_directory=attempt_directory,
+        )
+        context.set_jvm_launch_plan(plan)
+        context.transition(LaunchPhase.RESOLVING_RUNTIME)
+        return PreparedProjectLaunch(
+            execution=None,
+            build_system="gradle",
+            build_jdk=build_jdk,
+            module_output=world.module_output,
+            build_world_inputs=world.configuration_inputs,
+            runtime_jdk=runtime_jdk,
+            jvm_plan=plan,
+            command=command,
+            warnings=tuple(dict.fromkeys((*imported.warnings, *preferences.warnings))),
+            attempt_directory=attempt_directory,
+            fast_compile_plan=None,
+            fast_compile_unavailable_reason="DIRECT_RELOAD_NOT_USED",
+            jdt_build_world_plan=world.jdt_plan,
+            source_manifest_fingerprint=source_after,
+            source_manifest_before_ms=source_before_ms,
+            source_manifest_after_ms=source_after_ms,
+        )
+
+    @staticmethod
+    def _gradle_inputs(project: Path) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+        inputs = list(gradle_configuration_inputs(project))
+        resources = project / "src/main/resources"
+        if resources.is_dir():
+            inputs.extend(path for path in resources.rglob("*") if path.is_file())
+        return (
+            tuple(dict.fromkeys(path.resolve(strict=False) for path in inputs)),
+            gradle_configuration_environment_names(),
         )
 
     def materialize_command(
@@ -416,8 +688,7 @@ class ProjectLaunchPipeline:
         if (
             already_probed is not None
             and any(
-                candidate.java_executable
-                == already_probed.java_executable
+                candidate.java_executable == already_probed.java_executable
                 for candidate in candidates
             )
             and (not for_build or already_probed.has_compiler)
@@ -435,17 +706,18 @@ class ProjectLaunchPipeline:
                     cwd=cwd,
                     output_capture=build_log,
                     operation_name=(
-                        "build_java_probe"
-                        if for_build
-                        else "runtime_java_probe"
+                        "build_java_probe" if for_build else "runtime_java_probe"
                     ),
                 )
             )
             if result.succeeded:
-                detected_major = self._read_probed_java_major(
-                    build_log,
-                    offset=log_offset,
-                ) or candidate.major_version
+                detected_major = (
+                    self._read_probed_java_major(
+                        build_log,
+                        offset=log_offset,
+                    )
+                    or candidate.major_version
+                )
                 detected_compiler_major: int | None = None
                 if for_build:
                     compiler_log_offset = self._file_size(build_log)
@@ -469,9 +741,7 @@ class ProjectLaunchPipeline:
                 return replace(
                     candidate,
                     detected_major_version=detected_major,
-                    detected_compiler_major_version=(
-                        detected_compiler_major
-                    ),
+                    detected_compiler_major_version=(detected_compiler_major),
                 )
         role = "build" if for_build else "runtime"
         raise LaunchPipelineFailure(
@@ -487,10 +757,7 @@ class ProjectLaunchPipeline:
                 "configured_reference": (
                     preferences.maven_runner_jdk_name
                     if for_build
-                    else (
-                        explicit_reference
-                        or preferences.project_jdk_name
-                    )
+                    else (explicit_reference or preferences.project_jdk_name)
                 ),
             },
         )
@@ -534,9 +801,7 @@ class ProjectLaunchPipeline:
                 )
         except OSError:
             return None
-        return JavaToolchainCandidate.parse_compiler_major_version_output(
-            output
-        )
+        return JavaToolchainCandidate.parse_compiler_major_version_output(output)
 
     def _select_maven(
         self,
