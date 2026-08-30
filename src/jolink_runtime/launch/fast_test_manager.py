@@ -868,8 +868,6 @@ class FastTestManager:
             *maven.argv_prefix,
             "--batch-mode",
             "--fail-fast",
-            "-T",
-            "1",
             "-Dstyle.color=never",
             "-f",
             str(workspace.root_pom),

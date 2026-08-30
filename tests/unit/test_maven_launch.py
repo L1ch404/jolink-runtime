@@ -212,9 +212,7 @@ def test_single_module_plan_builds_compile_and_runtime_classpath(
     assert operation.operation_name == "maven_compile_and_classpath"
     assert operation.cwd == project
     assert "--batch-mode" in operation.argv
-    assert ("-T", "1") == operation.argv[
-        operation.argv.index("-T") : operation.argv.index("-T") + 2
-    ]
+    assert "-T" not in operation.argv
     assert "compile" in operation.argv
     assert any(
         value.endswith(
