@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
@@ -1040,6 +1041,15 @@ class FastTestManager:
             for key, value in runner_support_provenance.items()
             if value is not None
         }
+        effective_root = self._maven._read_effective_pom(effective_pom)
+        effective_project = self._maven._select_effective_project(
+            effective_root, module
+        )
+        compiler_model = self._maven._compiler_model(
+            effective_project,
+            build_jdk=build_jdk,
+            runtime_jdk=build_jdk,
+        )
         for label, processing in (
             ("main", main_processing),
             ("test", test_processing),
@@ -1091,6 +1101,11 @@ class FastTestManager:
             for value in unsupported_test_compiler
             if value != "testCompile.parameters"
         ]
+        unsupported_test_compiler = self._unshared_test_compiler_configuration(
+            effective_project,
+            unsupported_test_compiler,
+            compiler_model=compiler_model,
+        )
         if unsupported_test_compiler:
             raise FastTestManagerError(
                 "FAST_TEST_COMPILER_CONFIGURATION_UNSUPPORTED",
@@ -1128,15 +1143,6 @@ class FastTestManager:
             path
             for path in main_processor_paths
             if path not in lombok
-        )
-        effective_root = self._maven._read_effective_pom(effective_pom)
-        effective_project = self._maven._select_effective_project(
-            effective_root, module
-        )
-        compiler_model = self._maven._compiler_model(
-            effective_project,
-            build_jdk=build_jdk,
-            runtime_jdk=build_jdk,
         )
         method_parameters = self._compiler_method_parameters(
             effective_project
@@ -1594,6 +1600,83 @@ class FastTestManager:
             "FAST_TEST_BUILD_JDK_UNAVAILABLE",
             "Fast Test requires a usable project build JDK.",
         )
+
+    def _unshared_test_compiler_configuration(
+        self,
+        project: ET.Element,
+        names: Sequence[str],
+        *,
+        compiler_model: dict[str, Any],
+    ) -> list[str]:
+        if not names:
+            return []
+        plugin = self._maven._find_build_plugin(
+            project, "maven-compiler-plugin"
+        )
+        if plugin is None:
+            return list(names)
+        values: dict[str, list[str]] = {}
+        direct = plugin.find("./{*}configuration")
+        if direct is not None:
+            for field in ("testSource", "testTarget", "testEncoding"):
+                value = self._maven._config_text(direct, field)
+                if value:
+                    values.setdefault(field, []).append(value)
+        for execution in plugin.findall("./{*}executions/{*}execution"):
+            goals = {
+                (goal.text or "").strip()
+                for goal in execution.findall("./{*}goals/{*}goal")
+            }
+            if "testCompile" not in goals:
+                continue
+            configuration = execution.find("./{*}configuration")
+            if configuration is None:
+                continue
+            for field in ("source", "target", "encoding"):
+                value = self._maven._config_text(configuration, field)
+                if value:
+                    values.setdefault(f"testCompile.{field}", []).append(
+                        value
+                    )
+
+        source_level = int(compiler_model["source_level"])
+        target_level = int(compiler_model["target_level"])
+        expected_levels = {
+            "testSource": source_level,
+            "testTarget": target_level,
+            "testCompile.source": source_level,
+            "testCompile.target": target_level,
+        }
+        expected_encoding = self._maven._source_encoding(
+            project, require_host_codec=False
+        ).casefold()
+
+        def shared(name: str) -> bool:
+            observed = values.get(name, [])
+            if not observed:
+                return False
+            if name in expected_levels:
+                expected = expected_levels[name]
+                normalized: set[int] = set()
+                for value in observed:
+                    try:
+                        normalized.add(
+                            int(
+                                value.split(".", 2)[1]
+                                if value.startswith("1.")
+                                else value.split(".", 1)[0]
+                            )
+                        )
+                    except (ValueError, IndexError):
+                        return False
+                return normalized == {expected}
+            if name in {"testEncoding", "testCompile.encoding"}:
+                return {value.casefold() for value in observed} == {
+                    expected_encoding
+                }
+            return False
+
+        return [name for name in names if not shared(str(name))]
 
     def _compiler_method_parameters(self, project: Any) -> bool:
         plugin = self._maven._find_build_plugin(

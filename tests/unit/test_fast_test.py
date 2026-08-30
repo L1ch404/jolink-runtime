@@ -5,6 +5,7 @@ import threading
 import time
 import socket
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -331,6 +332,46 @@ def test_fast_test_bootstrap_log_tail_is_bounded_and_redacted(
     assert "secret-value" not in rendered
     assert "user:password" not in rendered
     assert "ordinary failure" in rendered
+
+
+def test_fast_test_accepts_shared_test_compile_source_target_encoding() -> None:
+    project = ET.fromstring(
+        """
+<project>
+  <properties><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+  <build><plugins><plugin>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration><source>1.8</source><target>1.8</target><encoding>UTF-8</encoding></configuration>
+    <executions><execution><goals><goal>testCompile</goal></goals><configuration>
+      <source>1.8</source><target>1.8</target><encoding>UTF-8</encoding>
+    </configuration></execution></executions>
+  </plugin></plugins></build>
+</project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        unsupported = manager._unshared_test_compiler_configuration(
+            project,
+            (
+                "testCompile.source",
+                "testCompile.target",
+                "testCompile.encoding",
+            ),
+            compiler_model={"source_level": 8, "target_level": 8},
+        )
+        assert unsupported == []
+        project.find(
+            ".//executions/execution/configuration/target"
+        ).text = "11"
+        unsupported = manager._unshared_test_compiler_configuration(
+            project,
+            ("testCompile.target",),
+            compiler_model={"source_level": 8, "target_level": 8},
+        )
+        assert unsupported == ["testCompile.target"]
+    finally:
+        manager.close()
 
 
 def test_reactor_module_is_selected_by_explicit_test_class(
