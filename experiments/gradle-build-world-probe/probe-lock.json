@@ -1,0 +1,8 @@
+{
+  "schema": "jolink.gradle-build-world-probe.lock.v1",
+  "probe_version": "0.1.0-spike1",
+  "sha256": "42dcf22fab6e98374a508d67dcadb94f15ef184cbdff1352419235d92dce5af9",
+  "class_major": 52,
+  "build_gradle_version": "8.10",
+  "compatibility_status": "g1_gradle_8_10_and_8_14_only"
+}

@@ -1,0 +1,29 @@
+plugins {
+    id 'java-gradle-plugin'
+}
+
+group = 'io.jolink'
+version = '0.1.0-spike1'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+gradlePlugin {
+    plugins {
+        jolinkBuildWorldProbe {
+            id = 'io.jolink.build-world-probe'
+            implementationClass = 'io.jolink.gradle.JoLinkGradleInitPlugin'
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.withType(Jar).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}

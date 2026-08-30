@@ -1,0 +1,7 @@
+initscript {
+    dependencies {
+        classpath files(System.getProperty('jolink.gradle.probeJar'))
+    }
+}
+
+apply plugin: io.jolink.gradle.JoLinkGradleInitPlugin
