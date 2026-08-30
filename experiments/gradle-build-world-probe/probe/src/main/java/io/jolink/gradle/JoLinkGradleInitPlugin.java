@@ -23,6 +23,7 @@ import java.util.Objects;
 import java.util.Set;
 
 import org.gradle.api.Action;
+import org.gradle.api.GradleException;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.api.Task;
@@ -31,19 +32,40 @@ import org.gradle.api.tasks.SourceSet;
 import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.testing.Test;
+import org.gradle.api.tasks.testing.junit.JUnitOptions;
 import org.gradle.api.tasks.testing.junitplatform.JUnitPlatformOptions;
 import org.gradle.api.tasks.testing.testng.TestNGOptions;
 import org.gradle.jvm.toolchain.JavaCompiler;
+import org.gradle.jvm.toolchain.JavaLauncher;
 
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-spike1";
+    private static final String VERSION = "0.1.0-spike2";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
+    private String requestId;
+    private String probeSha256;
+    private String exportTaskName;
+
+    private static final class BoundaryException extends RuntimeException {
+        final String code;
+
+        BoundaryException(String code, String message) {
+            super(code + ": " + message);
+            this.code = code;
+        }
+    }
 
     @Override
     public void apply(final Gradle gradle) {
+        requestId = requiredIdentity("jolink.gradle.requestId", 8, 128);
+        probeSha256 = requiredIdentity("jolink.gradle.probeSha256", 64, 64);
+        if (!probeSha256.matches("[0-9a-f]{64}")) {
+            throw new GradleException("GRADLE_PROBE_IDENTITY_INVALID: probe SHA");
+        }
+        exportTaskName = "jolinkExportBuildWorld_"
+                + probeSha256.substring(0, 12);
         final String targetPath = System.getProperty(
                 "jolink.gradle.targetProject", ":");
         gradle.beforeProject(new Action<Project>() {
@@ -64,13 +86,46 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 baselineEnvironments.put(
                         task.getPath(), stringify(task.getEnvironment())));
         registerExportTask(project);
+        registerSlowCompileGate(project);
+    }
+
+    private void registerSlowCompileGate(final Project project) {
+        long slowMillis = Long.parseLong(System.getProperty(
+                "jolink.gradle.slowCompileMillis", "0"));
+        if (slowMillis <= 0) {
+            return;
+        }
+        String taskName = "jolinkSlowCompileGate_"
+                + probeSha256.substring(0, 12);
+        if (project.getTasks().findByName(taskName) != null) {
+            throw new GradleException(
+                    "GRADLE_PROBE_TASK_CONFLICT: " + taskName);
+        }
+        Task gate = project.getTasks().create(taskName);
+        gate.doLast(ignored -> {
+            try {
+                Path marker = outputPath().resolveSibling(
+                        outputPath().getFileName() + ".started");
+                Files.createDirectories(marker.getParent());
+                Files.write(marker, "started\n".getBytes(StandardCharsets.UTF_8));
+                restrict(marker);
+                Thread.sleep(Math.min(slowMillis, 120_000L));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new GradleException("GRADLE_PROBE_SLOW_GATE_INTERRUPTED");
+            } catch (IOException error) {
+                throw new GradleException("GRADLE_PROBE_SLOW_GATE_FAILED", error);
+            }
+        });
+        project.getTasks().getByName("compileJava").dependsOn(gate);
     }
 
     private void registerExportTask(final Project project) {
-        if (project.getTasks().findByName("jolinkExportBuildWorld") != null) {
-            return;
+        if (project.getTasks().findByName(exportTaskName) != null) {
+            throw new GradleException(
+                    "GRADLE_PROBE_TASK_CONFLICT: " + exportTaskName);
         }
-        Task task = project.getTasks().create("jolinkExportBuildWorld");
+        Task task = project.getTasks().create(exportTaskName);
         task.setGroup("joLink");
         task.setDescription("Export a private task-native Java Test Build World.");
         task.dependsOn("classes", "testClasses");
@@ -78,58 +133,89 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     }
 
     private void export(Project project) {
-        String rawOutput = System.getProperty("jolink.gradle.output");
-        if (rawOutput == null || rawOutput.trim().isEmpty()) {
-            throw new IllegalArgumentException("Missing jolink.gradle.output.");
-        }
-        Path output = new File(rawOutput).toPath().toAbsolutePath().normalize();
+        Path output = outputPath();
         Path started = output.resolveSibling(output.getFileName() + ".started");
         try {
             Files.createDirectories(output.getParent());
             Files.write(started, "started\n".getBytes(StandardCharsets.UTF_8));
             restrict(started);
-            long slowMillis = Long.parseLong(System.getProperty(
-                    "jolink.gradle.slowMillis", "0"));
-            if (slowMillis > 0) {
-                Thread.sleep(Math.min(slowMillis, 120_000L));
-            }
-            String json = render(project);
-            Path temporary = output.resolveSibling(
-                    "." + output.getFileName() + ".tmp");
-            Files.write(temporary, json.getBytes(StandardCharsets.UTF_8));
-            restrict(temporary);
             try {
-                Files.move(
-                        temporary,
-                        output,
-                        StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException ignored) {
-                Files.move(
-                        temporary,
-                        output,
-                        StandardCopyOption.REPLACE_EXISTING);
+                writePrivate(output, render(project));
+            } catch (BoundaryException boundary) {
+                Map<String, Object> failure = new LinkedHashMap<>();
+                failure.put("ok", false);
+                failure.put("schema", SCHEMA);
+                failure.put("probeVersion", VERSION);
+                failure.put("requestId", requestId);
+                failure.put("probeSha256", probeSha256);
+                failure.put("targetProjectPath", project.getPath());
+                failure.put("errorCode", boundary.code);
+                failure.put("message", boundary.getMessage());
+                writePrivate(output, json(failure) + "\n");
+                throw boundary;
             }
-            restrict(output);
         } catch (Exception error) {
             throw new RuntimeException("Unable to export joLink Build World.", error);
         }
     }
 
+    private static Path outputPath() {
+        String rawOutput = System.getProperty("jolink.gradle.output");
+        if (rawOutput == null || rawOutput.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing jolink.gradle.output.");
+        }
+        return new File(rawOutput).toPath().toAbsolutePath().normalize();
+    }
+
+    private static void writePrivate(Path output, String content)
+            throws IOException {
+        Path temporary = output.resolveSibling(
+                "." + output.getFileName() + ".tmp");
+        Files.write(temporary, content.getBytes(StandardCharsets.UTF_8));
+        restrict(temporary);
+        try {
+            Files.move(
+                    temporary,
+                    output,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(
+                    temporary,
+                    output,
+                    StandardCopyOption.REPLACE_EXISTING);
+        }
+        restrict(output);
+    }
+
     private String render(Project project) throws Exception {
         SourceSetContainer sourceSets = project.getExtensions()
                 .getByType(SourceSetContainer.class);
+        validateBoundaries(project, sourceSets);
         SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
         SourceSet test = sourceSets.getByName(SourceSet.TEST_SOURCE_SET_NAME);
-        JavaCompile compileJava = (JavaCompile) project.getTasks()
+        Task rawCompileJava = project.getTasks()
                 .getByName(main.getCompileJavaTaskName());
-        JavaCompile compileTestJava = (JavaCompile) project.getTasks()
+        Task rawCompileTestJava = project.getTasks()
                 .getByName(test.getCompileJavaTaskName());
+        if (!(rawCompileJava instanceof JavaCompile)
+                || !(rawCompileTestJava instanceof JavaCompile)) {
+            throw boundary(
+                    "GRADLE_COMPILE_TASK_UNSUPPORTED",
+                    "Expected compileJava and compileTestJava to be JavaCompile tasks.");
+        }
+        JavaCompile compileJava = (JavaCompile) rawCompileJava;
+        JavaCompile compileTestJava = (JavaCompile) rawCompileTestJava;
         Test testTask = (Test) project.getTasks().getByName("test");
 
         Map<String, Object> root = new LinkedHashMap<>();
+        root.put("ok", true);
         root.put("schema", SCHEMA);
         root.put("probeVersion", VERSION);
+        root.put("requestId", requestId);
+        root.put("probeSha256", probeSha256);
+        root.put("exportTaskName", exportTaskName);
+        root.put("targetProjectPath", project.getPath());
         root.put("gradleVersion", project.getGradle().getGradleVersion());
         root.put("projectPath", project.getPath());
         root.put("projectName", project.getName());
@@ -137,6 +223,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         root.put("rootDirectory", canonical(project.getRootDir()));
         root.put("gradleDaemonJavaHome", canonical(new File(
                 System.getProperty("java.home"))));
+        root.put("gradleDaemonJavaVersion", System.getProperty(
+                "java.specification.version"));
         root.put("main", sourceSet(main));
         root.put("test", sourceSet(test));
         root.put("compileJava", compileTask(compileJava));
@@ -145,21 +233,50 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return json(root) + "\n";
     }
 
+    private static void validateBoundaries(
+            Project project, SourceSetContainer sourceSets) {
+        if (project.getRootProject().getAllprojects().size() != 1) {
+            throw boundary(
+                    "GRADLE_MULTI_PROJECT_UNSUPPORTED",
+                    "G1.1 requires exactly one Gradle Project.");
+        }
+        Set<String> sourceSetNames = new LinkedHashSet<>();
+        for (SourceSet sourceSet : sourceSets) {
+            sourceSetNames.add(sourceSet.getName());
+        }
+        Set<String> expectedSourceSets = new LinkedHashSet<>(
+                Arrays.asList("main", "test"));
+        if (!sourceSetNames.equals(expectedSourceSets)) {
+            throw boundary(
+                    "GRADLE_SOURCE_SET_UNSUPPORTED",
+                    "G1.1 requires exactly main and test SourceSets.");
+        }
+        Set<String> testTaskNames = new LinkedHashSet<>();
+        for (Test test : project.getTasks().withType(Test.class)) {
+            testTaskNames.add(test.getName());
+        }
+        if (!testTaskNames.equals(Collections.singleton("test"))) {
+            throw boundary(
+                    "GRADLE_TEST_TASK_UNSUPPORTED",
+                    "G1.1 requires exactly the default test Test task.");
+        }
+    }
+
     private static Map<String, Object> sourceSet(SourceSet sourceSet)
             throws IOException {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("name", sourceSet.getName());
-        result.put("javaSourceDirectories", files(
+        result.put("javaSourceDirectories", orderedFiles(
                 sourceSet.getJava().getSrcDirs()));
-        result.put("resourceDirectories", files(
+        result.put("resourceDirectories", orderedFiles(
                 sourceSet.getResources().getSrcDirs()));
-        result.put("classesDirectories", files(
+        result.put("classesDirectories", orderedFiles(
                 sourceSet.getOutput().getClassesDirs().getFiles()));
         result.put("resourcesDirectory", nullableFile(
                 sourceSet.getOutput().getResourcesDir()));
-        result.put("compileClasspath", files(
+        result.put("compileClasspath", orderedFiles(
                 sourceSet.getCompileClasspath().getFiles()));
-        result.put("runtimeClasspath", files(
+        result.put("runtimeClasspath", orderedFiles(
                 sourceSet.getRuntimeClasspath().getFiles()));
         return result;
     }
@@ -170,8 +287,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("taskPath", task.getPath());
         result.put("sourceCompatibility", task.getSourceCompatibility());
         result.put("targetCompatibility", task.getTargetCompatibility());
-        result.put("sourceFiles", files(task.getSource().getFiles()));
-        result.put("classpath", files(task.getClasspath().getFiles()));
+        result.put("sourceFiles", orderedFiles(task.getSource().getFiles()));
+        result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
         result.put("destinationDirectory", canonical(
                 task.getDestinationDirectory().get().getAsFile()));
         result.put("encoding", task.getOptions().getEncoding());
@@ -179,7 +296,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 task.getOptions().getCompilerArgs()));
         result.put("compilerArgsIdentity", identity(
                 task.getOptions().getCompilerArgs()));
-        result.put("annotationProcessorPath", files(
+        result.put("annotationProcessorPath", orderedFiles(
                 task.getOptions().getAnnotationProcessorPath() == null
                         ? Collections.<File>emptySet()
                         : task.getOptions().getAnnotationProcessorPath().getFiles()));
@@ -198,11 +315,29 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("taskPath", task.getPath());
         result.put("framework", framework(task));
-        result.put("testClassesDirectories", files(
+        result.put("testClassesDirectories", orderedFiles(
                 task.getTestClassesDirs().getFiles()));
-        result.put("classpath", files(task.getClasspath().getFiles()));
+        result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
         result.put("workingDirectory", canonical(task.getWorkingDir()));
         result.put("enableAssertions", task.getEnableAssertions());
+        JavaLauncher launcher = task.getJavaLauncher().getOrNull();
+        result.put("javaHome", launcher == null ? null : canonical(
+                launcher.getMetadata().getInstallationPath().getAsFile()));
+        result.put("javaExecutable", launcher == null ? null : canonical(
+                launcher.getExecutablePath().getAsFile()));
+        result.put("javaVersion", launcher == null ? null
+                : launcher.getMetadata().getLanguageVersion().asInt());
+        result.put("javaSelectionSource", "resolved_java_launcher");
+        result.put("minHeapSize", task.getMinHeapSize());
+        result.put("maxHeapSize", task.getMaxHeapSize());
+        result.put("jvmArgumentProviderCount",
+                task.getJvmArgumentProviders().size());
+        result.put("jvmArgumentProvidersUnmodeled",
+                !task.getJvmArgumentProviders().isEmpty());
+        result.put("bootstrapClasspath", orderedFiles(
+                task.getBootstrapClasspath().getFiles()));
+        result.put("maxParallelForks", task.getMaxParallelForks());
+        result.put("forkEvery", task.getForkEvery());
         List<String> jvmArgs = new ArrayList<>(task.getJvmArgs());
         result.put("jvmArgsPrivate", jvmArgs);
         result.put("jvmArgsIdentity", identity(jvmArgs));
@@ -238,7 +373,28 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         if (task.getOptions() instanceof TestNGOptions) {
             return "testng";
         }
-        return "junit4";
+        if (task.getOptions() instanceof JUnitOptions) {
+            return "junit4";
+        }
+        throw boundary(
+                "GRADLE_TEST_FRAMEWORK_UNSUPPORTED",
+                "The Test task uses an unsupported framework options type.");
+    }
+
+    private static BoundaryException boundary(String code, String message) {
+        return new BoundaryException(code, message);
+    }
+
+    private static String requiredIdentity(
+            String name, int minimum, int maximum) {
+        String value = System.getProperty(name);
+        if (value == null || value.length() < minimum
+                || value.length() > maximum
+                || !value.matches("[A-Za-z0-9_.-]+")) {
+            throw new GradleException(
+                    "GRADLE_PROBE_IDENTITY_INVALID: " + name);
+        }
+        return value;
     }
 
     private static Map<String, String> environmentDifference(
@@ -272,13 +428,12 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return result;
     }
 
-    private static List<String> files(Collection<File> values)
+    private static List<String> orderedFiles(Collection<File> values)
             throws IOException {
         List<String> result = new ArrayList<>();
         for (File value : values) {
             result.add(canonical(value));
         }
-        Collections.sort(result);
         return result;
     }
 

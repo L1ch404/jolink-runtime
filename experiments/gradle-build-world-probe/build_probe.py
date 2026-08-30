@@ -24,6 +24,17 @@ def main() -> int:
     args = parser.parse_args()
     gradle = args.gradle.expanduser().resolve(strict=True)
     java_home = args.java_home.expanduser().resolve(strict=True)
+    java_probe = subprocess.run(
+        (str(java_home / "bin/java"), "-XshowSettings:properties", "-version"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    java_details = java_probe.stdout + java_probe.stderr
+    if "java.specification.version = 1.8" not in java_details:
+        raise SystemExit("The G1.1 Probe must be built with a real JDK 8.")
     environment = {
         **os.environ,
         "JAVA_HOME": str(java_home),
@@ -50,7 +61,7 @@ def main() -> int:
     )
     if completed.returncode != 0:
         raise SystemExit(completed.stdout + completed.stderr)
-    jar = PROJECT / "build/libs/jolink-gradle-probe-0.1.0-spike1.jar"
+    jar = PROJECT / "build/libs/jolink-gradle-probe-0.1.0-spike2.jar"
     digest = hashlib.sha256(jar.read_bytes()).hexdigest()
     with zipfile.ZipFile(jar) as archive:
         majors = {
@@ -78,6 +89,7 @@ def main() -> int:
                 "probe_jar": str(jar),
                 "sha256": digest,
                 "class_major": lock["class_major"],
+                "build_java_version": "8",
             },
             separators=(",", ":"),
         )
