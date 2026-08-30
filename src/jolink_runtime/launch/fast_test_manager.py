@@ -185,6 +185,8 @@ class TestAttempt:
     compile_ms: float | None = None
     runner_ms: float | None = None
     post_test_freshness_ms: float | None = None
+    compiled_source_count: int = 0
+    compiled_source_units: tuple[str, ...] = ()
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
     thread: threading.Thread | None = None
@@ -220,6 +222,10 @@ class TestAttempt:
             value = getattr(self, name)
             if value is not None:
                 payload[name] = value
+        payload["compiled_source_count"] = self.compiled_source_count
+        payload["compiled_source_units"] = list(
+            self.compiled_source_units
+        )
         if self.result is not None:
             payload.update(self.result)
         return payload
@@ -387,6 +393,12 @@ class FastTestManager:
                     compiled = project.compiler.compile(selected_sources)
                     attempt.require_not_cancelled()
                     attempt.compile_ms = compiled.elapsed_ms
+                    attempt.compiled_source_count = (
+                        compiled.compiled_source_count
+                    )
+                    attempt.compiled_source_units = tuple(
+                        compiled.compiled_source_units
+                    )
                     if not compiled.main_compile_ok or not compiled.test_compile_ok:
                         attempt.state = "compile_failed"
                         attempt.result = {

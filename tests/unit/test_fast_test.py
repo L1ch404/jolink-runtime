@@ -291,6 +291,27 @@ def test_fast_test_manager_starts_idle_and_closes() -> None:
     assert manager.close() is True
 
 
+def test_fast_test_attempt_exposes_compiled_source_identity(tmp_path: Path) -> None:
+    attempt = FastTestAttempt(
+        test_run_id="test_compiled_identity",
+        generation=1,
+        owner=AttemptToken("test_compiled_identity", 1),
+        project_path=tmp_path,
+        source_files=("src/test/java/example/AppTest.java",),
+        tests=("example.AppTest#works",),
+        timeout_seconds=30,
+        compiled_source_count=1,
+        compiled_source_units=("test-src/example/AppTest.java",),
+    )
+
+    snapshot = attempt.snapshot()
+
+    assert snapshot["compiled_source_count"] == 1
+    assert snapshot["compiled_source_units"] == [
+        "test-src/example/AppTest.java"
+    ]
+
+
 def test_reactor_module_is_selected_by_explicit_test_class(
     tmp_path: Path,
 ) -> None:
