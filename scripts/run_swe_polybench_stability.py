@@ -125,12 +125,11 @@ def _build_environment_prefix(test_command: str) -> str:
         f"export JAVA_HOME={java_home}",
         f"export PATH={java_home}/bin:$PATH",
     ]
-    if "1.8" in java_home or "java-8" in java_home:
-        values.append(
-            "export MAVEN_OPTS=\"${MAVEN_OPTS:-} "
-            "-Djdk.tls.client.protocols=TLSv1.2 "
-            "-Dhttps.protocols=TLSv1.2\""
-        )
+    values.append(
+        "export MAVEN_OPTS=\"${MAVEN_OPTS:-} "
+        "-Djdk.tls.client.protocols=TLSv1.2 "
+        "-Dhttps.protocols=TLSv1.2\""
+    )
     return "; ".join(values) + "; "
 
 

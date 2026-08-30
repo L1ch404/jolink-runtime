@@ -168,12 +168,11 @@ def main() -> int:
             + os.pathsep
             + os.environ.get("PATH", "")
         )
-        if "1.8" in str(java_home) or "java-8" in str(java_home):
-            os.environ["MAVEN_OPTS"] = (
-                os.environ.get("MAVEN_OPTS", "")
-                + " -Djdk.tls.client.protocols=TLSv1.2"
-                + " -Dhttps.protocols=TLSv1.2"
-            ).strip()
+        os.environ["MAVEN_OPTS"] = (
+            os.environ.get("MAVEN_OPTS", "")
+            + " -Djdk.tls.client.protocols=TLSv1.2"
+            + " -Dhttps.protocols=TLSv1.2"
+        ).strip()
     project = Path(config["project_path"]).resolve(strict=True)
     selector = str(config["selector"])
     class_name, separator, method_name = selector.rpartition("#")
