@@ -207,6 +207,9 @@ def main() -> int:
         "source_selection": (
             "test_patch" if config.get("source_hint") else "unique_search"
         ),
+        "source_hint_candidate_count": int(
+            config.get("source_hint_candidate_count", 0)
+        ),
         "official_selected": official,
         "java_home": java_home,
         "official_failure_kind": config.get("official_failure_kind"),
@@ -220,7 +223,11 @@ def main() -> int:
             dispatcher,
             project=project,
             selector=selector,
-            source_files=(),
+            source_files=(
+                (source_relative,)
+                if int(config.get("source_hint_candidate_count", 0)) > 1
+                else ()
+            ),
             timeout=float(config.get("fast_test_timeout", 600)),
         )
         report["stages"]["baseline"] = baseline

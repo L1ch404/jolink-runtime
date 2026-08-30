@@ -118,7 +118,7 @@ def _java_home(test_command: str) -> str | None:
     return match.group(1).rstrip("/") if match else None
 
 
-def _source_hint(test_patch: str, selector: str) -> str | None:
+def _source_hint(test_patch: str, selector: str) -> tuple[str | None, int]:
     class_name = selector.partition("#")[0].split("$", 1)[0]
     suffix = "/".join(class_name.split(".")) + ".java"
     candidates = []
@@ -128,7 +128,11 @@ def _source_hint(test_patch: str, selector: str) -> str | None:
         path = line[6:].strip()
         if path.endswith(suffix) and path not in candidates:
             candidates.append(path)
-    return candidates[0] if len(candidates) == 1 else None
+    if not candidates:
+        return None, 0
+    return min(candidates, key=lambda value: (value.count("/"), value)), len(
+        candidates
+    )
 
 
 def _build_environment_prefix(test_command: str) -> str:
@@ -432,6 +436,9 @@ def _instance(
                 time.monotonic() - fallback_started
             )
 
+        source_hint, source_hint_count = _source_hint(
+            row["test_patch"], report["selected_test"]
+        )
         sanitized = {
             "instance_id": instance_id,
             "project_path": "/testbed",
@@ -439,9 +446,8 @@ def _instance(
             "fast_test_timeout": fast_timeout,
             "java_home": _java_home(row["test_command"]),
             "official_failure_kind": report["official_failure_kind"],
-            "source_hint": _source_hint(
-                row["test_patch"], report["selected_test"]
-            ),
+            "source_hint": source_hint,
+            "source_hint_candidate_count": source_hint_count,
         }
         input_path = instance_dir / "driver-input.json"
         _atomic_json(input_path, sanitized)
