@@ -191,6 +191,7 @@ def main() -> int:
         "source_file": source_relative,
         "official_selected": official,
         "java_home": java_home,
+        "official_failure_kind": config.get("official_failure_kind"),
         "stages": {},
     }
     official_known = official.get("outcome") in {"passed", "failed"}
@@ -206,11 +207,23 @@ def main() -> int:
         )
         report["stages"]["baseline"] = baseline
         if baseline.get("ok") is not True:
+            official_compile_failed = (
+                config.get("official_failure_kind") == "compile_failed"
+            )
             report.update(
                 {
                     "ok": False,
-                    "stage": "bootstrap",
-                    "error_code": baseline.get("error_code", "FAST_TEST_FAILED"),
+                    "stage": (
+                        "official_baseline"
+                        if official_compile_failed
+                        else "bootstrap"
+                    ),
+                    "error_code": (
+                        "OFFICIAL_BASE_COMPILE_FAILED"
+                        if official_compile_failed
+                        else baseline.get("error_code", "FAST_TEST_FAILED")
+                    ),
+                    "jolink_error_code": baseline.get("error_code"),
                     "error": baseline.get("error"),
                 }
             )

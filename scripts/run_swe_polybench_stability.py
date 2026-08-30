@@ -39,6 +39,7 @@ EXPECTED_BOUNDARY_MARKERS = (
     "UNSUPPORTED",
     "UNMODELED",
     "UNAVAILABLE",
+    "UNVERIFIED",
     "AMBIGUOUS",
     "REQUIRES",
     "NOT_FOUND",
@@ -353,6 +354,28 @@ def _instance(
         report["timing_seconds"]["official_baseline"] = (
             time.monotonic() - baseline_started
         )
+        baseline_text = (instance_dir / "official-baseline.log").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        report_resolution_failure = (
+            "PluginResolutionException" in baseline_text
+            or (
+                "maven-surefire-report-plugin" in baseline_text
+                and "could not be resolved" in baseline_text.casefold()
+            )
+        )
+        compile_failure = (
+            "COMPILATION ERROR" in baseline_text
+            or "Compilation failure" in baseline_text
+            or "CompilationFailureException" in baseline_text
+        )
+        report["official_failure_kind"] = (
+            "compile_failed"
+            if compile_failure
+            else "report_plugin_resolution"
+            if report_resolution_failure
+            else None
+        )
         reports = _docker(
             "exec",
             container,
@@ -365,7 +388,11 @@ def _instance(
             stderr=subprocess.DEVNULL,
         )
         report["official_report_fallback_used"] = False
-        if reports.returncode != 0 and "surefire-report:report" in row["test_command"]:
+        if (
+            reports.returncode != 0
+            and report_resolution_failure
+            and "surefire-report:report" in row["test_command"]
+        ):
             fallback_command = row["test_command"].replace(
                 "surefire-report:report", ""
             )
@@ -398,6 +425,7 @@ def _instance(
             "selector": report["selected_test"],
             "fast_test_timeout": fast_timeout,
             "java_home": _java_home(row["test_command"]),
+            "official_failure_kind": report["official_failure_kind"],
         }
         input_path = instance_dir / "driver-input.json"
         _atomic_json(input_path, sanitized)
@@ -609,6 +637,10 @@ def main() -> int:
         destination = output / "instances" / _safe_name(row["instance_id"]) / "result.json"
         if destination.is_file() and not args.retry_existing:
             result = json.loads(destination.read_text(encoding="utf-8"))
+            normalized = _classify(result)
+            if result.get("classification") != normalized:
+                result["classification"] = normalized
+                _atomic_json(destination, result)
             results.append(result)
             print(f"[{index}/{len(rows)}] resume {row['instance_id']} {result['classification']}")
             continue
