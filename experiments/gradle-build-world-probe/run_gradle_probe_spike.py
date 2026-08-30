@@ -173,6 +173,10 @@ dependencies {
     testImplementation(fileTree("libs/junit") { include("*.jar") })
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+}
+
 tasks.test {
     useJUnitPlatform()
 %s
@@ -199,6 +203,10 @@ dependencies {
     annotationProcessor files('libs/processor.jar')
     testAnnotationProcessor files('libs/processor.jar')
     testImplementation fileTree(dir: 'libs/junit', include: ['*.jar'])
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
 }
 
 test {

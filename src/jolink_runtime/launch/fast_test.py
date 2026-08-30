@@ -297,6 +297,8 @@ class FastTestRunner:
         attempt_directory: Path,
         timeout_seconds: float,
         owner: AttemptToken,
+        framework: str | None = None,
+        environment: dict[str, str] | None = None,
     ) -> FastTestResult:
         if not selectors or len(selectors) > 64:
             raise FastTestError(
@@ -321,7 +323,19 @@ class FastTestRunner:
                 )
         assets = FastTestAssets.load()
         normalized = complete_test_runtime_classpath(classpath)
-        framework = detect_test_framework(normalized)
+        detected_framework = detect_test_framework(normalized)
+        if framework is None:
+            framework = detected_framework
+        elif framework not in {"junit4", "junit5", "testng"}:
+            raise FastTestError(
+                "TEST_FRAMEWORK_UNAVAILABLE",
+                "The build authority selected an unsupported test framework.",
+            )
+        elif detected_framework not in {framework, "auto"}:
+            raise FastTestError(
+                "TEST_FRAMEWORK_UNAVAILABLE",
+                "The selected test framework is unavailable on the runtime classpath.",
+            )
         attempt_directory.mkdir(parents=True, exist_ok=False, mode=0o700)
         selectors_file = attempt_directory / "selectors.private.txt"
         selectors_file.write_text(
@@ -433,6 +447,7 @@ class FastTestRunner:
                 cwd=working_directory,
                 timeout_seconds=timeout_seconds,
                 output_capture=log,
+                environment=dict(environment or {}),
                 max_output_bytes=4 * 1024 * 1024,
                 operation_name="jdt_fast_test",
             ),

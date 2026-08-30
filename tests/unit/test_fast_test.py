@@ -450,8 +450,10 @@ def test_runner_rejects_an_unsettled_process_tree_and_uses_classpath_file(
 
     class Supervisor:
         observed_argv = ()
+        observed_spec = None
 
         def run(self, spec, *, owner):
+            self.observed_spec = spec
             self.observed_argv = spec.argv
             values = list(spec.argv)
 
@@ -517,12 +519,16 @@ def test_runner_rejects_an_unsettled_process_tree_and_uses_classpath_file(
             attempt_directory=tmp_path / "attempt",
             timeout_seconds=5,
             owner=AttemptToken("test_tree", 1),
+            environment={"JOLINK_TEST_ENV": "preserved"},
         )
 
     assert captured.value.error_code == "TEST_PROCESS_TREE_NOT_SETTLED"
     assert captured.value.context["remaining_process_count"] == 1
     assert "-cp" not in supervisor.observed_argv
     assert "--classpath-file" in supervisor.observed_argv
+    assert supervisor.observed_spec.environment == {
+        "JOLINK_TEST_ENV": "preserved"
+    }
     pathing = Path(
         supervisor.observed_argv[
             supervisor.observed_argv.index("-jar") + 1

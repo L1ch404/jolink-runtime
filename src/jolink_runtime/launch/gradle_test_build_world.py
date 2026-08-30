@@ -57,11 +57,20 @@ def _require(condition: bool, code: str, message: str) -> None:
         raise GradleBuildWorldError(code, message)
 
 
+def javac_executable(java_home: Path, *, windows: bool | None = None) -> Path:
+    if windows is None:
+        windows = os.name == "nt"
+    name = "javac.exe" if windows else "javac"
+    return (java_home / "bin" / name).resolve(strict=True)
+
+
 def create_gradle_test_build_world(
     *,
     model: dict[str, Any],
     project_root: Path,
     configuration_inputs: Sequence[Path],
+    runner_environment: dict[str, str],
+    configuration_environment_names: Sequence[str],
 ) -> JavaTestBuildWorld:
     project = project_root.resolve(strict=True)
     standard_main = (project / "src/main/java").resolve(strict=False)
@@ -110,6 +119,32 @@ def create_gradle_test_build_world(
         "GRADLE_RESOURCES_UNMODELED",
         "Gradle Fast Test v0.1 requires empty main/test resource roots.",
     )
+    expected_main_sources = {
+        path.resolve(strict=True)
+        for path in standard_main.rglob("*.java")
+        if path.is_file()
+    }
+    expected_test_sources = {
+        path.resolve(strict=True)
+        for path in standard_test.rglob("*.java")
+        if path.is_file()
+    }
+    _require(
+        set(_paths(model["compileJava"]["sourceFiles"]))
+        == expected_main_sources
+        and set(_paths(model["compileTestJava"]["sourceFiles"]))
+        == expected_test_sources,
+        "GRADLE_COMPILE_SOURCE_SET_UNMODELED",
+        "Gradle JavaCompile source files differ from standard source roots.",
+    )
+    _require(
+        not any(
+            path.name == "module-info.java"
+            for path in expected_main_sources | expected_test_sources
+        ),
+        "GRADLE_JPMS_UNSUPPORTED",
+        "Gradle JPMS/module-path compilation is not supported.",
+    )
 
     main_compile = model["compileJava"]
     test_compile = model["compileTestJava"]
@@ -131,7 +166,8 @@ def create_gradle_test_build_world(
     )
     level = 8 if main_compile["sourceCompatibility"] in {"1.8", "8"} else 11
     _require(
-        main_compile["encoding"] == test_compile["encoding"],
+        bool(main_compile["encoding"])
+        and main_compile["encoding"] == test_compile["encoding"],
         "GRADLE_COMPILE_ENCODING_UNMODELED",
         "Gradle main/test source encodings differ.",
     )
@@ -207,10 +243,20 @@ def create_gradle_test_build_world(
         "GRADLE_LOMBOK_UNMODELED",
         "Gradle Lombok requires a dedicated ECJ javaagent path.",
     )
+    for task in (main_compile, test_compile):
+        generated = task.get("generatedSourceOutputDirectory")
+        if generated:
+            generated_root = Path(generated).resolve(strict=False)
+            _require(
+                not generated_root.is_dir()
+                or not any(generated_root.rglob("*.java")),
+                "GRADLE_SOURCE_GENERATING_PROCESSOR_UNSUPPORTED",
+                "Gradle source-generating Processors are not supported.",
+            )
 
     runtime = model["testRuntime"]
     _require(
-        runtime["framework"] in {"junit4", "junit_platform", "testng"},
+        runtime["framework"] == "junit_platform",
         "GRADLE_TEST_FRAMEWORK_UNSUPPORTED",
         "Gradle Test uses an unsupported framework.",
     )
@@ -249,6 +295,19 @@ def create_gradle_test_build_world(
         field="test.classpath",
     )
     _require(
+        _paths(runtime["testClassesDirectories"]) == (test_output,),
+        "GRADLE_TEST_CLASSES_UNMODELED",
+        "Gradle Test classes directories differ from compileTestJava output.",
+    )
+    test_working_directory = Path(runtime["workingDirectory"]).resolve(
+        strict=False
+    )
+    _require(
+        test_working_directory.is_dir(),
+        "GRADLE_TEST_WORKING_DIRECTORY_UNAVAILABLE",
+        "Gradle Test working directory is unavailable.",
+    )
+    _require(
         runtime_paths.count(test_output) == 1
         and runtime_paths.count(main_output) == 1,
         "GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED",
@@ -266,9 +325,7 @@ def create_gradle_test_build_world(
     source_roots = (standard_main, standard_test)
     resource_roots = (standard_main_resources, standard_test_resources)
     configuration = tuple(
-        path.resolve(strict=False)
-        for path in configuration_inputs
-        if path.is_file()
+        path.resolve(strict=False) for path in configuration_inputs
     )
     return JavaTestBuildWorld(
         build_system="gradle",
@@ -283,15 +340,22 @@ def create_gradle_test_build_world(
         test_runtime_classpath=runtime_dependencies,
         resource_roots=resource_roots,
         target_java_home=main_home,
-        source_encoding=main_compile["encoding"] or "UTF-8",
+        source_encoding=main_compile["encoding"],
         source_level=level,
         method_parameters=False,
         processor_entries=main_processors,
         java_agents=(),
         extra_worker_jvm_arguments=(),
         test_java_executable=Path(runtime["javaExecutable"]).resolve(strict=True),
-        javac_executable=(main_home / "bin/javac").resolve(strict=True),
+        test_framework="junit5",
+        test_working_directory=test_working_directory,
+        test_classes_directories=(test_output,),
+        runner_environment=dict(runner_environment),
+        javac_executable=javac_executable(main_home),
         configuration_inputs=configuration,
+        configuration_environment_names=tuple(
+            sorted(set(configuration_environment_names))
+        ),
         runner_support_provenance={
             "build_system": "gradle",
             "gradle_version": model["gradleVersion"],
@@ -300,6 +364,13 @@ def create_gradle_test_build_world(
         native_resource_oracle_required=bool(main_processors),
         expected_input_manifest=build_input_manifest(source_roots, resource_roots),
     )
+
+
+__all__ = [
+    "GradleBuildWorldError",
+    "create_gradle_test_build_world",
+    "javac_executable",
+]
 
 
 __all__ = [

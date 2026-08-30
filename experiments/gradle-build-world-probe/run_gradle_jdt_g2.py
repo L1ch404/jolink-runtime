@@ -19,6 +19,10 @@ from types import ModuleType
 
 from jolink_runtime.adapters.java.classfile import compare_class_output_tier1
 from jolink_runtime.launch.fast_test import FastTestRunner
+from jolink_runtime.launch.gradle_test_build_world import (
+    GradleBuildWorldError,
+    create_gradle_test_build_world,
+)
 from jolink_runtime.launch.jdt_compile_session import (
     JdtCandidate,
     PersistentJdtCompileSession,
@@ -43,188 +47,56 @@ def load_g1() -> ModuleType:
     return module
 
 
-def ordered_paths(values: list[str]) -> tuple[Path, ...]:
-    return tuple(
-        Path(value).expanduser().resolve(strict=False) for value in values
-    )
-
-
-def existing_classpath(
-    values: list[str],
-    *,
-    optional_missing: set[Path],
-    field: str,
-) -> tuple[Path, ...]:
-    result: list[Path] = []
-    for path in ordered_paths(values):
-        if path.exists():
-            result.append(path)
-        elif path not in optional_missing:
-            raise AssertionError(
-                {"error_code": "GRADLE_CLASSPATH_ENTRY_UNAVAILABLE", "field": field}
-            )
-    return tuple(result)
-
-
-def is_lombok(path: Path) -> bool:
-    if not path.is_file() or path.suffix.casefold() != ".jar":
-        return False
-    try:
-        with zipfile.ZipFile(path) as archive:
-            names = set(archive.namelist())
-    except zipfile.BadZipFile:
-        return False
-    return bool(
-        {
-            "lombok/launch/Agent.class",
-            "lombok/core/AnnotationProcessor.class",
-        }
-        & names
-    )
-
-
 def validate_authority(
     model: dict,
     *,
     project: Path,
     expected_compile_java_home: Path,
 ) -> dict:
-    standard = {
-        "main_source": (project / "src/main/java").resolve(strict=False),
-        "test_source": (project / "src/test/java").resolve(strict=False),
-        "main_resource": (project / "src/main/resources").resolve(strict=False),
-        "test_resource": (project / "src/test/resources").resolve(strict=False),
-    }
-    if ordered_paths(model["main"]["javaSourceDirectories"]) != (
-        standard["main_source"],
-    ) or ordered_paths(model["test"]["javaSourceDirectories"]) != (
-        standard["test_source"],
-    ):
-        raise AssertionError("GRADLE_SOURCE_LAYOUT_UNSUPPORTED")
-    if ordered_paths(model["main"]["resourceDirectories"]) != (
-        standard["main_resource"],
-    ) or ordered_paths(model["test"]["resourceDirectories"]) != (
-        standard["test_resource"],
-    ):
-        raise AssertionError("GRADLE_RESOURCE_LAYOUT_UNSUPPORTED")
-    for source_set in (model["main"], model["test"]):
-        if any(
-            source_set[field]
-            for field in (
-                "javaIncludes",
-                "javaExcludes",
-                "resourceIncludes",
-                "resourceExcludes",
-            )
-        ):
-            raise AssertionError("GRADLE_SOURCE_PATTERN_UNMODELED")
-
-    main_compile = model["compileJava"]
-    test_compile = model["compileTestJava"]
-    expected_home = expected_compile_java_home.resolve(strict=True)
-    main_home = Path(main_compile["compilerJavaHome"]).resolve(strict=True)
-    test_home = Path(test_compile["compilerJavaHome"]).resolve(strict=True)
-    if main_home != test_home or main_home != expected_home:
-        raise AssertionError("GRADLE_COMPILE_TOOLCHAIN_UNMODELED")
-    if not (
-        main_compile["sourceCompatibility"]
-        == test_compile["sourceCompatibility"]
-        == main_compile["targetCompatibility"]
-        == test_compile["targetCompatibility"]
-        == "11"
-    ):
-        raise AssertionError("GRADLE_COMPILE_LEVEL_UNMODELED")
-    if main_compile["encoding"] != test_compile["encoding"]:
-        raise AssertionError("GRADLE_COMPILE_ENCODING_UNMODELED")
-    for compile_task in (main_compile, test_compile):
-        if (
-            compile_task["release"] is not None
-            or compile_task["compilerArgsPrivate"]
-            or compile_task["fork"]
-            or compile_task["compilerArgumentProvidersUnmodeled"]
-            or not compile_task["debug"]
-            or not compile_task["incremental"]
-        ):
-            raise AssertionError("GRADLE_COMPILE_CONFIGURATION_UNMODELED")
-
-    main_output = Path(main_compile["destinationDirectory"]).resolve(strict=True)
-    test_output = Path(test_compile["destinationDirectory"]).resolve(strict=True)
-    if ordered_paths(model["main"]["classesDirectories"]) != (main_output,):
-        raise AssertionError("GRADLE_MAIN_OUTPUT_UNMODELED")
-    if ordered_paths(model["test"]["classesDirectories"]) != (test_output,):
-        raise AssertionError("GRADLE_TEST_OUTPUT_UNMODELED")
-
-    optional_missing = {
-        path
-        for path in (
-            Path(value).resolve(strict=False)
-            for value in (
-                model["main"].get("resourcesDirectory"),
-                model["test"].get("resourcesDirectory"),
-            )
-            if value
+    configuration_inputs = tuple(
+        (project / name).resolve(strict=False)
+        for name in (
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+            "gradle.properties",
+            "gradle/libs.versions.toml",
+            "gradle/wrapper/gradle-wrapper.properties",
+            "gradle/wrapper/gradle-wrapper.jar",
         )
-        if not path.exists()
-    }
-    main_dependencies = existing_classpath(
-        main_compile["classpath"],
-        optional_missing=optional_missing,
-        field="compileJava.classpath",
     )
-    raw_test = existing_classpath(
-        test_compile["classpath"],
-        optional_missing=optional_missing,
-        field="compileTestJava.classpath",
-    )
-    formal_outputs = {main_output, test_output}
-    test_without_outputs = tuple(
-        path for path in raw_test if path not in formal_outputs
-    )
-    if test_without_outputs[: len(main_dependencies)] != main_dependencies:
-        raise AssertionError("GRADLE_TEST_CLASSPATH_ORDER_UNMODELED")
-    test_dependencies = test_without_outputs[len(main_dependencies) :]
-
-    main_processors = existing_classpath(
-        main_compile["annotationProcessorPath"],
-        optional_missing=set(),
-        field="compileJava.annotationProcessorPath",
-    )
-    test_processors = existing_classpath(
-        test_compile["annotationProcessorPath"],
-        optional_missing=set(),
-        field="compileTestJava.annotationProcessorPath",
-    )
-    if main_processors != test_processors:
-        raise AssertionError("GRADLE_PROCESSOR_PATH_UNMODELED")
-    if any(is_lombok(path) for path in main_processors):
-        raise AssertionError("GRADLE_LOMBOK_UNMODELED")
-
-    runtime = model["testRuntime"]
-    runtime_paths = existing_classpath(
-        runtime["classpath"],
-        optional_missing=optional_missing,
-        field="test.classpath",
-    )
-    if runtime_paths.count(test_output) != 1 or runtime_paths.count(main_output) != 1:
-        raise AssertionError("GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED")
-
+    try:
+        world = create_gradle_test_build_world(
+            model=model,
+            project_root=project,
+            configuration_inputs=configuration_inputs,
+            runner_environment={},
+            configuration_environment_names=(),
+        )
+    except GradleBuildWorldError as error:
+        raise AssertionError(error.error_code) from error
+    if world.target_java_home != expected_compile_java_home.resolve(
+        strict=True
+    ):
+        raise AssertionError("GRADLE_COMPILE_TOOLCHAIN_UNMODELED")
     return {
-        "main_roots": (standard["main_source"],),
-        "test_roots": (standard["test_source"],),
-        "resource_roots": (
-            standard["main_resource"],
-            standard["test_resource"],
+        "main_roots": world.main_source_roots,
+        "test_roots": world.test_source_roots,
+        "resource_roots": world.resource_roots,
+        "main_output": world.main_output,
+        "test_output": world.test_output,
+        "main_dependencies": world.main_dependencies,
+        "test_dependencies": world.test_dependencies,
+        "processors": world.processor_entries,
+        "target_java_home": world.target_java_home,
+        "encoding": world.source_encoding,
+        "parameters": world.method_parameters,
+        "runtime_paths": tuple(
+            Path(value).resolve(strict=False)
+            for value in model["testRuntime"]["classpath"]
+            if Path(value).resolve(strict=False).exists()
         ),
-        "main_output": main_output,
-        "test_output": test_output,
-        "main_dependencies": main_dependencies,
-        "test_dependencies": test_dependencies,
-        "processors": main_processors,
-        "target_java_home": main_home,
-        "encoding": main_compile["encoding"] or "UTF-8",
-        "parameters": False,
-        "runtime_paths": runtime_paths,
-        "optional_missing": optional_missing,
     }
 
 
@@ -312,9 +184,7 @@ def validate_native_processor_resources(
     native: dict[str, str],
     formal: dict[str, str],
 ) -> None:
-    if not native or any(
-        formal.get(path) != digest for path, digest in native.items()
-    ):
+    if not native or native != formal:
         raise AssertionError("GRADLE_PROCESSOR_RESOURCE_INCOMPATIBLE")
 
 
@@ -331,21 +201,16 @@ def authority_fault_injections(
     def rejected(
         expected: str,
         mutation,
-        *,
-        runtime_only: bool = False,
     ) -> None:
         nonlocal failures
         candidate = copy.deepcopy(model)
         mutation(candidate)
         try:
-            if runtime_only:
-                assert_supported_test_runtime(candidate)
-            else:
-                validate_authority(
-                    candidate,
-                    project=project,
-                    expected_compile_java_home=java11_home,
-                )
+            validate_authority(
+                candidate,
+                project=project,
+                expected_compile_java_home=java11_home,
+            )
         except AssertionError as error:
             if expected not in str(error):
                 raise
@@ -389,12 +254,10 @@ def authority_fault_injections(
         lambda value: value["testRuntime"].__setitem__(
             "enableAssertions", False
         ),
-        runtime_only=True,
     )
     rejected(
         "GRADLE_TEST_CONFIGURATION_UNMODELED",
         lambda value: value["testRuntime"]["includeTags"].append("slow"),
-        runtime_only=True,
     )
     extra_output = root / "extra-output"
     extra_output.mkdir()

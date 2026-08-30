@@ -91,7 +91,9 @@ from .jdt_compile_session import (
     lombok_worker_jvm_arguments,
 )
 from .test_build_world import (
+    GradleTestBuildWorldBootstrap,
     JavaTestBuildWorld,
+    MavenTestBuildWorldBootstrap,
     TestBuildWorldBootstrap,
 )
 
@@ -157,6 +159,8 @@ __all__ = [
     "discover_java8_system_entries",
     "lombok_worker_jvm_arguments",
     "JavaTestBuildWorld",
+    "MavenTestBuildWorldBootstrap",
+    "GradleTestBuildWorldBootstrap",
     "TestBuildWorldBootstrap",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",

@@ -34,7 +34,13 @@ from .gradle_test_build_world import (
 )
 from .process_supervisor import AttemptToken, ProcessSupervisor
 from .toolchain import JavaToolchainCandidate, JavaToolchainResolver, MavenToolResolver
-from .test_build_world import JavaTestBuildWorld, build_input_manifest
+from .test_build_world import (
+    GradleTestBuildWorldBootstrap,
+    JavaTestBuildWorld,
+    MavenTestBuildWorldBootstrap,
+    TestBuildWorldBootstrap,
+    build_input_manifest,
+)
 
 
 _HELP_PLUGIN_GOAL = (
@@ -101,10 +107,14 @@ class _FastTestProject:
     module_root: Path
     build_jdk: JavaToolchainCandidate
     test_java_executable: Path
+    test_framework: str | None
+    test_working_directory: Path
+    runner_environment: dict[str, str]
     javac_executable: Path
     compiler: PersistentJdtCompileSession
     runtime_classpath: tuple[Path, ...]
     configuration_inputs: tuple[Path, ...]
+    configuration_environment_names: tuple[str, ...]
     dependency_entries: tuple[Path, ...]
     configuration_fingerprint: str
     resource_roots: tuple[Path, ...]
@@ -119,6 +129,9 @@ class _FastTestProject:
         try:
             current = fast_compile_fingerprint(
                 configuration_inputs=self.configuration_inputs,
+                configuration_environment_names=(
+                    self.configuration_environment_names
+                ),
                 javac_executable=self.javac_executable,
                 compile_classpath=self.dependency_entries,
             )
@@ -216,6 +229,10 @@ class FastTestManager:
         self._idea = IdeaEnvironmentImporter()
         self._java = JavaToolchainResolver()
         self._maven_tools = MavenToolResolver()
+        self._bootstraps: tuple[TestBuildWorldBootstrap, ...] = (
+            MavenTestBuildWorldBootstrap(),
+            GradleTestBuildWorldBootstrap(),
+        )
         self._project: _FastTestProject | None = None
         self._initializing_compiler: PersistentJdtCompileSession | None = None
         self._active: TestAttempt | None = None
@@ -411,13 +428,15 @@ class FastTestManager:
                 try:
                     result = self._runner.run(
                         java_executable=project.test_java_executable,
+                        framework=project.test_framework,
                         classpath=(
                             project.compiler.test_output_directory,
                             project.compiler.output_directory,
                             *project.runtime_classpath,
                         ),
                         selectors=attempt.tests,
-                        working_directory=project.module_root,
+                        working_directory=project.test_working_directory,
+                        environment=project.runner_environment,
                         attempt_directory=test_attempt,
                         timeout_seconds=attempt.timeout_seconds,
                         owner=attempt.owner,
@@ -552,16 +571,17 @@ class FastTestManager:
 
     def _bootstrap(self, attempt: TestAttempt) -> _FastTestProject:
         root = attempt.project_path
-        if (root / "pom.xml").is_file():
-            return self._bootstrap_maven(attempt)
-        if (
-            (root / "gradlew").is_file()
-            and (
-                (root / "build.gradle").is_file()
-                or (root / "build.gradle.kts").is_file()
+        matches = tuple(
+            provider for provider in self._bootstraps if provider.detect(root)
+        )
+        if len(matches) == 1:
+            return matches[0].bootstrap(self, attempt)
+        if len(matches) > 1:
+            raise FastTestManagerError(
+                "BUILD_SYSTEM_AMBIGUOUS",
+                "Fast Test found multiple supported build systems.",
+                context={"build_systems": [item.kind for item in matches]},
             )
-        ):
-            return self._bootstrap_gradle(attempt)
         raise FastTestManagerError(
             "BUILD_SYSTEM_NOT_FOUND",
             "Fast Test requires a Maven POM or Gradle Wrapper project.",
@@ -675,6 +695,13 @@ class FastTestManager:
         bootstrap.mkdir(mode=0o700)
         log = bootstrap / "gradle-test-bootstrap.log"
         project = attempt.project_path
+        if (project / "buildSrc").exists() or (
+            project / "build-logic"
+        ).exists():
+            raise FastTestManagerError(
+                "GRADLE_BUILD_LOGIC_UNSUPPORTED",
+                "Gradle buildSrc/build-logic is not supported in v0.1.",
+            )
         preferences = self._idea.import_preferences(project)
         build_jdk = self._select_build_jdk(
             preferences, project, log, attempt
@@ -703,12 +730,19 @@ class FastTestManager:
             (main_root, test_root), resource_roots
         )
         environment = JavaToolchainResolver.maven_environment(build_jdk)
+        gradle_args = shlex.split(os.environ.get("GRADLE_ARGS", ""))
+        if any(value not in {"-o", "--offline"} for value in gradle_args):
+            raise FastTestManagerError(
+                "GRADLE_ARGUMENTS_UNSUPPORTED",
+                "Only Gradle offline mode is supported through GRADLE_ARGS.",
+            )
+        offline = any(value in {"-o", "--offline"} for value in gradle_args)
         operation = self._supervisor.run(
             BuildOperationSpec(
                 argv=probe.command(
                     wrapper=wrapper,
                     prepared=prepared,
-                    offline=False,
+                    offline=offline,
                 ),
                 cwd=project,
                 environment=environment,
@@ -735,23 +769,55 @@ class FastTestManager:
             )
         model = probe.load_model(prepared)
         prepared.init_script.unlink(missing_ok=True)
+        gradle_user_home = Path(
+            os.environ.get("GRADLE_USER_HOME", str(Path.home() / ".gradle"))
+        ).expanduser().resolve(strict=False)
+        configuration_candidates = [
+            project / "build.gradle",
+            project / "build.gradle.kts",
+            project / "settings.gradle",
+            project / "settings.gradle.kts",
+            project / "gradle.properties",
+            project / "gradle/libs.versions.toml",
+            project / "gradle/wrapper/gradle-wrapper.properties",
+            project / "gradle/wrapper/gradle-wrapper.jar",
+            gradle_user_home / "gradle.properties",
+            gradle_user_home / "init.gradle",
+            gradle_user_home / "init.gradle.kts",
+            Path(__file__).parent / "gradle-build-world-probe-lock.json",
+        ]
+        for root in (project, project / "gradle", gradle_user_home / "init.d"):
+            if root.is_dir():
+                configuration_candidates.extend(root.rglob("*.gradle"))
+                configuration_candidates.extend(root.rglob("*.gradle.kts"))
         configuration_inputs = tuple(
-            path
-            for path in (
-                project / "build.gradle",
-                project / "build.gradle.kts",
-                project / "settings.gradle",
-                project / "settings.gradle.kts",
-                project / "gradle.properties",
-                project / "gradle/wrapper/gradle-wrapper.properties",
-                Path(__file__).parent / "gradle-build-world-probe-lock.json",
+            dict.fromkeys(
+                path.resolve(strict=False)
+                for path in configuration_candidates
             )
-            if path.is_file()
+        )
+        configuration_environment_names = tuple(
+            sorted(
+                {
+                    "GRADLE_USER_HOME",
+                    "GRADLE_OPTS",
+                    "JAVA_OPTS",
+                    *(
+                        name
+                        for name in os.environ
+                        if name.startswith("ORG_GRADLE_PROJECT_")
+                    ),
+                }
+            )
         )
         world = create_gradle_test_build_world(
             model=model,
             project_root=project,
             configuration_inputs=configuration_inputs,
+            runner_environment=environment,
+            configuration_environment_names=(
+                configuration_environment_names
+            ),
         )
         if before != world.expected_input_manifest:
             raise FastTestManagerError(
@@ -1128,8 +1194,13 @@ class FastTestManager:
             java_agents=tuple(f"{path}=ECJ" for path in lombok),
             extra_worker_jvm_arguments=(),
             test_java_executable=build_jdk.java_executable,
+            test_framework=None,
+            test_working_directory=module.directory,
+            test_classes_directories=(test_output,),
+            runner_environment={},
             javac_executable=build_jdk.javac_executable,
             configuration_inputs=configuration_inputs,
+            configuration_environment_names=(),
             upstream_source_roots=upstream_source_roots,
             runner_support_provenance=runner_support_provenance,
         )
@@ -1306,21 +1377,25 @@ class FastTestManager:
         if world.native_resource_oracle_required:
             formal_resources = self._formal_resource_manifest(world)
             native_resources = compiler.native_full_resource_manifest
-            if not native_resources or any(
-                formal_resources.get(path) != digest
-                for path, digest in native_resources.items()
-            ):
+            if not native_resources or native_resources != formal_resources:
                 raise FastTestManagerError(
                     "JDT_TEST_RESOURCE_BASELINE_INCOMPATIBLE",
                     "JDT Processor resources differ from the build authority.",
                 )
         all_dependencies = tuple(
             dict.fromkeys(
-                (*world.main_dependencies, *world.test_dependencies)
+                (
+                    *world.main_dependencies,
+                    *world.test_dependencies,
+                    *world.test_runtime_classpath,
+                )
             )
         )
         fingerprint = fast_compile_fingerprint(
             configuration_inputs=world.configuration_inputs,
+            configuration_environment_names=(
+                world.configuration_environment_names
+            ),
             javac_executable=world.javac_executable,
             compile_classpath=all_dependencies,
         )
@@ -1333,10 +1408,16 @@ class FastTestManager:
             module_root=world.module_root,
             build_jdk=build_jdk,
             test_java_executable=world.test_java_executable,
+            test_framework=world.test_framework,
+            test_working_directory=world.test_working_directory,
+            runner_environment=dict(world.runner_environment),
             javac_executable=world.javac_executable,
             compiler=compiler,
             runtime_classpath=world.test_runtime_classpath,
             configuration_inputs=world.configuration_inputs,
+            configuration_environment_names=(
+                world.configuration_environment_names
+            ),
             dependency_entries=all_dependencies,
             configuration_fingerprint=fingerprint,
             resource_roots=world.resource_roots,
