@@ -231,6 +231,7 @@ class BuildOperationSpec:
     )
     timeout_seconds: float | None = None
     output_capture: Path | None = None
+    max_output_bytes: int | None = None
     operation_name: str = "build"
 
     def diagnostic_summary(self) -> dict[str, Any]:
@@ -245,6 +246,7 @@ class BuildOperationSpec:
                 if self.output_capture is not None
                 else None
             ),
+            "max_output_bytes": self.max_output_bytes,
             "environment_names": sorted(str(key) for key in self.environment),
         }
 

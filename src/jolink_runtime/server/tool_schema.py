@@ -85,12 +85,15 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "project_path": {
             "type": "string",
             "description": (
-                "Local Maven project root for launch only. joLink imports an "
+                "Local Maven project root for launch or Fast Test. joLink imports an "
                 "IntelliJ IDEA Application or Spring Boot launch, uses the "
                 "project's Maven/JDK settings, compiles in the background, "
                 "then starts the resolved classpath. Do not combine with "
                 "classpath, main_class, jar_path, app_args, or vm_args. "
-                "Restart never accepts project_path; it reuses the current "
+                "Fast Test can use a headless Maven jar project or one "
+                "selector-identified jar module in a standard Reactor and "
+                "does not require a running application. Restart never accepts "
+                "project_path; it reuses the current "
                 "sealed Generation without Maven."
             ),
         },
@@ -354,7 +357,12 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "minLength": 1,
             },
             "description": (
-                "Required for reload: explicit Java source paths in the selected "
+                "Explicit Java source paths changed for reload or Fast Test. "
+                "For Fast Test this may include added, edited, or deleted main/test "
+                "sources and may be "
+                "omitted on the initial unchanged baseline; paths are relative "
+                "to project_path, including a Reactor module prefix. For reload, paths are "
+                "in the selected "
                 "Maven module. joLink compiles them in a persistent private JDT "
                 "session, seals a durable Candidate, and applies it by HotSwap "
                 "or managed restart."
@@ -367,6 +375,21 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "For reload, try HotSwap first when true. Set false to apply "
                 "the compiled Candidate by managed restart with rollback."
             ),
+        },
+        "tests": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": True,
+            "items": {"type": "string", "minLength": 1},
+            "description": (
+                "Explicit Fast Test selectors as fully qualified Class or "
+                "Class#method. Fast Test v1 supports JUnit 4/5 and TestNG."
+            ),
+        },
+        "test_run_id": {
+            "type": "string",
+            "description": "Active Fast Test id required by cancel_test.",
         },
     },
     "required": ["action"],
@@ -399,6 +422,8 @@ PUBLIC_APPLICATION_ACTIONS = (
     "restart",
     "stop",
     "detach",
+    "test",
+    "cancel_test",
 )
 PUBLIC_STATUS_ACTIONS = ("processes", "status", "logs")
 PUBLIC_DEBUGGER_ACTIONS = (
@@ -447,6 +472,9 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "startup_wait_timeout_seconds",
         "source_files",
         "hotswap",
+        "tests",
+        "test_run_id",
+        "timeout",
     ),
 )
 JAVA_STATUS_INPUT_SCHEMA = {
@@ -490,7 +518,9 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
 )
 
 JAVA_APPLICATION_DESCRIPTION = (
-    "Launch, attach, reload, restart, stop, or detach a local Java application. "
+    "Launch, attach, fast-test, reload, restart, stop, or detach Java code. "
+    "Fast Test uses one Maven Bootstrap, persistent JDT main/test incremental "
+    "compilation, and an isolated JUnit 4/5 or TestNG Runner without changing a Runtime. "
     "For Maven project launches, reload compiles explicit source_files in the "
     "persistent JDT session, uses HotSwap when safe, and otherwise restarts the "
     "Candidate with automatic rollback."

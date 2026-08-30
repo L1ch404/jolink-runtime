@@ -27,6 +27,7 @@ from jolink_runtime.launch.fast_compile import (
 from jolink_runtime.launch.project_session import JavaProjectSession
 from jolink_runtime.launch.jdt_compile_session import (
     JdtCandidate,
+    JdtCompileError,
     JdtCompileResult,
     PersistentJdtCompileSession,
 )
@@ -323,6 +324,7 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
                 compile_ok=True,
                 actual_build_kind="INCREMENTAL",
                 compiled_source_count=1,
+                compiled_source_units=("src/Example.java",),
                 changed_classes=("Example.class",),
                 deleted_classes=(),
                 changed_resources=(),
@@ -461,6 +463,80 @@ def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
     )
     assert result.data["artifact"] == "worker.jar"
     assert result.data["retryable"] is False
+
+
+def test_poisoned_jdt_reload_clears_ready_product_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/Example.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("public class Example {}\n", encoding="utf-8")
+    initial = tmp_path / "initial"
+    initial.mkdir()
+    (initial / "Example.class").write_bytes(b"baseline")
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    session.generations.initialize(
+        initial,
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+
+    class PoisonedJdt(PersistentJdtCompileSession):
+        is_ready = True
+        closed = False
+
+        @property
+        def ready(self) -> bool:
+            return self.is_ready
+
+        def compile(self, _sources):
+            self.is_ready = False
+            raise JdtCompileError(
+                "JDT_SOURCE_CHANGE_NOT_OBSERVED",
+                "The requested source was missed.",
+            )
+
+        def close(self) -> bool:
+            self.closed = True
+            return True
+
+    compiler = object.__new__(PoisonedJdt)
+    session.attach_compile_session(compiler)
+    session.complete_jdt_bootstrap(10.0)
+    plan = SimpleNamespace(
+        project_root=project,
+        source_roots=(project / "src/main/java",),
+        is_fresh=lambda: True,
+    )
+    prepared = ProjectUpdatePlan(
+        fast_compile_plan=None,
+        fast_compile_unavailable_reason="DIRECT_DISABLED",
+        attempt_directory=tmp_path,
+        project_session=session,
+        jdt_build_world_plan=plan,
+    )
+    runtime = JavaRuntime()
+    runtime._proc._process = SimpleNamespace(is_alive=lambda: True)
+    monkeypatch.setattr(
+        runtime,
+        "_project_update_context",
+        lambda: ("launch_1", 1, prepared),
+    )
+
+    result = runtime.update(_action(source, project))
+
+    assert result.ok is False
+    assert result.data["error_code"] == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
+    assert compiler.closed is True
+    assert session.compile_session is None
+    assert session.compile_ready is False
+    assert session.jdt_bootstrap_state == "unavailable"
+    assert session.jdt_unavailable_reason == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
 
 
 def test_jdt_bootstrap_failure_survives_attempt_migration(

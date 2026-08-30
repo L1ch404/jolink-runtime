@@ -15,9 +15,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Stream;
 
 import org.eclipse.core.resources.ICommand;
 import org.eclipse.core.resources.IContainer;
@@ -39,6 +42,7 @@ import org.eclipse.core.runtime.Platform;
 import org.eclipse.equinox.app.IApplication;
 import org.eclipse.equinox.app.IApplicationContext;
 import org.eclipse.jdt.core.IClasspathEntry;
+import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
 
@@ -71,6 +75,7 @@ public final class WorkerApplication implements IApplication {
     private String canonicalSourceEncoding;
     private String effectiveSourceEncoding;
     private boolean sourceEncodingVerified;
+    private boolean testModelConfigured;
     private boolean aptEnabled;
     private int aptFactoryPathRequestedCount;
     private int aptFactoryPathEffectiveCount;
@@ -87,6 +92,9 @@ public final class WorkerApplication implements IApplication {
     private String lastTerminalBuildGenerationId;
     private String lastTerminalStatus;
     private long protocolSequence;
+    private Set<String> previousSourceUnits = new LinkedHashSet<>();
+    private final Set<String> pendingDeletedSourceUnits =
+            new LinkedHashSet<>();
 
     private static final class ActiveBuild {
         final String requestId;
@@ -176,17 +184,29 @@ public final class WorkerApplication implements IApplication {
             emitError("INVALID_SOURCE_ENCODING", "Unsupported source encoding.");
             return Integer.valueOf(2);
         }
+        String sourceLevel = arguments.getOrDefault("source-level", "8");
+        if (!"8".equals(sourceLevel) && !"11".equals(sourceLevel)) {
+            emitError("INVALID_SOURCE_LEVEL", "Unsupported source level.");
+            return Integer.valueOf(2);
+        }
+        boolean methodParameters = "true".equalsIgnoreCase(
+                arguments.getOrDefault("parameters", "false"));
         instrumentationEnabled = !"disabled".equals(
                 arguments.getOrDefault("instrumentation", "enabled"));
         BuildObservation.setEnabled(instrumentationEnabled);
 
         try {
             String aptProcessorsFile = arguments.get("apt-processors-file");
+            String testClasspathFile = arguments.get("test-classpath-file");
             initialize(
                     Paths.get(systemLibrariesFile),
                     sourceEncoding,
+                    sourceLevel,
+                    methodParameters,
                     aptProcessorsFile == null
-                            ? null : Paths.get(aptProcessorsFile));
+                            ? null : Paths.get(aptProcessorsFile),
+                    testClasspathFile == null
+                            ? null : Paths.get(testClasspathFile));
             emitReady();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -232,7 +252,10 @@ public final class WorkerApplication implements IApplication {
     private void initialize(
             Path systemLibrariesFile,
             String sourceEncoding,
-            Path aptProcessorsFile) throws Exception {
+            String sourceLevel,
+            boolean methodParameters,
+            Path aptProcessorsFile,
+            Path testClasspathFile) throws Exception {
         workspace = ResourcesPlugin.getWorkspace();
         IWorkspaceDescription workspaceDescription = workspace.getDescription();
         workspaceDescription.setAutoBuilding(false);
@@ -291,7 +314,12 @@ public final class WorkerApplication implements IApplication {
         }
 
         List<IClasspathEntry> classpath = new ArrayList<>();
-        classpath.add(JavaCore.newSourceEntry(source.getFullPath()));
+        classpath.add(JavaCore.newSourceEntry(
+                source.getFullPath(),
+                new IPath[0],
+                new IPath[0],
+                output.getFullPath(),
+                new IClasspathAttribute[0]));
         for (String line : Files.readAllLines(
                 systemLibrariesFile, StandardCharsets.UTF_8)) {
             String value = line.trim();
@@ -307,6 +335,54 @@ public final class WorkerApplication implements IApplication {
                         null));
             }
         }
+        if (testClasspathFile != null) {
+            if (!Files.isRegularFile(testClasspathFile)) {
+                throw new IOException("Test classpath file is unavailable.");
+            }
+            IFolder testSource = ensureFolder(project.getFolder("test-src"));
+            IFolder testOutput = ensureFolder(project.getFolder("test-bin"));
+            if (!requestedCharset.equals(Charset.forName(
+                    testSource.getDefaultCharset(true)))) {
+                testSource.setDefaultCharset(canonicalSourceEncoding, monitor);
+            }
+            if (!requestedCharset.equals(Charset.forName(
+                    testSource.getDefaultCharset(true)))) {
+                throw new IOException(
+                        "Eclipse Resources did not apply test source encoding.");
+            }
+            IClasspathAttribute[] testAttributes = new IClasspathAttribute[] {
+                JavaCore.newClasspathAttribute(
+                        IClasspathAttribute.TEST,
+                        Boolean.TRUE.toString())
+            };
+            classpath.add(JavaCore.newSourceEntry(
+                    testSource.getFullPath(),
+                    new IPath[0],
+                    new IPath[0],
+                    testOutput.getFullPath(),
+                    testAttributes));
+            for (String line : Files.readAllLines(
+                    testClasspathFile, StandardCharsets.UTF_8)) {
+                String value = line.trim();
+                if (value.isEmpty()) {
+                    continue;
+                }
+                Path entry = Paths.get(value);
+                if (!Files.exists(entry)) {
+                    throw new IOException(
+                            "Test classpath entry is unavailable.");
+                }
+                classpath.add(JavaCore.newLibraryEntry(
+                        org.eclipse.core.runtime.Path.fromOSString(
+                                entry.toAbsolutePath().normalize().toString()),
+                        null,
+                        null,
+                        new org.eclipse.jdt.core.IAccessRule[0],
+                        testAttributes,
+                        false));
+            }
+            testModelConfigured = true;
+        }
         if (classpath.size() == 1) {
             throw new IOException("System library snapshot is empty.");
         }
@@ -318,10 +394,15 @@ public final class WorkerApplication implements IApplication {
 
         Map<String, String> options = new LinkedHashMap<>(
                 javaProject.getOptions(false));
-        JavaCore.setComplianceOptions(JavaCore.VERSION_1_8, options);
-        options.put(JavaCore.COMPILER_SOURCE, JavaCore.VERSION_1_8);
-        options.put(JavaCore.COMPILER_COMPLIANCE, JavaCore.VERSION_1_8);
-        options.put(JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, JavaCore.VERSION_1_8);
+        String compliance = "11".equals(sourceLevel)
+                ? JavaCore.VERSION_11 : JavaCore.VERSION_1_8;
+        JavaCore.setComplianceOptions(compliance, options);
+        options.put(JavaCore.COMPILER_SOURCE, compliance);
+        options.put(JavaCore.COMPILER_COMPLIANCE, compliance);
+        options.put(JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, compliance);
+        options.put(
+                JavaCore.COMPILER_CODEGEN_METHOD_PARAMETERS_ATTR,
+                methodParameters ? JavaCore.GENERATE : JavaCore.DO_NOT_GENERATE);
         options.put(JavaCore.COMPILER_PB_ENABLE_PREVIEW_FEATURES, JavaCore.DISABLED);
         if (!javaProject.getOptions(false).equals(options)) {
             javaProject.setOptions(options);
@@ -330,6 +411,31 @@ public final class WorkerApplication implements IApplication {
             configureApt(aptProcessorsFile);
         }
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
+        previousSourceUnits = sourceUnits();
+        pendingDeletedSourceUnits.clear();
+    }
+
+    private Set<String> sourceUnits() throws IOException {
+        Set<String> result = new LinkedHashSet<>();
+        collectSourceUnits("src", result);
+        collectSourceUnits("test-src", result);
+        return result;
+    }
+
+    private void collectSourceUnits(String folderName, Set<String> result)
+            throws IOException {
+        IFolder folder = project.getFolder(folderName);
+        if (!folder.exists() || folder.getLocation() == null) {
+            return;
+        }
+        Path root = folder.getLocation().toFile().toPath();
+        try (Stream<Path> paths = Files.walk(root)) {
+            paths.filter(path -> Files.isRegularFile(path))
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .forEach(path -> result.add(
+                            folderName + "/" + root.relativize(path)
+                                    .toString().replace(File.separatorChar, '/')));
+        }
     }
 
     private void configureApt(Path processorsFile) throws Exception {
@@ -720,6 +826,13 @@ public final class WorkerApplication implements IApplication {
         WorkerMetrics.resetPeaks();
         long started = System.nanoTime();
         project.refreshLocal(IResource.DEPTH_INFINITE, buildMonitor);
+        Set<String> currentSourceUnits = sourceUnits();
+        for (String previous : previousSourceUnits) {
+            if (!currentSourceUnits.contains(previous)) {
+                pendingDeletedSourceUnits.add(previous);
+            }
+        }
+        pendingDeletedSourceUnits.removeAll(currentSourceUnits);
         project.build(buildKind, buildMonitor);
         if (buildMonitor.isCanceled()) {
             throw new OperationCanceledException();
@@ -781,12 +894,19 @@ public final class WorkerApplication implements IApplication {
         int errorCount = errorDiagnostics.size();
         int warningCount = warningDiagnostics.size();
         int infoCount = infoDiagnostics.size();
+        int testErrorCount = diagnosticCount(errorDiagnostics, true);
+        int mainErrorCount = errorCount - testErrorCount;
+        int testWarningCount = diagnosticCount(warningDiagnostics, true);
+        int mainWarningCount = warningCount - testWarningCount;
         int returnedErrorCount = Math.min(errorCount, MAX_ERROR_DIAGNOSTICS);
 
         String actualBuildKind = observation.actualBuildKind();
         boolean compileOperation = !"CLEAN".equals(requestedKind);
         boolean compileOk = errorCount == 0;
         boolean compilerOutputEligible = compileOperation && compileOk;
+        List<String> deletedSourceUnits = new ArrayList<>(
+                pendingDeletedSourceUnits);
+        Collections.sort(deletedSourceUnits);
         StringBuilder result = new StringBuilder();
         result.append("{\"ok\":").append(errorCount == 0)
                 .append(",\"status\":")
@@ -816,6 +936,8 @@ public final class WorkerApplication implements IApplication {
                 .append(observation.buildFinished)
                 .append(",\"compiled_source_units\":")
                 .append(jsonArray(observation.compiledUnits))
+                .append(",\"deleted_source_units\":")
+                .append(jsonArray(deletedSourceUnits))
                 .append("}")
                 .append(",\"resource_delta\":{")
                 .append("\"status\":\"unavailable\",")
@@ -824,9 +946,19 @@ public final class WorkerApplication implements IApplication {
                 .append(observation.buildFinished)
                 .append(",\"compiled_source_units\":")
                 .append(jsonArray(observation.compiledUnits))
+                .append(",\"deleted_source_units\":")
+                .append(jsonArray(deletedSourceUnits))
                 .append(",\"elapsed_ms\":").append(elapsedMillis)
                 .append(",\"error_count\":").append(errorCount)
                 .append(",\"warning_count\":").append(warningCount)
+                .append(",\"main_error_count\":").append(mainErrorCount)
+                .append(",\"test_error_count\":").append(testErrorCount)
+                .append(",\"main_warning_count\":").append(mainWarningCount)
+                .append(",\"test_warning_count\":").append(testWarningCount)
+                .append(",\"main_compile_ok\":")
+                .append(mainErrorCount == 0)
+                .append(",\"test_compile_ok\":")
+                .append(testErrorCount == 0)
                 .append(",\"info_count\":").append(infoCount)
                 .append(",\"returned_error_count\":")
                 .append(returnedErrorCount)
@@ -859,11 +991,28 @@ public final class WorkerApplication implements IApplication {
         }
         result
                 .append("}");
+        previousSourceUnits = currentSourceUnits;
+        if (compileOk) {
+            pendingDeletedSourceUnits.clear();
+        }
         if (active == null) {
             emit(result.toString());
         } else {
             emitTerminal(active, result.toString());
         }
+    }
+
+    private static int diagnosticCount(
+            List<ProblemDiagnostic> diagnostics,
+            boolean test) {
+        int count = 0;
+        for (ProblemDiagnostic diagnostic : diagnostics) {
+            boolean testResource = diagnostic.resource.startsWith("test-src/");
+            if (testResource == test) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private synchronized void emitTerminal(
@@ -1028,6 +1177,14 @@ public final class WorkerApplication implements IApplication {
                 + json(effectiveSourceEncoding) + ","
                 + "\"source_encoding_verified\":"
                 + sourceEncodingVerified + ","
+                + "\"source_level\":" + json(
+                        javaProject.getOption(JavaCore.COMPILER_SOURCE, false)) + ","
+                + "\"method_parameters\":" + json(
+                        javaProject.getOption(
+                                JavaCore.COMPILER_CODEGEN_METHOD_PARAMETERS_ATTR,
+                                false)) + ","
+                + "\"test_model_configured\":"
+                + testModelConfigured + ","
                 + "\"apt_enabled\":" + aptEnabled + ","
                 + "\"apt_factory_path_requested_count\":"
                 + aptFactoryPathRequestedCount + ","

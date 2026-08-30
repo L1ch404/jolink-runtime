@@ -633,6 +633,7 @@ class JdtCompileResult:
     compile_ok: bool
     actual_build_kind: str | None
     compiled_source_count: int
+    compiled_source_units: tuple[str, ...]
     changed_classes: tuple[str, ...]
     deleted_classes: tuple[str, ...]
     changed_resources: tuple[str, ...]
@@ -648,6 +649,14 @@ class JdtCompileResult:
     candidate_deleted_classes: tuple[str, ...] = ()
     candidate_changed_resources: tuple[str, ...] = ()
     candidate_deleted_resources: tuple[str, ...] = ()
+    main_compile_ok: bool = True
+    test_compile_ok: bool = True
+    main_error_count: int = 0
+    test_error_count: int = 0
+    main_warning_count: int = 0
+    test_warning_count: int = 0
+    test_output_directory: Path | None = None
+    deleted_source_units: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -720,6 +729,27 @@ def discover_java8_system_entries(java_home: Path) -> tuple[Path, ...]:
     return tuple(entries)
 
 
+def discover_target_system_entries(
+    java_home: Path,
+    target_level: int,
+) -> tuple[Path, ...]:
+    if int(target_level) == 8:
+        return discover_java8_system_entries(java_home)
+    if int(target_level) == 11:
+        home = java_home.expanduser().resolve(strict=True)
+        jrt = home / "lib/jrt-fs.jar"
+        if not jrt.is_file():
+            raise JdtCompileError(
+                "JDT_TARGET_PLATFORM_UNAVAILABLE",
+                "The Java 11 target JDK has no jrt-fs.jar system image.",
+            )
+        return (jrt,)
+    raise JdtCompileError(
+        "JDT_TARGET_PLATFORM_UNSUPPORTED",
+        "The product JDT model supports Java target 8 or 11.",
+    )
+
+
 class PersistentJdtCompileSession:
     """One long-lived JavaBuilder state for one frozen Build World."""
 
@@ -733,6 +763,13 @@ class PersistentJdtCompileSession:
         baseline_source_roots: Sequence[Path] | None = None,
         classpath_entries: Sequence[Path],
         source_encoding: str,
+        source_level: int = 8,
+        method_parameters: bool = False,
+        test_source_roots: Sequence[Path] = (),
+        baseline_test_source_roots: Sequence[Path] | None = None,
+        test_classpath_entries: Sequence[Path] = (),
+        baseline_main_output: Path | None = None,
+        baseline_test_output: Path | None = None,
         processor_entries: Sequence[Path] = (),
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
@@ -758,7 +795,40 @@ class PersistentJdtCompileSession:
         self.classpath_entries = tuple(
             path.expanduser().resolve(strict=True) for path in classpath_entries
         )
+        self.test_source_roots = tuple(
+            path.expanduser().resolve(strict=True) for path in test_source_roots
+        )
+        self.baseline_test_source_roots = tuple(
+            path.expanduser().resolve(strict=True)
+            for path in (baseline_test_source_roots or test_source_roots)
+        )
+        if len(self.baseline_test_source_roots) != len(self.test_source_roots):
+            raise JdtCompileError(
+                "JDT_TEST_SOURCE_SNAPSHOT_INVALID",
+                "The frozen test source snapshot does not match test roots.",
+            )
+        self.test_classpath_entries = tuple(
+            path.expanduser().resolve(strict=True)
+            for path in test_classpath_entries
+        )
+        self.baseline_main_output = (
+            baseline_main_output.expanduser().resolve(strict=True)
+            if baseline_main_output is not None
+            else None
+        )
+        self.baseline_test_output = (
+            baseline_test_output.expanduser().resolve(strict=True)
+            if baseline_test_output is not None
+            else None
+        )
         self.source_encoding = source_encoding
+        if int(source_level) not in {8, 11}:
+            raise JdtCompileError(
+                "JDT_SOURCE_LEVEL_UNSUPPORTED",
+                "The product JDT Worker supports source level 8 or 11.",
+            )
+        self.source_level = int(source_level)
+        self.method_parameters = bool(method_parameters)
         self.processor_entries = tuple(
             path.expanduser().resolve(strict=True) for path in processor_entries
         )
@@ -785,11 +855,16 @@ class PersistentJdtCompileSession:
         self.private_project = self.root / "workspace/plain-fixture"
         self.private_source = self.private_project / "src"
         self.output_directory = self.private_project / "bin"
+        self.private_test_source = self.private_project / "test-src"
+        self.test_output_directory = self.private_project / "test-bin"
         self._source_map: dict[Path, Path] = {}
         self._client: JdtWorkerClient | None = None
         self._poisoned = False
         self._poison_reason = ""
         self._baseline_ready = False
+        self._working_compile_state = "unknown"
+        self._last_compile_diagnostics: tuple[dict[str, Any], ...] = ()
+        self._last_compile_error_count = 0
         self._published_output_manifest: dict[str, str] = {}
         self._state_lock = threading.RLock()
         self._operation_lock = threading.Lock()
@@ -803,6 +878,21 @@ class PersistentJdtCompileSession:
                 and not self._poisoned
                 and self._baseline_ready
             )
+
+    @property
+    def working_compile_state(self) -> str:
+        with self._state_lock:
+            return self._working_compile_state
+
+    @property
+    def last_compile_diagnostics(self) -> tuple[dict[str, Any], ...]:
+        with self._state_lock:
+            return tuple(dict(value) for value in self._last_compile_diagnostics)
+
+    @property
+    def last_compile_error_count(self) -> int:
+        with self._state_lock:
+            return self._last_compile_error_count
 
     def start(self) -> JdtCompileResult:
         with self._operation_lock:
@@ -830,13 +920,35 @@ class PersistentJdtCompileSession:
                         "".join(f"{path}\n" for path in self.processor_entries),
                         encoding="utf-8",
                     )
+                test_classpath_file: Path | None = None
+                if self.test_source_roots:
+                    test_classpath_file = (
+                        self.root / "worker-test-classpath.private.txt"
+                    )
+                    test_classpath_file.write_text(
+                        "".join(
+                            f"{path}\n" for path in self.test_classpath_entries
+                        ),
+                        encoding="utf-8",
+                    )
                 client = self._start_worker(
                     classpath_file=classpath_file,
                     processor_file=processor_file,
+                    test_classpath_file=test_classpath_file,
                 )
                 with self._state_lock:
                     self._client = client
                 result = self._build("FULL", source_changes_pending=False)
+                if self.baseline_main_output is not None:
+                    self._copy_frozen_resources(
+                        self.baseline_main_output,
+                        self.output_directory,
+                    )
+                if self.baseline_test_output is not None:
+                    self._copy_frozen_resources(
+                        self.baseline_test_output,
+                        self.test_output_directory,
+                    )
                 return result
             except Exception:
                 with self._state_lock:
@@ -862,64 +974,96 @@ class PersistentJdtCompileSession:
                         "JDT_BASELINE_NOT_ACCEPTED",
                         "The initial JDT FULL baseline has not passed validation.",
                     )
-            try:
-                selected = tuple(
-                    path.expanduser().resolve(strict=True)
-                    for path in source_files
-                )
-            except OSError as error:
-                raise JdtCompileError(
-                    "SOURCE_LIFECYCLE_UNSUPPORTED",
-                    "Adding or deleting Java sources is not supported yet.",
-                ) from error
+            selected = tuple(
+                path.expanduser().resolve(strict=False)
+                for path in source_files
+            )
             if not selected:
                 raise JdtCompileError(
                     "INVALID_ARGUMENT",
                     "reload requires at least one Java source file.",
                 )
-            snapshots: dict[Path, tuple[Path, bytes, bytes]] = {}
+            snapshots: dict[
+                Path, tuple[Path, bytes | None, bytes | None, bool]
+            ] = {}
             for source in selected:
                 private = self._source_map.get(source)
+                if private is None:
+                    private = self._private_path_for_workspace_source(source)
                 if private is None:
                     raise JdtCompileError(
                         "SOURCE_OUTSIDE_BUILD_WORLD",
                         "A reload source is outside this CompileSession.",
                     )
-                content = source.read_bytes()
-                snapshots[source] = (private, content, private.read_bytes())
-            replaced: list[tuple[Path, bytes]] = []
-            changed_input_count = sum(
-                1
-                for _source, (_private, content, original) in snapshots.items()
-                if content != original
-            )
+                mapped = source in self._source_map
+                content = source.read_bytes() if source.is_file() else None
+                original = private.read_bytes() if private.is_file() else None
+                if content is None and original is None:
+                    # A fresh Bootstrap may already include a requested
+                    # deletion. There is no additional lifecycle delta.
+                    continue
+                snapshots[source] = (private, content, original, mapped)
+            if not snapshots:
+                return self._build("INCREMENTAL", source_changes_pending=False)
+            replaced: list[tuple[Path, bytes | None, Path, bool]] = []
+            changed_private_sources = {
+                private.relative_to(self.private_project).as_posix()
+                for _source, (private, content, original, _mapped)
+                in snapshots.items()
+                if content is not None and content != original
+            }
             try:
-                for private, content, original in snapshots.values():
-                    metadata = private.stat()
+                for source, (private, content, original, mapped) in snapshots.items():
+                    metadata = private.stat() if private.is_file() else None
+                    private.parent.mkdir(parents=True, exist_ok=True)
+                    if not mapped:
+                        self._source_map[source] = private
+                    replaced.append((private, original, source, mapped))
+                    if content is None:
+                        private.unlink(missing_ok=True)
+                        continue
                     temporary = private.with_name(
                         f".{private.name}.{time.time_ns()}.tmp"
                     )
                     temporary.write_bytes(content)
                     temporary.replace(private)
-                    replaced.append((private, original))
                     if content != original:
                         forced_mtime = max(
                             time.time_ns(),
-                            metadata.st_mtime_ns + 2_000_000_000,
+                            (
+                                metadata.st_mtime_ns + 2_000_000_000
+                                if metadata is not None
+                                else time.time_ns()
+                            ),
                         )
                         os.utime(
                             private,
-                            ns=(metadata.st_atime_ns, forced_mtime),
+                            ns=(
+                                metadata.st_atime_ns
+                                if metadata is not None
+                                else forced_mtime,
+                                forced_mtime,
+                            ),
                         )
-                        if private.stat().st_mtime_ns <= metadata.st_mtime_ns:
+                        if (
+                            metadata is not None
+                            and private.stat().st_mtime_ns
+                            <= metadata.st_mtime_ns
+                        ):
                             raise OSError(
                                 "private source timestamp did not advance"
                             )
             except Exception as error:
                 rollback_ok = True
-                for private, original in reversed(replaced):
+                for private, original, source, mapped in reversed(replaced):
                     try:
-                        private.write_bytes(original)
+                        if original is None:
+                            private.unlink(missing_ok=True)
+                        else:
+                            private.parent.mkdir(parents=True, exist_ok=True)
+                            private.write_bytes(original)
+                        if not mapped:
+                            self._source_map.pop(source, None)
                     except OSError:
                         rollback_ok = False
                 if not rollback_ok:
@@ -929,23 +1073,79 @@ class PersistentJdtCompileSession:
                     "The private source mirror could not be updated atomically.",
                 ) from error
             result = self._build("INCREMENTAL", source_changes_pending=False)
-            if changed_input_count and result.compiled_source_count == 0:
+            requested_deleted_source_units = {
+                private.relative_to(self.private_project).as_posix()
+                for _source, (private, content, _original, _mapped)
+                in snapshots.items()
+                if content is None
+            }
+            missing_deleted_source_units = sorted(
+                requested_deleted_source_units
+                - set(result.deleted_source_units)
+            )
+            if missing_deleted_source_units:
+                self._poison("JDT_SOURCE_DELETION_NOT_OBSERVED")
+                raise JdtCompileError(
+                    "JDT_SOURCE_DELETION_NOT_OBSERVED",
+                    "The JDT Worker did not observe every deleted source file.",
+                    context={
+                        "missing_source_count": len(
+                            missing_deleted_source_units
+                        ),
+                        "missing_sources": missing_deleted_source_units,
+                        "observed_deleted_sources": list(
+                            result.deleted_source_units
+                        ),
+                    },
+                )
+            missing_compiled_sources = sorted(
+                changed_private_sources - set(result.compiled_source_units)
+            )
+            if missing_compiled_sources:
                 self._poison("JDT_SOURCE_CHANGE_NOT_OBSERVED")
                 raise JdtCompileError(
                     "JDT_SOURCE_CHANGE_NOT_OBSERVED",
-                    "The JDT Worker did not compile a changed source file.",
+                    "The JDT Worker did not compile every changed source file.",
+                    context={
+                        "missing_source_count": len(missing_compiled_sources),
+                        "missing_sources": missing_compiled_sources,
+                    },
                 )
+            if result.compile_ok:
+                for source, (_private, content, _original, _mapped) in (
+                    snapshots.items()
+                ):
+                    if content is None:
+                        self._source_map.pop(source, None)
             pending = any(
-                not source.is_file()
-                or _sha256_file(source)
-                != hashlib.sha256(content).hexdigest()
-                for source, (_private, content, _original) in snapshots.items()
+                (
+                    source.exists()
+                    if content is None
+                    else not source.is_file()
+                    or _sha256_file(source)
+                    != hashlib.sha256(content).hexdigest()
+                )
+                for source, (_private, content, _original, _mapped)
+                in snapshots.items()
             )
             return replace(
                 result,
                 source_changes_pending=pending,
                 **self._publication_delta(),
             )
+
+    def _private_path_for_workspace_source(self, source: Path) -> Path | None:
+        matches: list[Path] = []
+        for roots, destination in (
+            (self.source_roots, self.private_source),
+            (self.test_source_roots, self.private_test_source),
+        ):
+            for root in roots:
+                if source.is_relative_to(root):
+                    matches.append(destination / source.relative_to(root))
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
     def accept_baseline(self) -> None:
         """Publish initial FULL only after Maven/JDT compatibility succeeds."""
@@ -961,6 +1161,32 @@ class PersistentJdtCompileSession:
                     self._complete_output_manifest()
                 )
                 self._baseline_ready = True
+                self._working_compile_state = "valid"
+                self._last_compile_diagnostics = ()
+                self._last_compile_error_count = 0
+
+    def workspace_source_changes(self) -> tuple[Path, ...]:
+        """Return main/test workspace sources that differ from the private mirror."""
+
+        with self._state_lock:
+            mapped = dict(self._source_map)
+        observed: set[Path] = set()
+        changed: set[Path] = set()
+        for root in (*self.source_roots, *self.test_source_roots):
+            for source in root.rglob("*.java"):
+                resolved = source.resolve(strict=False)
+                observed.add(resolved)
+                private = mapped.get(resolved)
+                if private is None:
+                    changed.add(resolved)
+                    continue
+                try:
+                    if source.read_bytes() != private.read_bytes():
+                        changed.add(resolved)
+                except OSError:
+                    changed.add(resolved)
+        changed.update(set(mapped) - observed)
+        return tuple(sorted(changed, key=str))
 
     def mark_published(self) -> None:
         """Advance the Runtime publication baseline after a confirmed apply."""
@@ -983,6 +1209,7 @@ class PersistentJdtCompileSession:
             self._poisoned = True
             self._poison_reason = "SESSION_CLOSED"
             self._baseline_ready = False
+            self._working_compile_state = "unknown"
         settled = client.force_close() if client is not None else True
         with self._operation_lock:
             shutil.rmtree(self.root, ignore_errors=True)
@@ -990,11 +1217,35 @@ class PersistentJdtCompileSession:
             self._published_output_manifest.clear()
         return settled
 
+    def interrupt(self, reason: str = "JDT_SESSION_INTERRUPTED") -> None:
+        """Force-close the Worker so a synchronous build unblocks promptly."""
+
+        self._poison(reason)
+
     def _materialize_sources(self) -> None:
-        self.private_source.mkdir(parents=True, exist_ok=False)
+        self._materialize_source_group(
+            source_roots=self.source_roots,
+            baseline_roots=self.baseline_source_roots,
+            destination_root=self.private_source,
+        )
+        if self.test_source_roots:
+            self._materialize_source_group(
+                source_roots=self.test_source_roots,
+                baseline_roots=self.baseline_test_source_roots,
+                destination_root=self.private_test_source,
+            )
+
+    def _materialize_source_group(
+        self,
+        *,
+        source_roots: Sequence[Path],
+        baseline_roots: Sequence[Path],
+        destination_root: Path,
+    ) -> None:
+        destination_root.mkdir(parents=True, exist_ok=False)
         mapped: dict[str, str] = {}
         for source_root, baseline_root in zip(
-            self.source_roots, self.baseline_source_roots
+            source_roots, baseline_roots
         ):
             for baseline_source in sorted(baseline_root.rglob("*.java")):
                 if baseline_source.is_symlink():
@@ -1012,16 +1263,28 @@ class PersistentJdtCompileSession:
                         "Two source roots map different Java files to one path.",
                     )
                 mapped[key] = digest
-                destination = self.private_source / relative
+                destination = destination_root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(baseline_source, destination)
                 self._source_map[source.resolve(strict=False)] = destination
+
+    @staticmethod
+    def _copy_frozen_resources(source_root: Path, output_root: Path) -> None:
+        output_root.mkdir(parents=True, exist_ok=True)
+        for source in sorted(source_root.rglob("*")):
+            if not source.is_file() or source.suffix == ".class":
+                continue
+            relative = source.relative_to(source_root)
+            destination = output_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
 
     def _start_worker(
         self,
         *,
         classpath_file: Path,
         processor_file: Path | None,
+        test_classpath_file: Path | None,
     ) -> JdtWorkerClient:
         java = self.candidate.verify_worker_java(
             self.worker_java_home
@@ -1060,11 +1323,19 @@ class PersistentJdtCompileSession:
             str(classpath_file),
             "--source-encoding",
             self.source_encoding,
+            "--source-level",
+            str(self.source_level),
+            "--parameters",
+            "true" if self.method_parameters else "false",
             "--instrumentation",
             "enabled",
         ]
         if processor_file is not None:
             command.extend(["--apt-processors-file", str(processor_file)])
+        if test_classpath_file is not None:
+            command.extend(
+                ["--test-classpath-file", str(test_classpath_file)]
+            )
         try:
             process_options: dict[str, Any] = {}
             if os.name == "nt":
@@ -1099,6 +1370,14 @@ class PersistentJdtCompileSession:
             or ready.get("status") != "ready"
             or ready.get("java_builder_count") != 1
             or ready.get("source_encoding_verified") is not True
+            or ready.get("source_level")
+            not in ({"8", "1.8"} if self.source_level == 8 else {"11"})
+            or ready.get("method_parameters")
+            != ("generate" if self.method_parameters else "do not generate")
+            or (
+                test_classpath_file is not None
+                and ready.get("test_model_configured") is not True
+            )
             or (
                 processor_file is not None
                 and ready.get("apt_factory_path_verified") is not True
@@ -1141,9 +1420,13 @@ class PersistentJdtCompileSession:
                 "The JDT build operation did not complete.",
             )
         compiled = frame.get("compiled_source_units")
+        deleted_sources = frame.get("deleted_source_units", [])
         changed = frame.get("changed_classes")
         deleted = frame.get("deleted_classes")
-        if not all(isinstance(value, list) for value in (compiled, changed, deleted)):
+        if not all(
+            isinstance(value, list)
+            for value in (compiled, deleted_sources, changed, deleted)
+        ):
             self._poison("JDT_WORKER_PROTOCOL_ERROR")
             raise JdtCompileError(
                 "JDT_WORKER_PROTOCOL_ERROR",
@@ -1177,25 +1460,52 @@ class PersistentJdtCompileSession:
             }
             for diagnostic in raw_diagnostics
         )
+        compiled_source_units = tuple(
+            sorted({str(value).replace("\\", "/") for value in compiled})
+        )
+        compile_ok = frame.get("compile_ok") is True
+        error_count = int(frame.get("error_count", 0))
+        with self._state_lock:
+            self._working_compile_state = "valid" if compile_ok else "failed"
+            self._last_compile_diagnostics = diagnostics if not compile_ok else ()
+            self._last_compile_error_count = error_count if not compile_ok else 0
         return JdtCompileResult(
-            compile_ok=frame.get("compile_ok") is True,
+            compile_ok=compile_ok,
             actual_build_kind=(
                 str(frame["actual_build_kind"])
                 if frame.get("actual_build_kind") is not None
                 else None
             ),
-            compiled_source_count=len(compiled),
+            compiled_source_count=len(compiled_source_units),
+            compiled_source_units=compiled_source_units,
             changed_classes=tuple(str(value) for value in changed),
             deleted_classes=tuple(str(value) for value in deleted),
             changed_resources=changed_resources,
             deleted_resources=deleted_resources,
-            error_count=int(frame.get("error_count", 0)),
+            error_count=error_count,
             warning_count=int(frame.get("warning_count", 0)),
             diagnostics=diagnostics,
             diagnostics_truncated=frame.get("diagnostics_truncated") is True,
             elapsed_ms=elapsed_ms,
             source_changes_pending=source_changes_pending,
             output_directory=self.output_directory,
+            main_compile_ok=frame.get("main_compile_ok") is not False,
+            test_compile_ok=frame.get("test_compile_ok") is not False,
+            main_error_count=int(frame.get("main_error_count", 0)),
+            test_error_count=int(frame.get("test_error_count", 0)),
+            main_warning_count=int(frame.get("main_warning_count", 0)),
+            test_warning_count=int(frame.get("test_warning_count", 0)),
+            test_output_directory=(
+                self.test_output_directory if self.test_source_roots else None
+            ),
+            deleted_source_units=tuple(
+                sorted(
+                    {
+                        str(value).replace("\\", "/")
+                        for value in deleted_sources
+                    }
+                )
+            ),
         )
 
     def _resource_manifest(self) -> dict[str, str]:
@@ -1248,6 +1558,7 @@ class PersistentJdtCompileSession:
             self._poisoned = True
             self._poison_reason = reason
             self._baseline_ready = False
+            self._working_compile_state = "unknown"
             client = self._client
             self._client = None
         if client is not None:
@@ -1271,4 +1582,5 @@ __all__ = [
     "lombok_worker_jvm_arguments",
     "PersistentJdtCompileSession",
     "discover_java8_system_entries",
+    "discover_target_system_entries",
 ]

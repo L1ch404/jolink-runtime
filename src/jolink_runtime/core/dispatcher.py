@@ -77,6 +77,14 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action.source_files = arguments.get("source_files")
     if "hotswap" in arguments:
         action.hotswap = _bool_arg(arguments, "hotswap", True)
+    if action.action == "test" and "project_path" in arguments:
+        action.project_path = arguments.get("project_path")
+    if "tests" in arguments:
+        action.tests = arguments.get("tests")
+    if "test_run_id" in arguments:
+        action.test_run_id = arguments.get("test_run_id")
+    if arguments.get("_product_status") is True:
+        action._product_status = True
     action.configure_startup_readiness(
         ready_port=int(arguments.get("ready_port", 0)),
         wait_timeout_seconds=float(
@@ -101,7 +109,7 @@ class ProjectLaunchArgumentError(ValueError):
             "argument": argument,
             "retryable": True,
             "suggested_next_step": (
-                "Correct the project launch arguments and retry launch/restart."
+                "Correct the java_application arguments and retry the action."
             ),
         }
 
@@ -121,6 +129,34 @@ def parse_project_launch_request(
         return None
 
     action = str(arguments.get("action", "status"))
+    if action in {"test", "cancel_test"}:
+        if has_launch_name:
+            raise ProjectLaunchArgumentError(
+                argument="launch_name",
+                message="launch_name is not valid for Fast Test.",
+            )
+        if action == "cancel_test" and has_project_path:
+            raise ProjectLaunchArgumentError(
+                argument="project_path",
+                message="cancel_test uses test_run_id and does not accept project_path.",
+            )
+        direct_fields = tuple(
+            field
+            for field in (
+                "classpath",
+                "main_class",
+                "jar_path",
+                "app_args",
+                "vm_args",
+            )
+            if field in arguments
+        )
+        if direct_fields:
+            raise ProjectLaunchArgumentError(
+                argument=direct_fields[0],
+                message="Fast Test cannot be combined with direct JVM launch arguments.",
+            )
+        return None
     if action != "run":
         raise ProjectLaunchArgumentError(
             argument="project_path",
@@ -240,6 +276,7 @@ class Dispatcher:
                     filter_text=args.get("filter"),
                     full=bool(args.get("full", False)),
                 )
+            args["_product_status"] = True
             return _product_application_payload(
                 self.dispatch_java_runtime(
                     args,
@@ -319,6 +356,8 @@ class Dispatcher:
             "resume": runtime.resume,
             "cleanup_debug_state": runtime.cleanup_debug_state,
             "update": getattr(runtime, "update", None),
+            "test": getattr(runtime, "test", None),
+            "cancel_test": getattr(runtime, "cancel_test", None),
         }
         handler = handlers.get(action.action)
         if handler is None:

@@ -218,6 +218,33 @@ def test_operation_timeout_terminates_the_process(tmp_path: Path) -> None:
     assert result.termination.terminated is True
 
 
+def test_output_limit_terminates_the_process(tmp_path: Path) -> None:
+    log = tmp_path / "bounded.log"
+    result = ProcessSupervisor().run(
+        BuildOperationSpec(
+            argv=(
+                sys.executable,
+                "-c",
+                (
+                    "import sys,time; chunk='x'*65536; "
+                    "[(sys.stdout.write(chunk),sys.stdout.flush(),time.sleep(.01)) "
+                    "for _ in range(1000)]"
+                ),
+            ),
+            cwd=tmp_path,
+            output_capture=log,
+            max_output_bytes=128 * 1024,
+            operation_name="bounded-output",
+        ),
+        owner=AttemptToken("launch_output_limit", 1),
+    )
+
+    assert result.output_limit_exceeded is True
+    assert result.succeeded is False
+    assert result.termination is not None
+    assert result.termination.terminated is True
+
+
 def test_unsettled_successful_command_retains_owner_until_retry(
     tmp_path: Path,
 ) -> None:

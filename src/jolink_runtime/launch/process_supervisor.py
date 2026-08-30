@@ -42,6 +42,7 @@ class OperationResult:
     finished_at: float
     output_capture: Path | None
     termination: TerminationReport | None = None
+    output_limit_exceeded: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -49,6 +50,7 @@ class OperationResult:
             self.return_code == 0
             and not self.cancelled
             and not self.timed_out
+            and not self.output_limit_exceeded
             and (
                 self.termination is None
                 or self.termination.terminated
@@ -150,6 +152,7 @@ class ProcessSupervisor:
             )
             cancelled = False
             timed_out = False
+            output_limit_exceeded = False
             while process.poll() is None:
                 handle.refresh_identity_tree()
                 if state.cancelled.wait(0.05):
@@ -158,7 +161,23 @@ class ProcessSupervisor:
                 if deadline is not None and time.monotonic() >= deadline:
                     timed_out = True
                     break
-            if cancelled or timed_out:
+                if (
+                    spec.max_output_bytes is not None
+                    and spec.output_capture is not None
+                    and spec.output_capture.stat().st_size
+                    > spec.max_output_bytes
+                ):
+                    output_limit_exceeded = True
+                    break
+            if (
+                not output_limit_exceeded
+                and spec.max_output_bytes is not None
+                and spec.output_capture is not None
+                and spec.output_capture.stat().st_size
+                > spec.max_output_bytes
+            ):
+                output_limit_exceeded = True
+            if cancelled or timed_out or output_limit_exceeded:
                 termination = self._terminator.terminate(
                     handle,
                     deadline=time.monotonic() + 5.0,
@@ -181,6 +200,7 @@ class ProcessSupervisor:
                 finished_at=time.monotonic(),
                 output_capture=spec.output_capture,
                 termination=termination,
+                output_limit_exceeded=output_limit_exceeded,
             )
         finally:
             if (

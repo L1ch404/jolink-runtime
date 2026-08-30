@@ -13,6 +13,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -23,6 +24,9 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
 import org.apache.maven.artifact.DependencyResolutionRequiredException;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.resolver.ArtifactResolutionRequest;
+import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -30,27 +34,35 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
+import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.model.Plugin;
 import org.apache.maven.model.PluginExecution;
+import org.apache.maven.model.Resource;
 import org.apache.maven.project.MavenProject;
+import org.apache.maven.repository.RepositorySystem;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 
 /** Export facts already resolved by the active Maven session. */
 @Mojo(
     name = "export-build-world",
-    defaultPhase = LifecyclePhase.COMPILE,
-    requiresDependencyResolution = ResolutionScope.COMPILE,
+    defaultPhase = LifecyclePhase.TEST_COMPILE,
+    requiresDependencyResolution = ResolutionScope.TEST,
     requiresProject = true,
     threadSafe = true
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
-    private static final String SCHEMA = "jolink.maven-build-world-probe.v1";
-    private static final String PROBE_VERSION = "0.1.0-spike6";
+    private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
+    private static final String PROBE_VERSION = "0.1.0-fasttest9";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
         "META-INF/services/javax.annotation.processing.Processor";
     private static final long MAX_PROCESSOR_SERVICE_BYTES = 64L * 1024L;
+    private static final String JUNIT_PLATFORM_LAUNCHER_FACTORY =
+        "org/junit/platform/launcher/core/LauncherFactory.class";
+
+    @Component
+    private RepositorySystem repositorySystem;
 
     private static final class ProcessorFacts {
         final String processingMode;
@@ -107,6 +119,28 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         }
     }
 
+    private static final class RunnerSupportFacts {
+        final List<String> classpathElements;
+        final String selectedVersion;
+        final String selectionSource;
+        final boolean fallbackUsed;
+        final String fallbackReason;
+
+        RunnerSupportFacts(
+            List<String> classpathElements,
+            String selectedVersion,
+            String selectionSource,
+            boolean fallbackUsed,
+            String fallbackReason
+        ) {
+            this.classpathElements = classpathElements;
+            this.selectedVersion = selectedVersion;
+            this.selectionSource = selectionSource;
+            this.fallbackUsed = fallbackUsed;
+            this.fallbackReason = fallbackReason;
+        }
+    }
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
@@ -122,12 +156,19 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             throw new MojoExecutionException("jolink.probe.outputDirectory is required");
         }
         final List<String> classpath;
+        final List<String> testClasspath;
         try {
             classpath = project.getCompileClasspathElements();
+            testClasspath = project.getTestClasspathElements();
         } catch (DependencyResolutionRequiredException error) {
-            throw new MojoExecutionException("Compile classpath is unresolved", error);
+            throw new MojoExecutionException("Compile/test classpath is unresolved", error);
         }
-        String json = render(classpath, processorFacts(classpath));
+        String json = render(
+            classpath,
+            testClasspath,
+            processorFacts(classpath),
+            processorFacts(testClasspath)
+        );
         try {
             Path directory = outputDirectory.getCanonicalFile().toPath();
             Files.createDirectories(directory);
@@ -160,8 +201,12 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
 
     private String render(
         List<String> classpath,
-        ProcessorFacts processors
+        List<String> testClasspath,
+        ProcessorFacts processors,
+        ProcessorFacts testProcessors
     ) throws MojoExecutionException {
+        RunnerSupportFacts runnerSupport =
+            junitPlatformRunnerSupport(testClasspath);
         StringBuilder out = new StringBuilder(4096);
         out.append('{');
         field(out, "schema", SCHEMA, false);
@@ -249,12 +294,97 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             true
         );
         out.append('}');
+        stringList(
+            out,
+            "testCompileSourceRoots",
+            project.getTestCompileSourceRoots(),
+            true
+        );
+        stringList(out, "testClasspathElements", testClasspath, true);
+        out.append(",\"testAnnotationProcessing\":{");
+        field(out, "processingMode", testProcessors.processingMode, false);
+        field(out, "discoveryMode", testProcessors.discoveryMode, true);
+        booleanField(
+            out,
+            "compileClasspathDiscovery",
+            testProcessors.compileClasspathDiscovery,
+            true
+        );
+        stringList(
+            out,
+            "processorProviderArtifactPaths",
+            testProcessors.providerArtifactPaths,
+            true
+        );
+        stringList(out, "providers", testProcessors.providers, true);
+        stringList(out, "options", testProcessors.options, true);
+        out.append('}');
         field(
             out,
             "outputDirectory",
             project.getBuild() == null ? null : canonical(new File(project.getBuild().getOutputDirectory())),
             true
         );
+        field(
+            out,
+            "testOutputDirectory",
+            project.getBuild() == null
+                ? null
+                : canonical(new File(project.getBuild().getTestOutputDirectory())),
+            true
+        );
+        stringList(out, "resourceDirectories", resourceDirectories(false), true);
+        stringList(out, "testResourceDirectories", resourceDirectories(true), true);
+        out.append(",\"testRuntime\":{");
+        stringList(
+            out,
+            "runnerSupportClasspathElements",
+            runnerSupport.classpathElements,
+            false
+        );
+        field(
+            out,
+            "runnerSupportSelectedVersion",
+            runnerSupport.selectedVersion,
+            true
+        );
+        field(
+            out,
+            "runnerSupportSelectionSource",
+            runnerSupport.selectionSource,
+            true
+        );
+        booleanField(
+            out,
+            "runnerSupportFallbackUsed",
+            runnerSupport.fallbackUsed,
+            true
+        );
+        field(
+            out,
+            "runnerSupportFallbackReason",
+            runnerSupport.fallbackReason,
+            true
+        );
+        stringList(
+            out,
+            "unsupportedSurefireConfigurationNames",
+            unsupportedSurefireConfigurationNames(),
+            true
+        );
+        stringList(
+            out,
+            "unsupportedFailsafeConfigurationNames",
+            unsupportedFailsafeConfigurationNames(),
+            true
+        );
+        stringList(
+            out,
+            "unsupportedTestCompilerConfigurationNames",
+            unsupportedTestCompilerConfigurationNames(),
+            true
+        );
+        out.append('}');
         out.append(",\"reactorProjects\":[");
         List<MavenProject> projects = session.getProjects();
         if (projects == null) {
@@ -283,6 +413,230 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         out.append(']');
         out.append('}').append('\n');
         return out.toString();
+    }
+
+    private RunnerSupportFacts junitPlatformRunnerSupport(
+        List<String> testClasspath
+    )
+        throws MojoExecutionException {
+        for (String raw : testClasspath) {
+            if (containsClass(new File(raw), JUNIT_PLATFORM_LAUNCHER_FACTORY)) {
+                return new RunnerSupportFacts(
+                    Collections.<String>emptyList(),
+                    artifactVersion("junit-platform-launcher"),
+                    "project_test_classpath",
+                    false,
+                    null
+                );
+            }
+        }
+        Artifact engine = null;
+        if (project.getArtifacts() != null) {
+            for (Artifact artifact : project.getArtifacts()) {
+                if ("org.junit.platform".equals(artifact.getGroupId())
+                        && "junit-platform-engine".equals(
+                            artifact.getArtifactId())) {
+                    engine = artifact;
+                    break;
+                }
+            }
+        }
+        if (engine == null || repositorySystem == null) {
+            return new RunnerSupportFacts(
+                Collections.<String>emptyList(),
+                null,
+                engine == null ? "not_required" : "unavailable",
+                false,
+                engine == null ? null : "repository_system_unavailable"
+            );
+        }
+        File exact = localExactLauncher(engine.getVersion());
+        if (exact != null) {
+            return new RunnerSupportFacts(
+                Collections.singletonList(canonical(exact)),
+                engine.getVersion(),
+                "local_exact",
+                false,
+                null
+            );
+        }
+        boolean offline = session.getRequest().isOffline();
+        if (!offline) {
+            Artifact launcher = repositorySystem.createArtifact(
+                "org.junit.platform",
+                "junit-platform-launcher",
+                engine.getVersion(),
+                Artifact.SCOPE_TEST,
+                "jar"
+            );
+            ArtifactResolutionRequest request = new ArtifactResolutionRequest()
+                .setArtifact(launcher)
+                .setResolveRoot(true)
+                .setResolveTransitively(false)
+                .setLocalRepository(session.getLocalRepository())
+                .setRemoteRepositories(project.getRemoteArtifactRepositories())
+                .setOffline(false);
+            ArtifactResolutionResult result = repositorySystem.resolve(request);
+            File file = launcher.getFile();
+            if (result.isSuccess() && file != null
+                    && containsClass(file, JUNIT_PLATFORM_LAUNCHER_FACTORY)) {
+                return new RunnerSupportFacts(
+                    Collections.singletonList(canonical(file)),
+                    engine.getVersion(),
+                    "maven_resolved_exact",
+                    false,
+                    null
+                );
+            }
+        }
+        File compatible = localCompatibleLauncher(engine.getVersion());
+        if (compatible != null) {
+            return new RunnerSupportFacts(
+                Collections.singletonList(canonical(compatible)),
+                compatible.getParentFile().getName(),
+                "local_compatible_fallback",
+                true,
+                offline ? "exact_unavailable_offline"
+                    : "exact_resolution_failed"
+            );
+        }
+        return new RunnerSupportFacts(
+            Collections.<String>emptyList(),
+            null,
+            "unavailable",
+            false,
+            offline ? "exact_unavailable_offline"
+                : "exact_resolution_failed"
+        );
+    }
+
+    private String artifactVersion(String artifactId) {
+        if (project.getArtifacts() == null) {
+            return null;
+        }
+        for (Artifact artifact : project.getArtifacts()) {
+            if ("org.junit.platform".equals(artifact.getGroupId())
+                    && artifactId.equals(artifact.getArtifactId())) {
+                return artifact.getVersion();
+            }
+        }
+        return null;
+    }
+
+    private File localExactLauncher(String version) {
+        if (session.getLocalRepository() == null || version == null) {
+            return null;
+        }
+        File candidate = new File(
+            session.getLocalRepository().getBasedir(),
+            "org/junit/platform/junit-platform-launcher/" + version
+                + "/junit-platform-launcher-" + version + ".jar"
+        );
+        return containsClass(candidate, JUNIT_PLATFORM_LAUNCHER_FACTORY)
+            ? candidate : null;
+    }
+
+    private File localCompatibleLauncher(String engineVersion) {
+        int[] required = numericVersion(engineVersion);
+        if (required == null || session.getLocalRepository() == null) {
+            return null;
+        }
+        File root = new File(
+            session.getLocalRepository().getBasedir(),
+            "org/junit/platform/junit-platform-launcher"
+        );
+        File[] versions = root.listFiles();
+        if (versions == null) {
+            return null;
+        }
+        File selected = null;
+        int[] selectedVersion = null;
+        for (File directory : versions) {
+            int[] candidateVersion = numericVersion(directory.getName());
+            if (candidateVersion == null
+                    || candidateVersion[0] != required[0]
+                    || compareVersion(candidateVersion, required) < 0) {
+                continue;
+            }
+            File candidate = new File(
+                directory,
+                "junit-platform-launcher-" + directory.getName() + ".jar"
+            );
+            if (!containsClass(candidate, JUNIT_PLATFORM_LAUNCHER_FACTORY)) {
+                continue;
+            }
+            if (selectedVersion == null
+                    || compareVersion(candidateVersion, selectedVersion) < 0) {
+                selected = candidate;
+                selectedVersion = candidateVersion;
+            }
+        }
+        return selected;
+    }
+
+    private int[] numericVersion(String value) {
+        if (value == null) {
+            return null;
+        }
+        String[] parts = value.split("\\.");
+        if (parts.length < 2) {
+            return null;
+        }
+        int[] result = new int[] {0, 0, 0};
+        try {
+            for (int index = 0; index < result.length && index < parts.length;
+                    index++) {
+                String digits = parts[index].replaceFirst("[^0-9].*$", "");
+                if (digits.isEmpty()) {
+                    return null;
+                }
+                result[index] = Integer.parseInt(digits);
+            }
+            return result;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private int compareVersion(int[] left, int[] right) {
+        for (int index = 0; index < Math.min(left.length, right.length); index++) {
+            int compared = Integer.compare(left[index], right[index]);
+            if (compared != 0) {
+                return compared;
+            }
+        }
+        return Integer.compare(left.length, right.length);
+    }
+
+    private boolean containsClass(File entry, String classFile) {
+        if (entry == null || !entry.isFile()) {
+            return false;
+        }
+        try (JarFile archive = new JarFile(entry)) {
+            return archive.getJarEntry(classFile) != null;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private List<String> resourceDirectories(boolean test)
+        throws MojoExecutionException {
+        if (project.getBuild() == null) {
+            return Collections.emptyList();
+        }
+        List<Resource> resources = test
+            ? project.getBuild().getTestResources()
+            : project.getBuild().getResources();
+        if (resources == null) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<String>();
+        for (Resource resource : resources) {
+            if (resource != null && resource.getDirectory() != null) {
+                result.add(canonical(new File(resource.getDirectory())));
+            }
+        }
+        return result;
     }
 
     private ProcessorFacts processorFacts(List<String> classpath)
@@ -445,6 +799,117 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             }
         }
         return null;
+    }
+
+    private Plugin surefirePlugin() {
+        return testPlugin("maven-surefire-plugin");
+    }
+
+    private Plugin failsafePlugin() {
+        return testPlugin("maven-failsafe-plugin");
+    }
+
+    private Plugin testPlugin(String artifactId) {
+        List<Plugin> plugins = project.getBuildPlugins();
+        if (plugins == null) {
+            return null;
+        }
+        for (Plugin plugin : plugins) {
+            if (artifactId.equals(plugin.getArtifactId())
+                && (plugin.getGroupId() == null
+                    || "org.apache.maven.plugins".equals(plugin.getGroupId()))) {
+                return plugin;
+            }
+        }
+        return null;
+    }
+
+    private List<String> unsupportedSurefireConfigurationNames() {
+        return unsupportedTestPluginConfigurationNames(surefirePlugin());
+    }
+
+    private List<String> unsupportedFailsafeConfigurationNames() {
+        return unsupportedTestPluginConfigurationNames(failsafePlugin());
+    }
+
+    private List<String> unsupportedTestPluginConfigurationNames(Plugin plugin) {
+        if (plugin == null) {
+            return Collections.emptyList();
+        }
+        Set<String> unsupported = new LinkedHashSet<String>();
+        if (plugin.getDependencies() != null
+                && !plugin.getDependencies().isEmpty()) {
+            unsupported.add("pluginDependencies");
+        }
+        Set<String> reportingOnly = new LinkedHashSet<String>(Arrays.asList(
+            "disableXmlReport",
+            "printSummary",
+            "redirectTestOutputToFile",
+            "reportFormat",
+            "trimStackTrace",
+            "useFile"
+        ));
+        List<Xpp3Dom> configurations = new ArrayList<Xpp3Dom>();
+        Xpp3Dom direct = pluginConfiguration(plugin);
+        if (direct != null) {
+            configurations.add(direct);
+        }
+        if (plugin.getExecutions() != null) {
+            for (PluginExecution execution : plugin.getExecutions()) {
+                Object raw = execution.getConfiguration();
+                if (raw instanceof Xpp3Dom) {
+                    configurations.add((Xpp3Dom) raw);
+                }
+            }
+        }
+        for (Xpp3Dom configuration : configurations) {
+            for (Xpp3Dom item : configuration.getChildren()) {
+                if (!reportingOnly.contains(item.getName())
+                        && (!value(item).isEmpty() || item.getChildCount() > 0)) {
+                    unsupported.add(item.getName());
+                }
+            }
+        }
+        List<String> result = new ArrayList<String>(unsupported);
+        Collections.sort(result);
+        return result;
+    }
+
+    private List<String> unsupportedTestCompilerConfigurationNames() {
+        Plugin plugin = compilerPlugin();
+        if (plugin == null) {
+            return Collections.emptyList();
+        }
+        Set<String> values = new LinkedHashSet<String>();
+        Xpp3Dom direct = pluginConfiguration(plugin);
+        if (direct != null) {
+            for (Xpp3Dom item : direct.getChildren()) {
+                if (item.getName().startsWith("test")
+                        && (!value(item).isEmpty() || item.getChildCount() > 0)) {
+                    values.add(item.getName());
+                }
+            }
+        }
+        if (plugin.getExecutions() != null) {
+            for (PluginExecution execution : plugin.getExecutions()) {
+                if (execution.getGoals() == null
+                        || !execution.getGoals().contains("testCompile")) {
+                    continue;
+                }
+                Object raw = execution.getConfiguration();
+                if (!(raw instanceof Xpp3Dom)) {
+                    continue;
+                }
+                for (Xpp3Dom item : ((Xpp3Dom) raw).getChildren()) {
+                    if (!value(item).isEmpty() || item.getChildCount() > 0) {
+                        values.add("testCompile." + item.getName());
+                    }
+                }
+            }
+        }
+        List<String> result = new ArrayList<String>(values);
+        Collections.sort(result);
+        return result;
     }
 
     private static Xpp3Dom pluginConfiguration(Plugin plugin) {

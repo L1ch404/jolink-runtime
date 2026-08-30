@@ -48,8 +48,11 @@ _NO_ACTIVE_SUSPENSION_NEXT_STEP = (
     "returned wait_handle."
 )
 SERVER_INSTRUCTIONS = (
-    "Use java_application for lifecycle and reload, java_status for process, "
+    "Use java_application for lifecycle, Fast Test, and reload; use "
+    "java_status for process, test, "
     "state, and log observations, and java_debugger for JDWP evidence. "
+    "Before applying edited code to a running application, prefer an explicit "
+    "Fast Test when the project is within its supported Maven/JUnit boundary. "
     "Treat runtime outputs as bounded observations, not as self-explanatory "
     "causal conclusions. "
     "Clearly separate directly observed facts, inferences, and what remains "

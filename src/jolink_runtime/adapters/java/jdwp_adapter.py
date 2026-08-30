@@ -51,6 +51,7 @@ from ...launch import (
     ReloadStage,
     RuntimeProcessState,
 )
+from ...launch.fast_test_manager import FastTestManager, FastTestManagerError
 from ..base import Runtime
 from .classfile import (
     ClassFileChangeKind,
@@ -268,6 +269,7 @@ class JavaRuntime(Runtime):
         self._last_project_request: ProjectLaunchRequest | None = None
         self._last_direct_action: RuntimeAction | None = None
         self._fast_compiler = FastCompiler()
+        self._fast_tests = FastTestManager()
         self._update_lock = threading.Lock()
         self._code_revision = 0
         self._runtime_overlay_sources: set[str] = set()
@@ -562,6 +564,11 @@ class JavaRuntime(Runtime):
         except Exception:
             logger.exception("java_runtime.fast_compile.force_close_failed")
             fast_compile_settled = False
+        try:
+            fast_test_settled = self._fast_tests.close(deadline=deadline)
+        except Exception:
+            logger.exception("java_runtime.fast_test.force_close_failed")
+            fast_test_settled = False
         controller_settled = True
         try:
             controller_result = self._launch_controller.force_close(
@@ -604,6 +611,7 @@ class JavaRuntime(Runtime):
         )
         settled = (
             fast_compile_settled
+            and fast_test_settled
             and controller_settled
             and target_settled
         )
@@ -635,6 +643,11 @@ class JavaRuntime(Runtime):
         except Exception:
             logger.exception("java_runtime.fast_compile.close_failed")
             fast_compile_settled = False
+        try:
+            fast_test_settled = self._fast_tests.close(deadline=deadline)
+        except Exception:
+            logger.exception("java_runtime.fast_test.close_failed")
+            fast_test_settled = False
         controller_settled = True
         try:
             controller_result = self._launch_controller.close(
@@ -753,6 +766,7 @@ class JavaRuntime(Runtime):
 
         settled = (
             fast_compile_settled
+            and fast_test_settled
             and controller_settled
             and target_settled
         )
@@ -2843,6 +2857,11 @@ class JavaRuntime(Runtime):
         return snapshot
 
     def status(self, action: RuntimeAction) -> RuntimeResult:
+        fast_test = (
+            self._fast_tests.status()
+            if getattr(action, "_product_status", False)
+            else None
+        )
         project = self._project_launch_snapshot()
         project_phase = (
             str(project.get("launch_phase"))
@@ -2854,6 +2873,7 @@ class JavaRuntime(Runtime):
                 **project,
                 "debug_state": "detached",
                 "running": project.get("process_state") == "running",
+                **({"fast_test": fast_test} if fast_test is not None else {}),
             }
             proc = self._proc.current
             if (
@@ -2909,6 +2929,7 @@ class JavaRuntime(Runtime):
                 "debug_state": "detached",
                 "running": False,
                 "message": "No application is managed by this runtime",
+                **({"fast_test": fast_test} if fast_test is not None else {}),
             }
             if project is not None:
                 data.update(project)
@@ -2923,6 +2944,7 @@ class JavaRuntime(Runtime):
                 "pid": proc.pid,
                 "exit_code": proc.exit_code,
                 "message": "Managed application has exited",
+                **({"fast_test": fast_test} if fast_test is not None else {}),
                 **readiness,
             }
             if project is not None:
@@ -2951,6 +2973,7 @@ class JavaRuntime(Runtime):
                 self._active_suspension.suspension_id
                 if self._active_suspension is not None else None
             ),
+            **({"fast_test": fast_test} if fast_test is not None else {}),
             **readiness,
         }
         startup_state = str(readiness["startup_state"])
@@ -3949,6 +3972,70 @@ class JavaRuntime(Runtime):
             )
         return attempt_id, generation, prepared
 
+    def test(self, action: RuntimeAction) -> RuntimeResult:
+        """Run explicit tests against a persistent headless JDT Build World."""
+
+        try:
+            project_path = Path(str(getattr(action, "project_path", "")))
+            if not str(project_path) or str(project_path) == ".":
+                raise FastTestManagerError(
+                    "INVALID_ARGUMENT",
+                    "Fast Test requires project_path.",
+                )
+            tests = getattr(action, "tests", None)
+            if not isinstance(tests, list) or not tests:
+                raise FastTestManagerError(
+                    "INVALID_ARGUMENT",
+                    "Fast Test requires one or more explicit tests.",
+                )
+            source_files = getattr(action, "source_files", None) or []
+            if not isinstance(source_files, list):
+                raise FastTestManagerError(
+                    "INVALID_ARGUMENT",
+                    "Fast Test source_files must be an array.",
+                )
+            payload = self._fast_tests.start(
+                project_path=project_path,
+                source_files=source_files,
+                tests=tests,
+                timeout_seconds=action.timeout,
+            )
+            return RuntimeResult(
+                ok=bool(payload.get("ok", True)),
+                data={key: value for key, value in payload.items() if key != "ok"},
+                error=str(payload.get("error", "")),
+            )
+        except (FastTestManagerError, OSError) as error:
+            return RuntimeResult(
+                ok=False,
+                error=str(error),
+                data={
+                    "error_code": getattr(error, "error_code", "FAST_TEST_FAILED"),
+                    "runtime_unchanged": True,
+                    **dict(getattr(error, "context", {}) or {}),
+                },
+            )
+
+    def cancel_test(self, action: RuntimeAction) -> RuntimeResult:
+        try:
+            test_run_id = str(getattr(action, "test_run_id", ""))
+            if not test_run_id:
+                raise FastTestManagerError(
+                    "INVALID_ARGUMENT",
+                    "cancel_test requires test_run_id.",
+                )
+            payload = self._fast_tests.cancel(test_run_id)
+            return RuntimeResult(ok=True, data=payload)
+        except FastTestManagerError as error:
+            return RuntimeResult(
+                ok=False,
+                error=str(error),
+                data={
+                    "error_code": error.error_code,
+                    **error.context,
+                },
+            )
+
     @staticmethod
     def _resolve_jdt_reload_sources(
         plan: Any,
@@ -4199,6 +4286,18 @@ class JavaRuntime(Runtime):
                     ),
                     error_code=getattr(error, "error_code", "JDT_RELOAD_FAILED"),
                 )
+            if not compiler.ready:
+                self._invalidate_jdt_compile_session(
+                    attempt_id,
+                    prepared,
+                    project_session,
+                    compiler,
+                    reason=getattr(
+                        error,
+                        "error_code",
+                        "JDT_COMPILE_SESSION_UNAVAILABLE",
+                    ),
+                )
             return RuntimeResult(
                 ok=False,
                 error=str(error),
@@ -4207,6 +4306,7 @@ class JavaRuntime(Runtime):
                     "applied": False,
                     "stage": "compile",
                     "retryable": True,
+                    **dict(getattr(error, "context", {}) or {}),
                     "suggested_next_step": (
                         "Fix the compile/session error and call reload again."
                     ),

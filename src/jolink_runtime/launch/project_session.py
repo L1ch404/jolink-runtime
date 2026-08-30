@@ -765,6 +765,14 @@ class JavaProjectSession:
                 self.compile_session is not None
                 and getattr(self.compile_session, "ready", False)
             )
+            if (
+                not self.compile_ready
+                and self.compile_session is not None
+                and self.jdt_bootstrap_state == "ready"
+            ):
+                self.jdt_bootstrap_state = "unavailable"
+                self.jdt_unavailable_reason = "JDT_COMPILE_SESSION_UNAVAILABLE"
+                self.jdt_unavailable_details = {}
             return self.compile_ready
 
     def clear_compile_session(self, expected: Any) -> None:

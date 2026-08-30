@@ -29,6 +29,7 @@ class _FakeWorker:
         self.closed = False
         self.fail_compile = False
         self.omit_compilation = False
+        self.compiled_units_override = None
         self.on_build = None
         self.command_error: JdtCompileError | None = None
         self.command_count = 0
@@ -61,7 +62,9 @@ class _FakeWorker:
                 "FULL" if command.endswith("FULL") else "INCREMENTAL"
             ),
             "compiled_source_units": (
-                [] if self.omit_compilation else ["example/App.java"]
+                list(self.compiled_units_override)
+                if self.compiled_units_override is not None
+                else ([] if self.omit_compilation else ["src/example/App.java"])
             ),
             "changed_classes": (
                 ["example/App.class"] if before != after else []
@@ -346,21 +349,35 @@ def test_compile_failure_keeps_mutable_output_non_publishable(
     ).read_bytes()
     source.write_text("broken source", encoding="utf-8")
     worker.fail_compile = True
+    worker.diagnostics = [
+        {
+            "resource": "src/example/App.java",
+            "line": 1,
+            "severity_name": "ERROR",
+            "message": "syntax error",
+        }
+    ]
 
     failed = session.compile((source,))
 
     assert failed.compile_ok is False
     assert failed.error_count == 1
+    assert session.working_compile_state == "failed"
+    assert session.last_compile_error_count == 1
+    assert session.last_compile_diagnostics[0]["message"] == "syntax error"
     assert failed.output_directory.joinpath(
         "example/App.class"
     ).read_bytes() == baseline
     worker.fail_compile = False
+    worker.diagnostics = []
     source.write_text(
         "package example; class App { int value() { return 2; } }",
         encoding="utf-8",
     )
     recovered = session.compile((source,))
     assert recovered.compile_ok is True
+    assert session.working_compile_state == "valid"
+    assert session.last_compile_error_count == 0
     assert recovered.candidate_changed_classes == ("example/App.class",)
 
 
@@ -405,6 +422,171 @@ def test_changed_source_without_worker_compilation_poisons_session(
         session.compile((source,))
 
     assert captured.value.error_code == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
+    assert session.ready is False
+    assert worker.closed is True
+
+
+def test_changed_source_must_be_the_source_observed_by_worker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    worker.compiled_units_override = ("src/example/Other.java",)
+
+    with pytest.raises(JdtCompileError) as captured:
+        session.compile((source,))
+
+    assert captured.value.error_code == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
+    assert captured.value.context == {
+        "missing_source_count": 1,
+        "missing_sources": ["src/example/App.java"],
+    }
+    assert session.ready is False
+    assert worker.closed is True
+
+
+def test_workspace_source_changes_tracks_unpublished_edits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, _worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    assert session.workspace_source_changes() == ()
+
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    assert session.workspace_source_changes() == (source.resolve(),)
+
+    session.compile((source,))
+    assert session.workspace_source_changes() == ()
+
+
+def test_source_addition_and_deletion_update_private_mirror_and_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    added = source.with_name("Added.java")
+    added.write_text(
+        "package example; class Added { int value() { return 7; } }",
+        encoding="utf-8",
+    )
+    original_command = worker.command
+
+    def lifecycle_command(command: str):
+        if command.endswith("FULL"):
+            return original_command(command)
+        private = session.private_source / "example/Added.java"
+        output = session.output_directory / "example/Added.class"
+        if private.is_file():
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(hashlib.sha256(private.read_bytes()).digest())
+            return {
+                "operation_ok": True,
+                "compile_ok": True,
+                "actual_build_kind": "INCREMENTAL",
+                "compiled_source_units": ["src/example/Added.java"],
+                "changed_classes": ["example/Added.class"],
+                "deleted_classes": [],
+                "error_count": 0,
+                "warning_count": 0,
+                "diagnostic_details": [],
+                "diagnostics_truncated": False,
+            }
+        output.unlink(missing_ok=True)
+        return {
+            "operation_ok": True,
+            "compile_ok": True,
+            "actual_build_kind": "INCREMENTAL",
+            "compiled_source_units": [],
+            "deleted_source_units": ["src/example/Added.java"],
+            "changed_classes": [],
+            "deleted_classes": ["example/Added.class"],
+            "error_count": 0,
+            "warning_count": 0,
+            "diagnostic_details": [],
+            "diagnostics_truncated": False,
+        }
+
+    worker.command = lifecycle_command
+
+    added_result = session.compile((added,))
+    assert added_result.changed_classes == ("example/Added.class",)
+    assert session.workspace_source_changes() == ()
+
+    added.unlink()
+    deleted_result = session.compile((added,))
+    assert deleted_result.deleted_classes == ("example/Added.class",)
+    assert deleted_result.deleted_source_units == (
+        "src/example/Added.java",
+    )
+    assert session.workspace_source_changes() == ()
+
+
+def test_unobserved_source_deletion_poisons_compile_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    deleted = source.with_name("Deleted.java")
+    deleted.write_text(
+        "package example; class Deleted {}",
+        encoding="utf-8",
+    )
+    session.start()
+    session.accept_baseline()
+    deleted.unlink()
+    worker.command = lambda _command: {
+        "operation_ok": True,
+        "compile_ok": True,
+        "actual_build_kind": "INCREMENTAL",
+        "compiled_source_units": [],
+        "deleted_source_units": [],
+        "changed_classes": [],
+        "deleted_classes": ["example/Deleted.class"],
+        "error_count": 0,
+        "warning_count": 0,
+        "diagnostic_details": [],
+        "diagnostics_truncated": False,
+    }
+
+    with pytest.raises(JdtCompileError) as captured:
+        session.compile((deleted,))
+
+    assert captured.value.error_code == "JDT_SOURCE_DELETION_NOT_OBSERVED"
+    assert captured.value.context["missing_sources"] == [
+        "src/example/Deleted.java"
+    ]
+    assert session.ready is False
+    assert worker.closed is True
+
+
+def test_interrupt_poison_closes_worker_without_waiting_for_operation_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, _source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+
+    session.interrupt("TEST_CANCELLED")
+
     assert session.ready is False
     assert worker.closed is True
 

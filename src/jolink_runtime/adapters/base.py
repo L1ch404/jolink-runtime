@@ -90,6 +90,16 @@ class Runtime(ABC):
         ...
 
     @abstractmethod
+    def test(self, action: RuntimeAction) -> RuntimeResult:
+        """Incrementally compile and run explicit project tests."""
+        ...
+
+    @abstractmethod
+    def cancel_test(self, action: RuntimeAction) -> RuntimeResult:
+        """Cancel one active Fast Test attempt."""
+        ...
+
+    @abstractmethod
     def interrupt_wait(self) -> None:
         """Wake a currently blocked debug-event reader without target cleanup."""
         ...
