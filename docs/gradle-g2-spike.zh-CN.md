@@ -1,8 +1,9 @@
-# Gradle G2：JDT Incremental + Fast Test闭环
+# Gradle G2/G2.1：JDT Incremental + Authority冻结
 
 ## 目标
 
-G2验证G1.1私有Task-native模型能否直接驱动现有编译与测试核心：
+G2验证G1.1私有Task-native模型能否直接驱动现有编译与测试核心；G2.1把
+标准Fixture中隐含成立的条件冻结为显式authority门禁：
 
 ```text
 Gradle Wrapper
@@ -19,17 +20,27 @@ Gradle Wrapper
 ## 转换规则
 
 - Gradle FileCollection顺序原样进入JDT/Runner。
-- 不存在的空classpath目录（例如无resources时的`build/resources/main`）保留在
-  Gradle权威模型中，但转换为JDT library entry时过滤；其余entry顺序不变。
-- `compileJava` classpath成为main依赖；`compileTestJava`中扣除main outputs和已存在
-  main依赖后的entry成为test-only依赖。
+- 缺失entry只允许已知为空的formal resource output；缺失依赖JAR或未知目录返回
+  `GRADLE_CLASSPATH_ENTRY_UNAVAILABLE`。
+- 去除formal outputs后，`compileJava.classpath`必须是
+  `compileTestJava.classpath`的有序前缀；否则返回
+  `GRADLE_TEST_CLASSPATH_ORDER_UNMODELED`，不允许重新排序。
 - Gradle formal main/test outputs只用于Tier 1 oracle；Runner classpath在原位置将其
   替换为JDT `bin/test-bin`。
+- Target系统库严格来自`compileJava/compileTestJava`共同的Compiler Toolchain；
+  source/target/encoding/release无法由同一JDT Project表达时fail-closed。
 - Test Runner严格使用`Test.javaLauncher`的executable、working directory和有序
   runtime classpath，不使用Daemon或Compile JDK猜测。
-- main/test Processor path必须完全相同；compiler args、Test environment/system
+- main/test各自必须只有一个classes output，且formal outputs必须真实出现在
+  Test.classpath中原位置；不再自动插入JDT bin/test-bin。
+- main/test Processor path必须完全相同；Lombok当前明确返回
+  `GRADLE_LOMBOK_UNMODELED`。compiler args、Test environment/system
   properties/JVM args/bootstrap classpath、argument providers和非默认fork语义当前
   fail-closed。
+- v0.1要求标准`src/main|test/java|resources`且无include/exclude pattern；Python
+  pre、Gradle post、private snapshot三方manifest必须完全一致。
+- JDT FULL后、formal resource overlay前捕获native resource manifest；每个JDT
+  Processor资源必须与Gradle formal output同路径同hash。
 
 ## 真实Fixture
 
@@ -65,6 +76,11 @@ test断言错误                               test failed
 test恢复                                   test passed
 最终JDT incremental class SHA tree
 == 独立JDT clean-full class SHA tree       exact
+JDT native Processor resource vs Gradle     exact
+overlay后完整class+resource tree
+== 独立JDT clean-full完整tree               exact
+pre/post/snapshot input manifest             exact
+authority故障注入                           11/11 rejected
 Worker/Runner process cleanup              settled
 ```
 
@@ -80,13 +96,17 @@ test edit/recovery    13–18ms
 
 ## 结论
 
-G2通过，证明：
+G2.1通过，证明：
 
-> Gradle不需要自己的JDT或测试实现。G1.1 Task-native模型可以复用现有
+> Gradle不需要自己的JDT或测试实现。G1.1 Task-native模型可以无损复用现有
 > PersistentJdtCompileSession和FastTestRunner，并保持Gradle的classpath顺序、
 > Compile/Test Toolchain、Processor和测试运行语义。
 
-下一阶段可以进入产品抽象：
+故障注入覆盖：classpath重排、错误Toolchain、release、自定义source、Test
+assertions/tags、多output、缺失依赖、runtime缺formal output、Lombok和Processor
+资源差异。
+
+下一阶段允许进入产品抽象：
 
 ```text
 TestBuildWorldBootstrap

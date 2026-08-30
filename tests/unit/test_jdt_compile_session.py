@@ -703,6 +703,29 @@ def test_compile_reports_resource_delta_and_bounded_diagnostics(
     assert result.diagnostics_truncated is True
 
 
+def test_full_captures_native_resources_before_formal_overlay(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, _source, worker = _session(tmp_path, monkeypatch)
+    formal = tmp_path / "formal-output/META-INF/generated.json"
+    formal.parent.mkdir(parents=True)
+    formal.write_bytes(b"formal")
+    session.baseline_main_output = formal.parents[1]
+    worker.resource_value = b"native"
+
+    session.start()
+
+    native_hash = hashlib.sha256(b"native").hexdigest()
+    assert session.native_full_resource_manifest == {
+        "main/META-INF/generated.json": native_hash
+    }
+    assert (
+        session.output_directory / "META-INF/generated.json"
+    ).read_bytes() == b"formal"
+
+
 def test_close_force_cancels_inflight_compile(
     tmp_path: Path,
     monkeypatch,

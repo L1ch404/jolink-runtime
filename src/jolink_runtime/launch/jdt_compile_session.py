@@ -866,6 +866,7 @@ class PersistentJdtCompileSession:
         self._last_compile_diagnostics: tuple[dict[str, Any], ...] = ()
         self._last_compile_error_count = 0
         self._published_output_manifest: dict[str, str] = {}
+        self._native_full_resource_manifest: dict[str, str] = {}
         self._state_lock = threading.RLock()
         self._operation_lock = threading.Lock()
 
@@ -893,6 +894,13 @@ class PersistentJdtCompileSession:
     def last_compile_error_count(self) -> int:
         with self._state_lock:
             return self._last_compile_error_count
+
+    @property
+    def native_full_resource_manifest(self) -> dict[str, str]:
+        """Resources produced by JDT FULL before formal-resource overlay."""
+
+        with self._state_lock:
+            return dict(self._native_full_resource_manifest)
 
     def start(self) -> JdtCompileResult:
         with self._operation_lock:
@@ -939,6 +947,10 @@ class PersistentJdtCompileSession:
                 with self._state_lock:
                     self._client = client
                 result = self._build("FULL", source_changes_pending=False)
+                with self._state_lock:
+                    self._native_full_resource_manifest = (
+                        self._native_resource_manifest()
+                    )
                 if self.baseline_main_output is not None:
                     self._copy_frozen_resources(
                         self.baseline_main_output,
@@ -1516,6 +1528,22 @@ class PersistentJdtCompileSession:
             for path in sorted(self.output_directory.rglob("*"))
             if path.is_file() and path.suffix != ".class"
         }
+
+    def _native_resource_manifest(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for prefix, root in (
+            ("main", self.output_directory),
+            ("test", self.test_output_directory),
+        ):
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.suffix == ".class":
+                    continue
+                result[f"{prefix}/{path.relative_to(root).as_posix()}"] = (
+                    _sha256_file(path)
+                )
+        return result
 
     def _complete_output_manifest(self) -> dict[str, str]:
         if not self.output_directory.is_dir():

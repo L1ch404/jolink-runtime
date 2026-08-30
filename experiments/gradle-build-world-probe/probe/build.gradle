@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'io.jolink'
-version = '0.1.0-spike2'
+version = '0.1.0-spike3'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8

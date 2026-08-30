@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import copy
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,7 @@ import os
 import shutil
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from types import ModuleType
 
@@ -42,12 +44,188 @@ def load_g1() -> ModuleType:
 
 
 def ordered_paths(values: list[str]) -> tuple[Path, ...]:
+    return tuple(
+        Path(value).expanduser().resolve(strict=False) for value in values
+    )
+
+
+def existing_classpath(
+    values: list[str],
+    *,
+    optional_missing: set[Path],
+    field: str,
+) -> tuple[Path, ...]:
     result: list[Path] = []
-    for value in values:
-        path = Path(value).expanduser().resolve(strict=False)
+    for path in ordered_paths(values):
         if path.exists():
             result.append(path)
+        elif path not in optional_missing:
+            raise AssertionError(
+                {"error_code": "GRADLE_CLASSPATH_ENTRY_UNAVAILABLE", "field": field}
+            )
     return tuple(result)
+
+
+def is_lombok(path: Path) -> bool:
+    if not path.is_file() or path.suffix.casefold() != ".jar":
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except zipfile.BadZipFile:
+        return False
+    return bool(
+        {
+            "lombok/launch/Agent.class",
+            "lombok/core/AnnotationProcessor.class",
+        }
+        & names
+    )
+
+
+def validate_authority(
+    model: dict,
+    *,
+    project: Path,
+    expected_compile_java_home: Path,
+) -> dict:
+    standard = {
+        "main_source": (project / "src/main/java").resolve(strict=False),
+        "test_source": (project / "src/test/java").resolve(strict=False),
+        "main_resource": (project / "src/main/resources").resolve(strict=False),
+        "test_resource": (project / "src/test/resources").resolve(strict=False),
+    }
+    if ordered_paths(model["main"]["javaSourceDirectories"]) != (
+        standard["main_source"],
+    ) or ordered_paths(model["test"]["javaSourceDirectories"]) != (
+        standard["test_source"],
+    ):
+        raise AssertionError("GRADLE_SOURCE_LAYOUT_UNSUPPORTED")
+    if ordered_paths(model["main"]["resourceDirectories"]) != (
+        standard["main_resource"],
+    ) or ordered_paths(model["test"]["resourceDirectories"]) != (
+        standard["test_resource"],
+    ):
+        raise AssertionError("GRADLE_RESOURCE_LAYOUT_UNSUPPORTED")
+    for source_set in (model["main"], model["test"]):
+        if any(
+            source_set[field]
+            for field in (
+                "javaIncludes",
+                "javaExcludes",
+                "resourceIncludes",
+                "resourceExcludes",
+            )
+        ):
+            raise AssertionError("GRADLE_SOURCE_PATTERN_UNMODELED")
+
+    main_compile = model["compileJava"]
+    test_compile = model["compileTestJava"]
+    expected_home = expected_compile_java_home.resolve(strict=True)
+    main_home = Path(main_compile["compilerJavaHome"]).resolve(strict=True)
+    test_home = Path(test_compile["compilerJavaHome"]).resolve(strict=True)
+    if main_home != test_home or main_home != expected_home:
+        raise AssertionError("GRADLE_COMPILE_TOOLCHAIN_UNMODELED")
+    if not (
+        main_compile["sourceCompatibility"]
+        == test_compile["sourceCompatibility"]
+        == main_compile["targetCompatibility"]
+        == test_compile["targetCompatibility"]
+        == "11"
+    ):
+        raise AssertionError("GRADLE_COMPILE_LEVEL_UNMODELED")
+    if main_compile["encoding"] != test_compile["encoding"]:
+        raise AssertionError("GRADLE_COMPILE_ENCODING_UNMODELED")
+    for compile_task in (main_compile, test_compile):
+        if (
+            compile_task["release"] is not None
+            or compile_task["compilerArgsPrivate"]
+            or compile_task["fork"]
+            or compile_task["compilerArgumentProvidersUnmodeled"]
+            or not compile_task["debug"]
+            or not compile_task["incremental"]
+        ):
+            raise AssertionError("GRADLE_COMPILE_CONFIGURATION_UNMODELED")
+
+    main_output = Path(main_compile["destinationDirectory"]).resolve(strict=True)
+    test_output = Path(test_compile["destinationDirectory"]).resolve(strict=True)
+    if ordered_paths(model["main"]["classesDirectories"]) != (main_output,):
+        raise AssertionError("GRADLE_MAIN_OUTPUT_UNMODELED")
+    if ordered_paths(model["test"]["classesDirectories"]) != (test_output,):
+        raise AssertionError("GRADLE_TEST_OUTPUT_UNMODELED")
+
+    optional_missing = {
+        path
+        for path in (
+            Path(value).resolve(strict=False)
+            for value in (
+                model["main"].get("resourcesDirectory"),
+                model["test"].get("resourcesDirectory"),
+            )
+            if value
+        )
+        if not path.exists()
+    }
+    main_dependencies = existing_classpath(
+        main_compile["classpath"],
+        optional_missing=optional_missing,
+        field="compileJava.classpath",
+    )
+    raw_test = existing_classpath(
+        test_compile["classpath"],
+        optional_missing=optional_missing,
+        field="compileTestJava.classpath",
+    )
+    formal_outputs = {main_output, test_output}
+    test_without_outputs = tuple(
+        path for path in raw_test if path not in formal_outputs
+    )
+    if test_without_outputs[: len(main_dependencies)] != main_dependencies:
+        raise AssertionError("GRADLE_TEST_CLASSPATH_ORDER_UNMODELED")
+    test_dependencies = test_without_outputs[len(main_dependencies) :]
+
+    main_processors = existing_classpath(
+        main_compile["annotationProcessorPath"],
+        optional_missing=set(),
+        field="compileJava.annotationProcessorPath",
+    )
+    test_processors = existing_classpath(
+        test_compile["annotationProcessorPath"],
+        optional_missing=set(),
+        field="compileTestJava.annotationProcessorPath",
+    )
+    if main_processors != test_processors:
+        raise AssertionError("GRADLE_PROCESSOR_PATH_UNMODELED")
+    if any(is_lombok(path) for path in main_processors):
+        raise AssertionError("GRADLE_LOMBOK_UNMODELED")
+
+    runtime = model["testRuntime"]
+    runtime_paths = existing_classpath(
+        runtime["classpath"],
+        optional_missing=optional_missing,
+        field="test.classpath",
+    )
+    if runtime_paths.count(test_output) != 1 or runtime_paths.count(main_output) != 1:
+        raise AssertionError("GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED")
+
+    return {
+        "main_roots": (standard["main_source"],),
+        "test_roots": (standard["test_source"],),
+        "resource_roots": (
+            standard["main_resource"],
+            standard["test_resource"],
+        ),
+        "main_output": main_output,
+        "test_output": test_output,
+        "main_dependencies": main_dependencies,
+        "test_dependencies": test_dependencies,
+        "processors": main_processors,
+        "target_java_home": main_home,
+        "encoding": main_compile["encoding"] or "UTF-8",
+        "parameters": False,
+        "runtime_paths": runtime_paths,
+        "optional_missing": optional_missing,
+    }
 
 
 def freeze_sources(destination: Path, roots: tuple[Path, ...]) -> tuple[Path, ...]:
@@ -63,6 +241,40 @@ def freeze_sources(destination: Path, roots: tuple[Path, ...]) -> tuple[Path, ..
     return tuple(frozen)
 
 
+def standard_input_manifest(project: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for relative in (
+        "src/main/java",
+        "src/test/java",
+        "src/main/resources",
+        "src/test/resources",
+    ):
+        root = project / relative
+        if not root.is_dir():
+            continue
+        for source in sorted(root.rglob("*")):
+            if source.is_file():
+                key = source.relative_to(project).as_posix()
+                result[key] = hashlib.sha256(source.read_bytes()).hexdigest()
+    return result
+
+
+def freeze_standard_inputs(
+    destination: Path,
+    project: Path,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, digest in standard_input_manifest(project).items():
+        source = project / key
+        output = destination / key
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, output)
+        result[key] = hashlib.sha256(output.read_bytes()).hexdigest()
+        if result[key] != digest:
+            raise AssertionError("SOURCE_CHANGED_DURING_GRADLE_SNAPSHOT")
+    return result
+
+
 def class_tree(*roots: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     for index, root in enumerate(roots):
@@ -72,40 +284,186 @@ def class_tree(*roots: Path) -> dict[str, str]:
     return result
 
 
-def runtime_classpath(
+def complete_tree(*roots: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for index, root in enumerate(roots):
+        for source in sorted(root.rglob("*")):
+            if source.is_file():
+                key = f"{index}/{source.relative_to(root).as_posix()}"
+                result[key] = hashlib.sha256(source.read_bytes()).hexdigest()
+    return result
+
+
+def formal_resource_manifest(authority: dict) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for prefix, root in (
+        ("main", authority["main_output"]),
+        ("test", authority["test_output"]),
+    ):
+        for source in sorted(root.rglob("*")):
+            if source.is_file() and source.suffix != ".class":
+                result[f"{prefix}/{source.relative_to(root).as_posix()}"] = (
+                    hashlib.sha256(source.read_bytes()).hexdigest()
+                )
+    return result
+
+
+def validate_native_processor_resources(
+    native: dict[str, str],
+    formal: dict[str, str],
+) -> None:
+    if not native or any(
+        formal.get(path) != digest for path, digest in native.items()
+    ):
+        raise AssertionError("GRADLE_PROCESSOR_RESOURCE_INCOMPATIBLE")
+
+
+def authority_fault_injections(
     model: dict,
+    *,
+    project: Path,
+    java11_home: Path,
+    root: Path,
+) -> int:
+    root.mkdir(parents=True, exist_ok=True)
+    failures = 0
+
+    def rejected(
+        expected: str,
+        mutation,
+        *,
+        runtime_only: bool = False,
+    ) -> None:
+        nonlocal failures
+        candidate = copy.deepcopy(model)
+        mutation(candidate)
+        try:
+            if runtime_only:
+                assert_supported_test_runtime(candidate)
+            else:
+                validate_authority(
+                    candidate,
+                    project=project,
+                    expected_compile_java_home=java11_home,
+                )
+        except AssertionError as error:
+            if expected not in str(error):
+                raise
+            failures += 1
+            return
+        raise AssertionError(f"Fault injection {expected} was accepted")
+
+    def reorder_test_classpath(candidate: dict) -> None:
+        main = list(candidate["compileJava"]["classpath"])
+        test = candidate["compileTestJava"]["classpath"]
+        outputs = {
+            candidate["compileJava"]["destinationDirectory"],
+            candidate["compileTestJava"]["destinationDirectory"],
+        }
+        extra = next(
+            value for value in test if value not in main and value not in outputs
+            and "resources/main" not in value.replace("\\", "/")
+        )
+        test.remove(extra)
+        test.insert(0, extra)
+
+    rejected("GRADLE_TEST_CLASSPATH_ORDER_UNMODELED", reorder_test_classpath)
+    rejected(
+        "GRADLE_COMPILE_TOOLCHAIN_UNMODELED",
+        lambda value: value["compileTestJava"].__setitem__(
+            "compilerJavaHome", str(root)
+        ),
+    )
+    rejected(
+        "GRADLE_COMPILE_CONFIGURATION_UNMODELED",
+        lambda value: value["compileJava"].__setitem__("release", 11),
+    )
+    rejected(
+        "GRADLE_SOURCE_LAYOUT_UNSUPPORTED",
+        lambda value: value["main"]["javaSourceDirectories"].append(
+            str(project / "src/custom/java")
+        ),
+    )
+    rejected(
+        "GRADLE_TEST_CONFIGURATION_UNMODELED",
+        lambda value: value["testRuntime"].__setitem__(
+            "enableAssertions", False
+        ),
+        runtime_only=True,
+    )
+    rejected(
+        "GRADLE_TEST_CONFIGURATION_UNMODELED",
+        lambda value: value["testRuntime"]["includeTags"].append("slow"),
+        runtime_only=True,
+    )
+    extra_output = root / "extra-output"
+    extra_output.mkdir()
+    rejected(
+        "GRADLE_MAIN_OUTPUT_UNMODELED",
+        lambda value: value["main"]["classesDirectories"].append(
+            str(extra_output)
+        ),
+    )
+    rejected(
+        "GRADLE_CLASSPATH_ENTRY_UNAVAILABLE",
+        lambda value: value["compileJava"]["classpath"].__setitem__(
+            0, str(root / "missing-dependency.jar")
+        ),
+    )
+    rejected(
+        "GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED",
+        lambda value: value["testRuntime"]["classpath"].remove(
+            value["compileJava"]["destinationDirectory"]
+        ),
+    )
+    fake_lombok = root / "fake-lombok.jar"
+    with zipfile.ZipFile(fake_lombok, "w") as archive:
+        archive.writestr("lombok/launch/Agent.class", b"class")
+
+    def inject_lombok(candidate: dict) -> None:
+        candidate["compileJava"]["annotationProcessorPath"] = [
+            str(fake_lombok)
+        ]
+        candidate["compileTestJava"]["annotationProcessorPath"] = [
+            str(fake_lombok)
+        ]
+
+    rejected("GRADLE_LOMBOK_UNMODELED", inject_lombok)
+    try:
+        validate_native_processor_resources(
+            {"main/META-INF/generated": "jdt"},
+            {"main/META-INF/generated": "gradle"},
+        )
+    except AssertionError as error:
+        if "GRADLE_PROCESSOR_RESOURCE_INCOMPATIBLE" not in str(error):
+            raise
+        failures += 1
+    else:
+        raise AssertionError("Processor resource mismatch was accepted")
+    return failures
+
+
+def runtime_classpath(
+    authority: dict,
     compiler: PersistentJdtCompileSession,
 ) -> tuple[Path, ...]:
-    formal_test_outputs = {
-        str(Path(value).resolve(strict=False))
-        for value in model["testRuntime"]["testClassesDirectories"]
-    }
-    formal_main_outputs = {
-        str(Path(value).resolve(strict=False))
-        for value in model["main"]["classesDirectories"]
-    }
     result: list[Path] = []
     test_added = False
     main_added = False
-    for raw in model["testRuntime"]["classpath"]:
-        normalized = str(Path(raw).resolve(strict=False))
-        if normalized in formal_test_outputs:
+    for path in authority["runtime_paths"]:
+        if path == authority["test_output"]:
             if not test_added:
                 result.append(compiler.test_output_directory)
                 test_added = True
             continue
-        if normalized in formal_main_outputs:
+        if path == authority["main_output"]:
             if not main_added:
                 result.append(compiler.output_directory)
                 main_added = True
             continue
-        dependency = Path(raw).resolve(strict=False)
-        if dependency.exists():
-            result.append(dependency)
-    if not test_added:
-        result.insert(0, compiler.test_output_directory)
-    if not main_added:
-        result.insert(1, compiler.output_directory)
+        result.append(path)
+    if not test_added or not main_added:
+        raise AssertionError("GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED")
     return tuple(dict.fromkeys(result))
 
 
@@ -114,6 +472,7 @@ def run_test(
     supervisor: ProcessSupervisor,
     *,
     model: dict,
+    authority: dict,
     compiler: PersistentJdtCompileSession,
     project: Path,
     attempt_root: Path,
@@ -125,7 +484,7 @@ def run_test(
             java_executable=Path(
                 model["testRuntime"]["javaExecutable"]
             ).resolve(strict=True),
-            classpath=runtime_classpath(model, compiler),
+            classpath=runtime_classpath(authority, compiler),
             selectors=("example.TextServiceTest#works",),
             working_directory=Path(
                 model["testRuntime"]["workingDirectory"]
@@ -150,49 +509,13 @@ def new_session(
     root: Path,
     candidate: JdtCandidate,
     worker_java_home: Path,
-    java11_home: Path,
+    authority: dict,
     model: dict,
     main_roots: tuple[Path, ...],
     test_roots: tuple[Path, ...],
     frozen_main: tuple[Path, ...],
     frozen_test: tuple[Path, ...],
 ) -> PersistentJdtCompileSession:
-    main_output = Path(model["compileJava"]["destinationDirectory"]).resolve(
-        strict=True
-    )
-    test_output = Path(
-        model["compileTestJava"]["destinationDirectory"]
-    ).resolve(strict=True)
-    main_output_keys = {
-        str(path) for path in ordered_paths(model["main"]["classesDirectories"])
-    }
-    test_output_keys = {
-        str(path) for path in ordered_paths(model["test"]["classesDirectories"])
-    }
-    main_dependencies = tuple(
-        path
-        for path in ordered_paths(model["compileJava"]["classpath"])
-        if str(path) not in main_output_keys | test_output_keys
-    )
-    main_keys = {str(path) for path in main_dependencies}
-    test_dependencies = tuple(
-        path
-        for path in ordered_paths(model["compileTestJava"]["classpath"])
-        if str(path) not in main_output_keys | test_output_keys
-        and str(path) not in main_keys
-    )
-    main_processors = ordered_paths(
-        model["compileJava"]["annotationProcessorPath"]
-    )
-    test_processors = ordered_paths(
-        model["compileTestJava"]["annotationProcessorPath"]
-    )
-    if main_processors != test_processors:
-        raise AssertionError("G2 requires identical main/test Processor paths")
-    if model["compileJava"]["compilerArgsPrivate"] or model[
-        "compileTestJava"
-    ]["compilerArgsPrivate"]:
-        raise AssertionError("G2 does not model compiler arguments yet")
     return PersistentJdtCompileSession(
         root=root,
         candidate=candidate,
@@ -200,17 +523,20 @@ def new_session(
         source_roots=main_roots,
         baseline_source_roots=frozen_main,
         classpath_entries=(
-            *discover_target_system_entries(java11_home, 11),
-            *main_dependencies,
+            *discover_target_system_entries(
+                authority["target_java_home"], 11
+            ),
+            *authority["main_dependencies"],
         ),
-        source_encoding=model["compileJava"]["encoding"] or "UTF-8",
+        source_encoding=authority["encoding"],
         source_level=11,
+        method_parameters=authority["parameters"],
         test_source_roots=test_roots,
         baseline_test_source_roots=frozen_test,
-        test_classpath_entries=test_dependencies,
-        baseline_main_output=main_output,
-        baseline_test_output=test_output,
-        processor_entries=main_processors,
+        test_classpath_entries=authority["test_dependencies"],
+        baseline_main_output=authority["main_output"],
+        baseline_test_output=authority["test_output"],
+        processor_entries=authority["processors"],
         max_heap_mb=1024,
     )
 
@@ -231,6 +557,28 @@ def assert_supported_test_runtime(model: dict) -> None:
         raise AssertionError("custom Test bootstrap classpath is unmodeled")
     if runtime["maxParallelForks"] != 1 or runtime["forkEvery"] != 0:
         raise AssertionError("parallel/fork Test semantics are unmodeled")
+    if (
+        runtime["enableAssertions"] is not True
+        or runtime["debug"] is not False
+        or runtime["failFast"] is not False
+        or runtime["dryRun"] is not False
+        or runtime["scanForTestClasses"] is not True
+        or runtime["minHeapSize"] is not None
+        or runtime["maxHeapSize"] is not None
+    ):
+        raise AssertionError("GRADLE_TEST_CONFIGURATION_UNMODELED")
+    for field in (
+        "includePatterns",
+        "excludePatterns",
+        "includeEngines",
+        "excludeEngines",
+        "includeTags",
+        "excludeTags",
+    ):
+        if runtime[field]:
+            raise AssertionError(
+                {"error_code": "GRADLE_TEST_CONFIGURATION_UNMODELED", "field": field}
+            )
 
 
 def main() -> int:
@@ -299,7 +647,7 @@ def main() -> int:
         init_script.write_bytes(g1.INIT_TEMPLATE.read_bytes())
         init_script.chmod(0o600)
         model_file = root / "private-model.json"
-        source_before = g1.source_manifest(project)
+        input_before = standard_input_manifest(project)
         g1.run(
             g1.probe_command(
                 project,
@@ -312,22 +660,44 @@ def main() -> int:
             environment=environment,
             timeout=180,
         )
-        if source_before != g1.source_manifest(project):
-            raise AssertionError("source changed during Gradle Bootstrap")
         model = json.loads(model_file.read_text(encoding="utf-8"))
+        authority = validate_authority(
+            model,
+            project=project,
+            expected_compile_java_home=java11_home,
+        )
         assert_supported_test_runtime(model)
+        fault_injection_count = authority_fault_injections(
+            model,
+            project=project,
+            java11_home=java11_home,
+            root=root / "authority-faults",
+        )
+        input_after = standard_input_manifest(project)
+        snapshot_manifest = freeze_standard_inputs(
+            root / "frozen-inputs", project
+        )
+        if not (
+            input_before
+            == input_after
+            == snapshot_manifest
+            == standard_input_manifest(project)
+        ):
+            raise AssertionError("SOURCE_CHANGED_DURING_GRADLE_BOOTSTRAP")
 
-        main_roots = ordered_paths(model["main"]["javaSourceDirectories"])
-        test_roots = ordered_paths(model["test"]["javaSourceDirectories"])
+        main_roots = authority["main_roots"]
+        test_roots = authority["test_roots"]
         frozen_main = freeze_sources(root / "frozen-main", main_roots)
         frozen_test = freeze_sources(root / "frozen-test", test_roots)
         candidate = JdtCandidate.load_product()
-        worker = candidate.select_worker_java((java11_home, java_home))
+        worker = candidate.select_worker_java(
+            (authority["target_java_home"], java_home)
+        )
         compiler = new_session(
             root=root / "jdt-session",
             candidate=candidate,
             worker_java_home=worker.home,
-            java11_home=java11_home,
+            authority=authority,
             model=model,
             main_roots=main_roots,
             test_roots=test_roots,
@@ -338,8 +708,8 @@ def main() -> int:
         full = compiler.start()
         if not full.compile_ok:
             raise AssertionError(full.diagnostics)
-        gradle_main = Path(model["compileJava"]["destinationDirectory"])
-        gradle_test = Path(model["compileTestJava"]["destinationDirectory"])
+        gradle_main = authority["main_output"]
+        gradle_test = authority["test_output"]
         main_tier1 = compare_class_output_tier1(
             gradle_main, compiler.output_directory
         )
@@ -348,6 +718,11 @@ def main() -> int:
         )
         if not main_tier1["compatible"] or not test_tier1["compatible"]:
             raise AssertionError({"main": main_tier1, "test": test_tier1})
+        formal_resources = formal_resource_manifest(authority)
+        native_resources = compiler.native_full_resource_manifest
+        validate_native_processor_resources(
+            native_resources, formal_resources
+        )
         compiler.accept_baseline()
 
         results: list[dict] = []
@@ -356,6 +731,7 @@ def main() -> int:
                 runner,
                 supervisor,
                 model=model,
+                authority=authority,
                 compiler=compiler,
                 project=project,
                 attempt_root=root / "runner-attempts",
@@ -377,6 +753,7 @@ def main() -> int:
                 runner,
                 supervisor,
                 model=model,
+                authority=authority,
                 compiler=compiler,
                 project=project,
                 attempt_root=root / "runner-attempts",
@@ -392,6 +769,7 @@ def main() -> int:
                 runner,
                 supervisor,
                 model=model,
+                authority=authority,
                 compiler=compiler,
                 project=project,
                 attempt_root=root / "runner-attempts",
@@ -413,6 +791,7 @@ def main() -> int:
                 runner,
                 supervisor,
                 model=model,
+                authority=authority,
                 compiler=compiler,
                 project=project,
                 attempt_root=root / "runner-attempts",
@@ -428,6 +807,7 @@ def main() -> int:
                 runner,
                 supervisor,
                 model=model,
+                authority=authority,
                 compiler=compiler,
                 project=project,
                 attempt_root=root / "runner-attempts",
@@ -443,7 +823,7 @@ def main() -> int:
             root=root / "jdt-clean-full-oracle",
             candidate=candidate,
             worker_java_home=worker.home,
-            java11_home=java11_home,
+            authority=authority,
             model=model,
             main_roots=main_roots,
             test_roots=test_roots,
@@ -454,14 +834,19 @@ def main() -> int:
         oracle_full = oracle.start()
         if not oracle_full.compile_ok:
             raise AssertionError(oracle_full.diagnostics)
-        incremental_tree = class_tree(
+        incremental_tree = complete_tree(
             compiler.output_directory, compiler.test_output_directory
         )
-        oracle_tree = class_tree(
+        oracle_tree = complete_tree(
             oracle.output_directory, oracle.test_output_directory
         )
         if incremental_tree != oracle_tree:
             raise AssertionError("incremental output differs from clean-full JDT")
+        if (
+            compiler.native_full_resource_manifest
+            != oracle.native_full_resource_manifest
+        ):
+            raise AssertionError("native Processor resources differ from clean-full")
 
         report = {
             "ok": True,
@@ -482,6 +867,11 @@ def main() -> int:
             "test_incremental_ms": bad_test_compile.elapsed_ms,
             "test_recovery_ms": test_recovery_compile.elapsed_ms,
             "incremental_equals_clean_full": True,
+            "native_processor_resource_oracle": True,
+            "input_manifest_three_way_equal": True,
+            "authority_classpath_order_gate": True,
+            "authority_target_jdk_from_model": True,
+            "authority_fault_injection_count": fault_injection_count,
             "processor_path_count": len(
                 model["compileJava"]["annotationProcessorPath"]
             ),

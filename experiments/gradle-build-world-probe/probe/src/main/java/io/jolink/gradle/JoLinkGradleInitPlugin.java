@@ -41,7 +41,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-spike2";
+    private static final String VERSION = "0.1.0-spike3";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -268,8 +268,16 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("name", sourceSet.getName());
         result.put("javaSourceDirectories", orderedFiles(
                 sourceSet.getJava().getSrcDirs()));
+        result.put("javaIncludes", sorted(
+                sourceSet.getJava().getIncludes()));
+        result.put("javaExcludes", sorted(
+                sourceSet.getJava().getExcludes()));
         result.put("resourceDirectories", orderedFiles(
                 sourceSet.getResources().getSrcDirs()));
+        result.put("resourceIncludes", sorted(
+                sourceSet.getResources().getIncludes()));
+        result.put("resourceExcludes", sorted(
+                sourceSet.getResources().getExcludes()));
         result.put("classesDirectories", orderedFiles(
                 sourceSet.getOutput().getClassesDirs().getFiles()));
         result.put("resourcesDirectory", nullableFile(
@@ -292,6 +300,13 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("destinationDirectory", canonical(
                 task.getDestinationDirectory().get().getAsFile()));
         result.put("encoding", task.getOptions().getEncoding());
+        result.put("debug", task.getOptions().isDebug());
+        result.put("fork", task.getOptions().isFork());
+        result.put("incremental", task.getOptions().isIncremental());
+        result.put("compilerArgumentProviderCount",
+                task.getOptions().getCompilerArgumentProviders().size());
+        result.put("compilerArgumentProvidersUnmodeled",
+                !task.getOptions().getCompilerArgumentProviders().isEmpty());
         result.put("compilerArgsPrivate", new ArrayList<>(
                 task.getOptions().getCompilerArgs()));
         result.put("compilerArgsIdentity", identity(
@@ -320,6 +335,10 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
         result.put("workingDirectory", canonical(task.getWorkingDir()));
         result.put("enableAssertions", task.getEnableAssertions());
+        result.put("debug", task.getDebug());
+        result.put("failFast", task.getFailFast());
+        result.put("dryRun", task.getDryRun().getOrElse(false));
+        result.put("scanForTestClasses", task.isScanForTestClasses());
         JavaLauncher launcher = task.getJavaLauncher().getOrNull();
         result.put("javaHome", launcher == null ? null : canonical(
                 launcher.getMetadata().getInstallationPath().getAsFile()));
@@ -363,6 +382,19 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 task.getFilter().getIncludePatterns()));
         result.put("excludePatterns", sorted(
                 task.getFilter().getExcludePatterns()));
+        if (task.getOptions() instanceof JUnitPlatformOptions) {
+            JUnitPlatformOptions options =
+                    (JUnitPlatformOptions) task.getOptions();
+            result.put("includeEngines", sorted(options.getIncludeEngines()));
+            result.put("excludeEngines", sorted(options.getExcludeEngines()));
+            result.put("includeTags", sorted(options.getIncludeTags()));
+            result.put("excludeTags", sorted(options.getExcludeTags()));
+        } else {
+            result.put("includeEngines", Collections.emptyList());
+            result.put("excludeEngines", Collections.emptyList());
+            result.put("includeTags", Collections.emptyList());
+            result.put("excludeTags", Collections.emptyList());
+        }
         return result;
     }
 
