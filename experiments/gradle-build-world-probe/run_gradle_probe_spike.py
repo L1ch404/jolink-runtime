@@ -126,6 +126,7 @@ def create_fixture(
     kotlin_dsl: bool,
     processor_jar: Path | None = None,
     junit_jars: tuple[Path, ...] = (),
+    custom_test_runtime: bool = True,
 ) -> Path:
     project = root / ("kotlin-dsl" if kotlin_dsl else "groovy-dsl")
     main = project / "src/main/java/example/TextService.java"
@@ -174,12 +175,16 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
-    workingDir = layout.buildDirectory.dir("test-working").get().asFile
+%s
+}
+""" % (
+            """    workingDir = layout.buildDirectory.dir("test-working").get().asFile
     systemProperty("jolink.fixture.token", "sensitive-system-value")
     environment("JOLINK_FIXTURE_ENV", "sensitive-environment-value")
-    jvmArgs("-Xmx128m")
-}
-"""
+    jvmArgs("-Xmx128m")"""
+            if custom_test_runtime
+            else ""
+        )
     else:
         build = """plugins { id 'java' }
 
@@ -198,12 +203,16 @@ dependencies {
 
 test {
     useJUnitPlatform()
-    workingDir = layout.buildDirectory.dir('test-working').get().asFile
+%s
+}
+""" % (
+            """    workingDir = layout.buildDirectory.dir('test-working').get().asFile
     systemProperty 'jolink.fixture.token', 'sensitive-system-value'
     environment 'JOLINK_FIXTURE_ENV', 'sensitive-environment-value'
-    jvmArgs '-Xmx128m'
-}
-"""
+    jvmArgs '-Xmx128m'"""
+            if custom_test_runtime
+            else ""
+        )
     (project / ("build.gradle.kts" if kotlin_dsl else "build.gradle")).write_text(
         build, encoding="utf-8"
     )
@@ -219,8 +228,9 @@ test {
     test.write_text(
         (
             "package example; import org.junit.jupiter.api.Test; "
+            "import static org.junit.jupiter.api.Assertions.assertEquals; "
             "public class TextServiceTest { @Test public void works() { "
-            "new TextService().strip(\" x \" ); } }\n"
+            "assertEquals(\"x\", new TextService().strip(\" x \")); } }\n"
             if junit_jars
             else "package example; public class TextServiceTest { "
             "public void placeholder() { new TextService().strip(\" x \" ); } }\n"
