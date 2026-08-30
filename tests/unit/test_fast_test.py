@@ -24,6 +24,7 @@ from jolink_runtime.launch.fast_test_manager import (
     FastTestManager,
     FastTestManagerError,
     TestAttempt as FastTestAttempt,
+    _redacted_build_log_tail,
 )
 from jolink_runtime.launch.jdt_compile_session import JdtCompileError
 from jolink_runtime.launch.process_supervisor import (
@@ -310,6 +311,26 @@ def test_fast_test_attempt_exposes_compiled_source_identity(tmp_path: Path) -> N
     assert snapshot["compiled_source_units"] == [
         "test-src/example/AppTest.java"
     ]
+
+
+def test_fast_test_bootstrap_log_tail_is_bounded_and_redacted(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "build.log"
+    log.write_text(
+        "[INFO] compiling\n"
+        "Authorization: Bearer secret-value\n"
+        "https://user:password@example.invalid/repository\n"
+        "[ERROR] ordinary failure\n",
+        encoding="utf-8",
+    )
+
+    tail = _redacted_build_log_tail(log)
+
+    rendered = "\n".join(tail)
+    assert "secret-value" not in rendered
+    assert "user:password" not in rendered
+    assert "ordinary failure" in rendered
 
 
 def test_reactor_module_is_selected_by_explicit_test_class(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shlex
 import shutil
 import tempfile
@@ -52,6 +53,28 @@ from .test_build_world import (
 _HELP_PLUGIN_GOAL = (
     "org.apache.maven.plugins:maven-help-plugin:3.2.0:effective-pom"
 )
+_BUILD_LOG_SECRET = re.compile(
+    r"(?i)(password|passwd|token|secret|authorization|cookie|credential|"
+    r"api[_-]?key|access[_-]?key|private[_-]?key)"
+)
+_BUILD_LOG_USERINFO = re.compile(r"(://)([^/@\s]+)@")
+_BUILD_LOG_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _redacted_build_log_tail(path: Path) -> list[str]:
+    try:
+        raw = path.read_bytes()[-32 * 1024 :]
+    except OSError:
+        return []
+    text = raw.decode("utf-8", errors="replace")
+    result: list[str] = []
+    for line in text.splitlines()[-80:]:
+        clean = _BUILD_LOG_ANSI.sub("", line)
+        if _BUILD_LOG_SECRET.search(clean):
+            result.append("<redacted sensitive build log line>")
+        else:
+            result.append(_BUILD_LOG_USERINFO.sub(r"\1<redacted>@", clean))
+    return result
 
 
 def _resource_tree_fingerprint(roots: Sequence[Path]) -> str:
@@ -784,7 +807,10 @@ class FastTestManager:
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_FAILED",
                     "The one-time Gradle classes/testClasses Bootstrap failed.",
-                    context={"return_code": operation.return_code},
+                    context={
+                        "return_code": operation.return_code,
+                        "bootstrap_log_tail": _redacted_build_log_tail(log),
+                    },
                 )
             model = probe.load_model(prepared)
         finally:
@@ -895,7 +921,10 @@ class FastTestManager:
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_FAILED",
                     "The one-time Maven test-compile Bootstrap failed.",
-                    context={"return_code": operation.return_code},
+                    context={
+                        "return_code": operation.return_code,
+                        "bootstrap_log_tail": _redacted_build_log_tail(log),
+                    },
                 )
             if before != self._workspace_source_fingerprint(
                 workspace_modules
