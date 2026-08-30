@@ -81,6 +81,8 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action.project_path = arguments.get("project_path")
     if "tests" in arguments:
         action.tests = arguments.get("tests")
+    if action.action == "test" and "build_system" in arguments:
+        action.build_system = arguments.get("build_system")
     if "test_run_id" in arguments:
         action.test_run_id = arguments.get("test_run_id")
     if arguments.get("_product_status") is True:

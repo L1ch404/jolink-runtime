@@ -289,6 +289,49 @@ def test_build_system_provider_dispatch_rejects_ambiguous_project(
         manager.close()
 
 
+@pytest.mark.parametrize("authority", ["maven", "gradle"])
+def test_build_system_provider_dispatch_accepts_explicit_authority(
+    tmp_path: Path,
+    authority: str,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    (tmp_path / "build.gradle").write_text("plugins {}\n", encoding="utf-8")
+    (tmp_path / "gradlew").write_bytes(b"")
+    manager = FastTestManager()
+    attempt = type(
+        "Attempt",
+        (),
+        {"project_path": tmp_path, "build_system": authority},
+    )()
+    try:
+        provider = manager._select_bootstrap(attempt)
+        assert provider.kind == authority
+    finally:
+        manager.close()
+
+
+def test_build_system_provider_dispatch_rejects_missing_explicit_authority(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    manager = FastTestManager()
+    attempt = type(
+        "Attempt",
+        (),
+        {"project_path": tmp_path, "build_system": "gradle"},
+    )()
+    try:
+        with pytest.raises(FastTestManagerError) as captured:
+            manager._select_bootstrap(attempt)
+        assert captured.value.error_code == "BUILD_SYSTEM_NOT_FOUND"
+        assert captured.value.context == {
+            "build_system": "gradle",
+            "detected_build_systems": ["maven"],
+        }
+    finally:
+        manager.close()
+
+
 def _prepare_runtime_model(tmp_path: Path, model: dict) -> dict:
     project = tmp_path / "project"
     model["exportScope"] = "runtime"

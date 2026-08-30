@@ -4159,6 +4159,9 @@ class JavaRuntime(Runtime):
                 project_path=project_path,
                 source_files=source_files,
                 tests=tests,
+                build_system=str(
+                    getattr(action, "build_system", "") or ""
+                ),
                 timeout_seconds=action.timeout,
             )
             return RuntimeResult(

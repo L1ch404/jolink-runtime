@@ -35,9 +35,19 @@ Fast Test不是`mvn test`的MCP包装。Maven只在第一次或Build World失效
     "src/test/java/example/ServiceTest.java"
   ],
   "tests": ["example.ServiceTest#works"],
+  "build_system": "maven",
   "timeout": 60
 }
 ```
+
+`build_system`可选值为`maven | gradle`。当项目根目录同时包含两套受支持构建时
+必须显式提供；只有一套时可以省略。它是Build World权威来源的一部分，同一路径
+切换构建系统时不会复用另一套构建产生的持久JDT Session。
+
+benchmark或离线A/B应在计时前物化项目镜像、Maven Probe依赖和wheel锁定的JDT
+Candidate；运行阶段临时下载编译器或Maven plugin会把网络波动误计为Fast Test
+失败。仓库中的`prepare_swe_polybench_images.py`会在线准备、离线复核并生成与
+wheel SHA绑定的prepared image manifest。
 
 短测试直接返回结果；较慢测试返回`status=running`和`test_run_id`，通过
 `java_status(status)`观察，或通过`cancel_test`取消。

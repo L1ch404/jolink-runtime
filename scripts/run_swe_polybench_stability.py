@@ -45,6 +45,15 @@ EXPECTED_BOUNDARY_MARKERS = (
     "NOT_FOUND",
     "PACKAGING",
 )
+BOOTSTRAP_ENVIRONMENT_MARKERS = (
+    "remote host terminated the handshake",
+    "ssl peer shut down incorrectly",
+    "could not transfer artifact",
+    "non-resolvable parent pom",
+    "unresolveable build extension",
+    "pluginresolutionexception",
+    "unresolvablemodelexception",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -151,6 +160,20 @@ def _build_environment_prefix(test_command: str) -> str:
     return "; ".join(values) + "; "
 
 
+def _build_system(test_command: str) -> str | None:
+    if re.search(
+        r"(?:^|[^\w./-])(?:\./)?mvnw?(?=\s|$)",
+        test_command,
+    ):
+        return "maven"
+    if re.search(
+        r"(?:^|[^\w./-])(?:\./)?gradlew?(?=\s|$)",
+        test_command,
+    ):
+        return "gradle"
+    return None
+
+
 def _safe_name(instance_id: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]", "-", instance_id)[:100]
 
@@ -244,6 +267,21 @@ def _classify(report: dict[str, Any]) -> str:
         return "DATASET_OR_ENVIRONMENT_FAILURE"
     if report.get("stage") in {"host_runner", "driver"}:
         return "HARNESS_FAILURE"
+    if code == "FAST_TEST_BOOTSTRAP_FAILED":
+        baseline = (
+            report.get("jolink", {}).get("stages", {}).get("baseline", {})
+        )
+        bootstrap_text = "\n".join(
+            str(value) for value in baseline.get("bootstrap_log_tail", [])
+        ).casefold()
+        if any(
+            marker in bootstrap_text
+            for marker in BOOTSTRAP_ENVIRONMENT_MARKERS
+        ):
+            return "DATASET_OR_ENVIRONMENT_FAILURE"
+        official = report.get("jolink", {}).get("official_selected", {})
+        if official.get("outcome") not in {"passed", "failed"}:
+            return "DATASET_OR_ENVIRONMENT_FAILURE"
     if any(marker in code for marker in EXPECTED_BOUNDARY_MARKERS):
         return "UNSUPPORTED_EXPECTED"
     return "PRODUCT_BUG"
@@ -261,18 +299,22 @@ def _instance(
     fast_timeout: float,
     pull_attempts: int,
     delete_image: bool,
+    image_override: str | None = None,
 ) -> dict[str, Any]:
     instance_id = row["instance_id"]
     started = time.monotonic()
     instance_dir = output / "instances" / _safe_name(instance_id)
     instance_dir.mkdir(parents=True, exist_ok=True)
-    image = _image(instance_id)
+    base_image = _image(instance_id)
+    image = image_override or base_image
     container = f"jolink-spb-{_safe_name(instance_id).lower()}"
     report: dict[str, Any] = {
         "instance_id": instance_id,
         "repo": row["repo"],
         "base_commit": row["base_commit"],
         "image": image,
+        "base_image": base_image,
+        "prepared_image": image_override,
         "classification": "HARNESS_FAILURE",
         "timing_seconds": {},
     }
@@ -445,6 +487,7 @@ def _instance(
             "selector": report["selected_test"],
             "fast_test_timeout": fast_timeout,
             "java_home": _java_home(row["test_command"]),
+            "build_system": _build_system(row["test_command"]),
             "official_failure_kind": report["official_failure_kind"],
             "source_hint": source_hint,
             "source_hint_candidate_count": source_hint_count,
@@ -527,7 +570,7 @@ def _instance(
         )
         report["container_cleanup_ok"] = cleanup.returncode == 0
         report["timing_seconds"]["total"] = time.monotonic() - started
-        if delete_image:
+        if delete_image and image_override is None:
             _docker(
                 "image",
                 "rm",
@@ -609,6 +652,8 @@ def main() -> int:
     parser.add_argument("--official-timeout", type=float, default=1800)
     parser.add_argument("--fast-timeout", type=float, default=600)
     parser.add_argument("--pull-attempts", type=int, default=3)
+    parser.add_argument("--prepared-images", type=Path)
+    parser.add_argument("--require-prepared-images", action="store_true")
     parser.add_argument("--jolink-commit", required=True)
     parser.add_argument("--dataset-revision", required=True)
     parser.add_argument("--harness-revision", required=True)
@@ -620,6 +665,17 @@ def main() -> int:
     uv_cache = args.uv_cache.resolve(strict=True)
     wheel = args.wheel.resolve(strict=True)
     driver = args.driver.resolve(strict=True)
+    prepared_images: dict[str, Any] = {}
+    prepared_manifest_sha256 = None
+    if args.prepared_images is not None:
+        prepared_path = args.prepared_images.resolve(strict=True)
+        prepared_manifest = json.loads(prepared_path.read_text(encoding="utf-8"))
+        if prepared_manifest.get("schema") != "jolink.swe-polybench-prepared-images.v2":
+            raise SystemExit("unsupported prepared image manifest")
+        if prepared_manifest.get("wheel_sha256") != _sha256(wheel):
+            raise SystemExit("prepared image wheel does not match this run")
+        prepared_images = dict(prepared_manifest.get("images", {}))
+        prepared_manifest_sha256 = _sha256(prepared_path)
     output.mkdir(parents=True, exist_ok=True)
     (output / "instances").mkdir(exist_ok=True)
     shutil.copy2(wheel, assets / wheel.name)
@@ -636,6 +692,66 @@ def main() -> int:
         rows.sort(key=lambda row: (order.get(row["instance_id"], 999), row["instance_id"]))
     if args.limit is not None:
         rows = rows[: max(0, args.limit)]
+    invalid_prepared = [
+        row["instance_id"]
+        for row in rows
+        if row["instance_id"] in prepared_images
+        and prepared_images[row["instance_id"]].get("base_image")
+        != _image(row["instance_id"])
+    ]
+    if invalid_prepared:
+        raise SystemExit(
+            f"prepared image base mismatch: {sorted(invalid_prepared)}"
+        )
+    tampered_prepared = []
+    for row in rows:
+        entry = prepared_images.get(row["instance_id"])
+        if entry is None:
+            continue
+        image = str(entry.get("prepared_image", ""))
+        inspected_id = _docker(
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}}",
+            image,
+            timeout=60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        inspected_base = _docker(
+            "image",
+            "inspect",
+            "--format",
+            '{{ index .Config.Labels "io.jolink.swe-polybench.base-image-id" }}',
+            image,
+            timeout=60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if (
+            inspected_id.returncode != 0
+            or str(inspected_id.stdout or "").strip()
+            != str(entry.get("prepared_image_id", ""))
+            or inspected_base.returncode != 0
+            or str(inspected_base.stdout or "").strip()
+            != str(entry.get("base_image_id", ""))
+        ):
+            tampered_prepared.append(row["instance_id"])
+    if tampered_prepared:
+        raise SystemExit(
+            f"prepared image identity mismatch: {sorted(tampered_prepared)}"
+        )
+    if args.require_prepared_images:
+        missing_prepared = [
+            row["instance_id"]
+            for row in rows
+            if row["instance_id"] not in prepared_images
+        ]
+        if missing_prepared:
+            raise SystemExit(
+                f"prepared images required but missing: {sorted(missing_prepared)}"
+            )
     manifest = {
         "schema": "jolink.swe-polybench-stability.v1",
         "created_at": time.time(),
@@ -652,6 +768,7 @@ def main() -> int:
         "gold_fields_excluded": sorted(GOLD_FIELDS),
         "image_tag": "v1.1",
         "max_workers": 1,
+        "prepared_images_manifest_sha256": prepared_manifest_sha256,
     }
     _atomic_json(output / "run-manifest.json", manifest)
     results: list[dict[str, Any]] = []
@@ -679,6 +796,11 @@ def main() -> int:
             fast_timeout=args.fast_timeout,
             pull_attempts=args.pull_attempts,
             delete_image=args.delete_images,
+            image_override=(
+                str(prepared_images[row["instance_id"]]["prepared_image"])
+                if row["instance_id"] in prepared_images
+                else None
+            ),
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         _atomic_json(destination, result)

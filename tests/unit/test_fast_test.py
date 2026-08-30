@@ -39,7 +39,10 @@ from jolink_runtime.launch.gradle_probe import (
     gradle_configuration_environment_names,
     gradle_configuration_inputs,
 )
-from jolink_runtime.server.tool_schema import JAVA_APPLICATION_INPUT_SCHEMA
+from jolink_runtime.server.tool_schema import (
+    JAVA_APPLICATION_INPUT_SCHEMA,
+    JAVA_DEBUGGER_INPUT_SCHEMA,
+)
 
 
 def test_fast_test_assets_are_locked_java8_bytecode() -> None:
@@ -293,6 +296,23 @@ def test_fast_test_manager_starts_idle_and_closes() -> None:
     assert manager.close() is True
 
 
+def test_fast_test_manager_rejects_unknown_build_system(tmp_path: Path) -> None:
+    manager = FastTestManager()
+    try:
+        with pytest.raises(FastTestManagerError) as captured:
+            manager.start(
+                project_path=tmp_path,
+                source_files=(),
+                tests=("example.AppTest#works",),
+                timeout_seconds=30,
+                build_system="ant",
+            )
+        assert captured.value.error_code == "INVALID_ARGUMENT"
+        assert captured.value.context == {"argument": "build_system"}
+    finally:
+        manager.close()
+
+
 def test_fast_test_attempt_exposes_compiled_source_identity(tmp_path: Path) -> None:
     attempt = FastTestAttempt(
         test_run_id="test_compiled_identity",
@@ -312,6 +332,7 @@ def test_fast_test_attempt_exposes_compiled_source_identity(tmp_path: Path) -> N
     assert snapshot["compiled_source_units"] == [
         "test-src/example/AppTest.java"
     ]
+    assert snapshot["build_system"] == "auto"
 
 
 def test_fast_test_bootstrap_log_tail_is_bounded_and_redacted(
@@ -468,6 +489,10 @@ def test_java_application_schema_exposes_fast_test_without_new_tool() -> None:
     assert "test" in actions
     assert "cancel_test" in actions
     assert "tests" in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
+    assert JAVA_APPLICATION_INPUT_SCHEMA["properties"]["build_system"][
+        "enum"
+    ] == ["maven", "gradle"]
+    assert "build_system" not in JAVA_DEBUGGER_INPUT_SCHEMA["properties"]
     assert "test_run_id" in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
     description = JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"][
         "description"

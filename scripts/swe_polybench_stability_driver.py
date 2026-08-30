@@ -47,6 +47,7 @@ def _run_test(
     selector: str,
     source_files: tuple[str, ...],
     timeout: float,
+    build_system: str | None,
 ) -> dict[str, Any]:
     started = _call(
         dispatcher,
@@ -57,6 +58,11 @@ def _run_test(
             "source_files": list(source_files),
             "tests": [selector],
             "timeout": timeout,
+            **(
+                {"build_system": build_system}
+                if build_system is not None
+                else {}
+            ),
         },
     )
     if started.get("status") in TERMINAL or started.get("passed") is not None:
@@ -212,6 +218,7 @@ def main() -> int:
         ),
         "official_selected": official,
         "java_home": java_home,
+        "build_system": config.get("build_system"),
         "official_failure_kind": config.get("official_failure_kind"),
         "stages": {},
     }
@@ -229,6 +236,7 @@ def main() -> int:
                 else ()
             ),
             timeout=float(config.get("fast_test_timeout", 600)),
+            build_system=config.get("build_system"),
         )
         report["stages"]["baseline"] = baseline
         if baseline.get("ok") is not True:
@@ -273,6 +281,7 @@ def main() -> int:
             selector=selector,
             source_files=(source_relative,),
             timeout=float(config.get("fast_test_timeout", 600)),
+            build_system=config.get("build_system"),
         )
         report["stages"]["forward"] = forward
         report["forward_compiled_identity"] = _compiled_identity(forward, source)
@@ -284,6 +293,7 @@ def main() -> int:
             selector=selector,
             source_files=(source_relative,),
             timeout=float(config.get("fast_test_timeout", 600)),
+            build_system=config.get("build_system"),
         )
         report["stages"]["reverse"] = reverse
         report["reverse_compiled_identity"] = _compiled_identity(reverse, source)

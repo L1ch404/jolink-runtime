@@ -392,6 +392,15 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "Class#method. Fast Test v1 supports JUnit 4/5 and TestNG."
             ),
         },
+        "build_system": {
+            "type": "string",
+            "enum": ["maven", "gradle"],
+            "description": (
+                "Optional authoritative build system for Fast Test. Set this "
+                "when a project contains both Maven and Gradle builds; omit it "
+                "when exactly one supported build is present."
+            ),
+        },
         "test_run_id": {
             "type": "string",
             "description": "Active Fast Test id required by cancel_test.",
@@ -478,6 +487,7 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "source_files",
         "hotswap",
         "tests",
+        "build_system",
         "test_run_id",
         "timeout",
     ),
@@ -518,6 +528,7 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
             "tail",
             "source_files",
             "hotswap",
+            "build_system",
         }
     ),
 )

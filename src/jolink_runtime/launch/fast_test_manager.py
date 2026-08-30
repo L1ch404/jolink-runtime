@@ -133,6 +133,7 @@ class FastTestManagerError(RuntimeError):
 
 @dataclass
 class _FastTestProject:
+    build_system: str
     project_root: Path
     module_root: Path
     build_jdk: JavaToolchainCandidate
@@ -198,6 +199,7 @@ class TestAttempt:
     source_files: tuple[str, ...]
     tests: tuple[str, ...]
     timeout_seconds: float
+    build_system: str = ""
     state: str = "starting"
     started_at: float = field(default_factory=time.time)
     started_monotonic: float = field(default_factory=time.monotonic)
@@ -231,6 +233,7 @@ class TestAttempt:
             "project_path": str(self.project_path),
             "source_file_count": len(self.source_files),
             "selected_test_count": len(self.tests),
+            "build_system": self.build_system or "auto",
             "cancel_requested": self.cancel_requested,
             "runtime_unchanged": True,
         }
@@ -286,10 +289,18 @@ class FastTestManager:
         source_files: Sequence[str],
         tests: Sequence[str],
         timeout_seconds: float,
+        build_system: str = "",
         short_wait_seconds: float = 2.0,
     ) -> dict[str, Any]:
         root = project_path.expanduser().resolve(strict=True)
         timeout = min(max(float(timeout_seconds), 0.1), 600.0)
+        authority = str(build_system or "").strip().lower()
+        if authority not in {"", "maven", "gradle"}:
+            raise FastTestManagerError(
+                "INVALID_ARGUMENT",
+                "Fast Test build_system must be 'maven' or 'gradle'.",
+                context={"argument": "build_system"},
+            )
         with self._lock:
             if self._closed:
                 raise FastTestManagerError(
@@ -311,6 +322,7 @@ class FastTestManager:
                 project_path=root,
                 source_files=tuple(str(value) for value in source_files),
                 tests=tuple(str(value) for value in tests),
+                build_system=authority,
                 timeout_seconds=timeout,
             )
             thread = threading.Thread(
@@ -597,27 +609,50 @@ class FastTestManager:
                     self._active = None
 
     def _ensure_project(self, attempt: TestAttempt) -> _FastTestProject:
+        provider = self._select_bootstrap(attempt)
         project = self._project
         if (
             project is not None
             and project.project_root == attempt.project_path
+            and project.build_system == provider.kind
             and project.compiler.ready
             and project.is_fresh()
         ):
             return project
         self._drop_project()
         attempt.state = "bootstrapping"
-        project = self._bootstrap(attempt)
+        project = provider.bootstrap(self, attempt)
         self._project = project
         return project
 
     def _bootstrap(self, attempt: TestAttempt) -> _FastTestProject:
+        return self._select_bootstrap(attempt).bootstrap(self, attempt)
+
+    def _select_bootstrap(
+        self,
+        attempt: TestAttempt,
+    ) -> TestBuildWorldBootstrap:
         root = attempt.project_path
         matches = tuple(
             provider for provider in self._bootstraps if provider.detect(root)
         )
+        requested = str(getattr(attempt, "build_system", "") or "")
+        if requested:
+            selected = tuple(
+                provider for provider in matches if provider.kind == requested
+            )
+            if len(selected) == 1:
+                return selected[0]
+            raise FastTestManagerError(
+                "BUILD_SYSTEM_NOT_FOUND",
+                f"Fast Test did not find the requested {requested} build.",
+                context={
+                    "build_system": requested,
+                    "detected_build_systems": [item.kind for item in matches],
+                },
+            )
         if len(matches) == 1:
-            return matches[0].bootstrap(self, attempt)
+            return matches[0]
         if len(matches) > 1:
             raise FastTestManagerError(
                 "BUILD_SYSTEM_AMBIGUOUS",
@@ -1420,6 +1455,7 @@ class FastTestManager:
         )
         attempt.require_not_cancelled()
         return _FastTestProject(
+            build_system=world.build_system,
             project_root=world.project_root,
             module_root=world.module_root,
             build_jdk=build_jdk,
