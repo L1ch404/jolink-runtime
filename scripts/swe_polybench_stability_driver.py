@@ -64,9 +64,20 @@ def _run_test(
     return _wait_test(dispatcher, timeout=timeout + 30)
 
 
-def _test_source(project: Path, class_name: str) -> Path:
+def _test_source(
+    project: Path,
+    class_name: str,
+    source_hint: str | None = None,
+) -> Path:
     top_level = class_name.split("$", 1)[0]
     suffix = Path(*top_level.split(".")).with_suffix(".java")
+    if source_hint:
+        hinted = (project / source_hint).resolve(strict=True)
+        if project not in hinted.parents:
+            raise RuntimeError("TEST_SOURCE_HINT_OUTSIDE_PROJECT")
+        if tuple(hinted.parts[-len(suffix.parts) :]) != suffix.parts:
+            raise RuntimeError("TEST_SOURCE_HINT_MISMATCH")
+        return hinted
     matches = [
         path.resolve()
         for path in project.rglob(suffix.name)
@@ -178,7 +189,11 @@ def main() -> int:
     class_name, separator, method_name = selector.rpartition("#")
     if not separator:
         raise SystemExit("selector must be Class#method")
-    source = _test_source(project, class_name)
+    source = _test_source(
+        project,
+        class_name,
+        config.get("source_hint"),
+    )
     source_relative = source.relative_to(project).as_posix()
     official = _official_outcome(
         project,
@@ -189,6 +204,9 @@ def main() -> int:
         "instance_id": config["instance_id"],
         "selector": selector,
         "source_file": source_relative,
+        "source_selection": (
+            "test_patch" if config.get("source_hint") else "unique_search"
+        ),
         "official_selected": official,
         "java_home": java_home,
         "official_failure_kind": config.get("official_failure_kind"),
