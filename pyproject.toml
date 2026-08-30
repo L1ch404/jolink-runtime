@@ -42,6 +42,9 @@ jolink_runtime = [
   "launch/fast-test-runner.jar.b64",
   "launch/maven-build-world-probe.jar.b64",
   "launch/maven-build-world-probe.pom",
+  "launch/gradle-build-world-probe.jar.b64",
+  "launch/gradle-build-world-probe-lock.json",
+  "launch/gradle-init.gradle",
 ]
 
 [tool.pytest.ini_options]

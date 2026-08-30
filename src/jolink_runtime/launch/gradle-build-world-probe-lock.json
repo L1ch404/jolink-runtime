@@ -1,0 +1,11 @@
+{
+  "class_major": 52,
+  "probe_version": "0.1.0-spike3",
+  "schema": "jolink.gradle-build-world-probe.product-lock.v1",
+  "sha256": "a3ae7bb4f376f3b86ee5ad0d3d7484aa99bb2a81ac5a3239723b2a7ace51a244",
+  "supported_gradle_versions": [
+    "8.10",
+    "8.14"
+  ],
+  "task_prefix": "jolinkExportBuildWorld_"
+}

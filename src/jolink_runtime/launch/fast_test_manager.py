@@ -27,8 +27,14 @@ from .jdt_compile_session import (
 )
 from .maven import MavenBuildSystemAdapter, MavenResolutionError
 from .maven_probe import MavenProbeError, ProductMavenProbe
+from .gradle_probe import GradleProbeError, ProductGradleProbe, wrapper_version
+from .gradle_test_build_world import (
+    GradleBuildWorldError,
+    create_gradle_test_build_world,
+)
 from .process_supervisor import AttemptToken, ProcessSupervisor
 from .toolchain import JavaToolchainCandidate, JavaToolchainResolver, MavenToolResolver
+from .test_build_world import JavaTestBuildWorld, build_input_manifest
 
 
 _HELP_PLUGIN_GOAL = (
@@ -94,6 +100,8 @@ class _FastTestProject:
     project_root: Path
     module_root: Path
     build_jdk: JavaToolchainCandidate
+    test_java_executable: Path
+    javac_executable: Path
     compiler: PersistentJdtCompileSession
     runtime_classpath: tuple[Path, ...]
     configuration_inputs: tuple[Path, ...]
@@ -111,7 +119,7 @@ class _FastTestProject:
         try:
             current = fast_compile_fingerprint(
                 configuration_inputs=self.configuration_inputs,
-                javac_executable=self.build_jdk.javac_executable,
+                javac_executable=self.javac_executable,
                 compile_classpath=self.dependency_entries,
             )
             resources_match = (
@@ -402,7 +410,7 @@ class FastTestManager:
                 runner_started = time.monotonic()
                 try:
                     result = self._runner.run(
-                        java_executable=project.build_jdk.java_executable,
+                        java_executable=project.test_java_executable,
                         classpath=(
                             project.compiler.test_output_directory,
                             project.compiler.output_directory,
@@ -476,6 +484,8 @@ class FastTestManager:
             FastTestError,
             FastTestManagerError,
             JdtCompileError,
+            GradleProbeError,
+            GradleBuildWorldError,
             MavenProbeError,
             MavenResolutionError,
         ) as error:
@@ -541,6 +551,23 @@ class FastTestManager:
         return project
 
     def _bootstrap(self, attempt: TestAttempt) -> _FastTestProject:
+        root = attempt.project_path
+        if (root / "pom.xml").is_file():
+            return self._bootstrap_maven(attempt)
+        if (
+            (root / "gradlew").is_file()
+            and (
+                (root / "build.gradle").is_file()
+                or (root / "build.gradle.kts").is_file()
+            )
+        ):
+            return self._bootstrap_gradle(attempt)
+        raise FastTestManagerError(
+            "BUILD_SYSTEM_NOT_FOUND",
+            "Fast Test requires a Maven POM or Gradle Wrapper project.",
+        )
+
+    def _bootstrap_maven(self, attempt: TestAttempt) -> _FastTestProject:
         attempt.require_not_cancelled()
         session_root = Path(
             tempfile.mkdtemp(prefix="jolink-fast-test-session-")
@@ -636,6 +663,110 @@ class FastTestManager:
         with self._lock:
             self._pending_roots.discard(session_root)
         return project
+
+    def _bootstrap_gradle(self, attempt: TestAttempt) -> _FastTestProject:
+        attempt.require_not_cancelled()
+        session_root = Path(
+            tempfile.mkdtemp(prefix="jolink-gradle-fast-test-session-")
+        )
+        with self._lock:
+            self._pending_roots.add(session_root)
+        bootstrap = session_root / "bootstrap"
+        bootstrap.mkdir(mode=0o700)
+        log = bootstrap / "gradle-test-bootstrap.log"
+        project = attempt.project_path
+        preferences = self._idea.import_preferences(project)
+        build_jdk = self._select_build_jdk(
+            preferences, project, log, attempt
+        )
+        probe = ProductGradleProbe.load()
+        version = wrapper_version(project)
+        if version not in probe.supported_versions:
+            raise FastTestManagerError(
+                "GRADLE_VERSION_UNSUPPORTED",
+                "This Gradle Wrapper version has no product evidence.",
+            )
+        wrapper = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
+        if not wrapper.is_file():
+            raise FastTestManagerError(
+                "GRADLE_WRAPPER_UNAVAILABLE",
+                "The Gradle Wrapper executable is unavailable.",
+            )
+        prepared = probe.prepare(bootstrap)
+        main_root = project / "src/main/java"
+        test_root = project / "src/test/java"
+        resource_roots = (
+            project / "src/main/resources",
+            project / "src/test/resources",
+        )
+        before = build_input_manifest(
+            (main_root, test_root), resource_roots
+        )
+        environment = JavaToolchainResolver.maven_environment(build_jdk)
+        operation = self._supervisor.run(
+            BuildOperationSpec(
+                argv=probe.command(
+                    wrapper=wrapper,
+                    prepared=prepared,
+                    offline=False,
+                ),
+                cwd=project,
+                environment=environment,
+                timeout_seconds=max(120.0, attempt.timeout_seconds),
+                output_capture=log,
+                max_output_bytes=16 * 1024 * 1024,
+                operation_name="gradle_fast_test_bootstrap",
+            ),
+            owner=attempt.owner,
+        )
+        attempt.require_not_cancelled()
+        if operation.output_limit_exceeded:
+            raise FastTestManagerError(
+                "FAST_TEST_BOOTSTRAP_OUTPUT_LIMIT_EXCEEDED",
+                "The Gradle Fast Test Bootstrap exceeded the 16 MiB log limit.",
+            )
+        if not operation.succeeded:
+            if prepared.output_file.is_file():
+                probe.load_model(prepared)
+            raise FastTestManagerError(
+                "FAST_TEST_BOOTSTRAP_FAILED",
+                "The one-time Gradle classes/testClasses Bootstrap failed.",
+                context={"return_code": operation.return_code},
+            )
+        model = probe.load_model(prepared)
+        prepared.init_script.unlink(missing_ok=True)
+        configuration_inputs = tuple(
+            path
+            for path in (
+                project / "build.gradle",
+                project / "build.gradle.kts",
+                project / "settings.gradle",
+                project / "settings.gradle.kts",
+                project / "gradle.properties",
+                project / "gradle/wrapper/gradle-wrapper.properties",
+                Path(__file__).parent / "gradle-build-world-probe-lock.json",
+            )
+            if path.is_file()
+        )
+        world = create_gradle_test_build_world(
+            model=model,
+            project_root=project,
+            configuration_inputs=configuration_inputs,
+        )
+        if before != world.expected_input_manifest:
+            raise FastTestManagerError(
+                "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
+                "Gradle Build World inputs changed during Bootstrap.",
+            )
+        result = self._start_build_world(
+            attempt=attempt,
+            world=world,
+            build_jdk=build_jdk,
+            session_root=session_root,
+        )
+        with self._lock:
+            self._pending_roots.discard(session_root)
+        return result
 
     def _run_maven_probe_bootstrap(
         self,
@@ -947,60 +1078,156 @@ class FastTestManager:
             build_jdk,
             target_level=target_level,
         )
+        dependency_keys = {
+            os.path.normcase(str(path))
+            for path in (*main_dependencies, *test_dependencies)
+        }
+        upstream_source_roots = tuple(
+            root
+            for item in workspace.modules
+            if item.directory != module.directory
+            and os.path.normcase(str(item.output_directory)) in dependency_keys
+            for root in (
+                item.directory / "src/main/java",
+                item.directory / "src/test/java",
+            )
+            if root.is_dir()
+        )
+        configuration_inputs = tuple(
+            [item.pom_file for item in workspace.modules]
+            + [effective_pom]
+            + ([source_settings] if source_settings is not None else [])
+            + list(self._resource_inputs(resource_roots))
+            + [
+                path
+                for path in (
+                    workspace.build_root / ".mvn/maven.config",
+                    workspace.build_root / ".mvn/jvm.config",
+                    workspace.build_root / ".mvn/extensions.xml",
+                )
+                if path.is_file()
+            ]
+        )
+        world = JavaTestBuildWorld(
+            build_system="maven",
+            project_root=workspace.project_root,
+            module_root=module.directory,
+            main_source_roots=main_roots,
+            test_source_roots=test_roots,
+            main_output=main_output,
+            test_output=test_output,
+            main_dependencies=main_dependencies,
+            test_dependencies=test_dependencies,
+            test_runtime_classpath=runtime_classpath,
+            resource_roots=tuple(resource_roots),
+            target_java_home=target_java_home,
+            source_encoding=self._maven._source_encoding(effective_project),
+            source_level=target_level,
+            method_parameters=method_parameters,
+            processor_entries=processor_entries,
+            java_agents=tuple(f"{path}=ECJ" for path in lombok),
+            extra_worker_jvm_arguments=(),
+            test_java_executable=build_jdk.java_executable,
+            javac_executable=build_jdk.javac_executable,
+            configuration_inputs=configuration_inputs,
+            upstream_source_roots=upstream_source_roots,
+            runner_support_provenance=runner_support_provenance,
+        )
+        return self._start_build_world(
+            attempt=attempt,
+            world=world,
+            build_jdk=build_jdk,
+            session_root=session_root,
+        )
+
+    def _start_build_world(
+        self,
+        *,
+        attempt: TestAttempt,
+        world: JavaTestBuildWorld,
+        build_jdk: JavaToolchainCandidate,
+        session_root: Path,
+    ) -> _FastTestProject:
+        if world.expected_input_manifest and build_input_manifest(
+            (*world.main_source_roots, *world.test_source_roots),
+            world.resource_roots,
+        ) != world.expected_input_manifest:
+            raise FastTestManagerError(
+                "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
+                "Build World inputs changed before private snapshot.",
+            )
         main_snapshots = self._freeze_sources(
-            session_root / "main-source-snapshot", main_roots
+            session_root / "main-source-snapshot",
+            world.main_source_roots,
         )
         test_snapshots = self._freeze_sources(
-            session_root / "test-source-snapshot", test_roots
+            session_root / "test-source-snapshot",
+            world.test_source_roots,
         )
+        resource_snapshots = self._freeze_trees(
+            session_root / "resource-snapshot", world.resource_roots
+        )
+        if world.expected_input_manifest:
+            frozen_manifest = build_input_manifest(
+                (*main_snapshots, *test_snapshots), resource_snapshots
+            )
+            current_manifest = build_input_manifest(
+                (*world.main_source_roots, *world.test_source_roots),
+                world.resource_roots,
+            )
+            if (
+                frozen_manifest != world.expected_input_manifest
+                or current_manifest != world.expected_input_manifest
+            ):
+                raise FastTestManagerError(
+                    "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
+                    "Build World inputs changed during private snapshot.",
+                )
         attempt.require_not_cancelled()
         candidate = JdtCandidate.load_product()
-        worker_java = candidate.select_worker_java((build_jdk.home,))
+        worker_java = candidate.select_worker_java(
+            (build_jdk.home, world.target_java_home)
+        )
+        lombok_enabled = bool(world.java_agents)
         compiler = PersistentJdtCompileSession(
             root=session_root / "compile-session",
             candidate=candidate,
             worker_java_home=worker_java.home,
-            source_roots=main_roots,
+            source_roots=world.main_source_roots,
             baseline_source_roots=main_snapshots,
             classpath_entries=(
                 *discover_target_system_entries(
-                    target_java_home, target_level
+                    world.target_java_home, world.source_level
                 ),
-                *main_dependencies,
+                *world.main_dependencies,
             ),
-            source_encoding=self._maven._source_encoding(effective_project),
-            source_level=target_level,
-            method_parameters=method_parameters,
-            test_source_roots=test_roots,
+            source_encoding=world.source_encoding,
+            source_level=world.source_level,
+            method_parameters=world.method_parameters,
+            test_source_roots=world.test_source_roots,
             baseline_test_source_roots=test_snapshots,
-            test_classpath_entries=test_dependencies,
-            baseline_main_output=main_output,
-            baseline_test_output=test_output,
-            processor_entries=processor_entries,
-            java_agents=tuple(f"{path}=ECJ" for path in lombok),
-            extra_jvm_arguments=lombok_worker_jvm_arguments(
-                worker_java.major, lombok_enabled=bool(lombok)
+            test_classpath_entries=world.test_dependencies,
+            baseline_main_output=world.main_output,
+            baseline_test_output=world.test_output,
+            processor_entries=world.processor_entries,
+            java_agents=world.java_agents,
+            extra_jvm_arguments=(
+                *world.extra_worker_jvm_arguments,
+                *lombok_worker_jvm_arguments(
+                    worker_java.major,
+                    lombok_enabled=lombok_enabled,
+                ),
             ),
         )
         return self._run_compiler_initialization_transaction(
             attempt=attempt,
             compiler=compiler,
-            finish=lambda full: self._finish_compiler_initialization(
+            finish=lambda full: self._finish_build_world(
                 attempt=attempt,
                 full=full,
                 compiler=compiler,
-                main_output=main_output,
-                test_output=test_output,
-                workspace=workspace,
-                module=module,
+                world=world,
                 build_jdk=build_jdk,
-                effective_pom=effective_pom,
-                source_settings=source_settings,
-                resource_roots=resource_roots,
-                main_dependencies=main_dependencies,
-                test_dependencies=test_dependencies,
-                runtime_classpath=runtime_classpath,
-                runner_support_provenance=runner_support_provenance,
                 session_root=session_root,
             ),
         )
@@ -1035,24 +1262,14 @@ class FastTestManager:
             if not published:
                 compiler.close()
 
-    def _finish_compiler_initialization(
+    def _finish_build_world(
         self,
         *,
         attempt: TestAttempt,
         full: Any,
         compiler: PersistentJdtCompileSession,
-        main_output: Path,
-        test_output: Path,
-        workspace: Any,
-        module: Any,
+        world: JavaTestBuildWorld,
         build_jdk: JavaToolchainCandidate,
-        effective_pom: Path,
-        source_settings: Path | None,
-        resource_roots: Sequence[Path],
-        main_dependencies: Sequence[Path],
-        test_dependencies: Sequence[Path],
-        runtime_classpath: tuple[Path, ...],
-        runner_support_provenance: dict[str, Any],
         session_root: Path,
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
@@ -1067,10 +1284,10 @@ class FastTestManager:
         from ..adapters.java.classfile import compare_class_output_tier1
 
         main_compatibility = compare_class_output_tier1(
-            main_output, compiler.output_directory
+            world.main_output, compiler.output_directory
         )
         test_compatibility = compare_class_output_tier1(
-            test_output, compiler.test_output_directory
+            world.test_output, compiler.test_output_directory
         )
         attempt.require_not_cancelled()
         if not main_compatibility["compatible"] or not test_compatibility[
@@ -1078,7 +1295,7 @@ class FastTestManager:
         ]:
             raise FastTestManagerError(
                 "JDT_TEST_BASELINE_INCOMPATIBLE",
-                "The JDT main/test baseline is not compatible with Maven.",
+                "The JDT main/test baseline is not compatible with the build authority.",
                 context={
                     "main": main_compatibility,
                     "test": test_compatibility,
@@ -1086,72 +1303,69 @@ class FastTestManager:
             )
         compiler.accept_baseline()
         attempt.require_not_cancelled()
-        configuration_inputs = tuple(
-            [module.pom_file for module in workspace.modules]
-            + [effective_pom]
-            + (
-                [source_settings]
-                if source_settings is not None
-                else []
-            )
-            + list(self._resource_inputs(resource_roots))
-            + [
-                path
-                for path in (
-                    workspace.build_root / ".mvn/maven.config",
-                    workspace.build_root / ".mvn/jvm.config",
-                    workspace.build_root / ".mvn/extensions.xml",
+        if world.native_resource_oracle_required:
+            formal_resources = self._formal_resource_manifest(world)
+            native_resources = compiler.native_full_resource_manifest
+            if not native_resources or any(
+                formal_resources.get(path) != digest
+                for path, digest in native_resources.items()
+            ):
+                raise FastTestManagerError(
+                    "JDT_TEST_RESOURCE_BASELINE_INCOMPATIBLE",
+                    "JDT Processor resources differ from the build authority.",
                 )
-                if path.is_file()
-            ]
+        all_dependencies = tuple(
+            dict.fromkeys(
+                (*world.main_dependencies, *world.test_dependencies)
+            )
         )
-        all_dependencies = tuple(dict.fromkeys((*main_dependencies, *test_dependencies)))
         fingerprint = fast_compile_fingerprint(
-            configuration_inputs=configuration_inputs,
-            javac_executable=build_jdk.javac_executable,
+            configuration_inputs=world.configuration_inputs,
+            javac_executable=world.javac_executable,
             compile_classpath=all_dependencies,
         )
-        resource_fingerprint = _resource_tree_fingerprint(resource_roots)
-        dependency_keys = {
-            os.path.normcase(str(path))
-            for path in (*main_dependencies, *test_dependencies)
-        }
-        upstream_module_directories = {
-            item.directory
-            for item in workspace.modules
-            if item.directory != module.directory
-            and os.path.normcase(str(item.output_directory))
-            in dependency_keys
-        }
-        upstream_source_roots = tuple(
-            root
-            for item in workspace.modules
-            if item.directory in upstream_module_directories
-            for root in (
-                item.directory / "src/main/java",
-                item.directory / "src/test/java",
-            )
-            if root.is_dir()
+        resource_fingerprint = _resource_tree_fingerprint(
+            world.resource_roots
         )
         attempt.require_not_cancelled()
         return _FastTestProject(
-            project_root=workspace.project_root,
-            module_root=module.directory,
+            project_root=world.project_root,
+            module_root=world.module_root,
             build_jdk=build_jdk,
+            test_java_executable=world.test_java_executable,
+            javac_executable=world.javac_executable,
             compiler=compiler,
-            runtime_classpath=runtime_classpath,
-            configuration_inputs=configuration_inputs,
+            runtime_classpath=world.test_runtime_classpath,
+            configuration_inputs=world.configuration_inputs,
             dependency_entries=all_dependencies,
             configuration_fingerprint=fingerprint,
-            resource_roots=tuple(resource_roots),
+            resource_roots=world.resource_roots,
             resource_fingerprint=resource_fingerprint,
-            upstream_source_roots=upstream_source_roots,
+            upstream_source_roots=world.upstream_source_roots,
             upstream_source_fingerprint=_java_source_roots_fingerprint(
-                upstream_source_roots
+                world.upstream_source_roots
             ),
-            runner_support_provenance=dict(runner_support_provenance),
+            runner_support_provenance=dict(
+                world.runner_support_provenance
+            ),
             session_root=session_root,
         )
+
+    @staticmethod
+    def _formal_resource_manifest(
+        world: JavaTestBuildWorld,
+    ) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for prefix, root in (
+            ("main", world.main_output),
+            ("test", world.test_output),
+        ):
+            for path in sorted(root.rglob("*")):
+                if path.is_file() and path.suffix != ".class":
+                    result[
+                        f"{prefix}/{path.relative_to(root).as_posix()}"
+                    ] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return result
 
     @staticmethod
     def _select_test_module(workspace: Any, attempt: TestAttempt) -> Any:
@@ -1468,6 +1682,24 @@ class FastTestManager:
                 output = target / relative
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, output)
+            frozen.append(target)
+        return tuple(frozen)
+
+    @staticmethod
+    def _freeze_trees(
+        destination: Path, roots: Sequence[Path]
+    ) -> tuple[Path, ...]:
+        frozen: list[Path] = []
+        for index, root in enumerate(roots):
+            target = destination / str(index)
+            target.mkdir(parents=True, exist_ok=False)
+            if root.is_dir():
+                for source in sorted(root.rglob("*")):
+                    if not source.is_file():
+                        continue
+                    output = target / source.relative_to(root)
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, output)
             frozen.append(target)
         return tuple(frozen)
 

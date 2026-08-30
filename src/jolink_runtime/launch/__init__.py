@@ -90,6 +90,10 @@ from .jdt_compile_session import (
     discover_java8_system_entries,
     lombok_worker_jvm_arguments,
 )
+from .test_build_world import (
+    JavaTestBuildWorld,
+    TestBuildWorldBootstrap,
+)
 
 __all__ = [
     "IN_PROGRESS_LAUNCH_PHASES",
@@ -152,6 +156,8 @@ __all__ = [
     "WorkerJavaRuntime",
     "discover_java8_system_entries",
     "lombok_worker_jvm_arguments",
+    "JavaTestBuildWorld",
+    "TestBuildWorldBootstrap",
     "ProcessTreeHandle",
     "ProcessTreeTerminator",
     "TerminationReport",

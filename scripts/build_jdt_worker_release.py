@@ -23,6 +23,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--java-home", type=Path, required=True)
     parser.add_argument("--maven", type=Path)
+    parser.add_argument("--gradle", type=Path)
     parser.add_argument(
         "--cache-root",
         type=Path,
@@ -39,6 +40,11 @@ def main() -> int:
     )
     if maven is None:
         raise SystemExit("Maven is required to build the bundled Fast Test Probe")
+    gradle = args.gradle or (
+        Path(shutil.which("gradle")) if shutil.which("gradle") else None
+    )
+    if gradle is None:
+        raise SystemExit("Gradle is required to build the Gradle Fast Test Probe")
     build_script = (
         repository / "experiments/jdt-incremental-worker/build_worker.py"
     )
@@ -73,6 +79,17 @@ def main() -> int:
     _run(
         [
             sys.executable,
+            str(repository / "scripts/build_gradle_probe_assets.py"),
+            "--java8-home",
+            str(args.java_home),
+            "--gradle",
+            str(gradle),
+        ],
+        cwd=repository,
+    )
+    _run(
+        [
+            sys.executable,
             str(repository / "scripts/build_fast_test_assets.py"),
             "--java-home",
             str(args.java_home),
@@ -93,12 +110,14 @@ def main() -> int:
         "from jolink_runtime.launch.jdt_compile_session import JdtCandidate; "
         "from jolink_runtime.launch.fast_test import FastTestAssets; "
         "from jolink_runtime.launch.maven_probe import ProductMavenProbe; "
+        "from jolink_runtime.launch.gradle_probe import ProductGradleProbe; "
         "c=JdtCandidate.load_product(); "
         f"w=c.verify_worker_java(Path({str(args.java_home)!r})); "
         "assert c.worker_class_major==52 and c.worker_java_minimum==8; "
         "assert w.major==8 and w.data_model==64; "
         "assert FastTestAssets.load().java_minimum==8; "
-        "assert ProductMavenProbe.load().schema.endswith('.v2')"
+        "assert ProductMavenProbe.load().schema.endswith('.v2'); "
+        "assert ProductGradleProbe.load().supported_versions==('8.10','8.14')"
     )
     _run(
         [

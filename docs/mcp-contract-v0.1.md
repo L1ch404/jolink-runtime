@@ -23,9 +23,9 @@ is frozen separately in
 - `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
   `stack`, `variables`, `resume`, `cleanup_debug_state`
 
-`test` is independent of an application JVM. For the first call on a Maven
-project it runs one supervised `test-compile` Bootstrap with the bundled,
-content-checked Maven Probe, then initializes one private persistent JDT project
+`test` is independent of an application JVM. For the first call it runs one
+supervised Maven `test-compile` or Gradle `classes/testClasses` Bootstrap with a
+bundled content-checked Probe, then initializes one private persistent JDT project
 with test source/dependency attributes and separate main/test outputs. Later
 calls synchronize only explicit `source_files`, use JDT incremental compilation,
 and launch an isolated Java 8 bytecode Test Runner for explicit JUnit 4/5 or TestNG
@@ -72,6 +72,16 @@ downstream module sources fail closed.
 
 The first release exposes Java only. Future languages receive their own tools
 and adapters instead of adding a `language` union to these Java tools.
+
+Gradle Fast Test v0.1 is limited to Wrapper versions 8.10/8.14, one Java
+Project, standard main/test source roots, Java 8/11, one ordered main/test
+classpath model, identical Processor paths, empty resource roots, and default
+JUnit4/JUnit Platform/TestNG runtime configuration. Custom SourceSets/Test tasks,
+Lombok, source-generating Processors, resource overlays, Test JVM properties,
+filters/tags/engines, custom fork/heap/JVM args, multi-Project and composite
+builds fail closed. Target system libraries and the Test executable come from
+Gradle's resolved Compiler Toolchain and Test JavaLauncher rather than the
+Gradle Daemon JDK.
 
 `wait_breakpoint` remains an internal Runtime-lineage compatibility alias. It
 is not advertised or accepted as a public MCP action.

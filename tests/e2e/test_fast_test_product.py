@@ -215,3 +215,50 @@ def test_real_testng_fast_test_loop() -> None:
     assert payload["method_selector_passed"] is True
     assert payload["class_selector_failure_observed"] is True
     assert payload["failsafe_unmodeled_configuration_rejected"] is True
+
+
+@pytest.mark.fast_test_e2e
+def test_real_gradle_jdt_fast_test_product_loop() -> None:
+    if os.environ.get("JOLINK_RUN_FAST_TEST_E2E") != "1":
+        pytest.skip("set JOLINK_RUN_FAST_TEST_E2E=1")
+    gradle = os.environ.get("JOLINK_FAST_TEST_GRADLE")
+    java8 = os.environ.get("JOLINK_FAST_TEST_JAVA8_HOME")
+    java11 = os.environ.get("JOLINK_FAST_TEST_JAVA11_HOME")
+    java17 = os.environ.get("JOLINK_FAST_TEST_JAVA17_HOME")
+    junit = os.environ.get("JOLINK_FAST_TEST_JUNIT_JARS")
+    if not all((gradle, java8, java11, java17, junit)):
+        pytest.skip("set Gradle, Java 8/11/17, and JUnit Fast Test E2E inputs")
+    root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        str(root / "scripts/validate_fast_test_gradle.py"),
+        "--gradle",
+        gradle,
+        "--gradle-version",
+        "8.14",
+        "--java8-home",
+        java8,
+        "--java11-home",
+        java11,
+        "--java17-home",
+        java17,
+    ]
+    for jar in junit.split(os.pathsep):
+        command.extend(("--junit-jar", jar))
+    completed = subprocess.run(
+        command,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.splitlines()[-1])
+    assert payload["ok"] is True
+    assert payload["build_system"] == "gradle"
+    assert payload["baseline_passed"] is True
+    assert payload["main_failure_observed"] is True
+    assert payload["test_recovery_passed"] is True

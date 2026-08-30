@@ -85,12 +85,14 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "project_path": {
             "type": "string",
             "description": (
-                "Local Maven project root for launch or Fast Test. joLink imports an "
+                "Local Maven project root for launch, or Maven/Gradle Wrapper "
+                "project root for Fast Test. joLink imports an "
                 "IntelliJ IDEA Application or Spring Boot launch, uses the "
                 "project's Maven/JDK settings, compiles in the background, "
                 "then starts the resolved classpath. Do not combine with "
                 "classpath, main_class, jar_path, app_args, or vm_args. "
-                "Fast Test can use a headless Maven jar project or one "
+                "Fast Test can use a supported single-Project Gradle Java build, "
+                "a headless Maven jar project, or one "
                 "selector-identified jar module in a standard Reactor and "
                 "does not require a running application. Restart never accepts "
                 "project_path; it reuses the current "
@@ -519,7 +521,7 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
 
 JAVA_APPLICATION_DESCRIPTION = (
     "Launch, attach, fast-test, reload, restart, stop, or detach Java code. "
-    "Fast Test uses one Maven Bootstrap, persistent JDT main/test incremental "
+    "Fast Test uses one Maven or Gradle authority Bootstrap, persistent JDT main/test incremental "
     "compilation, and an isolated JUnit 4/5 or TestNG Runner without changing a Runtime. "
     "For Maven project launches, reload compiles explicit source_files in the "
     "persistent JDT session, uses HotSwap when safe, and otherwise restarts the "

@@ -55,6 +55,10 @@ Fast Test不是`mvn test`的MCP包装。Maven只在第一次或Build World失效
 
 编译、Runner协议、超时或进程收敛失败才返回`ok=false`。
 
+`project_path`现在可指向受支持的Maven或Gradle Wrapper项目。二者先转换为同一个
+`JavaTestBuildWorld`，JDT与Runner不读取POM、SourceSet或Test Task原始字段。
+Gradle产品边界和证据见[Gradle G3](gradle-g3-product.zh-CN.md)。
+
 ## 实现边界
 
 - Probe v2随wheel分发，JAR/POM/implementation identity均有SHA校验；

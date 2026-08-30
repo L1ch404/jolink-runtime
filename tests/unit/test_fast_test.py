@@ -32,6 +32,7 @@ from jolink_runtime.launch.process_supervisor import (
 )
 from jolink_runtime.launch.process_tree import TerminationReport
 from jolink_runtime.launch.maven_probe import ProductMavenProbe
+from jolink_runtime.launch.gradle_probe import ProductGradleProbe
 from jolink_runtime.server.tool_schema import JAVA_APPLICATION_INPUT_SCHEMA
 
 
@@ -83,6 +84,19 @@ def test_product_probe_creates_private_mirror_safe_settings(
         / probe.version
         / f"jolink-maven-probe-{probe.version}.jar"
     ).is_file()
+
+
+def test_product_gradle_probe_assets_are_content_checked(
+    tmp_path: Path,
+) -> None:
+    probe = ProductGradleProbe.load()
+
+    prepared = probe.prepare(tmp_path / "attempt")
+
+    assert prepared.probe_jar.is_file()
+    assert prepared.probe_sha256 == probe.sha256
+    assert prepared.task_name.endswith(probe.sha256[:12])
+    assert prepared.init_script.stat().st_mode & 0o777 == 0o600
 
 
 def test_framework_detection_uses_project_runtime_classes(
@@ -332,6 +346,10 @@ def test_java_application_schema_exposes_fast_test_without_new_tool() -> None:
     assert "cancel_test" in actions
     assert "tests" in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
     assert "test_run_id" in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
+    description = JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"][
+        "description"
+    ]
+    assert "Gradle Wrapper" in description
 
 
 def test_runtime_status_exposes_headless_fast_test_state() -> None:

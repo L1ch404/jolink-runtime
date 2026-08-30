@@ -72,7 +72,8 @@ joLink exposes three focused MCP tools:
 - `java_status` — Java process discovery, application/build status, and logs;
 - `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
 
-Fast Test uses Maven once to establish an authoritative test Build World, then
+Fast Test uses Maven or a supported Gradle Wrapper once to establish an
+authoritative test Build World, then
 keeps main and test classes current with JDT incremental compilation and runs
 explicit JUnit 4/5 or TestNG tests in an isolated JVM:
 
@@ -87,10 +88,11 @@ java_application(action=test,
 
 `passed=false` means the selected tests executed and found a failure; it is not
 a Tool infrastructure error. Fast Test does not require or modify a running
-application. The first release supports Java 8 or 11 Maven jar projects and one
-explicitly selected jar module in a standard Reactor. Upstream module changes
-fall back to a fresh Maven Bootstrap; only the selected module stays in the
-persistent JDT model.
+application. The first release supports Java 8 or 11 Maven jar projects, one
+explicitly selected jar module in a standard Reactor, and Gradle 8.10/8.14
+single-Project Java builds with standard main/test layouts and default Test
+runtime semantics. Upstream Maven module changes fall back to a fresh Maven
+Bootstrap; only the selected module stays in the persistent JDT model.
 
 The public actions are:
 
