@@ -17,10 +17,58 @@ is frozen separately in
 
 ## Exposed tools
 
-- `java_application`: `launch`, `attach`, `reload`, `restart`, `stop`, `detach`
+- `java_application`: `launch`, `attach`, `test`, `cancel_test`, `reload`,
+  `restart`, `stop`, `detach`
 - `java_status`: `processes`, `status`, `logs`
 - `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
   `stack`, `variables`, `resume`, `cleanup_debug_state`
+
+`test` is independent of an application JVM. For the first call on a Maven
+project it runs one supervised `test-compile` Bootstrap with the bundled,
+content-checked Maven Probe, then initializes one private persistent JDT project
+with test source/dependency attributes and separate main/test outputs. Later
+calls synchronize only explicit `source_files`, use JDT incremental compilation,
+and launch an isolated Java 8 bytecode Test Runner for explicit JUnit 4/5 or TestNG
+`Class` or `Class#method` selectors. Test assertion failures are successful Tool
+execution (`ok=true`, `passed=false`); compiler, protocol, timeout, and process
+failures use `ok=false`. A test never promotes or mutates a Runtime Generation.
+Explicit Fast Test `source_files` may describe ordinary Java source additions
+or deletions. For deletion, the Worker must return the exact private
+`deleted_source_units`; omission poisons the CompileSession even if a class
+appears to disappear. Runtime `reload` keeps its stricter, separate lifecycle
+gate.
+
+The initial Fast Test contract is deliberately bounded to equal Java 8 or 11
+source/target levels, one Maven jar module or one selector-identified jar module
+inside a standard static Reactor, identical main/test Processor paths,
+explicit selectors, and project-provided JUnit engines. When Surefire normally
+supplies a missing JUnit Platform Launcher, selection is deterministic: a
+project-declared launcher, a local exact engine version, or a Maven-resolved
+exact engine version wins in that order. Only when the exact version is
+unavailable may an already resolved same-major launcher no older than the engine
+be used. Version, source, and fallback reason are reported without local paths;
+cross-major guessing is forbidden. Unsupported Surefire VM/system
+property configuration fails closed. `cancel_test` addresses one active
+`test_run_id`; `java_status(status)` exposes the current or last TestAttempt.
+After any compile failure the private working compile state remains `failed`;
+no Test Runner may start until a later explicit-source compile succeeds. Runner
+classpath is passed through a Java 8 pathing JAR Manifest, so dependency count
+does not expand the operating-system command line while project classes remain
+visible to the normal Application/System ClassLoader. Cancellation is settled
+only after the complete TestAttempt exits, not
+merely after its currently supervised subprocesses stop. Temporary Maven
+settings are deleted immediately after the Probe snapshot is read. The bundled
+content-checked Probe coordinate is always seeded into the selected local Maven
+repository so implicit offline policy is safe. A source/resource/POM/settings
+change observed after Runner completion is reported as pending evidence and
+forces a fresh Bootstrap before the next test.
+
+For a Reactor, Maven runs `-pl <selected-module> -am`; upstream module outputs
+remain Maven-owned classpath inputs. Only the selected module is held in the
+persistent JDT main/test model. Test selectors determine the target module;
+target-owned `source_files` enter JDT, while changed source files belonging to
+an actual upstream classpath module force a new Maven Bootstrap. Unrelated or
+downstream module sources fail closed.
 
 The first release exposes Java only. Future languages receive their own tools
 and adapters instead of adding a `language` union to these Java tools.

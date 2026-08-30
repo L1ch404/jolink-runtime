@@ -67,9 +67,30 @@ Debug deeper only when necessary.
 
 joLink exposes three focused MCP tools:
 
-- `java_application` — lifecycle, project launch, reload, restart, and attach;
+- `java_application` — lifecycle, headless Fast Test, project launch, reload,
+  restart, and attach;
 - `java_status` — Java process discovery, application/build status, and logs;
 - `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
+
+Fast Test uses Maven once to establish an authoritative test Build World, then
+keeps main and test classes current with JDT incremental compilation and runs
+explicit JUnit 4/5 or TestNG tests in an isolated JVM:
+
+```text
+java_application(action=test,
+  project_path=/path/to/project,
+  source_files=[src/main/java/example/Service.java],
+  tests=[example.ServiceTest#works], timeout=60)
+-> if status=running, poll java_status(action=status)
+-> cancel with java_application(action=cancel_test, test_run_id=...)
+```
+
+`passed=false` means the selected tests executed and found a failure; it is not
+a Tool infrastructure error. Fast Test does not require or modify a running
+application. The first release supports Java 8 or 11 Maven jar projects and one
+explicitly selected jar module in a standard Reactor. Upstream module changes
+fall back to a fresh Maven Bootstrap; only the selected module stays in the
+persistent JDT model.
 
 The public actions are:
 
@@ -509,6 +530,21 @@ uv run python scripts/validate_jdt_worker_matrix.py \
 uv run python scripts/validate_jdt8_product_mcp.py \
   --jdk8-home <jdk8> \
   --maven-home <maven-home>
+
+JOLINK_RUN_FAST_TEST_E2E=1 \
+JOLINK_FAST_TEST_JAVA8_HOME=<jdk8> \
+  uv run pytest -q -m fast_test_e2e \
+  tests/e2e/test_fast_test_product.py
+
+uv run python scripts/validate_fast_test_build_jdk_matrix.py \
+  --target-java8-home <jdk8> \
+  --build-java-home <jdk8> \
+  --build-java-home <jdk11> \
+  --build-java-home <jdk17>
+
+uv run python scripts/build_jdt_worker_release.py \
+  --java-home <jdk8> \
+  --maven <maven-executable>
 ```
 
 The canonical CI environment for the heavier suite is:

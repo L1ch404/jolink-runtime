@@ -833,6 +833,34 @@ thawing, choose and test one bounded design:
 Until then, Processor-sensitive destructive edits must not be advertised as a
 complete native-incremental capability.
 
+## Product Fast Test follow-up backlog
+
+Fast Test v0.1 establishes one real vertical slice: bundled Maven Probe v2,
+one persistent JDT project with native test classpath attributes and separate
+outputs, and an isolated Java 8 JUnit 4/5 or TestNG Runner. The following are deliberately
+recorded as later product work rather than silently inferred support:
+
+- Java 9+ source/target system-library snapshots for benchmark repositories;
+- Maven Reactor test Build Worlds and project selection;
+- convergence of the headless Test CompileSession with an already-running
+  application's reload CompileSession (v0.1 isolates them for correctness but
+  may keep two Workers);
+- modeled Surefire VM arguments, system properties, environment, working
+  directory, providers, and matching JUnit Platform launcher provenance;
+- test-specific Processor paths/options and Processor-aware destructive
+  invalidation;
+- source-generating Processor output ownership. A real MapStruct 1.3.0 Fast
+  Test probe currently sees Maven's frozen generated source and JDT APT's newly
+  generated implementation simultaneously, producing a duplicate type. This
+  is a safe false-negative and must not be fixed by a MapStruct name special
+  case;
+- conservative changed/impacted test selection with an auditable reverse
+  dependency index;
+- Windows Fast Test product E2E and long-running multi-project cache eviction.
+
+Unsupported Build Worlds fail closed before the Runner starts. Assertion
+failures remain successful Tool execution with `ok=true, passed=false`.
+
 ## Open decisions
 
 - Whether a complete semantic class comparator is worth its maintenance cost.
@@ -841,5 +869,5 @@ complete native-incremental capability.
 - Compile-model caching and precise invalidation after experiments prove value.
 - ABI-based downstream Reactor propagation.
 - Reproducible Maven resource and generated-source modeling.
-- The point at which Fast Test becomes more valuable than another compile
-  strategy optimization.
+- Which Fast Test compatibility boundary should expand first after Java 8
+  single-module dogfood: newer target platforms, Reactor, or test selection.
