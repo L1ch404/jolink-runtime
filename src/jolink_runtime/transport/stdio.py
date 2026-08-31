@@ -9,6 +9,7 @@ import anyio
 import mcp.server.stdio
 from mcp.server.lowlevel import NotificationOptions
 
+from ..core.diagnostic_logging import configure_private_diagnostic_logging
 from ..server.mcp_server import create_mcp_server
 
 
@@ -23,6 +24,12 @@ def _configure_stderr_logging() -> None:
     # HTTP trigger URLs and headers may contain application-specific data.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    diagnostics = configure_private_diagnostic_logging()
+    logging.getLogger(__name__).info(
+        "jolink.stdio.logging.ready private_log_status=%s private_log=%s",
+        diagnostics.get("status"),
+        diagnostics.get("log_file") or "-",
+    )
 
 
 async def run_stdio() -> None:

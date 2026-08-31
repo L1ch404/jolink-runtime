@@ -1,5 +1,9 @@
 # joLink Fast Test v0.1
 
+> Fast Test的边界必须遵循
+> [joLink产品泛用性原则](product-generality-principles.zh-CN.md)：主流配置导致的
+> `UNSUPPORTED`是待解决的兼容性缺口，不以“安全拒绝”作为完成标准。
+
 ## 目标
 
 Fast Test不是`mvn test`的MCP包装。Maven只在第一次或Build World失效时执行
@@ -52,6 +56,20 @@ wheel SHA绑定的prepared image manifest。
 短测试直接返回结果；较慢测试返回`status=running`和`test_run_id`，通过
 `java_status(status)`观察，或通过`cancel_test`取消。
 
+`timeout`只限制Test Runner，不再同时作为大型项目首次Build World的短超时。
+Maven/Gradle Bootstrap使用独立的900秒预算；超时时返回：
+
+```text
+FAST_TEST_BOOTSTRAP_TIMEOUT
+stage=maven_test_compile | gradle_classes_test_classes
+timed_out=true
+timeout_ms
+termination_forced
+remaining_process_count
+```
+
+而不是伪装成普通编译失败。
+
 断言失败的语义是：
 
 ```json
@@ -81,6 +99,10 @@ Gradle产品边界和证据见[Gradle G3](gradle-g3-product.zh-CN.md)。
   上游class继续测试；`source_files`始终相对`project_path`，目标模块源码进入
   JDT，上游源码由Maven吸收，无关/下游模块fail-closed；
 - 一个`IJavaProject`使用`IClasspathAttribute.TEST`和独立`bin/test-bin`；
+- Maven `compilerArgs`由共享CompilerArgumentProfile逐项分类；当前
+  `-J-Xms/-J-Xmx`映射到JDT Worker JVM，Fast Test与Runtime reload复用同一
+  规则。未知参数返回分类和数量，不回显原始值，也不会只因`compilerArgs`字段
+  非空就整体拒绝；
 - main/test diagnostics分别计数，测试源码错误不会伪装成main编译错误；
 - Test Runner为Java 8字节码，支持显式JUnit 4/5与TestNG Class/Class#method；
   对应API和Engine来自项目test runtime

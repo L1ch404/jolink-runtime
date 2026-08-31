@@ -103,6 +103,45 @@ def test_source_manifest_detects_edits_between_maven_and_snapshot(
     assert first != second
 
 
+def test_idea_module_outside_parent_reactor_uses_standalone_pom(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    child = root / "service-app"
+    source = child / "src/main/java/example/Application.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("package example; class Application {}\n", encoding="utf-8")
+    (root / "pom.xml").write_text(
+        """<project><modelVersion>4.0.0</modelVersion>
+<groupId>example</groupId><artifactId>parent</artifactId><version>1</version>
+<packaging>pom</packaging></project>\n""",
+        encoding="utf-8",
+    )
+    (child / "pom.xml").write_text(
+        """<project><modelVersion>4.0.0</modelVersion>
+<parent><groupId>example</groupId><artifactId>parent</artifactId><version>1</version>
+<relativePath>../pom.xml</relativePath></parent>
+<artifactId>service-app</artifactId></project>\n""",
+        encoding="utf-8",
+    )
+    intent = SimpleNamespace(
+        ide_module_name="service-app",
+        main_class="example.Application",
+    )
+    pipeline = ProjectLaunchPipeline()
+
+    workspace, module, warnings = (
+        pipeline._resolve_maven_workspace_and_module(root, intent)
+    )
+
+    assert workspace.project_root == child.resolve()
+    assert module.directory == child.resolve()
+    assert warnings == (
+        "The IDEA module is outside the parent Maven reactor; joLink is using "
+        "the module POM as the standalone build authority.",
+    )
+
+
 @pytest.mark.parametrize(
     ("line", "sensitive_value"),
     [

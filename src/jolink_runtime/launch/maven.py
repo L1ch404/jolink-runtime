@@ -19,6 +19,10 @@ from .contracts import (
     LaunchErrorCode,
     LaunchIntent,
 )
+from .compiler_profile import (
+    CompilerArgumentProfile,
+    classify_compiler_arguments,
+)
 from .idea_environment import IdeaBuildPreferences
 from .fast_compile import FastCompilePlan, fast_compile_fingerprint
 from .jdt_compile_session import JdtBuildWorldPlan
@@ -837,14 +841,10 @@ class MavenBuildSystemAdapter:
             effective_project, "maven-compiler-plugin"
         )
         configurations = self._compiler_configurations(compiler)
-        worker_min_heap_mb = 64
-        worker_max_heap_mb = 2048
         for configuration in configurations:
             if (
                 configuration.find("./{*}annotationProcessorPaths") is not None
                 or configuration.find("./{*}annotationProcessors") is not None
-                or configuration.find("./{*}compilerArguments") is not None
-                or self._config_text(configuration, "compilerArgument")
             ):
                 raise MavenResolutionError(
                     LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
@@ -852,42 +852,19 @@ class MavenBuildSystemAdapter:
                     retryable=False,
                     suggested_next_step="Use the formal Maven build and restart.",
                 )
-            compiler_args = configuration.find("./{*}compilerArgs")
-            if compiler_args is not None:
-                values = [
-                    (item.text or "").strip()
-                    for item in compiler_args.findall("./{*}arg")
-                    if (item.text or "").strip()
-                ]
-                for value in values:
-                    memory = re.fullmatch(
-                        r"-J-Xm(?P<kind>[sx])(?P<size>\d+)(?P<unit>[kKmMgG])",
-                        value,
-                    )
-                    if memory is None:
-                        raise MavenResolutionError(
-                            LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
-                            "Maven compiler arguments cannot be reproduced by JDT.",
-                            retryable=False,
-                            suggested_next_step=(
-                                "Remove unsupported compilerArgs or use the "
-                                "formal Maven build and restart."
-                            ),
-                        )
-                    size = int(memory.group("size"))
-                    unit = memory.group("unit").casefold()
-                    size_mb = max(
-                        1,
-                        size // 1024
-                        if unit == "k"
-                        else size
-                        if unit == "m"
-                        else size * 1024,
-                    )
-                    if memory.group("kind") == "x":
-                        worker_max_heap_mb = max(256, min(8192, size_mb))
-                    else:
-                        worker_min_heap_mb = max(32, min(8192, size_mb))
+        argument_profile = self._compiler_argument_profile(configurations)
+        if argument_profile.unresolved_arguments:
+            raise MavenResolutionError(
+                LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
+                "Maven compiler arguments cannot be reproduced by JDT.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use the formal Maven build while this compiler argument "
+                    "category is added to the shared compatibility model."
+                ),
+            )
+        worker_min_heap_mb = argument_profile.worker_min_heap_mb
+        worker_max_heap_mb = argument_profile.worker_max_heap_mb
         if worker_min_heap_mb > worker_max_heap_mb:
             raise MavenResolutionError(
                 LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
@@ -1670,6 +1647,68 @@ class MavenBuildSystemAdapter:
         if configuration is not None:
             configurations.append(configuration)
         return tuple(configurations)
+
+    @classmethod
+    def _test_compiler_configurations(
+        cls,
+        compiler: ET.Element | None,
+    ) -> tuple[ET.Element, ...]:
+        if compiler is None:
+            return ()
+        configurations: list[ET.Element] = []
+        direct = compiler.find("./{*}configuration")
+        if direct is not None:
+            configurations.append(direct)
+        for execution in compiler.findall(
+            "./{*}executions/{*}execution"
+        ):
+            goals = {
+                (goal.text or "").strip()
+                for goal in execution.findall("./{*}goals/{*}goal")
+            }
+            if "testCompile" not in goals:
+                continue
+            configuration = execution.find("./{*}configuration")
+            if configuration is not None:
+                configurations.append(configuration)
+        return tuple(configurations)
+
+    @classmethod
+    def _compiler_argument_values(
+        cls,
+        configuration: ET.Element,
+    ) -> tuple[str, ...]:
+        values: list[str] = []
+        arguments = configuration.find("./{*}compilerArgs")
+        if arguments is not None:
+            values.extend(
+                (item.text or "").strip()
+                for item in arguments.findall("./{*}arg")
+                if (item.text or "").strip()
+            )
+        argument = cls._config_text(configuration, "compilerArgument")
+        if argument:
+            values.extend(shlex.split(argument, posix=True))
+        legacy = configuration.find("./{*}compilerArguments")
+        if legacy is not None:
+            for item in legacy:
+                name = cls._local_name(item.tag)
+                value = (item.text or "").strip()
+                values.append(f"-{name}{('=' + value) if value else ''}")
+        return tuple(values)
+
+    @classmethod
+    def _compiler_argument_profile(
+        cls,
+        configurations: tuple[ET.Element, ...],
+    ) -> CompilerArgumentProfile:
+        return classify_compiler_arguments(
+            tuple(
+                argument
+                for configuration in configurations
+                for argument in cls._compiler_argument_values(configuration)
+            )
+        )
 
     @classmethod
     def _compiler_value(

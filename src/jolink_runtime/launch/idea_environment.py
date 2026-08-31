@@ -99,6 +99,18 @@ class IdeaEnvironmentImporter:
             warnings,
             "userSettingsFile",
         )
+        custom_maven_home = self._available_idea_path(
+            custom_maven_home,
+            kind="directory",
+            warning="customMavenHome: configured path unavailable; using wrapper/PATH",
+            warnings=warnings,
+        )
+        settings = self._available_idea_path(
+            settings,
+            kind="file",
+            warning="userSettingsFile: configured path unavailable; using Maven default",
+            warnings=warnings,
+        )
         local_repository = self._path_option(
             workspace_options.get("localRepository"),
             project_root,
@@ -135,6 +147,26 @@ class IdeaEnvironmentImporter:
             warnings=tuple(warnings),
             jdk_homes_by_name=jdk_homes,
         )
+
+    @staticmethod
+    def _available_idea_path(
+        path: Path | None,
+        *,
+        kind: str,
+        warning: str,
+        warnings: list[str],
+    ) -> Path | None:
+        if path is None:
+            return None
+        available = (
+            path.is_file() and not path.is_symlink()
+            if kind == "file"
+            else path.is_dir() and not path.is_symlink()
+        )
+        if available:
+            return path
+        warnings.append(warning)
+        return None
 
     def _read_project_xml(
         self,

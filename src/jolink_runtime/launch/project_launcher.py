@@ -188,12 +188,14 @@ class ProjectLaunchPipeline:
                         "Correct the Gradle Wrapper/Probe input and retry launch."
                     ),
                 ) from error
+        standalone_module_warning: tuple[str, ...] = ()
         try:
-            workspace = self._maven.resolve_workspace(
-                request.project_path
-            )
-            module = self._maven.select_module(
+            (
                 workspace,
+                module,
+                standalone_module_warning,
+            ) = self._resolve_maven_workspace_and_module(
+                request.project_path,
                 imported.intent,
             )
         except MavenResolutionError as error:
@@ -378,6 +380,7 @@ class ProjectLaunchPipeline:
                     (
                         *imported.warnings,
                         *preferences.warnings,
+                        *standalone_module_warning,
                         *capability_warnings,
                     )
                 )
@@ -392,6 +395,67 @@ class ProjectLaunchPipeline:
             source_manifest_fingerprint=source_manifest_after,
             source_manifest_before_ms=source_manifest_before_ms,
             source_manifest_after_ms=source_manifest_after_ms,
+        )
+
+    def _resolve_maven_workspace_and_module(
+        self,
+        project_root: Path,
+        intent: Any,
+    ) -> tuple[Any, Any, tuple[str, ...]]:
+        workspace = self._maven.resolve_workspace(project_root)
+        try:
+            return (
+                workspace,
+                self._maven.select_module(workspace, intent),
+                (),
+            )
+        except MavenResolutionError as error:
+            if error.error_code is not LaunchErrorCode.BUILD_MODULE_NOT_FOUND:
+                raise
+
+        root = project_root.expanduser().resolve(strict=True)
+        candidates: list[Path] = []
+        module_name = str(getattr(intent, "ide_module_name", "") or "")
+        if module_name and Path(module_name).name == module_name:
+            exact = root / module_name
+            if (exact / "pom.xml").is_file() and not exact.is_symlink():
+                candidates.append(exact)
+        source_relative = (
+            Path("src/main/java")
+            / Path(*str(intent.main_class).split("."))
+        ).with_suffix(".java")
+        for pom in sorted(root.glob("*/pom.xml")):
+            directory = pom.parent
+            if (
+                directory not in candidates
+                and not directory.is_symlink()
+                and (directory / source_relative).is_file()
+            ):
+                candidates.append(directory)
+        if len(candidates) != 1:
+            raise MavenResolutionError(
+                LaunchErrorCode.BUILD_MODULE_NOT_FOUND,
+                "No unique standalone Maven module contains the selected main class.",
+                retryable=True,
+                suggested_next_step=(
+                    "Choose an IDEA launch whose module maps to one direct "
+                    "child Maven project."
+                ),
+                context={
+                    "ide_module_name": module_name,
+                    "main_class": intent.main_class,
+                    "candidate_count": len(candidates),
+                },
+            )
+        standalone = self._maven.resolve_workspace(candidates[0])
+        module = self._maven.select_module(standalone, intent)
+        return (
+            standalone,
+            module,
+            (
+                "The IDEA module is outside the parent Maven reactor; joLink "
+                "is using the module POM as the standalone build authority.",
+            ),
         )
 
     def _prepare_gradle(

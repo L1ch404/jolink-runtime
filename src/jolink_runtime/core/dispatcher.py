@@ -11,6 +11,7 @@ from typing import Any
 from ..adapters.java.jdwp_adapter import JavaRuntime
 from ..adapters.java.process_discovery import discover_java_processes
 from ..launch import ProjectLaunchRequest
+from .diagnostic_logging import private_diagnostic_logging_status
 from .models import RuntimeAction, RuntimeResult
 from .session_manager import SessionManager
 from .wait_state import WaitControl
@@ -279,13 +280,18 @@ class Dispatcher:
                     full=bool(args.get("full", False)),
                 )
             args["_product_status"] = True
-            return _product_application_payload(
+            payload = _product_application_payload(
                 self.dispatch_java_runtime(
                     args,
                     session_key=session_key,
                     wait_control=wait_control,
                 )
             )
+            if args.get("action") == "status":
+                payload["server_diagnostics"] = (
+                    private_diagnostic_logging_status()
+                )
+            return payload
         if tool_name == "java_debugger":
             return self.dispatch_java_runtime(
                 args,

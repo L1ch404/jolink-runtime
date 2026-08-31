@@ -1,1 +1,5 @@
 tests/fixtures/runtime-lineage-2.4.0/*.json text eol=lf
+src/jolink_runtime/launch/maven-build-world-probe.pom text eol=lf
+src/jolink_runtime/launch/jdt-product-config.ini text eol=lf
+src/jolink_runtime/launch/*.json text eol=lf
+src/jolink_runtime/launch/*.b64 text eol=lf

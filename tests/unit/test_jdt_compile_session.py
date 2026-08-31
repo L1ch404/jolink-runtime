@@ -865,6 +865,15 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
         "_download_product_artifact",
         staticmethod(download),
     )
+    original_read_bytes = Path.read_bytes
+
+    def crlf_product_config(path: Path) -> bytes:
+        value = original_read_bytes(path)
+        if path == module_root / "jdt-product-config.ini":
+            return value.replace(b"\n", b"\r\n")
+        return value
+
+    monkeypatch.setattr(Path, "read_bytes", crlf_product_config)
     product_root = tmp_path / "content-addressed/product-test/lock-sha"
     original_rename = Path.rename
     raced = False
@@ -894,3 +903,6 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
     assert product_root.joinpath(
         "plugins/net.jolink.runtime.jdt.worker_0.1.0.jar"
     ).read_bytes() == worker
+    assert product_root.joinpath(
+        "configuration/config.ini"
+    ).read_bytes() == config

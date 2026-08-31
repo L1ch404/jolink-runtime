@@ -94,6 +94,22 @@ single-Project Java builds with standard main/test layouts and default Test
 runtime semantics. Upstream Maven module changes fall back to a fresh Maven
 Bootstrap; only the selected module stays in the persistent JDT model.
 
+## Private diagnostics
+
+joLink keeps stdout exclusively for MCP JSON-RPC. Python lifecycle logs and
+tracebacks are also written to a bounded private rotating file:
+
+```text
+Windows: %LOCALAPPDATA%\jolink-runtime\logs\mcp.log
+macOS/Linux: $XDG_CACHE_HOME/jolink-runtime/logs/mcp.log
+               or ~/.cache/jolink-runtime/logs/mcp.log
+```
+
+`java_status(action=status)` returns `server_diagnostics` with the active path
+or `stderr_only` when file logging could not be initialized. A diagnostic-file
+failure never prevents the MCP server from starting. The file is limited to
+4 MiB with three rotated backups; stdout remains untouched.
+
 The public actions are:
 
 ```text
@@ -497,6 +513,21 @@ A generic MCP client configuration can launch it directly from a checkout:
 ```
 
 ## Tests
+
+After changing joLink source, do not kill an MCP server and assume an existing
+host tool handle will reconnect. Start a fresh server from the current
+worktree through the real stdio protocol:
+
+```bash
+uv run python scripts/jolink_mcp_dev_client.py
+```
+
+The client prints the Git commit, dirty-worktree state, source fingerprint,
+Python executable, and stderr path before accepting JSONL `tools/call`
+requests. Send `{"command":"quit"}` to close the client and trigger normal
+server cleanup. This is the canonical interactive verification path for
+uncommitted code; a Codex/IDE MCP connection should be established only after
+the code under test is frozen.
 
 The real subprocess acceptance test exercises the MCP stdio boundary:
 

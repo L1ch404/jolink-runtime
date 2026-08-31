@@ -7,6 +7,7 @@ from jolink_runtime.adapters.java.log_manager import (
     LogManager,
     _MAX_TAIL_RETURN_BYTES,
     _MAX_TAIL_SCAN_BYTES,
+    read_log_tail_snapshot,
 )
 
 
@@ -31,6 +32,19 @@ def test_small_tail_keeps_exact_total_and_utf8_lines(tmp_path: Path) -> None:
     assert result["has_more_before"] is True
     assert result["truncated"] is False
     assert result["snapshot_consistent"] is True
+
+
+def test_build_log_tail_can_use_windows_maven_code_page(tmp_path: Path) -> None:
+    log_file = tmp_path / "windows-maven.log"
+    log_file.write_bytes("编译成功\r\n".encode("gbk"))
+
+    result = read_log_tail_snapshot(
+        str(log_file),
+        encoding="gbk",
+    )
+
+    assert result["lines"] == ["编译成功\r\n"]
+    assert result["encoding"] == "gbk"
 
 
 def test_tail_reads_only_the_file_size_snapshot(

@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.jolink</groupId>
   <artifactId>jolink-maven-probe</artifactId>
-  <version>0.1.0-fasttest9</version>
+  <version>0.1.0-fasttest10</version>
   <packaging>maven-plugin</packaging>
 
   <name>joLink Maven Build World Probe</name>

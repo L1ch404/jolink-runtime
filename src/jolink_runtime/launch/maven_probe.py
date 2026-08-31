@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .product_assets import canonical_lf_bytes
+
 
 _SETTINGS_NS = "http://maven.apache.org/SETTINGS/1.0.0"
 _MAX_SETTINGS_BYTES = 4 * 1024 * 1024
@@ -19,9 +21,16 @@ _MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
 class MavenProbeError(RuntimeError):
-    def __init__(self, error_code: str, message: str) -> None:
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.context = dict(context or {})
 
 
 def _sha256(data: bytes) -> str:
@@ -60,6 +69,7 @@ class ProductMavenProbe:
         pom: bytes,
     ) -> None:
         probe = lock["maven_probe"]
+        pom = canonical_lf_bytes(pom)
         self.lock = lock
         self.jar = jar
         self.pom = pom
@@ -68,13 +78,29 @@ class ProductMavenProbe:
         self.version = str(probe["version"])
         self.implementation_id = str(probe["implementation_id"])
         self.schema = str(probe["schema"])
-        if (
-            _sha256(jar) != probe["sha256"]
-            or _sha256(pom) != probe["pom_sha256"]
-        ):
+        jar_expected = str(probe["sha256"])
+        jar_actual = _sha256(jar)
+        if jar_actual != jar_expected:
             raise MavenProbeError(
                 "MAVEN_PROBE_INTEGRITY_MISMATCH",
-                "The bundled Maven Probe does not match its product lock.",
+                "The bundled Maven Probe JAR does not match its product lock.",
+                context={
+                    "artifact": "maven-build-world-probe.jar",
+                    "expected_sha256": jar_expected,
+                    "actual_sha256": jar_actual,
+                },
+            )
+        pom_expected = str(probe["pom_sha256"])
+        pom_actual = _sha256(pom)
+        if pom_actual != pom_expected:
+            raise MavenProbeError(
+                "MAVEN_PROBE_INTEGRITY_MISMATCH",
+                "The bundled Maven Probe POM does not match its product lock.",
+                context={
+                    "artifact": "maven-build-world-probe.pom",
+                    "expected_sha256": pom_expected,
+                    "actual_sha256": pom_actual,
+                },
             )
         majors: set[int] = set()
         try:
@@ -109,7 +135,9 @@ class ProductMavenProbe:
                 ),
                 validate=False,
             )
-            pom = (root / "maven-build-world-probe.pom").read_bytes()
+            pom = canonical_lf_bytes(
+                (root / "maven-build-world-probe.pom").read_bytes()
+            )
             return cls(lock=lock, jar=jar, pom=pom)
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
             raise MavenProbeError(

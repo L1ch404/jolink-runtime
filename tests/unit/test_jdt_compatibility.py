@@ -64,3 +64,32 @@ def test_jdt_baseline_gate_rejects_public_api_difference(
 
     assert result["compatible"] is False
     assert result["api_mismatch_count"] == 1
+
+
+def test_jdt_baseline_gate_normalizes_type_annotation_order(
+    tmp_path: Path,
+) -> None:
+    prefix = """
+package example;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+@Target(ElementType.TYPE_USE) @Retention(RetentionPolicy.RUNTIME) @interface A {}
+@Target(ElementType.TYPE_USE) @Retention(RetentionPolicy.RUNTIME) @interface B {}
+"""
+    maven = _compile(
+        tmp_path / "maven",
+        prefix
+        + "public class App { public @A @B String value() { return \"x\"; } }",
+    )
+    jdt = _compile(
+        tmp_path / "jdt",
+        prefix
+        + "public class App { public @B @A String value() { return \"x\"; } }",
+    )
+
+    result = compare_class_output_tier1(maven, jdt)
+
+    assert result["compatible"] is True
+    assert result["api_mismatch_count"] == 0

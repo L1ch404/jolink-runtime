@@ -26,6 +26,7 @@ from typing import Any, Iterable, Sequence
 
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .fast_compile import fast_compile_fingerprint
+from .product_assets import canonical_lf_bytes
 
 
 class JdtCompileError(RuntimeError):
@@ -84,7 +85,7 @@ class JdtCandidate:
 
         lock_path = Path(__file__).with_name("jdt-product-candidate.json")
         try:
-            lock_raw = lock_path.read_bytes()
+            lock_raw = canonical_lf_bytes(lock_path.read_bytes())
             lock = json.loads(lock_raw)
             candidate_id = str(lock["candidate_id"])
             if Path(candidate_id).name != candidate_id:
@@ -306,9 +307,12 @@ class JdtCandidate:
                 )
 
             config_path = configuration / "config.ini"
-            shutil.copyfile(
-                Path(__file__).with_name("jdt-product-config.ini"),
-                config_path,
+            config_path.write_bytes(
+                canonical_lf_bytes(
+                    Path(__file__).with_name(
+                        "jdt-product-config.ini"
+                    ).read_bytes()
+                )
             )
             cls._load_root(lock, temporary)
             if product_root.exists():

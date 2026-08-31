@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import zipfile
+import hashlib
 import threading
 import time
 import socket
@@ -33,7 +34,7 @@ from jolink_runtime.launch.process_supervisor import (
     OperationResult,
 )
 from jolink_runtime.launch.process_tree import TerminationReport
-from jolink_runtime.launch.maven_probe import ProductMavenProbe
+from jolink_runtime.launch.maven_probe import MavenProbeError, ProductMavenProbe
 from jolink_runtime.launch.gradle_probe import (
     ProductGradleProbe,
     gradle_configuration_environment_names,
@@ -93,6 +94,32 @@ def test_product_probe_creates_private_mirror_safe_settings(
         / probe.version
         / f"jolink-maven-probe-{probe.version}.jar"
     ).is_file()
+
+
+def test_product_probe_accepts_crlf_pom_but_rejects_changed_content() -> None:
+    probe = ProductMavenProbe.load()
+    crlf = probe.pom.replace(b"\n", b"\r\n")
+
+    loaded = ProductMavenProbe(
+        lock=probe.lock,
+        jar=probe.jar,
+        pom=crlf,
+    )
+    assert b"\r\n" not in loaded.pom
+
+    changed = probe.pom + b"<!-- changed -->\n"
+    with pytest.raises(MavenProbeError) as captured:
+        ProductMavenProbe(
+            lock=probe.lock,
+            jar=probe.jar,
+            pom=changed,
+        )
+    assert captured.value.error_code == "MAVEN_PROBE_INTEGRITY_MISMATCH"
+    assert captured.value.context == {
+        "artifact": "maven-build-world-probe.pom",
+        "expected_sha256": probe.lock["maven_probe"]["pom_sha256"],
+        "actual_sha256": hashlib.sha256(changed).hexdigest(),
+    }
 
 
 def test_product_gradle_probe_assets_are_content_checked(
@@ -820,6 +847,182 @@ def test_probe_settings_are_deleted_when_maven_bootstrap_fails(
 
     assert settings.exists() is False
     manager.close()
+
+
+def test_maven_bootstrap_timeout_is_structured_and_uses_long_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = tmp_path / "maven-probe-settings.xml"
+    settings.write_text("<settings/>\n", encoding="utf-8")
+    output = tmp_path / "probe-output"
+    output.mkdir()
+    pom = tmp_path / "pom.xml"
+    pom.write_text("<project/>\n", encoding="utf-8")
+    log = tmp_path / "build.log"
+    log.write_text("still downloading\n", encoding="utf-8")
+    attempt = SimpleNamespace(
+        owner=AttemptToken("test_timeout", 1),
+        timeout_seconds=30.0,
+        bootstrap_timeout_seconds=900.0,
+        require_not_cancelled=lambda: None,
+    )
+    manager = FastTestManager()
+    now = time.monotonic()
+    observed_timeout = None
+
+    def timed_out(spec, **_kwargs):
+        nonlocal observed_timeout
+        observed_timeout = spec.timeout_seconds
+        return OperationResult(
+            operation_name="maven_fast_test_bootstrap",
+            return_code=1,
+            cancelled=False,
+            timed_out=True,
+            started_at=now,
+            finished_at=now,
+            output_capture=log,
+            termination=TerminationReport(
+                pid=123,
+                terminated=True,
+                forced=True,
+            ),
+        )
+
+    monkeypatch.setattr(manager._supervisor, "run", timed_out)
+
+    with pytest.raises(FastTestManagerError) as captured:
+        manager._run_maven_probe_bootstrap(
+            attempt=attempt,
+            probe=SimpleNamespace(load_snapshot=lambda *_args, **_kwargs: {}),
+            prepared_probe=SimpleNamespace(
+                settings_file=settings,
+                output_directory=output,
+                goal="io.jolink:probe:1:export",
+            ),
+            maven=SimpleNamespace(argv_prefix=("mvn",)),
+            preferences=SimpleNamespace(active_profiles=()),
+            workspace=SimpleNamespace(root_pom=pom, build_root=tmp_path),
+            module=SimpleNamespace(directory=tmp_path),
+            build_jdk=SimpleNamespace(
+                java_executable=tmp_path / "java",
+                source="PATH",
+                home=tmp_path,
+            ),
+            local_repository=tmp_path / "repo",
+            offline=False,
+            effective_pom=tmp_path / "effective.xml",
+            log=log,
+        )
+
+    assert observed_timeout == 900.0
+    assert captured.value.error_code == "FAST_TEST_BOOTSTRAP_TIMEOUT"
+    assert captured.value.context == {
+        "stage": "maven_test_compile",
+        "timed_out": True,
+        "timeout_ms": 900000,
+        "termination_forced": True,
+        "remaining_process_count": 0,
+        "bootstrap_log_tail": ["still downloading"],
+    }
+    assert settings.exists() is False
+    manager.close()
+
+
+def test_fast_test_maps_test_compile_memory_arguments_to_worker() -> None:
+    project = ET.fromstring(
+        """
+<project>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <executions><execution>
+      <goals><goal>testCompile</goal></goals>
+      <configuration><compilerArgs>
+        <arg>-J-Xms512m</arg><arg>-J-Xmx3g</arg>
+      </compilerArgs></configuration>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        remaining, minimum, maximum = (
+            manager._compiler_argument_compatibility(
+                project,
+                ["testCompile.compilerArgs"],
+            )
+        )
+        assert remaining == []
+        assert minimum == 512
+        assert maximum == 3072
+    finally:
+        manager.close()
+
+
+def test_fast_test_treats_legacy_javac_optimize_as_redundant() -> None:
+    project = ET.fromstring(
+        """
+<project>
+  <properties><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <executions><execution>
+      <goals><goal>testCompile</goal></goals>
+      <configuration><optimize>true</optimize></configuration>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        remaining = manager._unshared_test_compiler_configuration(
+            project,
+            ["testCompile.optimize"],
+            compiler_model={"source_level": 8, "target_level": 8},
+        )
+        assert remaining == []
+    finally:
+        manager.close()
+
+
+def test_fast_test_keeps_unknown_compiler_argument_as_compatibility_gap() -> None:
+    project = ET.fromstring(
+        """
+<project>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <executions><execution>
+      <goals><goal>testCompile</goal></goals>
+      <configuration><compilerArgs>
+        <arg>-Xplugin:Custom</arg>
+      </compilerArgs></configuration>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        with pytest.raises(FastTestManagerError) as captured:
+            manager._compiler_argument_compatibility(
+                project,
+                ["testCompile.compilerArgs"],
+            )
+        assert (
+            captured.value.error_code
+            == "FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED"
+        )
+        assert captured.value.context == {
+            "unresolved_argument_count": 1,
+            "argument_categories": ["compiler_extension"],
+        }
+    finally:
+        manager.close()
 
 
 @pytest.mark.parametrize("failure_point", ["cancel", "tier1", "resource"])

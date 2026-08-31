@@ -208,9 +208,23 @@ def main() -> int:
   <groupId>example</groupId><artifactId>fast-test</artifactId><version>1</version>
   <properties><maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
+    <test.skip>true</test.skip>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
   <dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId>
     <version>4.13.2</version><scope>test</scope></dependency></dependencies>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId><version>3.8.1</version>
+    <executions><execution><id>test-memory</id>
+      <goals><goal>testCompile</goal></goals>
+      <configuration><compilerArgs><arg>-J-Xmx3g</arg></compilerArgs>
+      </configuration>
+    </execution></executions>
+  </plugin><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-surefire-plugin</artifactId><version>2.22.2</version>
+    <configuration><skipTests>${test.skip}</skipTests></configuration>
+  </plugin></plugins></build>
 </project>\n""",
             encoding="utf-8",
         )
@@ -265,6 +279,10 @@ def main() -> int:
             baseline = wait(manager)
             if not baseline.get("passed"):
                 raise AssertionError(baseline)
+            if manager._project.compiler.max_heap_mb != 3072:
+                raise AssertionError(
+                    manager._project.compiler.max_heap_mb
+                )
             temporary_settings_deleted = not any(
                 manager._project.session_root.rglob(
                     "maven-probe-settings.xml"

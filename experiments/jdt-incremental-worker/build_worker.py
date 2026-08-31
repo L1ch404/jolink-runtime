@@ -359,7 +359,13 @@ def main(argv: list[str] | None = None) -> int:
                 "evidence_mode": "enabled_with_required_off_on_parity",
             },
         }
-        lock["equinox"]["configuration_sha256"] = sha256_file(config_path)
+        config_bytes = config_path.read_bytes().replace(
+            b"\r\n", b"\n"
+        ).replace(b"\r", b"\n")
+        _atomic_write(config_path, config_bytes)
+        lock["equinox"]["configuration_sha256"] = hashlib.sha256(
+            config_bytes
+        ).hexdigest()
         lock["equinox"]["launcher_filename"] = launcher
         lock["equinox"]["configuration_materialization"] = (
             "replace file:plugins/ with the verified candidate plugins file URI"

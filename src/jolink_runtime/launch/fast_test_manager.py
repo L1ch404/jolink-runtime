@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import locale
 import os
 import re
 import shlex
@@ -54,6 +55,7 @@ from .test_build_world import (
 _HELP_PLUGIN_GOAL = (
     "org.apache.maven.plugins:maven-help-plugin:3.2.0:effective-pom"
 )
+_DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 900.0
 _BUILD_LOG_SECRET = re.compile(
     r"(?i)(password|passwd|token|secret|authorization|cookie|credential|"
     r"api[_-]?key|access[_-]?key|private[_-]?key)"
@@ -67,7 +69,13 @@ def _redacted_build_log_tail(path: Path) -> list[str]:
         raw = path.read_bytes()[-32 * 1024 :]
     except OSError:
         return []
-    text = raw.decode("utf-8", errors="replace")
+    get_encoding = getattr(locale, "getencoding", None)
+    encoding = (
+        str(get_encoding())
+        if callable(get_encoding)
+        else locale.getpreferredencoding(False)
+    )
+    text = raw.decode(encoding, errors="replace")
     result: list[str] = []
     for line in text.splitlines()[-80:]:
         clean = _BUILD_LOG_ANSI.sub("", line)
@@ -200,6 +208,7 @@ class TestAttempt:
     tests: tuple[str, ...]
     timeout_seconds: float
     build_system: str = ""
+    bootstrap_timeout_seconds: float = _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
     state: str = "starting"
     started_at: float = field(default_factory=time.time)
     started_monotonic: float = field(default_factory=time.monotonic)
@@ -234,6 +243,7 @@ class TestAttempt:
             "source_file_count": len(self.source_files),
             "selected_test_count": len(self.tests),
             "build_system": self.build_system or "auto",
+            "bootstrap_timeout_seconds": self.bootstrap_timeout_seconds,
             "cancel_requested": self.cancel_requested,
             "runtime_unchanged": True,
         }
@@ -290,10 +300,17 @@ class FastTestManager:
         tests: Sequence[str],
         timeout_seconds: float,
         build_system: str = "",
+        bootstrap_timeout_seconds: float = (
+            _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
+        ),
         short_wait_seconds: float = 2.0,
     ) -> dict[str, Any]:
         root = project_path.expanduser().resolve(strict=True)
         timeout = min(max(float(timeout_seconds), 0.1), 600.0)
+        bootstrap_timeout = min(
+            max(float(bootstrap_timeout_seconds), 120.0),
+            3600.0,
+        )
         authority = str(build_system or "").strip().lower()
         if authority not in {"", "maven", "gradle"}:
             raise FastTestManagerError(
@@ -324,6 +341,7 @@ class FastTestManager:
                 tests=tuple(str(value) for value in tests),
                 build_system=authority,
                 timeout_seconds=timeout,
+                bootstrap_timeout_seconds=bootstrap_timeout,
             )
             thread = threading.Thread(
                 target=self._run_attempt,
@@ -824,7 +842,11 @@ class FastTestManager:
                     ),
                     cwd=project,
                     environment=environment,
-                    timeout_seconds=max(120.0, attempt.timeout_seconds),
+                    timeout_seconds=getattr(
+                        attempt,
+                        "bootstrap_timeout_seconds",
+                        _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
+                    ),
                     output_capture=log,
                     max_output_bytes=16 * 1024 * 1024,
                     operation_name="gradle_fast_test_bootstrap",
@@ -832,6 +854,13 @@ class FastTestManager:
                 owner=attempt.owner,
             )
             attempt.require_not_cancelled()
+            if operation.timed_out:
+                raise self._bootstrap_timeout_error(
+                    operation,
+                    attempt=attempt,
+                    stage="gradle_classes_test_classes",
+                    log=log,
+                )
             if operation.output_limit_exceeded:
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_OUTPUT_LIMIT_EXCEEDED",
@@ -938,7 +967,11 @@ class FastTestManager:
                     argv=tuple(command),
                     cwd=workspace.build_root,
                     environment=JavaToolchainResolver.maven_environment(build_jdk),
-                    timeout_seconds=max(120.0, attempt.timeout_seconds),
+                    timeout_seconds=getattr(
+                        attempt,
+                        "bootstrap_timeout_seconds",
+                        _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
+                    ),
                     output_capture=log,
                     max_output_bytes=16 * 1024 * 1024,
                     operation_name="maven_fast_test_bootstrap",
@@ -946,6 +979,13 @@ class FastTestManager:
                 owner=attempt.owner,
             )
             attempt.require_not_cancelled()
+            if operation.timed_out:
+                raise self._bootstrap_timeout_error(
+                    operation,
+                    attempt=attempt,
+                    stage="maven_test_compile",
+                    log=log,
+                )
             if operation.output_limit_exceeded:
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_OUTPUT_LIMIT_EXCEEDED",
@@ -1103,6 +1143,11 @@ class FastTestManager:
         unsupported_surefire = test_runtime.get(
             "unsupportedSurefireConfigurationNames", []
         )
+        unsupported_surefire = [
+            value
+            for value in unsupported_surefire
+            if value not in {"skip", "skipTests"}
+        ]
         if unsupported_surefire:
             raise FastTestManagerError(
                 "FAST_TEST_SUREFIRE_CONFIGURATION_UNSUPPORTED",
@@ -1116,6 +1161,11 @@ class FastTestManager:
         unsupported_failsafe = test_runtime.get(
             "unsupportedFailsafeConfigurationNames", []
         )
+        unsupported_failsafe = [
+            value
+            for value in unsupported_failsafe
+            if value not in {"skip", "skipTests"}
+        ]
         if unsupported_failsafe:
             raise FastTestManagerError(
                 "FAST_TEST_FAILSAFE_CONFIGURATION_UNSUPPORTED",
@@ -1138,6 +1188,14 @@ class FastTestManager:
             effective_project,
             unsupported_test_compiler,
             compiler_model=compiler_model,
+        )
+        (
+            unsupported_test_compiler,
+            worker_min_heap_mb,
+            worker_max_heap_mb,
+        ) = self._compiler_argument_compatibility(
+            effective_project,
+            unsupported_test_compiler,
         )
         if unsupported_test_compiler:
             raise FastTestManagerError(
@@ -1253,6 +1311,8 @@ class FastTestManager:
             configuration_inputs=configuration_inputs,
             configuration_environment_names=(),
             upstream_source_roots=upstream_source_roots,
+            worker_min_heap_mb=worker_min_heap_mb,
+            worker_max_heap_mb=worker_max_heap_mb,
             runner_support_provenance=runner_support_provenance,
         )
         return self._start_build_world(
@@ -1340,6 +1400,8 @@ class FastTestManager:
                     lombok_enabled=lombok_enabled,
                 ),
             ),
+            min_heap_mb=world.worker_min_heap_mb,
+            max_heap_mb=world.worker_max_heap_mb,
         )
         return self._run_compiler_initialization_transaction(
             attempt=attempt,
@@ -1666,7 +1728,7 @@ class FastTestManager:
             configuration = execution.find("./{*}configuration")
             if configuration is None:
                 continue
-            for field in ("source", "target", "encoding"):
+            for field in ("source", "target", "encoding", "optimize"):
                 value = self._maven._config_text(configuration, field)
                 if value:
                     values.setdefault(f"testCompile.{field}", []).append(
@@ -1708,9 +1770,71 @@ class FastTestManager:
                 return {value.casefold() for value in observed} == {
                     expected_encoding
                 }
+            if name in {"testOptimize", "testCompile.optimize"}:
+                return {
+                    value.casefold() for value in observed
+                } <= {"true", "false"}
             return False
 
         return [name for name in names if not shared(str(name))]
+
+    def _compiler_argument_compatibility(
+        self,
+        project: ET.Element,
+        unsupported_test_configuration: Sequence[str],
+    ) -> tuple[list[str], int, int]:
+        compiler = self._maven._find_build_plugin(
+            project, "maven-compiler-plugin"
+        )
+        main_profile = self._maven._compiler_argument_profile(
+            self._maven._compiler_configurations(compiler)
+        )
+        test_profile = self._maven._compiler_argument_profile(
+            self._maven._test_compiler_configurations(compiler)
+        )
+        remaining = list(unsupported_test_configuration)
+        argument_configuration_names = {
+            "testCompile.compilerArgs",
+            "testCompile.compilerArgument",
+            "testCompile.compilerArguments",
+        }
+        if test_profile.decisions and not test_profile.unresolved_arguments:
+            remaining = [
+                value
+                for value in remaining
+                if value not in argument_configuration_names
+            ]
+        unresolved = (
+            *main_profile.unresolved_arguments,
+            *test_profile.unresolved_arguments,
+        )
+        if unresolved:
+            raise FastTestManagerError(
+                "FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED",
+                "Fast Test cannot reproduce one or more compiler arguments.",
+                context={
+                    "unresolved_argument_count": len(unresolved),
+                    "argument_categories": ["compiler_extension"],
+                },
+            )
+        worker_min_heap_mb = max(
+            main_profile.worker_min_heap_mb,
+            test_profile.worker_min_heap_mb,
+        )
+        worker_max_heap_mb = max(
+            main_profile.worker_max_heap_mb,
+            test_profile.worker_max_heap_mb,
+        )
+        if worker_min_heap_mb > worker_max_heap_mb:
+            raise FastTestManagerError(
+                "FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED",
+                "Compiler JVM Xms exceeds Xmx.",
+                context={
+                    "unresolved_argument_count": 0,
+                    "argument_categories": ["compiler_process_memory"],
+                },
+            )
+        return remaining, worker_min_heap_mb, worker_max_heap_mb
 
     def _compiler_method_parameters(self, project: Any) -> bool:
         plugin = self._maven._find_build_plugin(
@@ -2049,11 +2173,60 @@ class FastTestManager:
             return "Retry test and include every edited main/test Java source_file."
         if code in {"TEST_TIMEOUT", "TEST_OUTPUT_LIMIT_EXCEEDED"}:
             return "Narrow the explicit test selection or adjust the bounded timeout/output."
+        if code == "FAST_TEST_BOOTSTRAP_TIMEOUT":
+            return (
+                "Retry the Fast Test Bootstrap; dependency caches may now be "
+                "partially warmed. If it repeats, inspect bootstrap_log_tail."
+            )
+        if code in {
+            "MAVEN_PROBE_INTEGRITY_MISMATCH",
+            "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+            "JDT_CANDIDATE_INSTALL_FAILED",
+        }:
+            return (
+                "Repair or reinstall the bundled joLink build assets, then "
+                "retry without changing the project or test input."
+            )
         if code == "TEST_FRAMEWORK_UNAVAILABLE":
             return "Use the project's formal test command or add its matching JUnit runtime launcher."
         if "UNSUPPORTED" in code or "UNAVAILABLE" in code:
             return "Use the project's formal test workflow for this unsupported Build World."
         return "Inspect the structured error, correct the project/test input, and retry."
+
+    @staticmethod
+    def _bootstrap_timeout_error(
+        operation: Any,
+        *,
+        attempt: TestAttempt,
+        stage: str,
+        log: Path,
+    ) -> FastTestManagerError:
+        termination = getattr(operation, "termination", None)
+        return FastTestManagerError(
+            "FAST_TEST_BOOTSTRAP_TIMEOUT",
+            "The one-time Fast Test Build World Bootstrap timed out.",
+            context={
+                "stage": stage,
+                "timed_out": True,
+                "timeout_ms": round(
+                    float(
+                        getattr(
+                            attempt,
+                            "bootstrap_timeout_seconds",
+                            _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
+                        )
+                    )
+                    * 1000
+                ),
+                "termination_forced": bool(
+                    getattr(termination, "forced", False)
+                ),
+                "remaining_process_count": len(
+                    getattr(termination, "remaining_pids", ())
+                ),
+                "bootstrap_log_tail": _redacted_build_log_tail(log),
+            },
+        )
 
     def _cleanup_pending_roots(self) -> None:
         with self._lock:

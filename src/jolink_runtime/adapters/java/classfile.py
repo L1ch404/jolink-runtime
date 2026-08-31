@@ -569,20 +569,29 @@ def _annotation_value(reader: _Reader, pool: _ConstantPool) -> Any:
 
 def _annotation(reader: _Reader, pool: _ConstantPool) -> Any:
     annotation_type = pool.utf8(reader.u2())
-    pairs = tuple(
-        (pool.utf8(reader.u2()), _annotation_value(reader, pool))
-        for _ in range(reader.u2())
-    )
+    pairs = tuple(sorted(
+        (
+            (pool.utf8(reader.u2()), _annotation_value(reader, pool))
+            for _ in range(reader.u2())
+        ),
+        key=lambda item: item[0],
+    ))
     return (annotation_type, pairs)
 
 
 def _annotations(reader: _Reader, pool: _ConstantPool) -> Any:
-    return tuple(_annotation(reader, pool) for _ in range(reader.u2()))
+    return tuple(sorted(
+        (_annotation(reader, pool) for _ in range(reader.u2())),
+        key=repr,
+    ))
 
 
 def _parameter_annotations(reader: _Reader, pool: _ConstantPool) -> Any:
     return tuple(
-        tuple(_annotation(reader, pool) for _ in range(reader.u2()))
+        tuple(sorted(
+            (_annotation(reader, pool) for _ in range(reader.u2())),
+            key=repr,
+        ))
         for _ in range(reader.u1())
     )
 
@@ -615,7 +624,7 @@ def _type_annotations(reader: _Reader, pool: _ConstantPool) -> Any:
         target = _type_annotation_target(reader, target_type)
         path = tuple((reader.u1(), reader.u1()) for _ in range(reader.u1()))
         values.append((target_type, target, path, _annotation(reader, pool)))
-    return tuple(values)
+    return tuple(sorted(values, key=repr))
 
 
 def _normalize_attribute(

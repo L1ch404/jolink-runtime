@@ -69,6 +69,10 @@ def test_imports_only_the_idea_build_environment_subset(
         </project>
         """,
     )
+    (home / "tools/maven").mkdir(parents=True)
+    (project / "settings.xml").write_text(
+        "<settings/>\n", encoding="utf-8"
+    )
     jdk_table = (
         home
         / "Library"
@@ -150,6 +154,40 @@ def test_idea_managed_or_unresolved_values_degrade_to_bounded_warnings(
     )
 
 
+def test_missing_idea_maven_paths_fall_back_with_bounded_warnings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: home),
+    )
+    _write(
+        project / ".idea/workspace.xml",
+        """
+        <project><component name="MavenImportPreferences">
+          <option name="customMavenHome" value="$USER_HOME$/old-maven" />
+          <option name="userSettingsFile" value="$USER_HOME$/old-settings.xml" />
+        </component></project>
+        """,
+    )
+
+    preferences = IdeaEnvironmentImporter(
+        idea_config_roots=(),
+    ).import_preferences(project)
+
+    assert preferences.custom_maven_home is None
+    assert preferences.user_settings_file is None
+    assert preferences.warnings == (
+        "customMavenHome: configured path unavailable; using wrapper/PATH",
+        "userSettingsFile: configured path unavailable; using Maven default",
+    )
+
+
 def test_invalid_project_xml_never_exposes_parser_or_file_contents(
     tmp_path: Path,
 ) -> None:
@@ -172,6 +210,7 @@ def test_invalid_project_xml_never_exposes_parser_or_file_contents(
 def test_imports_legacy_maven_home_option(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
+    (project / "tools/maven").mkdir(parents=True)
     _write(
         project / ".idea" / "workspace.xml",
         """
@@ -195,6 +234,7 @@ def test_non_maven_options_do_not_override_maven_environment(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
+    (project / "correct-maven").mkdir()
     _write(
         project / ".idea" / "workspace.xml",
         """

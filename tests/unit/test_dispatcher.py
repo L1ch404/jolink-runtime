@@ -91,11 +91,16 @@ def test_product_tool_names_map_to_existing_runtime_actions(monkeypatch) -> None
         {"action": "reload", "source_files": ["App.java"]},
         session_key="product-tools",
     )["status"] == "update"
-    assert dispatcher.dispatch(
+    status = dispatcher.dispatch(
         "java_status",
         {"action": "status"},
         session_key="product-tools",
-    )["status"] == "status"
+    )
+    assert status["status"] == "status"
+    assert status["server_diagnostics"]["status"] in {
+        "active",
+        "stderr_only",
+    }
     assert dispatcher.dispatch(
         "java_debugger",
         {"action": "threads"},

@@ -62,6 +62,7 @@ def read_log_tail_snapshot(
     log_file: str,
     n: int = 50,
     *,
+    encoding: str = "utf-8",
     max_scan_bytes: int = _MAX_TAIL_SCAN_BYTES,
     max_return_bytes: int = _MAX_TAIL_RETURN_BYTES,
 ) -> dict:
@@ -123,7 +124,7 @@ def read_log_tail_snapshot(
             # still useful evidence as long as the truncation is explicit.
             first_line_truncated = True
 
-    decoded_lines = raw.decode("utf-8", errors="replace").splitlines(
+    decoded_lines = raw.decode(encoding, errors="replace").splitlines(
         keepends=True
     )
     requested_tail = decoded_lines[-requested_lines:]
@@ -190,6 +191,7 @@ def read_log_tail_snapshot(
         "first_line_truncated": first_line_truncated,
         "snapshot_consistent": not file_changed_during_read,
         "log_file": log_file,
+        "encoding": encoding,
     }
     if prefix_was_discarded:
         result["discarded_partial_prefix"] = True

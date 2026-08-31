@@ -14,7 +14,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SOURCE = (
     ROOT
@@ -23,6 +22,10 @@ RUNNER_SOURCE = (
 PROBE_ROOT = ROOT / "experiments/jdt-incremental-worker/maven-probe"
 PRODUCT_ROOT = ROOT / "src/jolink_runtime/launch"
 FIXED_TIME = (2026, 8, 29, 0, 0, 0)
+
+
+def canonical_lf_bytes(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def sha256(data: bytes) -> str:
@@ -132,11 +135,15 @@ def build_probe(java_home: Path, maven: Path) -> tuple[bytes, bytes, str]:
         env=environment,
         check=True,
     )
-    jar = target / "jolink-maven-probe-0.1.0-fasttest9.jar"
+    jar = target / "jolink-maven-probe-0.1.0-fasttest10.jar"
     jar_bytes = jar.read_bytes()
     if class_majors(jar_bytes) != {52}:
         raise RuntimeError("Maven Probe is not pure Java 8 bytecode")
-    return jar_bytes, (PROBE_ROOT / "pom.xml").read_bytes(), implementation_id
+    return (
+        jar_bytes,
+        canonical_lf_bytes((PROBE_ROOT / "pom.xml").read_bytes()),
+        implementation_id,
+    )
 
 
 def write_base64(path: Path, data: bytes) -> None:
@@ -173,7 +180,7 @@ def main() -> int:
             "schema": "jolink.maven-build-world-probe.v2",
             "group_id": "io.jolink",
             "artifact_id": "jolink-maven-probe",
-            "version": "0.1.0-fasttest9",
+            "version": "0.1.0-fasttest10",
             "sha256": sha256(probe),
             "pom_sha256": sha256(probe_pom),
             "implementation_id": implementation_id,

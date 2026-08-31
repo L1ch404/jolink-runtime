@@ -12,6 +12,7 @@ LLM never sees JDWP, thread IDs, or protocol details.
 from __future__ import annotations
 
 import hashlib
+import locale
 import logging
 import os
 import re
@@ -125,6 +126,15 @@ def _error_summary(error: Exception) -> str:
     """Return one safe diagnostic line, excluding captured application logs."""
     message = str(error)
     return message.splitlines()[0][:240] if message else "-"
+
+
+def _host_build_log_encoding() -> str:
+    """Use the real host code page even when Python UTF-8 mode is enabled."""
+
+    get_encoding = getattr(locale, "getencoding", None)
+    if callable(get_encoding):
+        return str(get_encoding())
+    return locale.getpreferredencoding(False)
 
 
 @dataclass
@@ -1698,6 +1708,7 @@ class JavaRuntime(Runtime):
         def initialize() -> None:
             compiler: PersistentJdtCompileSession | None = None
             bootstrap_started = time.monotonic()
+            stage = "build_world_freshness"
             try:
                 is_fresh = getattr(plan, "is_fresh", lambda: True)
                 if not is_fresh():
@@ -1705,7 +1716,9 @@ class JavaRuntime(Runtime):
                         "JDT_BUILD_WORLD_STALE",
                         "The formal Build World changed before JDT bootstrap.",
                     )
+                stage = "candidate_load"
                 candidate = JdtCandidate.load_product()
+                stage = "worker_java_selection"
                 worker_java = candidate.select_worker_java(
                     (
                         prepared.build_jdk.home,
@@ -1713,10 +1726,12 @@ class JavaRuntime(Runtime):
                         plan.target_java_home,
                     )
                 )
+                stage = "worker_runtime_record"
                 session.record_jdt_worker_runtime(
                     java_major=worker_java.major,
                     data_model=worker_java.data_model,
                 )
+                stage = "target_system_discovery"
                 system_entries = discover_target_system_entries(
                     plan.target_java_home,
                     plan.target_level,
@@ -1724,6 +1739,7 @@ class JavaRuntime(Runtime):
                 lombok_agents = tuple(
                     f"{path}=ECJ" for path in plan.lombok_entries
                 )
+                stage = "compile_session_prepare"
                 compiler = PersistentJdtCompileSession(
                     root=session.root / "compile-session",
                     candidate=candidate,
@@ -1749,18 +1765,21 @@ class JavaRuntime(Runtime):
                     max_heap_mb=plan.worker_max_heap_mb,
                 )
                 session.attach_compile_session(compiler)
+                stage = "worker_start_and_jdt_full"
                 full = compiler.start()
                 if not full.compile_ok:
                     raise JdtCompileError(
                         "JDT_FULL_COMPILE_FAILED",
                         "The initial persistent JDT FULL build failed.",
                     )
+                stage = "generation_validation"
                 current_generation = session.generations.current
                 if current_generation is None:
                     raise JdtCompileError(
                         "CURRENT_GENERATION_UNAVAILABLE",
                         "The current Generation disappeared before JDT validation.",
                     )
+                stage = "tier1_validation"
                 try:
                     compatibility = compare_class_output_tier1(
                         current_generation.output_directory,
@@ -1782,11 +1801,13 @@ class JavaRuntime(Runtime):
                             if key != "compatible"
                         },
                     )
+                stage = "build_world_revalidation"
                 if not is_fresh():
                     raise JdtCompileError(
                         "JDT_BUILD_WORLD_STALE",
                         "The formal Build World changed during JDT bootstrap.",
                     )
+                stage = "baseline_accept"
                 compiler.accept_baseline()
                 self._reset_runtime_overlay()
                 session.refresh_compile_ready()
@@ -1795,7 +1816,8 @@ class JavaRuntime(Runtime):
                 )
             except Exception as error:
                 logger.exception(
-                    "java_runtime.jdt.bootstrap.failed error_type=%s",
+                    "java_runtime.jdt.bootstrap.failed stage=%s error_type=%s",
+                    stage,
                     type(error).__name__,
                 )
                 if compiler is not None:
@@ -1807,6 +1829,14 @@ class JavaRuntime(Runtime):
                     error, "error_code", "JDT_COMPILE_SESSION_START_FAILED"
                 )
                 error_details = dict(getattr(error, "context", {}) or {})
+                error_details.setdefault("stage", stage)
+                error_details.setdefault(
+                    "exception_type", type(error).__name__
+                )
+                error_details.setdefault(
+                    "error_summary",
+                    self._redact_build_log_line(_error_summary(error)),
+                )
                 session.fail_jdt_bootstrap(
                     reason=str(error_code),
                     details=error_details,
@@ -2994,6 +3024,7 @@ class JavaRuntime(Runtime):
                     tail = read_log_tail_snapshot(
                         str(build_log),
                         50,
+                        encoding=_host_build_log_encoding(),
                         max_scan_bytes=512 * 1024,
                         max_return_bytes=32 * 1024,
                     )

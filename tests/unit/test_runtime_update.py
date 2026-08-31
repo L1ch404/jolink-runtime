@@ -593,6 +593,11 @@ def test_jdt_bootstrap_failure_survives_attempt_migration(
     assert session.jdt_unavailable_reason == (
         "JDT_COMPILE_SESSION_START_FAILED"
     )
+    assert session.jdt_unavailable_details == {
+        "stage": "candidate_load",
+        "exception_type": "ValueError",
+        "error_summary": "unexpected bootstrap failure",
+    }
     monkeypatch.setattr(
         runtime,
         "_reconcile_project_process_exit",
