@@ -1,5 +1,9 @@
 # Runtime 启动成功的定义
 
+> joLink 的长期产品泛用性与Fast Path覆盖原则见
+> [product-generality-principles.zh-CN.md](product-generality-principles.zh-CN.md)。
+> 安全拒绝只是底线，不能替代对陌生主流Java项目的真实支持。
+
 > **状态：Accepted for MCP v0.1**
 >
 > 当前采用可选的本地 TCP readiness：Runtime 仍只返回可验证事实，不把
