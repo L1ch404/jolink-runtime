@@ -14,7 +14,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Iterable
@@ -138,6 +138,10 @@ class ReloadAttempt:
     applied: bool | None = None
     rolled_back: bool = False
     error_code: str | None = None
+    finished_at: float | None = None
+    cancel_requested: bool = False
+    cancel_reason: str | None = None
+    result_data: dict[str, Any] = field(default_factory=dict)
 
     @property
     def source_changes_pending(self) -> bool:
@@ -595,6 +599,10 @@ class JavaProjectSession:
         self._source_manifest_after_ms: float | None = None
         self._source_snapshot_ms: float | None = None
         self._jdt_bootstrap_ms: float | None = None
+        self._jdt_bootstrap_reused = False
+        self._jdt_bootstrap_build_kind: str | None = None
+        self._jdt_workspace_lease: Any | None = None
+        self._reload_worker: threading.Thread | None = None
         self._retained_directories: set[Path] = set()
         self._closed = False
         self._lock = threading.RLock()
@@ -659,9 +667,45 @@ class JavaProjectSession:
                 else attempt.stage
             )
             if applied is not None:
+                attempt.finished_at = time.time()
                 self._last_reload = attempt
                 self._active_reload = None
             return attempt
+
+    def attach_reload_worker(
+        self,
+        attempt: ReloadAttempt,
+        worker: threading.Thread,
+    ) -> None:
+        with self._lock:
+            if self._active_reload is not attempt:
+                raise ProjectSessionError(
+                    "RELOAD_OWNERSHIP_LOST",
+                    "The reload attempt is no longer active.",
+                )
+            self._reload_worker = worker
+
+    def request_reload_cancel(self, reason: str) -> None:
+        with self._lock:
+            if self._active_reload is not None:
+                self._active_reload.cancel_requested = True
+                self._active_reload.cancel_reason = str(reason)
+
+    def reload_cancel_requested(self, attempt: ReloadAttempt) -> bool:
+        with self._lock:
+            return bool(
+                self._active_reload is attempt
+                and attempt.cancel_requested
+            )
+
+    def record_reload_result(
+        self,
+        attempt: ReloadAttempt,
+        result: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            if self._active_reload is attempt or self._last_reload is attempt:
+                attempt.result_data = dict(result)
 
     def record_successful_startup(self, duration_ms: float) -> None:
         with self._lock:
@@ -714,9 +758,19 @@ class JavaProjectSession:
             self._jdt_worker_java_major = int(java_major)
             self._jdt_worker_data_model = int(data_model)
 
-    def complete_jdt_bootstrap(self, duration_ms: float) -> None:
+    def complete_jdt_bootstrap(
+        self,
+        duration_ms: float,
+        *,
+        reused: bool = False,
+        build_kind: str | None = None,
+    ) -> None:
         with self._lock:
             self._jdt_bootstrap_ms = max(0.0, float(duration_ms))
+            self._jdt_bootstrap_reused = bool(reused)
+            self._jdt_bootstrap_build_kind = (
+                str(build_kind) if build_kind is not None else None
+            )
             self.jdt_bootstrap_state = "ready"
             self.jdt_unavailable_reason = None
             self.jdt_unavailable_details = {}
@@ -759,6 +813,22 @@ class JavaProjectSession:
             self.compile_session = compile_session
             self.compile_ready = bool(getattr(compile_session, "ready", False))
 
+    def attach_jdt_workspace_lease(self, lease: Any) -> None:
+        with self._lock:
+            if self._jdt_workspace_lease is not None:
+                raise ProjectSessionError(
+                    "JDT_WORKSPACE_ALREADY_ATTACHED",
+                    "A persistent JDT workspace is already attached.",
+                )
+            self._jdt_workspace_lease = lease
+
+    def invalidate_jdt_workspace(self) -> None:
+        with self._lock:
+            lease = self._jdt_workspace_lease
+            self._jdt_workspace_lease = None
+        if lease is not None:
+            lease.release(clean=False)
+
     def refresh_compile_ready(self) -> bool:
         with self._lock:
             self.compile_ready = bool(
@@ -793,9 +863,34 @@ class JavaProjectSession:
         with self._lock:
             active = self._active_reload
             last = self._last_reload
+            last_payload: dict[str, object] | None = None
+            if last is not None:
+                last_payload = dict(last.result_data)
+                last_payload.update({
+                    "applied": last.applied,
+                    "reload_id": last.attempt_id,
+                    "stage": last.stage.value,
+                    "apply_method": last.apply_method,
+                    "compile_ms": last.compile_ms,
+                    "startup_ms": last.startup_ms,
+                    "source_changes_pending": last.source_changes_pending,
+                    "rolled_back": last.rolled_back,
+                    "error_code": last.error_code,
+                    "total_ms": round(
+                        max(
+                            0.0,
+                            (last.finished_at or time.time())
+                            - last.started_at,
+                        )
+                        * 1000,
+                        1,
+                    ),
+                })
             return {
                 "compile_ready": self.compile_ready,
                 "jdt_bootstrap_state": self.jdt_bootstrap_state,
+                "jdt_bootstrap_reused": self._jdt_bootstrap_reused,
+                "jdt_bootstrap_build_kind": self._jdt_bootstrap_build_kind,
                 "jdt_worker": (
                     {
                         "java_major": self._jdt_worker_java_major,
@@ -810,30 +905,18 @@ class JavaProjectSession:
                 "active_operation": (
                     {
                         "operation": "reload",
+                        "reload_id": active.attempt_id,
                         "stage": active.stage.value,
                         "elapsed_ms": round(
                             max(0.0, time.time() - active.started_at) * 1000,
                             1,
                         ),
+                        "cancel_requested": active.cancel_requested,
                     }
                     if active is not None
                     else None
                 ),
-                "last_reload": (
-                    {
-                        "applied": last.applied,
-                        "apply_method": last.apply_method,
-                        "compile_ms": last.compile_ms,
-                        "startup_ms": last.startup_ms,
-                        "source_changes_pending": (
-                            last.source_changes_pending
-                        ),
-                        "rolled_back": last.rolled_back,
-                        "error_code": last.error_code,
-                    }
-                    if last is not None
-                    else None
-                ),
+                "last_reload": last_payload,
                 "last_successful_startup_ms": (
                     self._last_successful_startup_ms
                 ),
@@ -851,16 +934,37 @@ class JavaProjectSession:
     def close(self, *, cleanup_retained: bool = True) -> None:
         with self._lock:
             self._closed = True
+            active_reload = self._active_reload
+            if active_reload is not None:
+                active_reload.cancel_requested = True
+                active_reload.cancel_reason = "PROJECT_SESSION_CLOSED"
             retained = tuple(self._retained_directories)
             self._retained_directories.clear()
             compile_session = self.compile_session
             self.compile_session = None
             self.compile_ready = False
+            reload_worker = self._reload_worker
+            workspace_lease = self._jdt_workspace_lease
+            self._jdt_workspace_lease = None
         if compile_session is not None:
             try:
                 compile_session.close()
             except Exception:
                 pass
+        if (
+            reload_worker is not None
+            and reload_worker is not threading.current_thread()
+            and reload_worker.is_alive()
+        ):
+            reload_worker.join(5.0)
+        if workspace_lease is not None:
+            workspace_lease.release(
+                clean=bool(
+                    active_reload is None
+                    and compile_session is not None
+                    and getattr(compile_session, "last_close_clean", False)
+                )
+            )
         if cleanup_retained:
             for directory in retained:
                 shutil.rmtree(directory, ignore_errors=True)

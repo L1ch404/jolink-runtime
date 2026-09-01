@@ -196,15 +196,13 @@ def test_project_session_serializes_reload_and_reports_source_drift(
     assert session.active_reload is None
     status = session.public_status()
     assert status["active_operation"] is None
-    assert status["last_reload"] == {
-        "applied": True,
-        "apply_method": None,
-        "compile_ms": 120.0,
-        "startup_ms": None,
-        "source_changes_pending": True,
-        "rolled_back": False,
-        "error_code": None,
-    }
+    assert status["last_reload"]["reload_id"] == attempt.attempt_id
+    assert status["last_reload"]["stage"] == "succeeded"
+    assert status["last_reload"]["applied"] is True
+    assert status["last_reload"]["compile_ms"] == 120.0
+    assert status["last_reload"]["source_changes_pending"] is True
+    assert status["last_reload"]["error_code"] is None
+    assert status["last_reload"]["total_ms"] >= 0
 
 
 def test_nonterminal_reload_keeps_applied_unknown_and_active(

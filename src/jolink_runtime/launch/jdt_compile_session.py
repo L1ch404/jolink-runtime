@@ -816,6 +816,7 @@ class PersistentJdtCompileSession:
         min_heap_mb: int = 64,
         max_heap_mb: int = 2048,
         timeout: float = 600.0,
+        preserve_root_on_close: bool = False,
     ) -> None:
         self.root = root.expanduser().resolve(strict=False)
         self.candidate = candidate
@@ -892,6 +893,7 @@ class PersistentJdtCompileSession:
         self.min_heap_mb = int(min_heap_mb)
         self.max_heap_mb = int(max_heap_mb)
         self.timeout = timeout
+        self.preserve_root_on_close = bool(preserve_root_on_close)
         self.private_project = self.root / "workspace/plain-fixture"
         self.private_source = self.private_project / "src"
         self.output_directory = self.private_project / "bin"
@@ -907,6 +909,8 @@ class PersistentJdtCompileSession:
         self._last_compile_error_count = 0
         self._published_output_manifest: dict[str, str] = {}
         self._native_full_resource_manifest: dict[str, str] = {}
+        self._worker_ready_frame: dict[str, Any] = {}
+        self._last_close_clean = False
         self._state_lock = threading.RLock()
         self._operation_lock = threading.Lock()
 
@@ -942,7 +946,19 @@ class PersistentJdtCompileSession:
         with self._state_lock:
             return dict(self._native_full_resource_manifest)
 
-    def start(self) -> JdtCompileResult:
+    @property
+    def last_close_clean(self) -> bool:
+        with self._state_lock:
+            return self._last_close_clean
+
+    @property
+    def workspace_reopened(self) -> bool:
+        with self._state_lock:
+            return self._worker_ready_frame.get(
+                "workspace_project_state"
+            ) == "reopened"
+
+    def start(self, *, reuse_workspace: bool = False) -> JdtCompileResult:
         with self._operation_lock:
             with self._state_lock:
                 if self._poisoned:
@@ -954,31 +970,21 @@ class PersistentJdtCompileSession:
                     )
             client: JdtWorkerClient | None = None
             try:
-                self.root.mkdir(parents=True, exist_ok=False, mode=0o700)
-                self._materialize_sources()
-                classpath_file = self.root / "worker-classpath.private.txt"
-                classpath_file.write_text(
-                    "".join(f"{path}\n" for path in self.classpath_entries),
-                    encoding="utf-8",
-                )
-                processor_file: Path | None = None
-                if self.processor_entries:
-                    processor_file = self.root / "apt-processors.private.txt"
-                    processor_file.write_text(
-                        "".join(f"{path}\n" for path in self.processor_entries),
-                        encoding="utf-8",
-                    )
-                test_classpath_file: Path | None = None
-                if self.test_source_roots:
-                    test_classpath_file = (
-                        self.root / "worker-test-classpath.private.txt"
-                    )
-                    test_classpath_file.write_text(
-                        "".join(
-                            f"{path}\n" for path in self.test_classpath_entries
-                        ),
-                        encoding="utf-8",
-                    )
+                if reuse_workspace:
+                    if not self.private_project.is_dir():
+                        raise JdtCompileError(
+                            "JDT_WORKSPACE_RESTORE_UNAVAILABLE",
+                            "The saved JDT workspace is unavailable.",
+                        )
+                    self._synchronize_persisted_sources()
+                else:
+                    self.root.mkdir(parents=True, exist_ok=False, mode=0o700)
+                    self._materialize_sources()
+                (
+                    classpath_file,
+                    processor_file,
+                    test_classpath_file,
+                ) = self._write_worker_inputs()
                 client = self._start_worker(
                     classpath_file=classpath_file,
                     processor_file=processor_file,
@@ -986,7 +992,15 @@ class PersistentJdtCompileSession:
                 )
                 with self._state_lock:
                     self._client = client
-                result = self._build("FULL", source_changes_pending=False)
+                if reuse_workspace and not self.workspace_reopened:
+                    raise JdtCompileError(
+                        "JDT_WORKSPACE_NOT_REOPENED",
+                        "The Worker did not reopen the saved JDT workspace.",
+                    )
+                result = self._build(
+                    "INCREMENTAL" if reuse_workspace else "FULL",
+                    source_changes_pending=False,
+                )
                 with self._state_lock:
                     self._native_full_resource_manifest = (
                         self._native_resource_manifest()
@@ -1010,6 +1024,36 @@ class PersistentJdtCompileSession:
                 self._source_map.clear()
                 shutil.rmtree(self.root, ignore_errors=True)
                 raise
+
+    def _write_worker_inputs(
+        self,
+    ) -> tuple[Path, Path | None, Path | None]:
+        classpath_file = self.root / "worker-classpath.private.txt"
+        classpath_file.write_text(
+            "".join(f"{path}\n" for path in self.classpath_entries),
+            encoding="utf-8",
+        )
+        processor_file: Path | None = None
+        if self.processor_entries:
+            processor_file = self.root / "apt-processors.private.txt"
+            processor_file.write_text(
+                "".join(f"{path}\n" for path in self.processor_entries),
+                encoding="utf-8",
+            )
+        else:
+            (self.root / "apt-processors.private.txt").unlink(missing_ok=True)
+        test_classpath_file: Path | None = None
+        if self.test_source_roots:
+            test_classpath_file = self.root / "worker-test-classpath.private.txt"
+            test_classpath_file.write_text(
+                "".join(f"{path}\n" for path in self.test_classpath_entries),
+                encoding="utf-8",
+            )
+        else:
+            (self.root / "worker-test-classpath.private.txt").unlink(
+                missing_ok=True
+            )
+        return classpath_file, processor_file, test_classpath_file
 
     def compile(self, source_files: Iterable[Path]) -> JdtCompileResult:
         with self._operation_lock:
@@ -1255,16 +1299,33 @@ class PersistentJdtCompileSession:
                 )
 
     def close(self) -> bool:
+        operation_owned = self._operation_lock.acquire(blocking=False)
         with self._state_lock:
             client = self._client
             self._client = None
+            baseline_ready = self._baseline_ready
+            previously_poisoned = self._poisoned
             self._poisoned = True
             self._poison_reason = "SESSION_CLOSED"
             self._baseline_ready = False
             self._working_compile_state = "unknown"
-        settled = client.force_close() if client is not None else True
-        with self._operation_lock:
+        clean = False
+        try:
+            if client is None:
+                settled = True
+            elif operation_owned and baseline_ready and not previously_poisoned:
+                settled = client.close()
+                clean = settled
+            else:
+                settled = client.force_close()
+        finally:
+            if operation_owned:
+                self._operation_lock.release()
+        with self._state_lock:
+            self._last_close_clean = clean
+        if not self.preserve_root_on_close:
             shutil.rmtree(self.root, ignore_errors=True)
+        with self._state_lock:
             self._source_map.clear()
             self._published_output_manifest.clear()
         return settled
@@ -1286,6 +1347,88 @@ class PersistentJdtCompileSession:
                 baseline_roots=self.baseline_test_source_roots,
                 destination_root=self.private_test_source,
             )
+
+    def _synchronize_persisted_sources(self) -> None:
+        self._source_map.clear()
+        self._synchronize_persisted_source_group(
+            source_roots=self.source_roots,
+            baseline_roots=self.baseline_source_roots,
+            destination_root=self.private_source,
+        )
+        if self.test_source_roots:
+            self._synchronize_persisted_source_group(
+                source_roots=self.test_source_roots,
+                baseline_roots=self.baseline_test_source_roots,
+                destination_root=self.private_test_source,
+            )
+
+    def _synchronize_persisted_source_group(
+        self,
+        *,
+        source_roots: Sequence[Path],
+        baseline_roots: Sequence[Path],
+        destination_root: Path,
+    ) -> None:
+        if not destination_root.is_dir():
+            raise JdtCompileError(
+                "JDT_WORKSPACE_SOURCE_MIRROR_UNAVAILABLE",
+                "The saved JDT source mirror is unavailable.",
+            )
+        desired: dict[str, tuple[str, Path, tuple[Path, ...]]] = {}
+        sources_by_key: dict[str, list[Path]] = {}
+        for source_root, baseline_root in zip(source_roots, baseline_roots):
+            for baseline_source in sorted(baseline_root.rglob("*.java")):
+                if baseline_source.is_symlink():
+                    raise JdtCompileError(
+                        "SOURCE_LINK_UNSUPPORTED",
+                        "CompileSession source roots may not contain links.",
+                    )
+                relative = baseline_source.relative_to(baseline_root)
+                key = relative.as_posix()
+                digest = _sha256_file(baseline_source)
+                source = source_root / relative
+                existing = desired.get(key)
+                if existing is not None and existing[0] != digest:
+                    raise JdtCompileError(
+                        "SOURCE_ROOT_COLLISION",
+                        "Two source roots map different Java files to one path.",
+                    )
+                sources_by_key.setdefault(key, []).append(source)
+                desired[key] = (
+                    digest,
+                    baseline_source,
+                    tuple(sources_by_key[key]),
+                )
+
+        observed = {
+            path.relative_to(destination_root).as_posix(): path
+            for path in destination_root.rglob("*.java")
+            if path.is_file()
+        }
+        for key, path in observed.items():
+            if key not in desired:
+                path.unlink(missing_ok=True)
+        for key, (digest, baseline_source, workspace_sources) in desired.items():
+            destination = destination_root / key
+            if not destination.is_file() or _sha256_file(destination) != digest:
+                previous_mtime = (
+                    destination.stat().st_mtime_ns
+                    if destination.is_file()
+                    else 0
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination.with_name(
+                    f".{destination.name}.{time.time_ns()}.tmp"
+                )
+                shutil.copyfile(baseline_source, temporary)
+                temporary.replace(destination)
+                forced_mtime = max(
+                    time.time_ns(),
+                    previous_mtime + 2_000_000_000,
+                )
+                os.utime(destination, ns=(forced_mtime, forced_mtime))
+            for source in workspace_sources:
+                self._source_map[source.resolve(strict=False)] = destination
 
     def _materialize_source_group(
         self,
@@ -1342,7 +1485,7 @@ class PersistentJdtCompileSession:
             self.worker_java_home
         ).executable
         configuration = self.root / "configuration"
-        configuration.mkdir()
+        configuration.mkdir(exist_ok=True)
         template = (
             self.candidate.root / "configuration/config.ini"
         ).read_text(encoding="utf-8")
@@ -1440,6 +1583,8 @@ class PersistentJdtCompileSession:
                 "JDT_WORKER_NOT_READY",
                 "The JDT Worker did not verify the requested Build World.",
             )
+        with self._state_lock:
+            self._worker_ready_frame = dict(ready)
         return client
 
     def _build(

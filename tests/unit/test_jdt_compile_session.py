@@ -20,6 +20,7 @@ from jolink_runtime.launch.jdt_compile_session import (
     WorkerJavaRuntime,
     lombok_worker_jvm_arguments,
 )
+from jolink_runtime.launch.jdt_workspace_store import JdtWorkspaceStore
 
 
 class _FakeWorker:
@@ -229,6 +230,114 @@ def test_persistent_jdt_session_full_then_incremental(
     assert incremental.source_changes_pending is False
     assert session.close() is True
     assert worker.closed is True
+
+
+def test_local_workspace_file_reopens_without_another_full_build(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    source_root = project / "src/main/java"
+    source = source_root / "example/App.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "package example; class App { int value() { return 1; } }",
+        encoding="utf-8",
+    )
+    dependency = tmp_path / "dependency.jar"
+    dependency.write_bytes(b"dependency")
+    store = JdtWorkspaceStore(tmp_path / "cache")
+    identity = {"build_world_fingerprint": "world", "candidate": "test"}
+
+    first_lease = store.claim(
+        project_root=project,
+        module_root=project,
+        identity=identity,
+    )
+    assert first_lease.reusable is False
+    first = PersistentJdtCompileSession(
+        root=first_lease.root,
+        candidate=_candidate(tmp_path),
+        worker_java_home=tmp_path / "jdk",
+        source_roots=(source_root,),
+        classpath_entries=(dependency,),
+        source_encoding="UTF-8",
+        preserve_root_on_close=True,
+    )
+    first_worker = _FakeWorker(first)
+    monkeypatch.setattr(first, "_start_worker", lambda **_kwargs: first_worker)
+    assert first.start().actual_build_kind == "FULL"
+    first.accept_baseline()
+    first_lease.mark_initialized()
+    assert first.close() is True
+    first_lease.release(clean=first.last_close_clean)
+
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    second_lease = store.claim(
+        project_root=project,
+        module_root=project,
+        identity=identity,
+    )
+    assert second_lease.reusable is True
+    second = PersistentJdtCompileSession(
+        root=second_lease.root,
+        candidate=_candidate(tmp_path),
+        worker_java_home=tmp_path / "jdk",
+        source_roots=(source_root,),
+        classpath_entries=(dependency,),
+        source_encoding="UTF-8",
+        preserve_root_on_close=True,
+    )
+    second_worker = _FakeWorker(second)
+
+    def reopen(**_kwargs):
+        second._worker_ready_frame = {
+            "workspace_project_state": "reopened"
+        }
+        return second_worker
+
+    monkeypatch.setattr(second, "_start_worker", reopen)
+    restored = second.start(reuse_workspace=True)
+    assert restored.actual_build_kind == "INCREMENTAL"
+    assert restored.compiled_source_units == ("src/example/App.java",)
+    second.accept_baseline()
+    second_lease.mark_initialized()
+    assert second.close() is True
+    second_lease.release(clean=second.last_close_clean)
+
+    state = json.loads(
+        second_lease.state_file.read_text(encoding="utf-8")
+    )
+    assert state["clean_shutdown"] is True
+
+
+def test_unclean_local_workspace_forces_a_new_full_lineage(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    store = JdtWorkspaceStore(tmp_path / "cache")
+    identity = {"build_world_fingerprint": "world"}
+    first = store.claim(
+        project_root=project,
+        module_root=project,
+        identity=identity,
+    )
+    first.root.joinpath("workspace/plain-fixture").mkdir(parents=True)
+    first.mark_initialized()
+    first.release(clean=False)
+
+    second = store.claim(
+        project_root=project,
+        module_root=project,
+        identity=identity,
+    )
+
+    assert second.reusable is False
+    assert second.root.exists() is False
 
 
 def test_persistent_jdt_session_supports_test_only_source_roots(

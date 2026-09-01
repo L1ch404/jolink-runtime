@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import subprocess
@@ -39,6 +40,26 @@ pytestmark = pytest.mark.mcp_java_e2e
 
 class _DaemonHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+
+
+async def _await_reload(
+    session: Any,
+    started: dict[str, Any],
+    *,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    assert started["status"] == "reload_started"
+    reload_id = started["reload_id"]
+    with anyio.fail_after(timeout):
+        while True:
+            status = assert_ok(await call_payload(session, {"action": "status"}))
+            terminal = status.get("last_reload")
+            if (
+                isinstance(terminal, dict)
+                and terminal.get("reload_id") == reload_id
+            ):
+                return terminal
+            await anyio.sleep(0.05)
 
 
 @contextmanager
@@ -1005,6 +1026,161 @@ public class ProjectMcpFixture {
                     }))
                     assert stopped["status"] == "stopped"
                     await wait_until_async(lambda: not pid_is_alive(pid))
+
+    anyio.run(scenario)
+
+
+def test_jdt_workspace_reopens_and_reload_is_a_background_attempt(
+    tmp_path: Path,
+) -> None:
+    require_real_mcp_java_e2e()
+    if shutil.which("mvn") is None:
+        pytest.skip("Maven is required for the persistent JDT E2E")
+
+    project = tmp_path / "persistent-project"
+    source = project / "src/main/java/example/PersistentFixture.java"
+    source.parent.mkdir(parents=True)
+
+    def source_text(value: str) -> str:
+        return f"""\
+package example;
+
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
+public class PersistentFixture {{
+    private static String message() {{ return "{value}"; }}
+    public static void main(String[] args) throws Exception {{
+        int port = Integer.parseInt(args[0]);
+        try (ServerSocket server = new ServerSocket(
+            port, 8, InetAddress.getByName("127.0.0.1")
+        )) {{
+            while (true) {{
+                try (Socket socket = server.accept()) {{
+                    socket.getInputStream().read();
+                    socket.getOutputStream().write(
+                        message().getBytes(StandardCharsets.UTF_8)
+                    );
+                }}
+            }}
+        }}
+    }}
+}}
+"""
+
+    source.write_text(source_text("before"), encoding="utf-8")
+    (project / "pom.xml").write_text(
+        """\
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>persistent</artifactId><version>1</version>
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+</project>
+""",
+        encoding="utf-8",
+    )
+    ready_port = reserve_local_port()
+    jdwp_port = reserve_local_port()
+    while jdwp_port == ready_port:
+        jdwp_port = reserve_local_port()
+    run_config = project / ".run/PersistentFixture.xml"
+    run_config.parent.mkdir()
+    run_config.write_text(
+        f"""\
+<component name="ProjectRunConfigurationManager">
+  <configuration name="PersistentFixture" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="example.PersistentFixture" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="PROGRAM_PARAMETERS" value="{ready_port}" />
+    <method v="2"><option name="Make" enabled="true" /></method>
+  </configuration>
+</component>
+""",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+    }
+    java8_home = os.environ.get("JOLINK_TEST_JAVA8_HOME")
+    if java8_home:
+        environment["JAVA_HOME"] = java8_home
+        environment["PATH"] = (
+            str(Path(java8_home) / "bin")
+            + os.pathsep
+            + environment.get("PATH", "")
+        )
+
+    async def launch_and_wait(session: Any) -> dict[str, Any]:
+        assert_ok(await call_payload(session, {
+            "action": "run",
+            "project_path": str(project),
+            "launch_name": "PersistentFixture",
+            "jdwp_port": jdwp_port,
+            "ready_port": ready_port,
+            "startup_wait_timeout_seconds": 5,
+        }))
+        with anyio.fail_after(90):
+            while True:
+                status = assert_ok(await call_payload(
+                    session, {"action": "status"}
+                ))
+                if status.get("launch_phase") == "failed":
+                    raise AssertionError(status)
+                if (
+                    status.get("launch_phase") == "runtime_active"
+                    and status.get("compile_ready") is True
+                ):
+                    return status
+                await anyio.sleep(0.05)
+
+    def request_value() -> str:
+        with socket.create_connection(("127.0.0.1", ready_port), timeout=3) as client:
+            client.sendall(b"?")
+            return client.recv(64).decode("utf-8")
+
+    async def scenario() -> None:
+        with temporary_stderr() as stderr:
+            async with open_mcp_session(
+                stderr, environment=environment
+            ) as first_session:
+                first = await launch_and_wait(first_session)
+                assert first["jdt_bootstrap_reused"] is False
+                assert first["jdt_bootstrap_build_kind"] == "FULL"
+                assert_ok(await call_payload(first_session, {"action": "stop"}))
+
+        with temporary_stderr() as stderr:
+            async with open_mcp_session(
+                stderr, environment=environment
+            ) as second_session:
+                second = await launch_and_wait(second_session)
+                assert second["jdt_bootstrap_reused"] is True
+                assert second["jdt_bootstrap_build_kind"] != "FULL"
+                assert await anyio.to_thread.run_sync(request_value) == "before"
+
+                source.write_text(source_text("after"), encoding="utf-8")
+                with anyio.fail_after(1):
+                    started = assert_ok(await call_payload(second_session, {
+                        "action": "update",
+                        "source_files": [
+                            "src/main/java/example/PersistentFixture.java"
+                        ],
+                    }))
+                assert started["status"] == "reload_started"
+                terminal = await _await_reload(
+                    second_session, started, timeout=30
+                )
+                assert terminal["ok"] is True
+                assert terminal["status"] == "reloaded"
+                assert terminal["applied"] is True
+                assert await anyio.to_thread.run_sync(request_value) == "after"
+                assert_ok(await call_payload(second_session, {"action": "stop"}))
 
     anyio.run(scenario)
 

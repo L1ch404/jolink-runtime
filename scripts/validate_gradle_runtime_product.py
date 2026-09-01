@@ -292,8 +292,17 @@ async def _run(
                         "source_files": ["src/main/java/example/GradleRuntimeApp.java"],
                     },
                 )
-                if hot.get("ok") is not True or hot.get("apply_method") != "hotswap":
+                hot_id = hot.get("reload_id")
+                if hot.get("status") != "reload_started" or not hot_id:
                     raise RuntimeError(hot)
+                hot_status = await _status(
+                    session,
+                    lambda value: value.get("active_operation") is None
+                    and value.get("last_reload", {}).get("reload_id") == hot_id,
+                )
+                hot = hot_status["last_reload"]
+                if hot.get("ok") is not True or hot.get("apply_method") != "hotswap":
+                    raise RuntimeError(hot_status)
                 if _message(ready_port) != "after:resource-v1":
                     raise RuntimeError("Gradle HotSwap behavior mismatch")
 

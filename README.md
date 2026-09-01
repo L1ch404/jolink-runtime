@@ -290,11 +290,18 @@ agent can avoid a full Maven rebuild/restart:
 ```text
 java_status(action=status; confirm runtime_active and compile_ready=true)
 -> java_application(action=reload, source_files=[the explicit edited Java files])
+-> java_status(action=status; wait for last_reload to become terminal)
 -> trigger a fresh request
 -> verify the new runtime behavior
 ```
 
-`reload` updates a private persistent JDT Build World and seals its complete
+`reload` immediately returns `reload_started` plus a `reload_id`; compilation
+and application happen in the background and remain observable through
+`active_operation` and `last_reload`. The JDT workspace is saved under the
+local joLink cache after a clean stop and reopened when the project/module and
+Build World fingerprint still match, avoiding another explicit JDT FULL build.
+
+The reload Attempt updates a private persistent JDT Build World and seals its complete
 output delta as a durable Candidate. Compatible loaded method-body changes use
 HotSwap. Structural changes, resources, additions/deletions, an unsupported
 JVM, or `hotswap=false` use a managed Candidate restart, which requires a

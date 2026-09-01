@@ -75,11 +75,14 @@ def reserve_local_port() -> int:
 @asynccontextmanager
 async def open_mcp_session(
     stderr: TextIO,
+    *,
+    environment: dict[str, str] | None = None,
 ) -> AsyncIterator[ClientSession]:
     parameters = StdioServerParameters(
         command=sys.executable,
         args=["-m", "jolink_runtime.transport.stdio"],
         cwd=REPOSITORY_ROOT,
+        env=environment,
     )
     async with stdio_client(parameters, errlog=stderr) as (
         read_stream,

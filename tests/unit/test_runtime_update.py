@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,49 @@ def _plan(tmp_path: Path) -> tuple[FastCompilePlan, Path, Path]:
         ),
         source,
         config,
+    )
+
+
+def test_persistent_build_world_identity_ignores_temporary_metadata_path(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "attempt-one/effective-pom.xml"
+    second = tmp_path / "attempt-two/effective-pom.xml"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("<project/>\n", encoding="utf-8")
+    second.write_text("<project/>\n", encoding="utf-8")
+    dependency = tmp_path / "dependency-classes"
+    dependency.mkdir()
+    (dependency / "Dependency.class").write_bytes(b"dependency")
+    java = tmp_path / "jdk/bin/java"
+    java.parent.mkdir(parents=True)
+    java.write_bytes(b"java")
+    jdt = SimpleNamespace(
+        source_encoding="UTF-8",
+        source_level=8,
+        target_level=8,
+        method_parameters=False,
+        dependency_entries=(dependency,),
+        processor_entries=(),
+        lombok_entries=(),
+    )
+
+    def prepared(path: Path):
+        return SimpleNamespace(
+            build_world_inputs=(path,),
+            runtime_jdk=SimpleNamespace(java_executable=java),
+            jdt_build_world_plan=jdt,
+            source_manifest_fingerprint="source",
+            resource_input_manifest={},
+        )
+
+    first_identity = JavaRuntime._project_build_world_fingerprint(
+        prepared(first)
+    )
+    os.utime(dependency, None)
+    assert first_identity == JavaRuntime._project_build_world_fingerprint(
+        prepared(second)
     )
 
 
@@ -399,9 +443,16 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
     result = runtime.update(action)
 
     assert result.ok is True
-    assert result.data["status"] == "reloaded"
-    assert result.data["apply_method"] == "hotswap"
-    assert result.data["source_changes_pending"] is True
+    assert result.data["status"] == "reload_started"
+    assert result.data["applied"] is None
+    deadline = time.monotonic() + 5
+    while session.public_status()["last_reload"] is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert session.public_status()["last_reload"]["apply_method"] == "hotswap"
+    assert session.public_status()["last_reload"][
+        "source_changes_pending"
+    ] is True
     assert jdwp.redefined is True
     assert session.generations.current.ordinal == 2
     assert session.generations.current.output_directory.joinpath(
@@ -413,12 +464,108 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
     restart_action.source_files = ["src/main/java/Example.java"]
     restart_action.hotswap = False
     rejected = runtime.update(restart_action)
-    assert rejected.ok is False
-    assert rejected.data["error_code"] == (
+    assert rejected.ok is True
+    restart_id = rejected.data["reload_id"]
+    deadline = time.monotonic() + 5
+    while session.public_status()["last_reload"]["reload_id"] != restart_id:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert session.public_status()["last_reload"]["error_code"] == (
         "RELOAD_RESTART_REQUIRES_READINESS"
     )
     assert session.generations.candidate is None
 
+
+def test_jdt_reload_returns_attempt_before_background_compile_finishes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "src/main/java/Example.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("public class Example {}\n", encoding="utf-8")
+    initial = tmp_path / "initial"
+    initial.mkdir()
+    (initial / "Example.class").write_bytes(b"baseline")
+    session = JavaProjectSession(
+        root=tmp_path / "session",
+        build_world_fingerprint="world",
+    )
+    session.generations.initialize(
+        initial,
+        build_world_fingerprint="world",
+        runtime_active=True,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingJdt(PersistentJdtCompileSession):
+        @property
+        def ready(self) -> bool:
+            return True
+
+        def compile(self, _sources):
+            entered.set()
+            assert release.wait(5)
+            return JdtCompileResult(
+                compile_ok=True,
+                actual_build_kind="INCREMENTAL",
+                compiled_source_count=0,
+                compiled_source_units=(),
+                changed_classes=(),
+                deleted_classes=(),
+                changed_resources=(),
+                deleted_resources=(),
+                error_count=0,
+                warning_count=0,
+                diagnostics=(),
+                diagnostics_truncated=False,
+                elapsed_ms=10.0,
+                source_changes_pending=False,
+                output_directory=tmp_path / "jdt-output",
+            )
+
+        def close(self) -> bool:
+            return True
+
+    compiler = object.__new__(BlockingJdt)
+    session.attach_compile_session(compiler)
+    plan = SimpleNamespace(
+        project_root=project,
+        source_roots=(project / "src/main/java",),
+        is_fresh=lambda: True,
+    )
+    prepared = ProjectUpdatePlan(
+        fast_compile_plan=None,
+        fast_compile_unavailable_reason="DIRECT_DISABLED",
+        attempt_directory=tmp_path,
+        project_session=session,
+        jdt_build_world_plan=plan,
+    )
+    runtime = JavaRuntime()
+    runtime._proc._process = SimpleNamespace(is_alive=lambda: True)
+    monkeypatch.setattr(
+        runtime,
+        "_project_update_context",
+        lambda: ("launch_1", 1, prepared),
+    )
+
+    started_at = time.monotonic()
+    result = runtime.update(_action(source, project))
+
+    assert time.monotonic() - started_at < 0.5
+    assert result.ok is True
+    assert result.data["status"] == "reload_started"
+    assert entered.wait(5)
+    active = session.public_status()["active_operation"]
+    assert active["reload_id"] == result.data["reload_id"]
+    assert active["stage"] == "compiling"
+    release.set()
+    deadline = time.monotonic() + 5
+    while session.public_status()["last_reload"] is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert session.public_status()["last_reload"]["applied"] is True
 
 def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
     tmp_path: Path,
@@ -530,8 +677,16 @@ def test_poisoned_jdt_reload_clears_ready_product_state(
 
     result = runtime.update(_action(source, project))
 
-    assert result.ok is False
-    assert result.data["error_code"] == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
+    assert result.ok is True
+    assert result.data["status"] == "reload_started"
+    deadline = time.monotonic() + 5
+    while session.public_status()["last_reload"] is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert session.public_status()["last_reload"]["applied"] is False
+    assert session.public_status()["last_reload"]["error_code"] == (
+        "JDT_SOURCE_CHANGE_NOT_OBSERVED"
+    )
     assert compiler.closed is True
     assert session.compile_session is None
     assert session.compile_ready is False

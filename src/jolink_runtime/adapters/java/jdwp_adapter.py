@@ -53,6 +53,10 @@ from ...launch import (
     RuntimeProcessState,
 )
 from ...launch.fast_test_manager import FastTestManager, FastTestManagerError
+from ...launch.jdt_workspace_store import (
+    JdtWorkspaceStore,
+)
+from ...launch.jdt_reload_service import JdtReloadService
 from ...launch.test_build_world import build_input_manifest
 from ..base import Runtime
 from .classfile import (
@@ -283,6 +287,8 @@ class JavaRuntime(Runtime):
         self._last_direct_action: RuntimeAction | None = None
         self._fast_compiler = FastCompiler()
         self._fast_tests = FastTestManager()
+        self._jdt_workspaces = JdtWorkspaceStore()
+        self._jdt_reload_service = JdtReloadService(logger)
         self._update_lock = threading.Lock()
         self._code_revision = 0
         self._runtime_overlay_sources: set[str] = set()
@@ -1399,22 +1405,77 @@ class JavaRuntime(Runtime):
 
     @staticmethod
     def _project_build_world_fingerprint(prepared: Any) -> str:
-        plan = prepared.fast_compile_plan
         digest = hashlib.sha256()
-        if plan is not None and plan.configuration_fingerprint:
-            digest.update(str(plan.configuration_fingerprint).encode("ascii"))
-        else:
-            for path in prepared.build_world_inputs:
-                digest.update(str(path.name).encode("utf-8"))
+        jdt_plan = prepared.jdt_build_world_plan
+        configuration_inputs = (
+            getattr(jdt_plan, "configuration_inputs", prepared.build_world_inputs)
+            if jdt_plan is not None
+            else prepared.build_world_inputs
+        )
+        attempt_directory = getattr(
+            prepared, "attempt_directory", Path("/__jolink_no_attempt__")
+        ).resolve(strict=False)
+        for path in configuration_inputs:
+            resolved = path.resolve(strict=False)
+            if resolved.is_relative_to(attempt_directory):
+                continue
+            digest.update(str(path.name).encode("utf-8"))
+            try:
+                digest.update(path.read_bytes())
+            except OSError:
+                digest.update(b"<unavailable>")
+        digest.update(
+            str(prepared.runtime_jdk.java_executable).encode(
+                "utf-8", errors="surrogateescape"
+            )
+        )
+        if jdt_plan is not None:
+            for value in (
+                jdt_plan.source_encoding,
+                jdt_plan.source_level,
+                jdt_plan.target_level,
+                jdt_plan.method_parameters,
+            ):
+                digest.update(str(value).encode("utf-8"))
+                digest.update(b"\0")
+            for entry in (
+                *jdt_plan.dependency_entries,
+                *jdt_plan.processor_entries,
+                *jdt_plan.lombok_entries,
+            ):
+                normalized = entry.resolve(strict=False)
+                digest.update(
+                    str(normalized).encode(
+                        "utf-8", errors="surrogateescape"
+                    )
+                )
                 try:
-                    digest.update(path.read_bytes())
+                    if normalized.is_dir():
+                        for class_file in sorted(
+                            normalized.rglob("*.class"),
+                            key=lambda item: item.relative_to(
+                                normalized
+                            ).as_posix(),
+                        ):
+                            digest.update(
+                                class_file.relative_to(normalized)
+                                .as_posix()
+                                .encode("utf-8")
+                            )
+                            digest.update(
+                                hashlib.sha256(
+                                    class_file.read_bytes()
+                                ).digest()
+                            )
+                    else:
+                        stat = normalized.stat()
+                        digest.update(
+                            f"{stat.st_size}:{stat.st_mtime_ns}".encode(
+                                "ascii"
+                            )
+                        )
                 except OSError:
                     digest.update(b"<unavailable>")
-            digest.update(
-                str(prepared.runtime_jdk.java_executable).encode(
-                    "utf-8", errors="surrogateescape"
-                )
-            )
         digest.update(b"\0source-manifest\0")
         digest.update(
             str(prepared.source_manifest_fingerprint or "").encode("ascii")
@@ -1739,34 +1800,83 @@ class JavaRuntime(Runtime):
                 lombok_agents = tuple(
                     f"{path}=ECJ" for path in plan.lombok_entries
                 )
-                stage = "compile_session_prepare"
-                compiler = PersistentJdtCompileSession(
-                    root=session.root / "compile-session",
-                    candidate=candidate,
-                    worker_java_home=worker_java.home,
-                    source_roots=plan.source_roots,
-                    baseline_source_roots=(
-                        prepared.jdt_source_snapshot_roots
-                    ),
-                    classpath_entries=(
-                        *system_entries,
-                        *plan.dependency_entries,
-                    ),
-                    source_encoding=plan.source_encoding,
-                    source_level=plan.source_level,
-                    method_parameters=plan.method_parameters,
-                    processor_entries=plan.processor_entries,
-                    java_agents=lombok_agents,
-                    extra_jvm_arguments=lombok_worker_jvm_arguments(
-                        worker_java.major,
-                        lombok_enabled=bool(lombok_agents),
-                    ),
-                    min_heap_mb=plan.worker_min_heap_mb,
-                    max_heap_mb=plan.worker_max_heap_mb,
+                stage = "workspace_claim"
+                workspace_identity = {
+                    "build_world_fingerprint": session.build_world_fingerprint,
+                    "candidate_id": candidate.candidate_id,
+                    "candidate_identity": candidate.root.name,
+                    "worker_java_major": worker_java.major,
+                    "worker_data_model": worker_java.data_model,
+                    "source_encoding": plan.source_encoding,
+                    "source_level": plan.source_level,
+                    "target_level": plan.target_level,
+                    "method_parameters": plan.method_parameters,
+                }
+                workspace = self._jdt_workspaces.claim(
+                    project_root=plan.project_root,
+                    module_root=plan.module_root,
+                    identity=workspace_identity,
                 )
+                logger.info(
+                    "java_runtime.jdt.workspace.claim reused=%s "
+                    "build_world=%s",
+                    workspace.reusable,
+                    session.build_world_fingerprint[:12],
+                )
+                session.attach_jdt_workspace_lease(workspace)
+
+                def new_compiler() -> PersistentJdtCompileSession:
+                    return PersistentJdtCompileSession(
+                        root=workspace.root,
+                        candidate=candidate,
+                        worker_java_home=worker_java.home,
+                        source_roots=plan.source_roots,
+                        baseline_source_roots=(
+                            prepared.jdt_source_snapshot_roots
+                        ),
+                        classpath_entries=(
+                            *system_entries,
+                            *plan.dependency_entries,
+                        ),
+                        source_encoding=plan.source_encoding,
+                        source_level=plan.source_level,
+                        method_parameters=plan.method_parameters,
+                        processor_entries=plan.processor_entries,
+                        java_agents=lombok_agents,
+                        extra_jvm_arguments=lombok_worker_jvm_arguments(
+                            worker_java.major,
+                            lombok_enabled=bool(lombok_agents),
+                        ),
+                        min_heap_mb=plan.worker_min_heap_mb,
+                        max_heap_mb=plan.worker_max_heap_mb,
+                        preserve_root_on_close=True,
+                    )
+
+                stage = (
+                    "workspace_reopen"
+                    if workspace.reusable
+                    else "compile_session_prepare"
+                )
+                compiler = new_compiler()
                 session.attach_compile_session(compiler)
-                stage = "worker_start_and_jdt_full"
-                full = compiler.start()
+                try:
+                    full = compiler.start(
+                        reuse_workspace=workspace.reusable
+                    )
+                except (JdtCompileError, OSError):
+                    if not workspace.reusable:
+                        raise
+                    logger.warning(
+                        "java_runtime.jdt.workspace.restore_failed "
+                        "fallback=full"
+                    )
+                    compiler.close()
+                    session.clear_compile_session(compiler)
+                    workspace.reset_for_full()
+                    compiler = new_compiler()
+                    session.attach_compile_session(compiler)
+                    stage = "worker_start_and_jdt_full"
+                    full = compiler.start()
                 if not full.compile_ok:
                     raise JdtCompileError(
                         "JDT_FULL_COMPILE_FAILED",
@@ -1809,10 +1919,13 @@ class JavaRuntime(Runtime):
                     )
                 stage = "baseline_accept"
                 compiler.accept_baseline()
+                workspace.mark_initialized()
                 self._reset_runtime_overlay()
                 session.refresh_compile_ready()
                 session.complete_jdt_bootstrap(
-                    (time.monotonic() - bootstrap_started) * 1000
+                    (time.monotonic() - bootstrap_started) * 1000,
+                    reused=bool(workspace.reusable),
+                    build_kind=full.actual_build_kind,
                 )
             except Exception as error:
                 logger.exception(
@@ -1825,6 +1938,7 @@ class JavaRuntime(Runtime):
                         compiler.close()
                     finally:
                         session.clear_compile_session(compiler)
+                session.invalidate_jdt_workspace()
                 error_code = getattr(
                     error, "error_code", "JDT_COMPILE_SESSION_START_FAILED"
                 )
@@ -1872,6 +1986,7 @@ class JavaRuntime(Runtime):
 
         compiler.close()
         session.clear_compile_session(compiler)
+        session.invalidate_jdt_workspace()
         session.fail_jdt_bootstrap(reason=reason)
 
     def _project_launch_worker(
@@ -3351,6 +3466,26 @@ class JavaRuntime(Runtime):
 
     def update(self, action: RuntimeAction) -> RuntimeResult:
         """Compile explicit project sources and HotSwap compatible classes."""
+        context = self._project_update_context()
+        if not isinstance(context, RuntimeResult):
+            attempt_id, generation, prepared = context
+            project_session = getattr(prepared, "project_session", None)
+            if (
+                project_session is not None
+                and project_session.refresh_compile_ready()
+                and isinstance(
+                    project_session.compile_session,
+                    PersistentJdtCompileSession,
+                )
+            ):
+                return self._jdt_reload_service.start(
+                    self,
+                    action,
+                    attempt_id=attempt_id,
+                    generation=generation,
+                    prepared=prepared,
+                    project_session=project_session,
+                )
         if not self._update_lock.acquire(blocking=False):
             return RuntimeResult(
                 ok=False,
@@ -3373,22 +3508,6 @@ class JavaRuntime(Runtime):
             if isinstance(context, RuntimeResult):
                 return context
             attempt_id, generation, prepared = context
-            project_session = getattr(prepared, "project_session", None)
-            if (
-                project_session is not None
-                and project_session.refresh_compile_ready()
-                and isinstance(
-                    project_session.compile_session,
-                    PersistentJdtCompileSession,
-                )
-            ):
-                return self._update_with_jdt(
-                    action,
-                    attempt_id=attempt_id,
-                    generation=generation,
-                    prepared=prepared,
-                    project_session=project_session,
-                )
             plan = prepared.fast_compile_plan
             assert plan is not None
 
@@ -4399,6 +4518,9 @@ class JavaRuntime(Runtime):
         generation: int,
         prepared: ProjectUpdatePlan,
         project_session: JavaProjectSession,
+        reload_attempt: Any | None = None,
+        source_files: tuple[Path, ...] | None = None,
+        source_fingerprint: str | None = None,
     ) -> RuntimeResult:
         plan = prepared.jdt_build_world_plan
         compiler = project_session.compile_session
@@ -4470,14 +4592,24 @@ class JavaRuntime(Runtime):
                 },
             )
         try:
-            source_files = self._resolve_jdt_reload_sources(
-                plan, getattr(action, "source_files", None)
-            )
-            source_fingerprint = self._source_selection_fingerprint(source_files)
-            reload_attempt = project_session.begin_reload(
-                source_fingerprint,
-                source_files=source_files,
-            )
+            if source_files is None:
+                source_files = self._resolve_jdt_reload_sources(
+                    plan, getattr(action, "source_files", None)
+                )
+            if source_fingerprint is None:
+                source_fingerprint = self._source_selection_fingerprint(
+                    source_files
+                )
+            if reload_attempt is None:
+                reload_attempt = project_session.begin_reload(
+                    source_fingerprint,
+                    source_files=source_files,
+                )
+            elif project_session.active_reload is not reload_attempt:
+                raise ProjectSessionError(
+                    "RELOAD_OWNERSHIP_LOST",
+                    "The accepted reload attempt is no longer active.",
+                )
             project_session.transition_reload(ReloadStage.COMPILING)
             result = compiler.compile(source_files)
             reload_attempt.compile_ms = result.elapsed_ms
@@ -4485,12 +4617,19 @@ class JavaRuntime(Runtime):
         except (JdtCompileError, OSError, ProjectSessionError) as error:
             active = project_session.active_reload
             if active is not None:
+                cancelled = project_session.reload_cancel_requested(active)
                 project_session.finish_reload(
                     applied=False,
                     source_fingerprint_after=(
                         active.source_fingerprint_before
                     ),
-                    error_code=getattr(error, "error_code", "JDT_RELOAD_FAILED"),
+                    error_code=(
+                        "RELOAD_CANCELLED"
+                        if cancelled
+                        else getattr(
+                            error, "error_code", "JDT_RELOAD_FAILED"
+                        )
+                    ),
                 )
             if not compiler.ready:
                 self._invalidate_jdt_compile_session(
@@ -4519,6 +4658,21 @@ class JavaRuntime(Runtime):
                 },
             )
         current_context = self._project_update_context()
+        if project_session.reload_cancel_requested(reload_attempt):
+            project_session.finish_reload(
+                applied=False,
+                source_fingerprint_after=source_fingerprint,
+                error_code="RELOAD_CANCELLED",
+            )
+            return RuntimeResult(
+                ok=False,
+                error="The reload attempt was cancelled.",
+                data={
+                    "error_code": "RELOAD_CANCELLED",
+                    "applied": False,
+                    "retryable": True,
+                },
+            )
         if (
             isinstance(current_context, RuntimeResult)
             or current_context[0] != attempt_id
