@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -45,7 +46,9 @@ def _prepare_one(
     force: bool,
     uv_binary: Path,
     uv_cache: Path,
+    jdt_cache: Path | None,
     wheel: Path,
+    seed_image: str | None,
 ) -> dict[str, object]:
     instance_id = row["instance_id"]
     base_image = _image(instance_id)
@@ -76,6 +79,32 @@ def _prepare_one(
         return result
     base_image_id = _output(("image", "inspect", "--format", "{{.Id}}", base_image))
     result["base_image_id"] = base_image_id
+    source_image = base_image
+    if seed_image:
+        seed = _docker(
+            "image",
+            "inspect",
+            seed_image,
+            timeout=60,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        seed_base = (
+            _output(
+                (
+                    "image",
+                    "inspect",
+                    "--format",
+                    '{{ index .Config.Labels "io.jolink.swe-polybench.base-image-id" }}',
+                    seed_image,
+                )
+            )
+            if seed.returncode == 0
+            else ""
+        )
+        if seed.returncode == 0 and seed_base == base_image_id:
+            source_image = seed_image
+            result["seed_image"] = seed_image
     if not force:
         existing = _docker(
             "image",
@@ -114,6 +143,21 @@ def _prepare_one(
             )
     container = f"jolink-spb-prepare-{_safe_name(instance_id).lower()}"
     _docker("rm", "-f", container, timeout=60, stdout=subprocess.DEVNULL)
+    volumes = [
+        "--volume",
+        f"{uv_binary}:/jolink/uv:ro",
+        "--volume",
+        f"{wheel}:/jolink/{wheel.name}:ro",
+        "--volume",
+        f"{uv_cache}:/root/.cache/uv",
+    ]
+    if jdt_cache is not None:
+        volumes.extend(
+            (
+                "--volume",
+                f"{jdt_cache}:/jolink/jdt-worker-cache:ro",
+            )
+        )
     created = _docker(
         "create",
         "--platform",
@@ -122,17 +166,12 @@ def _prepare_one(
         container,
         "--workdir",
         "/testbed",
-        "--volume",
-        f"{uv_binary}:/jolink/uv:ro",
-        "--volume",
-        f"{wheel}:/jolink/{wheel.name}:ro",
-        "--volume",
-        f"{uv_cache}:/root/.cache/uv",
+        *volumes,
         "--env",
         "UV_CACHE_DIR=/root/.cache/uv/cache",
         "--env",
         "UV_PYTHON_INSTALL_DIR=/root/.cache/uv/python",
-        base_image,
+        source_image,
         "tail",
         "-f",
         "/dev/null",
@@ -148,6 +187,25 @@ def _prepare_one(
         return result
     try:
         _docker("start", container, timeout=60, check=True)
+        if jdt_cache is not None:
+            seeded = _docker(
+                "exec",
+                container,
+                "bash",
+                "-lc",
+                "mkdir -p /root/.cache/jolink-runtime/jdt-worker && "
+                "cp -a /jolink/jdt-worker-cache/. "
+                "/root/.cache/jolink-runtime/jdt-worker/",
+                timeout=120,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            if seeded.returncode != 0:
+                result.update(
+                    error_code="JDT_CANDIDATE_CACHE_SEED_FAILED",
+                    error=str(seeded.stdout or "")[-4000:],
+                )
+                return result
         status_before = _output(
             (
                 "exec",
@@ -168,6 +226,7 @@ def _prepare_one(
         for attempt in range(1, resolve_attempts + 1):
             with log.open("a", encoding="utf-8") as stream:
                 stream.write(f"\n=== online attempt {attempt} ===\n")
+                stream.flush()
                 completed = _docker(
                     "exec",
                     container,
@@ -188,6 +247,7 @@ def _prepare_one(
         offline = online.replace("mvn -B ", "mvn -B -o ", 1)
         with log.open("a", encoding="utf-8") as stream:
             stream.write("\n=== offline verification ===\n")
+            stream.flush()
             verified = _docker(
                 "exec",
                 container,
@@ -213,6 +273,7 @@ def _prepare_one(
         for attempt in range(1, resolve_attempts + 1):
             with jdt_log.open("a", encoding="utf-8") as stream:
                 stream.write(f"\n=== online attempt {attempt} ===\n")
+                stream.flush()
                 completed = _docker(
                     "exec",
                     container,
@@ -247,12 +308,18 @@ def _prepare_one(
             return result
         with jdt_log.open("a", encoding="utf-8") as stream:
             stream.write("\n=== offline verification ===\n")
+            stream.flush()
+            jdt_offline_command = jdt_command.replace(
+                "/jolink/uv run ",
+                "/jolink/uv run --offline ",
+                1,
+            )
             jdt_verified = _docker(
                 "exec",
                 container,
                 "bash",
                 "-lc",
-                jdt_command,
+                jdt_offline_command,
                 timeout=300,
                 stdout=stream,
                 stderr=subprocess.STDOUT,
@@ -332,19 +399,37 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--uv", type=Path, required=True)
     parser.add_argument("--uv-cache", type=Path, required=True)
+    parser.add_argument("--jdt-cache", type=Path)
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--instance", action="append", default=[])
     parser.add_argument("--pull-attempts", type=int, default=5)
     parser.add_argument("--resolve-attempts", type=int, default=5)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--seed-images", type=Path, action="append", default=[])
     args = parser.parse_args()
     dataset = args.dataset.resolve(strict=True)
     output = args.output.resolve(strict=False)
     uv_binary = args.uv.resolve(strict=True)
     uv_cache = args.uv_cache.resolve(strict=True)
+    jdt_cache = (
+        args.jdt_cache.expanduser().resolve(strict=False)
+        if args.jdt_cache is not None
+        else None
+    )
+    if jdt_cache is not None:
+        jdt_cache.mkdir(parents=True, exist_ok=True)
     wheel = args.wheel.resolve(strict=True)
     output.mkdir(parents=True, exist_ok=True)
     rows = _rows(dataset)
+    seed_entries: dict[str, dict[str, object]] = {}
+    for source in args.seed_images:
+        manifest = json.loads(
+            source.expanduser().resolve(strict=True).read_text(encoding="utf-8")
+        )
+        if manifest.get("schema") != "jolink.swe-polybench-prepared-images.v2":
+            raise SystemExit("unsupported seed image manifest")
+        for instance_id, entry in dict(manifest.get("images", {})).items():
+            seed_entries[str(instance_id)] = dict(entry)
     selected = set(args.instance)
     if selected:
         rows = [row for row in rows if row["instance_id"] in selected]
@@ -362,7 +447,15 @@ def main() -> int:
             force=args.force,
             uv_binary=uv_binary,
             uv_cache=uv_cache,
+            jdt_cache=jdt_cache,
             wheel=wheel,
+            seed_image=(
+                str(seed_entries[row["instance_id"]]["prepared_image"])
+                if row["instance_id"] in seed_entries
+                and seed_entries[row["instance_id"]].get("base_image")
+                == _image(row["instance_id"])
+                else None
+            ),
         )
         results.append(result)
         _atomic_json(

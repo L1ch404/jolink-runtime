@@ -22,6 +22,7 @@ from .contracts import (
 from .compiler_profile import (
     CompilerArgumentProfile,
     classify_compiler_arguments,
+    parse_maven_memory_megabytes,
 )
 from .idea_environment import IdeaBuildPreferences
 from .fast_compile import FastCompilePlan, fast_compile_fingerprint
@@ -863,8 +864,15 @@ class MavenBuildSystemAdapter:
                     "category is added to the shared compatibility model."
                 ),
             )
-        worker_min_heap_mb = argument_profile.worker_min_heap_mb
-        worker_max_heap_mb = argument_profile.worker_max_heap_mb
+        structured_min, structured_max = self._structured_compiler_heap(
+            configurations
+        )
+        worker_min_heap_mb = max(
+            argument_profile.worker_min_heap_mb, structured_min
+        )
+        worker_max_heap_mb = max(
+            argument_profile.worker_max_heap_mb, structured_max
+        )
         if worker_min_heap_mb > worker_max_heap_mb:
             raise MavenResolutionError(
                 LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
@@ -993,6 +1001,7 @@ class MavenBuildSystemAdapter:
             configuration_inputs=tuple(configuration_inputs),
             configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
             javac_executable=execution.build_jdk.javac_executable,
+            method_parameters=argument_profile.method_parameters,
             worker_min_heap_mb=worker_min_heap_mb,
             worker_max_heap_mb=worker_max_heap_mb,
         )
@@ -1683,8 +1692,9 @@ class MavenBuildSystemAdapter:
         if arguments is not None:
             values.extend(
                 (item.text or "").strip()
-                for item in arguments.findall("./{*}arg")
-                if (item.text or "").strip()
+                for item in arguments
+                if cls._local_name(item.tag) in {"arg", "compilerArg"}
+                and (item.text or "").strip()
             )
         argument = cls._config_text(configuration, "compilerArgument")
         if argument:
@@ -1709,6 +1719,30 @@ class MavenBuildSystemAdapter:
                 for argument in cls._compiler_argument_values(configuration)
             )
         )
+
+    @classmethod
+    def _structured_compiler_heap(
+        cls,
+        configurations: tuple[ET.Element, ...],
+    ) -> tuple[int, int]:
+        minimum = 64
+        maximum = 2048
+        for configuration in configurations:
+            initial = cls._config_text(configuration, "meminitial")
+            requested_minimum = (
+                parse_maven_memory_megabytes(initial) if initial else None
+            )
+            if requested_minimum is not None:
+                minimum = max(minimum, min(8192, requested_minimum))
+            maximum_text = cls._config_text(configuration, "maxmem")
+            requested_maximum = (
+                parse_maven_memory_megabytes(maximum_text)
+                if maximum_text
+                else None
+            )
+            if requested_maximum is not None:
+                maximum = max(maximum, min(8192, requested_maximum))
+        return minimum, maximum
 
     @classmethod
     def _compiler_value(

@@ -231,6 +231,78 @@ def test_persistent_jdt_session_full_then_incremental(
     assert worker.closed is True
 
 
+def test_persistent_jdt_session_supports_test_only_source_roots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    test_root = tmp_path / "project/test"
+    source = test_root / "example/AppTest.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "package example; class AppTest { int value() { return 1; } }",
+        encoding="utf-8",
+    )
+    dependency = tmp_path / "dependency.jar"
+    dependency.write_bytes(b"dependency")
+    session = PersistentJdtCompileSession(
+        root=tmp_path / "session",
+        candidate=_candidate(tmp_path),
+        worker_java_home=tmp_path / "jdk",
+        source_roots=(),
+        classpath_entries=(dependency,),
+        source_encoding="UTF-8",
+        test_source_roots=(test_root,),
+    )
+
+    class TestOnlyWorker(_FakeWorker):
+        def command(self, command: str):
+            self.command_count += 1
+            private = self.session.private_test_source / "example/AppTest.java"
+            output = self.session.test_output_directory / "example/AppTest.class"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            before = output.read_bytes() if output.exists() else None
+            output.write_bytes(hashlib.sha256(private.read_bytes()).digest())
+            after = output.read_bytes()
+            return {
+                "operation_ok": True,
+                "compile_ok": True,
+                "actual_build_kind": (
+                    "FULL" if command.endswith("FULL") else "INCREMENTAL"
+                ),
+                "compiled_source_units": ["test-src/example/AppTest.java"],
+                "changed_classes": (
+                    ["example/AppTest.class"] if before != after else []
+                ),
+                "deleted_source_units": [],
+                "deleted_classes": [],
+                "error_count": 0,
+                "warning_count": 0,
+                "diagnostic_details": [],
+                "diagnostics_truncated": False,
+                "main_compile_ok": True,
+                "test_compile_ok": True,
+            }
+
+    worker = TestOnlyWorker(session)
+    monkeypatch.setattr(session, "_start_worker", lambda **_kwargs: worker)
+
+    full = session.start()
+    session.accept_baseline()
+    source.write_text(
+        "package example; class AppTest { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    incremental = session.compile((source,))
+
+    assert full.compile_ok is True
+    assert full.compiled_source_units == ("test-src/example/AppTest.java",)
+    assert incremental.compile_ok is True
+    assert incremental.compiled_source_units == (
+        "test-src/example/AppTest.java",
+    )
+    assert session.close() is True
+
+
 def test_compile_ready_is_false_until_initial_full_build_completes(
     tmp_path: Path,
     monkeypatch,

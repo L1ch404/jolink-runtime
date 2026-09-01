@@ -112,7 +112,17 @@ def _selector(row: dict[str, str]) -> tuple[str, str]:
     selected = (p2p or f2p)
     if not selected:
         raise RuntimeError("NO_P2P_OR_F2P_TEST")
-    raw = selected[0]
+    raw = next(
+        (
+            value
+            for value in selected
+            if re.fullmatch(
+                r"[A-Za-z_$][A-Za-z0-9_$]*",
+                value.rpartition(".")[2],
+            )
+        ),
+        selected[0],
+    )
     class_name, separator, method_name = raw.rpartition(".")
     if not separator or not class_name or not method_name:
         raise RuntimeError(f"INVALID_TEST_ID:{raw}")

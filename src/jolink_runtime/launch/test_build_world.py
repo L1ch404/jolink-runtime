@@ -39,6 +39,7 @@ class JavaTestBuildWorld:
     upstream_source_roots: tuple[Path, ...] = ()
     worker_min_heap_mb: int = 64
     worker_max_heap_mb: int = 2048
+    test_jvm_arguments: tuple[str, ...] = ()
     runner_support_provenance: dict[str, object] = field(default_factory=dict)
     native_resource_oracle_required: bool = False
     expected_input_manifest: dict[str, str] = field(default_factory=dict)

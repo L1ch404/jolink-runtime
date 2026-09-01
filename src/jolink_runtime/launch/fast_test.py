@@ -299,6 +299,7 @@ class FastTestRunner:
         owner: AttemptToken,
         framework: str | None = None,
         environment: dict[str, str] | None = None,
+        jvm_arguments: Sequence[str] = (),
     ) -> FastTestResult:
         if not selectors or len(selectors) > 64:
             raise FastTestError(
@@ -322,6 +323,17 @@ class FastTestRunner:
                     "A Fast Test selector must be Class or Class#method.",
                 )
         assets = FastTestAssets.load()
+        if len(jvm_arguments) > 64 or any(
+            not value
+            or "\n" in value
+            or "\r" in value
+            or "\x00" in value
+            for value in jvm_arguments
+        ):
+            raise FastTestError(
+                "TEST_JVM_ARGUMENTS_INVALID",
+                "The modeled Test Runner JVM arguments are invalid.",
+            )
         normalized = complete_test_runtime_classpath(classpath)
         detected_framework = detect_test_framework(normalized)
         if framework is None:
@@ -422,6 +434,7 @@ class FastTestRunner:
         listener.start()
         command = (
             str(java_executable),
+            *tuple(jvm_arguments),
             "-ea",
             "-jar",
             str(pathing_jar),

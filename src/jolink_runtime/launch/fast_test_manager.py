@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .contracts import BuildOperationSpec, LaunchIntent
+from .compiler_profile import parse_maven_memory_megabytes
 from .fast_compile import fast_compile_fingerprint
 from .fast_test import FastTestError, FastTestRunner
 from .idea_environment import IdeaEnvironmentImporter
@@ -149,6 +150,7 @@ class _FastTestProject:
     test_framework: str | None
     test_working_directory: Path
     runner_environment: dict[str, str]
+    runner_jvm_arguments: tuple[str, ...]
     javac_executable: Path
     compiler: PersistentJdtCompileSession
     runtime_classpath: tuple[Path, ...]
@@ -509,6 +511,7 @@ class FastTestManager:
                         selectors=attempt.tests,
                         working_directory=project.test_working_directory,
                         environment=project.runner_environment,
+                        jvm_arguments=project.runner_jvm_arguments,
                         attempt_directory=test_attempt,
                         timeout_seconds=attempt.timeout_seconds,
                         owner=attempt.owner,
@@ -1033,13 +1036,19 @@ class FastTestManager:
         test_roots = self._paths(
             snapshot, "testCompileSourceRoots", module.directory
         )
-        if not main_roots or not test_roots:
+        if not test_roots:
             raise FastTestManagerError(
                 "FAST_TEST_SOURCE_ROOTS_UNAVAILABLE",
-                "The Maven Probe found no main or test Java source roots.",
+                "The Maven Probe found no test Java source roots.",
+                context={
+                    "main_source_root_count": len(main_roots),
+                    "test_source_root_count": len(test_roots),
+                },
             )
         attempt.require_not_cancelled()
-        main_output = Path(str(snapshot["outputDirectory"])).resolve(strict=True)
+        main_output = Path(str(snapshot["outputDirectory"])).resolve(
+            strict=False
+        )
         test_output = Path(str(snapshot["testOutputDirectory"])).resolve(strict=True)
         main_classpath = self._paths(
             snapshot, "compileClasspathElements", module.directory
@@ -1123,6 +1132,19 @@ class FastTestManager:
             build_jdk=build_jdk,
             runtime_jdk=build_jdk,
         )
+        if (
+            compiler_model["source_level"]
+            != compiler_model["target_level"]
+            or compiler_model["target_level"] not in {8, 11}
+        ):
+            raise FastTestManagerError(
+                "FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
+                "Fast Test supports equal Java 8 or 11 source/target levels.",
+                context={
+                    "source_level": compiler_model["source_level"],
+                    "target_level": compiler_model["target_level"],
+                },
+            )
         for label, processing in (
             ("main", main_processing),
             ("test", test_processing),
@@ -1148,6 +1170,14 @@ class FastTestManager:
             for value in unsupported_surefire
             if value not in {"skip", "skipTests"}
         ]
+        (
+            unsupported_surefire,
+            test_jvm_arguments,
+        ) = self._surefire_runtime_compatibility(
+            effective_project,
+            unsupported_surefire,
+            attempt=attempt,
+        )
         if unsupported_surefire:
             raise FastTestManagerError(
                 "FAST_TEST_SUREFIRE_CONFIGURATION_UNSUPPORTED",
@@ -1237,16 +1267,9 @@ class FastTestManager:
         )
         method_parameters = self._compiler_method_parameters(
             effective_project
+        ) or self._compiler_argument_method_parameters(
+            effective_project
         )
-        if (
-            compiler_model["source_level"]
-            != compiler_model["target_level"]
-            or compiler_model["target_level"] not in {8, 11}
-        ):
-            raise FastTestManagerError(
-                "FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
-                "Fast Test supports equal Java 8 or 11 source/target levels.",
-            )
         target_level = int(compiler_model["target_level"])
         target_java_home = self._select_target_java(
             preferences,
@@ -1307,6 +1330,7 @@ class FastTestManager:
             test_working_directory=module.directory,
             test_classes_directories=(test_output,),
             runner_environment={},
+            test_jvm_arguments=test_jvm_arguments,
             javac_executable=build_jdk.javac_executable,
             configuration_inputs=configuration_inputs,
             configuration_environment_names=(),
@@ -1389,7 +1413,9 @@ class FastTestManager:
             test_source_roots=world.test_source_roots,
             baseline_test_source_roots=test_snapshots,
             test_classpath_entries=world.test_dependencies,
-            baseline_main_output=world.main_output,
+            baseline_main_output=(
+                world.main_output if world.main_output.is_dir() else None
+            ),
             baseline_test_output=world.test_output,
             processor_entries=world.processor_entries,
             java_agents=world.java_agents,
@@ -1525,6 +1551,7 @@ class FastTestManager:
             test_framework=world.test_framework,
             test_working_directory=world.test_working_directory,
             runner_environment=dict(world.runner_environment),
+            runner_jvm_arguments=world.test_jvm_arguments,
             javac_executable=world.javac_executable,
             compiler=compiler,
             runtime_classpath=world.test_runtime_classpath,
@@ -1728,7 +1755,16 @@ class FastTestManager:
             configuration = execution.find("./{*}configuration")
             if configuration is None:
                 continue
-            for field in ("source", "target", "encoding", "optimize"):
+            for field in (
+                "source",
+                "target",
+                "encoding",
+                "optimize",
+                "fork",
+                "maxmem",
+                "meminitial",
+                "showWarnings",
+            ):
                 value = self._maven._config_text(configuration, field)
                 if value:
                     values.setdefault(f"testCompile.{field}", []).append(
@@ -1774,9 +1810,136 @@ class FastTestManager:
                 return {
                     value.casefold() for value in observed
                 } <= {"true", "false"}
+            if name in {"testFork", "testCompile.fork"}:
+                return {
+                    value.casefold() for value in observed
+                } <= {"true", "false"}
+            if name in {"testShowWarnings", "testCompile.showWarnings"}:
+                return {value.casefold() for value in observed} == {"true"}
+            if name in {
+                "testMaxmem",
+                "testCompile.maxmem",
+                "testMeminitial",
+                "testCompile.meminitial",
+            }:
+                return all(
+                    parse_maven_memory_megabytes(value) is not None
+                    for value in observed
+                )
             return False
 
         return [name for name in names if not shared(str(name))]
+
+    def _surefire_runtime_compatibility(
+        self,
+        project: ET.Element,
+        unsupported: Sequence[str],
+        *,
+        attempt: TestAttempt,
+    ) -> tuple[list[str], tuple[str, ...]]:
+        if not unsupported:
+            return [], ()
+        plugin = self._maven._find_build_plugin(
+            project, "maven-surefire-plugin"
+        )
+        if plugin is None:
+            return list(unsupported), ()
+        configuration = plugin.find("./{*}configuration")
+        for execution in plugin.findall("./{*}executions/{*}execution"):
+            goals = {
+                (goal.text or "").strip()
+                for goal in execution.findall("./{*}goals/{*}goal")
+            }
+            candidate = execution.find("./{*}configuration")
+            if "test" in goals and candidate is not None:
+                configuration = candidate
+        if configuration is None:
+            return list(unsupported), ()
+
+        modeled: set[str] = set()
+        arguments: list[str] = []
+        single_method = (
+            len(attempt.tests) == 1 and "#" in attempt.tests[0]
+        )
+        if single_method:
+            modeled.update(
+                {
+                    "includes",
+                    "excludes",
+                    "forkCount",
+                    "runOrder",
+                    "parallel",
+                    "reuseForks",
+                    "skipAfterFailureCount",
+                    "threadCount",
+                }
+            )
+
+        fork_mode = self._maven._config_text(configuration, "forkMode")
+        if single_method and fork_mode and fork_mode.casefold() == "once":
+            modeled.add("forkMode")
+        use_system_loader = self._maven._config_text(
+            configuration, "useSystemClassLoader"
+        )
+        if (
+            use_system_loader
+            and use_system_loader.casefold() == "true"
+        ):
+            modeled.add("useSystemClassLoader")
+
+        arg_line = self._maven._config_text(configuration, "argLine")
+        if arg_line:
+            arg_line = arg_line.replace("${jacocoArgLine}", "").replace(
+                "@{jacocoArgLine}", ""
+            )
+            try:
+                parsed = tuple(shlex.split(arg_line, posix=True))
+            except ValueError:
+                parsed = None
+            if parsed is not None and not any(
+                token.startswith("@{") or (
+                    "${" in token and token != "${argLine}"
+                )
+                for token in parsed
+            ):
+                arguments.extend(
+                    token for token in parsed if token != "${argLine}"
+                )
+                modeled.add("argLine")
+
+        for field in ("systemProperties", "systemPropertyVariables"):
+            container = configuration.find(f"./{{*}}{field}")
+            if container is None:
+                continue
+            properties: list[tuple[str, str]] = []
+            valid = True
+            for item in container:
+                name = self._maven._local_name(item.tag)
+                if name == "property":
+                    key = self._maven._config_text(item, "name")
+                    value = self._maven._config_text(item, "value")
+                else:
+                    key = name
+                    value = (item.text or "").strip()
+                if (
+                    not re.fullmatch(r"[A-Za-z0-9_.-]+", key)
+                    or "\n" in value
+                    or "\r" in value
+                    or "\x00" in value
+                ):
+                    valid = False
+                    break
+                properties.append((key, value))
+            if valid:
+                arguments.extend(
+                    f"-D{key}={value}" for key, value in properties
+                )
+                modeled.add(field)
+
+        return (
+            [value for value in unsupported if value not in modeled],
+            tuple(dict.fromkeys(arguments)),
+        )
 
     def _compiler_argument_compatibility(
         self,
@@ -1817,6 +1980,15 @@ class FastTestManager:
                     "argument_categories": ["compiler_extension"],
                 },
             )
+        if main_profile.method_parameters != test_profile.method_parameters:
+            raise FastTestManagerError(
+                "FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED",
+                "Main and test compiler argument profiles disagree.",
+                context={
+                    "unresolved_argument_count": 0,
+                    "argument_categories": ["main_test_profile_difference"],
+                },
+            )
         worker_min_heap_mb = max(
             main_profile.worker_min_heap_mb,
             test_profile.worker_min_heap_mb,
@@ -1824,6 +1996,25 @@ class FastTestManager:
         worker_max_heap_mb = max(
             main_profile.worker_max_heap_mb,
             test_profile.worker_max_heap_mb,
+        )
+        compiler = self._maven._find_build_plugin(
+            project, "maven-compiler-plugin"
+        )
+        main_structured = self._maven._structured_compiler_heap(
+            self._maven._compiler_configurations(compiler)
+        )
+        test_structured = self._maven._structured_compiler_heap(
+            self._maven._test_compiler_configurations(compiler)
+        )
+        worker_min_heap_mb = max(
+            worker_min_heap_mb,
+            main_structured[0],
+            test_structured[0],
+        )
+        worker_max_heap_mb = max(
+            worker_max_heap_mb,
+            main_structured[1],
+            test_structured[1],
         )
         if worker_min_heap_mb > worker_max_heap_mb:
             raise FastTestManagerError(
@@ -1835,6 +2026,24 @@ class FastTestManager:
                 },
             )
         return remaining, worker_min_heap_mb, worker_max_heap_mb
+
+    def _compiler_argument_method_parameters(
+        self,
+        project: ET.Element,
+    ) -> bool:
+        compiler = self._maven._find_build_plugin(
+            project, "maven-compiler-plugin"
+        )
+        main_profile = self._maven._compiler_argument_profile(
+            self._maven._compiler_configurations(compiler)
+        )
+        test_profile = self._maven._compiler_argument_profile(
+            self._maven._test_compiler_configurations(compiler)
+        )
+        return bool(
+            main_profile.method_parameters
+            or test_profile.method_parameters
+        )
 
     def _compiler_method_parameters(self, project: Any) -> bool:
         plugin = self._maven._find_build_plugin(

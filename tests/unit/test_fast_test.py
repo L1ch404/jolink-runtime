@@ -695,12 +695,18 @@ def test_runner_rejects_an_unsettled_process_tree_and_uses_classpath_file(
             timeout_seconds=5,
             owner=AttemptToken("test_tree", 1),
             environment={"JOLINK_TEST_ENV": "preserved"},
+            jvm_arguments=("-Dexample.mode=test", "-Xmx256m"),
         )
 
     assert captured.value.error_code == "TEST_PROCESS_TREE_NOT_SETTLED"
     assert captured.value.context["remaining_process_count"] == 1
     assert "-cp" not in supervisor.observed_argv
     assert "--classpath-file" in supervisor.observed_argv
+    assert "-Dexample.mode=test" in supervisor.observed_argv
+    assert "-Xmx256m" in supervisor.observed_argv
+    assert supervisor.observed_argv.index("-Xmx256m") < (
+        supervisor.observed_argv.index("-jar")
+    )
     assert supervisor.observed_spec.environment == {
         "JOLINK_TEST_ENV": "preserved"
     }
@@ -961,6 +967,59 @@ def test_fast_test_maps_test_compile_memory_arguments_to_worker() -> None:
         manager.close()
 
 
+def test_fast_test_reads_method_parameters_from_compiler_arguments() -> None:
+    project = ET.fromstring(
+        """
+<project><build><plugins><plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-compiler-plugin</artifactId>
+  <configuration><compilerArgs><arg>-parameters</arg></compilerArgs></configuration>
+  <executions><execution><goals><goal>testCompile</goal></goals>
+    <configuration><compilerArgs><arg>-parameters</arg></compilerArgs></configuration>
+  </execution></executions>
+</plugin></plugins></build></project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        assert manager._compiler_argument_method_parameters(project) is True
+    finally:
+        manager.close()
+
+
+def test_fast_test_accepts_legacy_compiler_arg_children() -> None:
+    project = ET.fromstring(
+        """
+<project><build><plugins><plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-compiler-plugin</artifactId>
+  <configuration><compilerArgs>
+    <compilerArg>-proc:none</compilerArg>
+    <compilerArg>-parameters</compilerArg>
+  </compilerArgs></configuration>
+  <executions><execution><goals><goal>testCompile</goal></goals>
+    <configuration><compilerArgs>
+      <compilerArg>-proc:none</compilerArg>
+      <compilerArg>-parameters</compilerArg>
+    </compilerArgs></configuration>
+  </execution></executions>
+</plugin></plugins></build></project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        remaining, _minimum, _maximum = (
+            manager._compiler_argument_compatibility(
+                project,
+                ["testCompile.compilerArgs"],
+            )
+        )
+        assert remaining == []
+        assert manager._compiler_argument_method_parameters(project) is True
+    finally:
+        manager.close()
+
+
 def test_fast_test_treats_legacy_javac_optimize_as_redundant() -> None:
     project = ET.fromstring(
         """
@@ -985,6 +1044,144 @@ def test_fast_test_treats_legacy_javac_optimize_as_redundant() -> None:
             compiler_model={"source_level": 8, "target_level": 8},
         )
         assert remaining == []
+    finally:
+        manager.close()
+
+
+def test_fast_test_maps_standard_compiler_process_and_diagnostic_options() -> None:
+    project = ET.fromstring(
+        """
+<project>
+  <properties><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+  <build><plugins><plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <executions><execution><goals><goal>testCompile</goal></goals>
+      <configuration><fork>false</fork><maxmem>3g</maxmem>
+        <showWarnings>true</showWarnings></configuration>
+    </execution></executions>
+  </plugin></plugins></build>
+</project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        remaining = manager._unshared_test_compiler_configuration(
+            project,
+            [
+                "testCompile.fork",
+                "testCompile.maxmem",
+                "testCompile.showWarnings",
+            ],
+            compiler_model={"source_level": 8, "target_level": 8},
+        )
+        assert remaining == []
+        _remaining, minimum, maximum = (
+            manager._compiler_argument_compatibility(project, remaining)
+        )
+        assert minimum == 64
+        assert maximum == 3072
+    finally:
+        manager.close()
+
+
+def test_single_method_maps_surefire_runtime_profile_to_runner_jvm() -> None:
+    project = ET.fromstring(
+        """
+<project><build><plugins><plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-surefire-plugin</artifactId>
+  <executions><execution><goals><goal>test</goal></goals><configuration>
+    <includes><include>**/Test*.java</include></includes>
+    <excludes><exclude>**/*IT.java</exclude></excludes>
+    <forkCount>4</forkCount><reuseForks>false</reuseForks>
+    <skipAfterFailureCount>1</skipAfterFailureCount>
+    <runOrder>random</runOrder><parallel>methods</parallel><threadCount>2</threadCount>
+    <forkMode>once</forkMode><useSystemClassLoader>true</useSystemClassLoader>
+    <argLine>${argLine} -Dfile.encoding=UTF-8 -Xms2g -Xmx2g ${jacocoArgLine}</argLine>
+    <systemProperties><legacy>true</legacy></systemProperties>
+    <systemPropertyVariables><user.timezone>UTC</user.timezone>
+    </systemPropertyVariables>
+  </configuration></execution></executions>
+</plugin></plugins></build></project>
+"""
+    )
+    attempt = SimpleNamespace(tests=("example.Test#works",))
+    manager = FastTestManager()
+    try:
+        remaining, arguments = manager._surefire_runtime_compatibility(
+            project,
+            [
+                "argLine",
+                "excludes",
+                "forkMode",
+                "forkCount",
+                "includes",
+                "parallel",
+                "runOrder",
+                "reuseForks",
+                "skipAfterFailureCount",
+                "systemProperties",
+                "systemPropertyVariables",
+                "threadCount",
+                "useSystemClassLoader",
+            ],
+            attempt=attempt,
+        )
+        assert remaining == []
+        assert arguments == (
+            "-Dfile.encoding=UTF-8",
+            "-Xms2g",
+            "-Xmx2g",
+            "-Dlegacy=true",
+            "-Duser.timezone=UTC",
+        )
+    finally:
+        manager.close()
+
+
+def test_multiple_selectors_keep_surefire_order_and_parallel_boundaries() -> None:
+    project = ET.fromstring(
+        """
+<project><build><plugins><plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-surefire-plugin</artifactId>
+  <configuration><parallel>methods</parallel><threadCount>2</threadCount>
+  </configuration>
+</plugin></plugins></build></project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        remaining, arguments = manager._surefire_runtime_compatibility(
+            project,
+            ["parallel", "threadCount"],
+            attempt=SimpleNamespace(tests=("example.One", "example.Two")),
+        )
+        assert remaining == ["parallel", "threadCount"]
+        assert arguments == ()
+    finally:
+        manager.close()
+
+
+def test_jacoco_only_argline_is_omitted_from_fast_test_runner() -> None:
+    project = ET.fromstring(
+        """
+<project><build><plugins><plugin>
+  <artifactId>maven-surefire-plugin</artifactId>
+  <configuration><argLine>${jacocoArgLine}</argLine></configuration>
+</plugin></plugins></build></project>
+"""
+    )
+    manager = FastTestManager()
+    try:
+        remaining, arguments = manager._surefire_runtime_compatibility(
+            project,
+            ["argLine"],
+            attempt=SimpleNamespace(tests=("example.Test#works",)),
+        )
+        assert remaining == []
+        assert arguments == ()
     finally:
         manager.close()
 
