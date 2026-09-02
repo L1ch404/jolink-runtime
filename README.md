@@ -135,12 +135,11 @@ These actions support:
 - launching a Java application as an owned JVM process;
 - importing an IntelliJ IDEA Application/Spring Boot launch from Maven, or a
   verified IDEA Application launch from a supported Gradle Wrapper project,
-  compiling it, resolving its runtime classpath, and launching it without
-  first packaging a fat JAR;
+  exporting its Build World without running Maven/Gradle compilation, compiling
+  with JDT before JVM startup, and launching without packaging a fat JAR;
 - stopping or restarting an application after code changes;
-- compiling explicit edits in a persistent private JDT session, sealing a
-  durable Candidate, and applying it by HotSwap or managed restart with
-  automatic rollback;
+- compiling explicit edits in a persistent private JDT session and applying
+  compatible loaded class definitions with HotSwap;
 - inspecting application status and logs;
 - attaching to an already-running local JVM;
 - setting semantic breakpoints and exception watches;
@@ -301,33 +300,36 @@ and application happen in the background and remain observable through
 local joLink cache after a clean stop and reopened when the project/module and
 Build World fingerprint still match, avoiding another explicit JDT FULL build.
 
-The reload Attempt updates a private persistent JDT Build World and seals its complete
-output delta as a durable Candidate. Compatible loaded method-body changes use
-HotSwap. Structural changes, resources, additions/deletions, an unsupported
-JVM, or `hotswap=false` use a managed Candidate restart, which requires a
-configured `ready_port`. If the Candidate does not become ready, joLink
-automatically restores the last-good Generation and reports
-`rolled_back=true`. Source edits made during restart are reported as pending.
-A successful apply is still not proof of business correctness, so a fresh
-verification request is required. Breakpoints in redefined classes become
-stale and must be set again against current source.
+The reload Attempt updates a private persistent JDT Build World and applies
+compatible loaded method-body changes with HotSwap. It never restarts the JVM.
+Structural changes, resources, additions/deletions, an unsupported JVM,
+HotSwap rejection, or `hotswap=false` return `RELOAD_REQUIRES_RELAUNCH` and
+leave the current JVM unchanged. Use `stop` followed by `launch` so JDT applies
+the pending change before starting a new Runtime. A successful HotSwap is runtime-only
+and is lost by `restart`; it is still not proof of business correctness, so a
+fresh verification request is required. Breakpoints in redefined classes
+become stale and must be set again against current source.
 
 The locked JDT Worker is installed into a content-addressed user cache on
 first use. Valid Eclipse bundles are reused from older joLink caches; missing
 bundles are downloaded and verified, while the product Worker and Equinox
 configuration ship inside the Python package. `restart` never accepts
-`project_path` and never invokes Maven: use `stop` followed by `launch` when a
-new formal project build is required.
+`project_path`; use `stop` followed by `launch` when source or resource changes
+must be incorporated into a newly started JVM.
 
 The same product Worker JAR targets Java 8 bytecode and runs on a 64-bit JDK 8
 or newer. joLink prefers the Maven Build JDK, preserving the Processor runtime
 used by the formal build, and does not require Java 8 projects to install a
 separate JDK 17.
 
-Persistent reload requires the imported IDEA launch to enable Make/Build before
-run. When it is disabled, joLink still launches the existing Maven output but
-returns `JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE` rather than claiming that
-old classes and current source share one compilation baseline.
+The imported IDEA Make/Build flag does not cause Maven or Gradle compilation.
+On the first launch, the Probe exports compiler/runtime facts and JDT performs
+FULL compilation. Later launches reuse the persisted Probe model when build
+configuration is unchanged, compare current sources with the persisted JDT
+source mirror, and either start immediately or run one JDT incremental build.
+
+See [JDT-first startup](docs/jdt-first-launch.zh-CN.md) for the current
+single-module startup and cache behavior.
 
 ## Typical workflow
 

@@ -56,7 +56,7 @@ def _run_one(
 
             source.write_text(_source("2"), encoding="utf-8")
             incremental = session.compile((source,))
-            if not incremental.compile_ok or incremental.candidate_changed_classes != (
+            if not incremental.compile_ok or incremental.runtime_changed_classes != (
                 "example/App.class",
             ):
                 raise RuntimeError(
@@ -72,7 +72,7 @@ def _run_one(
 
             source.write_text(_source("3"), encoding="utf-8")
             recovered = session.compile((source,))
-            if not recovered.compile_ok or recovered.candidate_changed_classes != (
+            if not recovered.compile_ok or recovered.runtime_changed_classes != (
                 "example/App.class",
             ):
                 raise RuntimeError(f"JDK {worker.major} recovery failed: {recovered}")

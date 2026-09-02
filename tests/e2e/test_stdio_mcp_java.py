@@ -39,6 +39,21 @@ from java_support import (
 pytestmark = pytest.mark.mcp_java_e2e
 
 
+def _java8_mcp_environment() -> dict[str, str]:
+    java8_home = os.environ.get("JOLINK_TEST_JAVA8_HOME")
+    if not java8_home:
+        pytest.skip("set JOLINK_TEST_JAVA8_HOME for JDT-first Java 8 launch")
+    return {
+        **os.environ,
+        "JAVA_HOME": java8_home,
+        "PATH": (
+            str(Path(java8_home) / "bin")
+            + os.pathsep
+            + os.environ.get("PATH", "")
+        ),
+    }
+
+
 class _DaemonHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -910,7 +925,7 @@ def test_run_status_tracks_delayed_tcp_readiness(tmp_path: Path) -> None:
     anyio.run(scenario)
 
 
-def test_project_path_launch_compiles_maven_and_reaches_tcp_readiness(
+def test_project_path_launch_uses_jdt_and_reaches_tcp_readiness(
     tmp_path: Path,
 ) -> None:
     """The public MCP path imports IDEA, builds Maven, and launches classes."""
@@ -989,7 +1004,10 @@ public class ProjectMcpFixture {
     async def scenario() -> None:
         with temporary_stderr() as stderr:
             with anyio.fail_after(90):
-                async with open_mcp_session(stderr) as session:
+                async with open_mcp_session(
+                    stderr,
+                    environment=_java8_mcp_environment(),
+                ) as session:
                     started = assert_ok(await call_payload(session, {
                         "action": "run",
                         "project_path": str(project),
@@ -1153,6 +1171,7 @@ public class PersistentFixture {{
             ) as first_session:
                 first = await launch_and_wait(first_session)
                 assert first["jdt_bootstrap_reused"] is False
+                assert first["probe_cache_reused"] is False
                 assert first["jdt_bootstrap_build_kind"] == "FULL"
                 states = list(
                     (tmp_path / "cache/jolink-runtime/jdt-workspaces").glob(
@@ -1163,16 +1182,23 @@ public class PersistentFixture {{
                 assert json.loads(states[0].read_text(encoding="utf-8"))[
                     "clean_shutdown"
                 ] is True
+                assert not project.joinpath("target/classes").exists()
                 assert_ok(await call_payload(first_session, {"action": "stop"}))
 
+        source.write_text(source_text("startup-incremental"), encoding="utf-8")
         with temporary_stderr() as stderr:
             async with open_mcp_session(
                 stderr, environment=environment
             ) as second_session:
                 second = await launch_and_wait(second_session)
                 assert second["jdt_bootstrap_reused"] is True
-                assert second["jdt_bootstrap_build_kind"] != "FULL"
-                assert await anyio.to_thread.run_sync(request_value) == "before"
+                assert second["probe_cache_reused"] is True
+                assert "log_tail" not in second["build"]
+                assert second["jdt_bootstrap_build_kind"] == "INCREMENTAL"
+                assert await anyio.to_thread.run_sync(request_value) == (
+                    "startup-incremental"
+                )
+                assert not project.joinpath("target/classes").exists()
 
                 source.write_text(source_text("after"), encoding="utf-8")
                 with anyio.fail_after(1):
@@ -1193,7 +1219,81 @@ public class PersistentFixture {{
                     "clean_shutdown"
                 ] is True
                 assert await anyio.to_thread.run_sync(request_value) == "after"
+
+                old_pid = int(terminal.get("pid") or second["pid"])
+                restarting = assert_ok(await call_payload(second_session, {
+                    "action": "restart",
+                }))
+                assert restarting["status"] == "restarting"
+                with anyio.fail_after(30):
+                    while True:
+                        restarted = assert_ok(await call_payload(
+                            second_session, {"action": "status"}
+                        ))
+                        if restarted.get("launch_phase") == "failed":
+                            raise AssertionError(restarted)
+                        if (
+                            restarted.get("launch_phase") == "runtime_active"
+                            and restarted.get("pid") != old_pid
+                        ):
+                            break
+                        await anyio.sleep(0.05)
+                assert await anyio.to_thread.run_sync(request_value) == (
+                    "startup-incremental"
+                )
+
+                reapplied = assert_ok(await call_payload(second_session, {
+                    "action": "update",
+                    "source_files": [
+                        "src/main/java/example/PersistentFixture.java"
+                    ],
+                }))
+                reapply_terminal = await _await_reload(
+                    second_session, reapplied, timeout=30
+                )
+                assert reapply_terminal["status"] == "reloaded"
+                assert reapply_terminal["applied"] is True
+                assert await anyio.to_thread.run_sync(request_value) == "after"
                 assert_ok(await call_payload(second_session, {"action": "stop"}))
+
+        with temporary_stderr() as stderr:
+            async with open_mcp_session(
+                stderr, environment=environment
+            ) as third_session:
+                third = await launch_and_wait(third_session)
+                assert third["probe_cache_reused"] is True
+                assert third["jdt_bootstrap_reused"] is True
+                assert third["jdt_bootstrap_build_kind"] is None
+                assert "log_tail" not in third["build"]
+                assert await anyio.to_thread.run_sync(request_value) == "after"
+                assert_ok(await call_payload(third_session, {"action": "stop"}))
+
+        source.write_text("package example; public class {\n", encoding="utf-8")
+        with temporary_stderr() as stderr:
+            async with open_mcp_session(
+                stderr, environment=environment
+            ) as failed_session:
+                assert_ok(await call_payload(failed_session, {
+                    "action": "run",
+                    "project_path": str(project),
+                    "launch_name": "PersistentFixture",
+                    "jdwp_port": jdwp_port,
+                    "ready_port": ready_port,
+                    "startup_wait_timeout_seconds": 5,
+                }))
+                with anyio.fail_after(30):
+                    while True:
+                        failed = assert_ok(await call_payload(
+                            failed_session, {"action": "status"}
+                        ))
+                        if failed.get("launch_phase") == "failed":
+                            break
+                        await anyio.sleep(0.05)
+                assert failed["launch_error"]["error_code"] == (
+                    "JDT_STARTUP_COMPILE_FAILED"
+                )
+                assert failed["process_state"] == "absent"
+                assert not failed.get("pid")
 
     anyio.run(scenario)
 
@@ -1352,7 +1452,22 @@ public class LazyValue {
     async def scenario() -> None:
         with temporary_stderr() as stderr:
             with anyio.fail_after(120):
-                async with open_mcp_session(stderr) as session:
+                async with open_mcp_session(
+                    stderr,
+                    environment=_java8_mcp_environment(),
+                ) as session:
+                    async def reload_source() -> dict[str, Any]:
+                        started = assert_ok(await call_payload(session, {
+                            "action": "update",
+                            "source_files": [
+                                "src/main/java/example/UpdateMcpFixture.java",
+                            ],
+                        }))
+                        assert started["status"] == "reload_started"
+                        return await _await_reload(
+                            session, started, timeout=30
+                        )
+
                     assert_ok(await call_payload(session, {
                         "action": "run",
                         "project_path": str(project),
@@ -1402,56 +1517,25 @@ public class LazyValue {
                         / "example"
                         / "UpdateMcpFixture.class"
                     )
-                    formal_bytes = formal_class.read_bytes()
+                    assert not formal_class.exists()
 
                     source.write_text(
                         updated_source,
                         encoding="utf-8",
                     )
-                    updated = assert_ok(await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    }))
-                    assert updated["status"] == "updated"
-                    assert updated["update_strategy"] == (
-                        "fast_compile_hotswap"
-                    )
-                    assert updated["selection_coverage"] == "caller_provided"
-                    assert updated["persistence"] == "committed_generation"
+                    updated = await reload_source()
+                    assert updated["status"] == "reloaded"
+                    assert updated["persistence"] == "runtime_only"
                     assert updated["runtime_overlay_active"] is True
                     assert updated["runtime_overlay_state"] == "active"
                     assert updated["verification_state"] == "not_verified"
-                    assert updated["restart_loses_update"] is False
-                    assert updated["redefined_classes"] == [
-                        "example.UpdateMcpFixture"
-                    ]
+                    assert updated["restart_loses_update"] is True
                     assert updated["stale_breakpoint_ids"] == [
                         original_breakpoint_id
                     ]
-                    assert updated["newly_stale_breakpoint_ids"] == [
-                        original_breakpoint_id
-                    ]
                     assert updated["breakpoint_refresh_state"] == "partial"
-                    assert updated["breakpoint_stale_reason"] == (
-                        "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
-                    )
-                    unchanged = assert_ok(await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    }))
+                    unchanged = await reload_source()
                     assert unchanged["status"] == "no_changes"
-                    assert unchanged["stale_breakpoint_ids"] == [
-                        original_breakpoint_id
-                    ]
-                    assert unchanged["newly_stale_breakpoint_ids"] == []
-                    assert unchanged["breakpoint_refresh_state"] == "partial"
-                    assert "Remove and set" in unchanged[
-                        "suggested_next_step"
-                    ]
 
                     listed = assert_ok(await call_payload(session, {
                         "action": "breakpoint",
@@ -1499,7 +1583,7 @@ public class LazyValue {
                         ],
                     }))
 
-                    assert formal_class.read_bytes() == formal_bytes
+                    assert not formal_class.exists()
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "after-update"
                     )
@@ -1508,20 +1592,15 @@ public class LazyValue {
                     }))
                     assert observed["runtime_overlay_active"] is True
                     assert observed["code_revision"] == 1
-                    assert observed["generation"] == 2
+                    assert observed["generation"] == 1
 
                     source.write_text(second_updated_source, encoding="utf-8")
-                    second_update = assert_ok(await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    }))
-                    assert second_update["status"] == "updated"
+                    second_update = await reload_source()
+                    assert second_update["status"] == "reloaded"
                     second_status = assert_ok(await call_payload(session, {
                         "action": "status",
                     }))
-                    assert second_status["generation"] == 3
+                    assert second_status["generation"] == 1
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "second-update"
                     )
@@ -1539,18 +1618,14 @@ public class LazyValue {
                         ),
                         encoding="utf-8",
                     )
-                    rejected = await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    })
+                    rejected = await reload_source()
                     assert rejected["ok"] is False
-                    assert rejected["error_code"] == "CLASS_SCHEMA_CHANGED"
+                    assert rejected["error_code"] == "RELOAD_REQUIRES_RELAUNCH"
+                    assert rejected["reason_code"] == "CLASS_SCHEMA_CHANGED"
                     assert rejected["runtime_code_state"] == "unchanged"
                     assert rejected["runtime_overlay_active"] is True
                     assert rejected["code_revision"] == 2
-                    assert formal_class.read_bytes() == formal_bytes
+                    assert not formal_class.exists()
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "second-update"
                     )
@@ -1562,20 +1637,19 @@ public class LazyValue {
                         ),
                         encoding="utf-8",
                     )
-                    static_rejected = await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    })
+                    static_rejected = await reload_source()
                     assert static_rejected["ok"] is False
                     assert static_rejected["error_code"] == (
-                        "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART"
+                        "RELOAD_REQUIRES_RELAUNCH"
                     )
+                    assert static_rejected["reason_code"] in {
+                        "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART",
+                        "CLASS_SCHEMA_CHANGED",
+                    }
                     assert static_rejected["runtime_code_state"] == "unchanged"
                     assert static_rejected["restart_required"] is True
                     assert static_rejected["code_revision"] == 2
-                    assert formal_class.read_bytes() == formal_bytes
+                    assert not formal_class.exists()
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "second-update"
                     )
@@ -1595,40 +1669,32 @@ public class LazyValue {
                         if restarted_status["launch_phase"] == "runtime_active":
                             break
                         await anyio.sleep(0.1)
-                    assert restarted_status["generation"] == 3
+                    assert restarted_status["generation"] == 1
+                    assert await anyio.to_thread.run_sync(request_value) == (
+                        "before-update"
+                    )
+
+                    reapplied_after_restart = await reload_source()
+                    assert reapplied_after_restart["status"] == "reloaded"
+                    reapplied_status = assert_ok(
+                        await call_payload(session, {"action": "status"})
+                    )
+                    assert reapplied_status["generation"] == 1
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "second-update"
                     )
-
-                    unchanged_after_restart = assert_ok(
-                        await call_payload(session, {
-                            "action": "update",
-                            "source_files": [
-                                "src/main/java/example/UpdateMcpFixture.java",
-                            ],
-                        })
-                    )
-                    assert unchanged_after_restart["status"] == "no_changes"
-                    unchanged_status = assert_ok(
-                        await call_payload(session, {"action": "status"})
-                    )
-                    assert unchanged_status["generation"] == 3
 
                     source.write_text(
                         source_text("before-update"),
                         encoding="utf-8",
                     )
-                    reverted = assert_ok(await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            "src/main/java/example/UpdateMcpFixture.java",
-                        ],
-                    }))
-                    assert reverted["status"] == "updated"
+                    reverted = await reload_source()
+                    assert reverted["ok"] is True, json.dumps(reverted)
+                    assert reverted["status"] == "reloaded"
                     reverted_status = assert_ok(
                         await call_payload(session, {"action": "status"})
                     )
-                    assert reverted_status["generation"] == 4
+                    assert reverted_status["generation"] == 1
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "before-update"
                     )
@@ -1638,11 +1704,11 @@ public class LazyValue {
     anyio.run(scenario)
 
 
-def test_project_path_reactor_launch_uses_fresh_workspace_dependency(
+def test_project_path_reactor_launch_reports_deferred_jdt_support(
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Fresh reactor classes win over an older local-repository artifact."""
+    """Multi-module JDT startup remains an explicit deferred capability."""
     require_real_mcp_java_e2e()
     maven = shutil.which("mvn")
     if maven is None:
@@ -1887,53 +1953,16 @@ public final class SharedMessage {
                     }))
                     assert started["status"] == "project_launch_started"
 
-                    active: dict[str, Any] | None = None
-                    while active is None:
+                    while True:
                         status = assert_ok(await call_payload(session, {
                             "action": "status",
                         }))
                         if status["launch_phase"] == "failed":
-                            raise AssertionError(status)
-                        if (
-                            status["launch_phase"] == "runtime_active"
-                            and status.get("fast_update", {}).get("available")
-                            is True
-                        ):
-                            active = status
                             break
                         await anyio.sleep(0.1)
-
-                    assert active["startup_state"] == "ready"
-                    assert active["fast_update"]["available"] is True
-                    await wait_until_async(marker.exists)
-                    assert marker.read_text(encoding="utf-8") == (
-                        "fresh-workspace-value"
+                    assert status["launch_error"]["error_code"] == (
+                        "JDT_MULTI_MODULE_NOT_IMPLEMENTED"
                     )
-                    app_source.write_text(
-                        fresh_app_source.replace(
-                            "return SharedMessage.freshOnly();",
-                            (
-                                'return SharedMessage.freshOnly() '
-                                '+ "-updated";'
-                            ),
-                        ),
-                        encoding="utf-8",
-                    )
-                    updated = assert_ok(await call_payload(session, {
-                        "action": "update",
-                        "source_files": [
-                            (
-                                "app/src/main/java/example/"
-                                "ReactorMcpFixture.java"
-                            ),
-                        ],
-                    }))
-                    assert updated["status"] == "updated"
-                    assert updated["redefined_classes"] == [
-                        "example.ReactorMcpFixture"
-                    ]
-                    assert_ok(await call_payload(session, {
-                        "action": "stop",
-                    }))
+                    assert status["process_state"] == "absent"
 
     anyio.run(scenario)

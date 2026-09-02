@@ -351,12 +351,7 @@ def _prepare_runtime_model(tmp_path: Path, model: dict) -> dict:
         "processResourcesTaskPath": ":processResources",
         "classesTaskPath": ":classes",
         "exportTaskPath": ":jolinkExportBuildWorld_fixture",
-        "executedTaskPaths": [
-            ":classes",
-            ":compileJava",
-            ":jolinkExportBuildWorld_fixture",
-            ":processResources",
-        ],
+        "executedTaskPaths": [":jolinkExportBuildWorld_fixture"],
         "classOutputOverlappingTaskPaths": [":compileJava"],
         "compileJavaActionCount": 1,
         "processResourcesActionCount": 1,
@@ -420,7 +415,7 @@ def test_product_gradle_runtime_freshness_covers_resources_and_runtime_only_deps
     assert world.jdt_plan.is_fresh() is False
 
 
-def test_product_gradle_runtime_seals_and_tracks_formal_resources(
+def test_product_gradle_runtime_tracks_source_resources_without_formal_build(
     tmp_path: Path,
 ) -> None:
     project, model = _model(tmp_path)
@@ -437,13 +432,16 @@ def test_product_gradle_runtime_seals_and_tracks_formal_resources(
         world.module_output,
         formal.parent.resolve(),
     )
-    assert world.generation_input_manifest["application.properties"]
+    assert world.generation_input_manifest == {}
+    assert world.formal_resource_roots == ()
     assert world.jdt_plan.is_fresh() is True
     formal.write_text("feature=v2\n", encoding="utf-8")
+    assert world.jdt_plan.is_fresh() is True
+    source.write_text("feature=v2\n", encoding="utf-8")
     assert world.jdt_plan.is_fresh() is False
 
 
-def test_product_gradle_runtime_rejects_class_resource_collision(
+def test_product_gradle_runtime_ignores_unbuilt_formal_output_collision(
     tmp_path: Path,
 ) -> None:
     project, model = _model(tmp_path)
@@ -454,10 +452,9 @@ def test_product_gradle_runtime_rejects_class_resource_collision(
     class_file.write_bytes(b"class")
     resource_file.write_bytes(b"resource")
 
-    with pytest.raises(GradleRuntimeBuildWorldError) as captured:
-        _runtime_world(tmp_path, model)
+    world = _runtime_world(tmp_path, model)
 
-    assert captured.value.error_code == "GRADLE_RUNTIME_OUTPUT_COLLISION"
+    assert world.generation_input_manifest == {}
 
 
 def test_product_gradle_runtime_rejects_transform_task(

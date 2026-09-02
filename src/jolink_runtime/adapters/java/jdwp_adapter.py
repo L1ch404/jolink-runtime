@@ -63,7 +63,6 @@ from .classfile import (
     ClassFileChangeKind,
     ClassFileFormatError,
     ParsedClassFile,
-    compare_class_output_tier1,
     compare_class_files,
     parse_class_file,
 )
@@ -216,6 +215,7 @@ class ProjectUpdatePlan:
     jdt_unavailable_details: dict[str, Any] | None = None
     build_system: str = "maven"
     build_offline: bool = False
+    probe_cache_reused: bool = False
 
 
 class JavaRuntime(Runtime):
@@ -918,21 +918,11 @@ class JavaRuntime(Runtime):
     ) -> RuntimeResult:
         """Restart the current sealed Generation without compiling sources."""
 
-        return self._restart_project_generation(action, apply_candidate=False)
-
-    def _restart_candidate_project(
-        self,
-        action: RuntimeAction,
-    ) -> RuntimeResult:
-        """Apply a sealed Candidate by restart, rolling back on startup failure."""
-
-        return self._restart_project_generation(action, apply_candidate=True)
+        return self._restart_project_generation(action)
 
     def _restart_project_generation(
         self,
         action: RuntimeAction,
-        *,
-        apply_candidate: bool,
     ) -> RuntimeResult:
 
         snapshot = self._launch_controller.snapshot()
@@ -959,20 +949,12 @@ class JavaRuntime(Runtime):
             or prepared.request is None
             or session is None
             or session.generations.current is None
-            or (
-                apply_candidate
-                and session.generations.candidate is None
-            )
         ):
             return RuntimeResult(
                 ok=False,
                 error="The current project generation is unavailable.",
                 data={
-                    "error_code": (
-                        "CANDIDATE_UNAVAILABLE"
-                        if apply_candidate
-                        else "CURRENT_GENERATION_UNAVAILABLE"
-                    ),
+                    "error_code": "CURRENT_GENERATION_UNAVAILABLE",
                     "retryable": True,
                     "suggested_next_step": (
                         "Launch the project again to establish a stable generation."
@@ -993,7 +975,6 @@ class JavaRuntime(Runtime):
             request=request,
             retained=prepared,
             session=session,
-            apply_candidate=apply_candidate,
         )
         with self._project_state_lock:
             self._preserve_project_sessions.add(attempt_id)
@@ -1011,15 +992,10 @@ class JavaRuntime(Runtime):
             data={
                 "status": "restarting",
                 "applied": None,
-                "apply_method": (
-                    "restart" if apply_candidate else "restart_current"
-                ),
+                "apply_method": "restart_current",
                 **restarted,
                 "suggested_next_step": (
-                    "Call status until the Candidate is active or rollback "
-                    "has restored the previous Generation."
-                    if apply_candidate
-                    else "Call status until the current stable generation is running."
+                    "Call status until the current stable generation is running."
                 ),
             },
         )
@@ -1031,7 +1007,6 @@ class JavaRuntime(Runtime):
         request: ProjectLaunchRequest,
         retained: ProjectUpdatePlan,
         session: JavaProjectSession,
-        apply_candidate: bool = False,
     ) -> None:
         attempt_directory = self._project_pipeline.create_attempt_directory(
             context.attempt_id
@@ -1048,25 +1023,15 @@ class JavaRuntime(Runtime):
             context.transition(LaunchPhase.RESOLVING_BUILD)
             context.transition(LaunchPhase.RESOLVING_RUNTIME)
             current = session.generations.current
-            target = (
-                session.generations.candidate
-                if apply_candidate
-                else current
-            )
-            if current is None or target is None:
+            if current is None:
                 raise ProjectSessionError(
-                    (
-                        "CANDIDATE_UNAVAILABLE"
-                        if apply_candidate
-                        else "CURRENT_GENERATION_UNAVAILABLE"
-                    ),
+                    "CURRENT_GENERATION_UNAVAILABLE",
                     "The requested generation disappeared before restart.",
                 )
             session.generations.verify_generation(current)
-            session.generations.verify_generation(target)
             classpath = list(retained.jvm_plan.classpath)
             classpath[retained.generation_classpath_index] = (
-                target.output_directory
+                current.output_directory
             )
             plan = replace(retained.jvm_plan, classpath=tuple(classpath))
             plan, command = self._project_pipeline.materialize_command(
@@ -1165,145 +1130,50 @@ class JavaRuntime(Runtime):
                         timeout_marked = True
                     context.cancel_event.wait(0.2)
 
-            def source_fingerprint_after_restart(active: Any) -> str:
+            process, startup_ms = start_target(plan, command)
+            context.check_cancelled()
+            session.generations.mark_runtime_current()
+            compiler = session.compile_session
+            if isinstance(compiler, PersistentJdtCompileSession):
+                try:
+                    compiler.reset_publication_baseline(
+                        current.output_directory
+                    )
+                except (JdtCompileError, OSError):
+                    self._invalidate_jdt_compile_session(
+                        context.attempt_id,
+                        retained,
+                        session,
+                        compiler,
+                        reason="JDT_RUNTIME_BASELINE_RESET_FAILED",
+                    )
+            active = session.active_reload
+            if active is not None and active.applied is None:
+                active.apply_method = "restart_current"
+                active.startup_ms = startup_ms
                 if active.source_files:
                     try:
-                        return self._source_selection_fingerprint(
-                            active.source_files
+                        source_fingerprint_after = (
+                            self._source_selection_fingerprint(
+                                active.source_files
+                            )
                         )
                     except OSError:
-                        return "source-unavailable-after-restart"
-                return (
-                    active.source_fingerprint_after
-                    or active.source_fingerprint_before
-                )
-
-            def rollback_to_current(
-                candidate_error: BaseException,
-            ) -> tuple[Any, float]:
-                nonlocal process
-                if process is None:
-                    process = self._proc.current
-                if process is not None:
-                    self._proc.stop_target(process)
-                process = None
-                session.transition_reload(ReloadStage.ROLLING_BACK)
-                if session.generations.candidate is not None:
-                    session.generations.discard_candidate()
-                rollback_classpath = list(retained.jvm_plan.classpath)
-                rollback_classpath[retained.generation_classpath_index] = (
-                    current.output_directory
-                )
-                rollback_plan = replace(
-                    retained.jvm_plan,
-                    classpath=tuple(rollback_classpath),
-                )
-                rollback_plan, rollback_command = (
-                    self._project_pipeline.materialize_command(
-                        rollback_plan,
-                        jdwp_port=request.jdwp_port,
-                        attempt_directory=attempt_directory,
-                    )
-                )
-                context.set_jvm_launch_plan(rollback_plan)
-                with self._project_state_lock:
-                    self._project_update_plans[context.attempt_id] = replace(
-                        retained,
-                        attempt_directory=attempt_directory,
-                        project_session=session,
-                        jvm_plan=rollback_plan,
-                        request=request,
-                    )
-                restored_process, restored_ms = start_target(
-                    rollback_plan,
-                    rollback_command,
-                )
-                process = restored_process
-                session.generations.mark_runtime_current()
-                active = session.active_reload
-                if active is not None:
-                    active.apply_method = "restart"
-                    active.startup_ms = restored_ms
-                    session.finish_reload(
-                        applied=False,
-                        source_fingerprint_after=(
-                            source_fingerprint_after_restart(active)
-                        ),
-                        error_code=getattr(
-                            candidate_error,
-                            "error_code",
-                            "CANDIDATE_START_FAILED",
-                        ),
-                        rolled_back=True,
-                    )
-                session.record_successful_startup(restored_ms)
-                return restored_process, restored_ms
-
-            try:
-                process, startup_ms = start_target(plan, command)
-            except (ProcessStartupError, LaunchPipelineFailure) as candidate_error:
-                if not apply_candidate:
-                    raise
-                process, startup_ms = rollback_to_current(candidate_error)
-                context.transition(LaunchPhase.RUNTIME_ACTIVE)
-                runtime_active = True
-                return
-            context.check_cancelled()
-            if apply_candidate:
-                try:
-                    session.generations.promote_candidate(
-                        runtime_classpath_changed=True
-                    )
-                except (OSError, ProjectSessionError) as promotion_error:
-                    process, startup_ms = rollback_to_current(
-                        ProjectSessionError(
-                            "GENERATION_PROMOTION_FAILED",
-                            str(promotion_error),
+                        source_fingerprint_after = (
+                            "source-unavailable-after-restart"
                         )
+                else:
+                    source_fingerprint_after = (
+                        active.source_fingerprint_after
+                        or active.source_fingerprint_before
                     )
-                    context.transition(LaunchPhase.RUNTIME_ACTIVE)
-                    runtime_active = True
-                    return
-                compiler = session.compile_session
-                if isinstance(compiler, PersistentJdtCompileSession):
-                    try:
-                        compiler.mark_published()
-                    except (JdtCompileError, OSError):
-                        self._invalidate_jdt_compile_session(
-                            context.attempt_id,
-                            retained,
-                            session,
-                            compiler,
-                            reason="JDT_PUBLICATION_BASELINE_FAILED",
-                        )
-                active = session.active_reload
-                if active is not None:
-                    active.apply_method = "restart"
-                    active.startup_ms = startup_ms
-                    session.finish_reload(
-                        applied=True,
-                        source_fingerprint_after=(
-                            source_fingerprint_after_restart(active)
-                        ),
-                    )
-            else:
-                session.generations.mark_runtime_current()
-                if session.generations.candidate is not None:
-                    session.generations.discard_candidate()
-                active = session.active_reload
-                if active is not None and active.applied is None:
-                    active.apply_method = "restart_current"
-                    active.startup_ms = startup_ms
-                    session.finish_reload(
-                        applied=False,
-                        source_fingerprint_after=(
-                            source_fingerprint_after_restart(active)
-                        ),
-                        error_code=(
-                            active.error_code or "HOT_SWAP_OUTCOME_UNKNOWN"
-                        ),
-                        rolled_back=True,
-                    )
+                session.finish_reload(
+                    applied=False,
+                    source_fingerprint_after=source_fingerprint_after,
+                    error_code=(
+                        active.error_code or "HOT_SWAP_OUTCOME_UNKNOWN"
+                    ),
+                )
             session.record_successful_startup(startup_ms)
             context.transition(LaunchPhase.RUNTIME_ACTIVE)
             runtime_active = True
@@ -1326,23 +1196,6 @@ class JavaRuntime(Runtime):
                 with self._project_state_lock:
                     process = self._project_processes.get(context.attempt_id)
             if not runtime_active:
-                if apply_candidate:
-                    try:
-                        if session.generations.candidate is not None:
-                            session.generations.discard_candidate()
-                        active = session.active_reload
-                        if active is not None:
-                            session.finish_reload(
-                                applied=False,
-                                source_fingerprint_after=(
-                                    active.source_fingerprint_after
-                                    or active.source_fingerprint_before
-                                ),
-                                error_code="CANDIDATE_RESTART_FAILED",
-                                rolled_back=False,
-                            )
-                    except (OSError, ProjectSessionError):
-                        pass
                 session.generations.mark_runtime_absent()
                 if process is not None:
                     stop_result = self._proc.stop_target(process)
@@ -1476,16 +1329,6 @@ class JavaRuntime(Runtime):
                         )
                 except OSError:
                     digest.update(b"<unavailable>")
-        digest.update(b"\0source-manifest\0")
-        digest.update(
-            str(prepared.source_manifest_fingerprint or "").encode("ascii")
-        )
-        digest.update(b"\0resource-manifest\0")
-        for name, value in sorted(prepared.resource_input_manifest.items()):
-            digest.update(name.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(value.encode("ascii"))
-            digest.update(b"\0")
         return digest.hexdigest()
 
     @staticmethod
@@ -1548,7 +1391,15 @@ class JavaRuntime(Runtime):
             ),
         )
         session.retain_directory(prepared.attempt_directory)
+        with self._project_state_lock:
+            self._project_sessions[context.attempt_id] = session
         try:
+            prepared = self._prepare_jdt_launch_output(
+                context,
+                request,
+                prepared,
+                session,
+            )
             generation_roots = tuple(
                 path.expanduser().resolve(strict=True)
                 for path in prepared.generation_input_roots
@@ -1626,91 +1477,26 @@ class JavaRuntime(Runtime):
                 )
             )
             context.set_jvm_launch_plan(generation_plan)
-            snapshot_roots: tuple[Path, ...] = ()
             snapshot_started = time.monotonic()
-            if prepared.jdt_build_world_plan is not None:
-                frozen: list[Path] = []
-                for index, source_root in enumerate(
+            if (
+                prepared.source_manifest_fingerprint is not None
+                and self._project_pipeline.source_manifest_fingerprint(
                     prepared.jdt_build_world_plan.source_roots
-                ):
-                    destination_root = (
-                        session.root / "launch-source-snapshot" / str(index)
-                    )
-                    destination_root.mkdir(parents=True, exist_ok=False)
-                    for source in sorted(source_root.rglob("*.java")):
-                        relative = source.relative_to(source_root)
-                        content = source.read_bytes()
-                        destination = destination_root / relative
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        destination.write_bytes(content)
-                        if source.read_bytes() != content:
-                            raise ProjectSessionError(
-                                "SOURCE_CHANGED_DURING_LAUNCH",
-                                "Project source changed while launch input was frozen.",
-                            )
-                    frozen.append(destination_root)
-                snapshot_roots = tuple(frozen)
-                snapshot_fingerprint = (
-                    self._project_pipeline.source_manifest_fingerprint(
-                        snapshot_roots
-                    )
+                ) != prepared.source_manifest_fingerprint
+            ):
+                raise ProjectSessionError(
+                    "SOURCE_CHANGED_DURING_LAUNCH",
+                    "Project sources changed before the JVM was started.",
                 )
-                if (
-                    prepared.source_manifest_fingerprint is not None
-                    and snapshot_fingerprint
-                    != prepared.source_manifest_fingerprint
-                ):
-                    raise ProjectSessionError(
-                        "SOURCE_CHANGED_AFTER_BUILD",
-                        "The launch source snapshot no longer matches the "
-                        "formal build input.",
-                    )
-            if prepared.resource_source_roots:
-                current_resources = build_input_manifest(
-                    (), prepared.resource_source_roots
+            if (
+                prepared.resource_source_roots
+                and build_input_manifest((), prepared.resource_source_roots)
+                != prepared.resource_input_manifest
+            ):
+                raise ProjectSessionError(
+                    "RESOURCE_CHANGED_DURING_LAUNCH",
+                    "Project resources changed before the JVM was started.",
                 )
-                if current_resources != prepared.resource_input_manifest:
-                    raise ProjectSessionError(
-                        "RESOURCE_CHANGED_AFTER_BUILD",
-                        "Project resources changed after the formal build.",
-                    )
-                frozen_resources: list[Path] = []
-                for index, resource_root in enumerate(
-                    prepared.resource_source_roots
-                ):
-                    destination_root = (
-                        session.root / "launch-resource-snapshot" / str(index)
-                    )
-                    destination_root.mkdir(parents=True, exist_ok=False)
-                    if resource_root.is_dir():
-                        for source in sorted(resource_root.rglob("*")):
-                            if source.is_symlink():
-                                raise ProjectSessionError(
-                                    "RESOURCE_LINK_UNSUPPORTED",
-                                    "Project resource roots may not contain links.",
-                                )
-                            if not source.is_file():
-                                continue
-                            destination = destination_root / source.relative_to(
-                                resource_root
-                            )
-                            destination.parent.mkdir(
-                                parents=True, exist_ok=True
-                            )
-                            shutil.copy2(source, destination)
-                    frozen_resources.append(destination_root)
-                if (
-                    build_input_manifest((), tuple(frozen_resources))
-                    != prepared.resource_input_manifest
-                    or build_input_manifest(
-                        (), prepared.resource_source_roots
-                    )
-                    != prepared.resource_input_manifest
-                ):
-                    raise ProjectSessionError(
-                        "RESOURCE_CHANGED_DURING_LAUNCH",
-                        "Project resources changed while launch input was frozen.",
-                    )
             session.record_generation_preparation(
                 generation_seal_ms=generation_seal_ms,
                 source_manifest_before_ms=(
@@ -1728,14 +1514,301 @@ class JavaRuntime(Runtime):
                     prepared,
                     jvm_plan=generation_plan,
                     command=command,
-                    jdt_source_snapshot_roots=snapshot_roots,
                 ),
                 session,
                 replacement_index,
             )
         except Exception:
+            with self._project_state_lock:
+                if self._project_sessions.get(context.attempt_id) is session:
+                    self._project_sessions.pop(context.attempt_id, None)
             session.close(cleanup_retained=False)
             raise
+
+    def _prepare_jdt_launch_output(
+        self,
+        context: LaunchContext,
+        request: ProjectLaunchRequest,
+        prepared: Any,
+        session: JavaProjectSession,
+    ) -> Any:
+        plan = prepared.jdt_build_world_plan
+        if plan is None:
+            raise LaunchPipelineFailure(
+                "JDT_BUILD_WORLD_UNAVAILABLE",
+                "Project launch requires a Probe-derived JDT Build World.",
+                retryable=True,
+                suggested_next_step=(
+                    "Inspect the Probe result and retry launch."
+                ),
+            )
+        if not plan.is_fresh():
+            raise LaunchPipelineFailure(
+                "JDT_BUILD_WORLD_STALE",
+                "The Probe-derived Build World changed before JDT startup.",
+                retryable=True,
+                suggested_next_step="Retry launch to run the Probe again.",
+            )
+        session.begin_jdt_bootstrap()
+
+        resource_output: Path | None = None
+        if prepared.resource_source_roots:
+            resource_output = session.root / "launch-resource-world"
+            resource_output.mkdir(parents=True, exist_ok=False)
+            observed: dict[str, str] = {}
+            for root in prepared.resource_source_roots:
+                if not root.is_dir():
+                    continue
+                for source in sorted(root.rglob("*")):
+                    if source.is_symlink():
+                        raise ProjectSessionError(
+                            "RESOURCE_LINK_UNSUPPORTED",
+                            "Project resource roots may not contain links.",
+                        )
+                    if not source.is_file():
+                        continue
+                    relative = source.relative_to(root).as_posix()
+                    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                    previous = observed.get(relative)
+                    if previous is not None and previous != digest:
+                        raise ProjectSessionError(
+                            "RESOURCE_OUTPUT_COLLISION",
+                            "Project resource roots contain a path collision.",
+                        )
+                    observed[relative] = digest
+                    destination = resource_output / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+
+        bootstrap_started = time.monotonic()
+        stage = "candidate_load"
+        compiler: PersistentJdtCompileSession | None = None
+        workspace = None
+        try:
+            context.check_cancelled()
+            candidate = JdtCandidate.load_product()
+            stage = "worker_java_selection"
+            worker_java = candidate.select_worker_java(
+                (
+                    prepared.build_jdk.home,
+                    prepared.runtime_jdk.home,
+                    plan.target_java_home,
+                )
+            )
+            session.record_jdt_worker_runtime(
+                java_major=worker_java.major,
+                data_model=worker_java.data_model,
+            )
+            stage = "target_system_discovery"
+            system_entries = discover_target_system_entries(
+                plan.target_java_home,
+                plan.target_level,
+            )
+            lombok_agents = tuple(
+                f"{path}=ECJ" for path in plan.lombok_entries
+            )
+            identity = {
+                "build_world_fingerprint": session.build_world_fingerprint,
+                "candidate_id": candidate.candidate_id,
+                "candidate_identity": candidate.root.name,
+                "worker_java_major": worker_java.major,
+                "worker_data_model": worker_java.data_model,
+                "source_encoding": plan.source_encoding,
+                "source_level": plan.source_level,
+                "target_level": plan.target_level,
+                "method_parameters": plan.method_parameters,
+            }
+            stage = "workspace_claim"
+            workspace = self._jdt_workspaces.claim(
+                project_root=plan.project_root,
+                module_root=plan.module_root,
+                identity=identity,
+            )
+            session.attach_jdt_workspace_lease(workspace)
+
+            def new_compiler() -> PersistentJdtCompileSession:
+                return PersistentJdtCompileSession(
+                    root=workspace.root,
+                    candidate=candidate,
+                    worker_java_home=worker_java.home,
+                    source_roots=plan.source_roots,
+                    classpath_entries=(*system_entries, *plan.dependency_entries),
+                    source_encoding=plan.source_encoding,
+                    source_level=plan.source_level,
+                    method_parameters=plan.method_parameters,
+                    processor_entries=plan.processor_entries,
+                    java_agents=lombok_agents,
+                    extra_jvm_arguments=lombok_worker_jvm_arguments(
+                        worker_java.major,
+                        lombok_enabled=bool(lombok_agents),
+                    ),
+                    min_heap_mb=plan.worker_min_heap_mb,
+                    max_heap_mb=plan.worker_max_heap_mb,
+                    baseline_main_output=resource_output,
+                    preserve_root_on_close=True,
+                )
+
+            compiler = new_compiler()
+            session.attach_compile_session(compiler)
+            context.check_cancelled()
+            reused = bool(workspace.reusable)
+            try:
+                stage = "workspace_reopen" if reused else "jdt_full"
+                result = compiler.start(
+                    reuse_workspace=reused,
+                    build_on_reuse=False,
+                )
+            except (JdtCompileError, OSError):
+                if not reused:
+                    raise
+                compiler.close()
+                session.clear_compile_session(compiler)
+                workspace.reset_for_full()
+                compiler = new_compiler()
+                session.attach_compile_session(compiler)
+                reused = False
+                stage = "jdt_full"
+                result = compiler.start()
+
+            context.check_cancelled()
+            if reused:
+                compiler.accept_baseline()
+                changed_sources = compiler.workspace_source_changes()
+                if changed_sources:
+                    stage = "jdt_incremental"
+                    session.mark_jdt_workspace_dirty()
+                    result = compiler.compile(changed_sources)
+            else:
+                changed_sources = ()
+            context.check_cancelled()
+            if not result.compile_ok:
+                raise JdtCompileError(
+                    "JDT_STARTUP_COMPILE_FAILED",
+                    "JDT could not compile the project before startup.",
+                    context={
+                        "error_count": result.error_count,
+                        "diagnostics": list(result.diagnostics),
+                    },
+                )
+            if not reused:
+                compiler.accept_baseline()
+            compiler.mark_published()
+            main_class_file = compiler.output_directory / Path(
+                *prepared.jvm_plan.main_class.split(".")
+            ).with_suffix(".class")
+            if not main_class_file.is_file():
+                raise JdtCompileError(
+                    "JDT_MAIN_CLASS_NOT_COMPILED",
+                    "JDT output does not contain the selected main class.",
+                )
+            current_source_manifest = (
+                self._project_pipeline.source_manifest_fingerprint(
+                    plan.source_roots
+                )
+            )
+            if (
+                prepared.source_manifest_fingerprint is not None
+                and not reused
+                and current_source_manifest
+                != prepared.source_manifest_fingerprint
+            ):
+                raise JdtCompileError(
+                    "SOURCE_CHANGED_DURING_BUILD",
+                    "Project sources changed during JDT startup compilation.",
+                )
+            workspace.mark_initialized()
+            if not compiler.save_workspace():
+                raise JdtCompileError(
+                    "JDT_WORKSPACE_SAVE_FAILED",
+                    "The JDT Worker did not save its workspace.",
+                )
+            workspace.checkpoint()
+            session.refresh_compile_ready()
+            session.complete_jdt_bootstrap(
+                (time.monotonic() - bootstrap_started) * 1000,
+                reused=reused,
+                build_kind=result.actual_build_kind,
+            )
+            cache_warnings: tuple[str, ...] = ()
+            try:
+                self._project_pipeline.save_cache(prepared, request)
+            except OSError as cache_error:
+                logger.warning(
+                    "java_runtime.launch.cache_write_failed error_type=%s",
+                    type(cache_error).__name__,
+                )
+                cache_warnings = (
+                    "The Build World cache could not be saved; the next "
+                    "launch may need to run the Probe again.",
+                )
+
+            original_roots = tuple(
+                root.resolve(strict=False)
+                for root in prepared.generation_input_roots
+            )
+            classpath = tuple(
+                path.resolve(strict=False)
+                for path in prepared.jvm_plan.classpath
+            )
+            positions = [
+                index
+                for index, path in enumerate(classpath)
+                if path in set(original_roots)
+            ]
+            if len(positions) != len(original_roots) or positions != list(
+                range(positions[0], positions[0] + len(positions))
+            ):
+                raise JdtCompileError(
+                    "JDT_RUNTIME_CLASSPATH_UNREPRESENTABLE",
+                    "Build output roots are not one replaceable classpath segment.",
+                )
+            runtime_classpath = (
+                *prepared.jvm_plan.classpath[: positions[0]],
+                compiler.output_directory,
+                *prepared.jvm_plan.classpath[positions[-1] + 1 :],
+            )
+            return replace(
+                prepared,
+                module_output=compiler.output_directory,
+                generation_input_roots=(compiler.output_directory,),
+                generation_input_manifest=self._flat_runtime_manifest(
+                    compiler.output_directory
+                ),
+                jvm_plan=replace(
+                    prepared.jvm_plan,
+                    classpath=runtime_classpath,
+                ),
+                warnings=(
+                    *prepared.warnings,
+                    *cache_warnings,
+                    (
+                        "Reused persistent JDT output without compilation."
+                        if reused and not changed_sources
+                        else "Applied persisted source changes with JDT incremental compilation."
+                        if reused
+                        else "Compiled the initial Runtime with JDT FULL."
+                    ),
+                ),
+            )
+        except Exception as error:
+            if compiler is not None:
+                try:
+                    compiler.close()
+                finally:
+                    session.clear_compile_session(compiler)
+            session.invalidate_jdt_workspace()
+            if isinstance(error, (LaunchPipelineFailure, LaunchCancelled)):
+                raise
+            raise LaunchPipelineFailure(
+                getattr(error, "error_code", "JDT_STARTUP_FAILED"),
+                str(error),
+                retryable=True,
+                suggested_next_step="Fix the JDT diagnostic and retry launch.",
+                context={
+                    "stage": stage,
+                    **dict(getattr(error, "context", {}) or {}),
+                },
+            ) from error
 
     def _promote_initial_project_generation(
         self,
@@ -1754,231 +1827,6 @@ class JavaRuntime(Runtime):
             runtime_classpath_changed=True
         )
         session.record_successful_startup(startup_ms)
-
-    def _start_jdt_compile_session_async(
-        self,
-        attempt_id: str,
-        prepared: Any,
-        session: JavaProjectSession,
-    ) -> None:
-        plan = prepared.jdt_build_world_plan
-        if plan is None:
-            return
-        session.begin_jdt_bootstrap()
-
-        def initialize() -> None:
-            compiler: PersistentJdtCompileSession | None = None
-            bootstrap_started = time.monotonic()
-            stage = "build_world_freshness"
-            try:
-                is_fresh = getattr(plan, "is_fresh", lambda: True)
-                if not is_fresh():
-                    raise JdtCompileError(
-                        "JDT_BUILD_WORLD_STALE",
-                        "The formal Build World changed before JDT bootstrap.",
-                    )
-                stage = "candidate_load"
-                candidate = JdtCandidate.load_product()
-                stage = "worker_java_selection"
-                worker_java = candidate.select_worker_java(
-                    (
-                        prepared.build_jdk.home,
-                        prepared.runtime_jdk.home,
-                        plan.target_java_home,
-                    )
-                )
-                stage = "worker_runtime_record"
-                session.record_jdt_worker_runtime(
-                    java_major=worker_java.major,
-                    data_model=worker_java.data_model,
-                )
-                stage = "target_system_discovery"
-                system_entries = discover_target_system_entries(
-                    plan.target_java_home,
-                    plan.target_level,
-                )
-                lombok_agents = tuple(
-                    f"{path}=ECJ" for path in plan.lombok_entries
-                )
-                stage = "workspace_claim"
-                workspace_identity = {
-                    "build_world_fingerprint": session.build_world_fingerprint,
-                    "candidate_id": candidate.candidate_id,
-                    "candidate_identity": candidate.root.name,
-                    "worker_java_major": worker_java.major,
-                    "worker_data_model": worker_java.data_model,
-                    "source_encoding": plan.source_encoding,
-                    "source_level": plan.source_level,
-                    "target_level": plan.target_level,
-                    "method_parameters": plan.method_parameters,
-                }
-                workspace = self._jdt_workspaces.claim(
-                    project_root=plan.project_root,
-                    module_root=plan.module_root,
-                    identity=workspace_identity,
-                )
-                logger.info(
-                    "java_runtime.jdt.workspace.claim reused=%s "
-                    "build_world=%s",
-                    workspace.reusable,
-                    session.build_world_fingerprint[:12],
-                )
-                session.attach_jdt_workspace_lease(workspace)
-
-                def new_compiler() -> PersistentJdtCompileSession:
-                    return PersistentJdtCompileSession(
-                        root=workspace.root,
-                        candidate=candidate,
-                        worker_java_home=worker_java.home,
-                        source_roots=plan.source_roots,
-                        baseline_source_roots=(
-                            prepared.jdt_source_snapshot_roots
-                        ),
-                        classpath_entries=(
-                            *system_entries,
-                            *plan.dependency_entries,
-                        ),
-                        source_encoding=plan.source_encoding,
-                        source_level=plan.source_level,
-                        method_parameters=plan.method_parameters,
-                        processor_entries=plan.processor_entries,
-                        java_agents=lombok_agents,
-                        extra_jvm_arguments=lombok_worker_jvm_arguments(
-                            worker_java.major,
-                            lombok_enabled=bool(lombok_agents),
-                        ),
-                        min_heap_mb=plan.worker_min_heap_mb,
-                        max_heap_mb=plan.worker_max_heap_mb,
-                        preserve_root_on_close=True,
-                    )
-
-                stage = (
-                    "workspace_reopen"
-                    if workspace.reusable
-                    else "compile_session_prepare"
-                )
-                compiler = new_compiler()
-                session.attach_compile_session(compiler)
-                try:
-                    full = compiler.start(
-                        reuse_workspace=workspace.reusable
-                    )
-                except (JdtCompileError, OSError):
-                    if not workspace.reusable:
-                        raise
-                    logger.warning(
-                        "java_runtime.jdt.workspace.restore_failed "
-                        "fallback=full"
-                    )
-                    compiler.close()
-                    session.clear_compile_session(compiler)
-                    workspace.reset_for_full()
-                    compiler = new_compiler()
-                    session.attach_compile_session(compiler)
-                    stage = "worker_start_and_jdt_full"
-                    full = compiler.start()
-                if not full.compile_ok:
-                    raise JdtCompileError(
-                        "JDT_FULL_COMPILE_FAILED",
-                        "The initial persistent JDT FULL build failed.",
-                    )
-                stage = "generation_validation"
-                current_generation = session.generations.current
-                if current_generation is None:
-                    raise JdtCompileError(
-                        "CURRENT_GENERATION_UNAVAILABLE",
-                        "The current Generation disappeared before JDT validation.",
-                    )
-                stage = "tier1_validation"
-                try:
-                    compatibility = compare_class_output_tier1(
-                        current_generation.output_directory,
-                        full.output_directory,
-                    )
-                except (ClassFileFormatError, OSError) as error:
-                    raise JdtCompileError(
-                        "JDT_BASELINE_CLASS_UNAVAILABLE",
-                        "A formal or JDT baseline class could not be compared.",
-                    ) from error
-                if not compatibility["compatible"]:
-                    raise JdtCompileError(
-                        "JDT_BASELINE_INCOMPATIBLE",
-                        "The JDT FULL output is not structurally compatible "
-                        "with the formal build Generation.",
-                        context={
-                            key: value
-                            for key, value in compatibility.items()
-                            if key != "compatible"
-                        },
-                    )
-                stage = "build_world_revalidation"
-                if not is_fresh():
-                    raise JdtCompileError(
-                        "JDT_BUILD_WORLD_STALE",
-                        "The formal Build World changed during JDT bootstrap.",
-                    )
-                stage = "baseline_accept"
-                compiler.accept_baseline()
-                workspace.mark_initialized()
-                stage = "workspace_checkpoint"
-                if not compiler.save_workspace():
-                    raise JdtCompileError(
-                        "JDT_WORKSPACE_SAVE_FAILED",
-                        "The JDT Worker did not save the reusable workspace.",
-                    )
-                workspace.checkpoint()
-                self._reset_runtime_overlay()
-                session.refresh_compile_ready()
-                session.complete_jdt_bootstrap(
-                    (time.monotonic() - bootstrap_started) * 1000,
-                    reused=bool(workspace.reusable),
-                    build_kind=full.actual_build_kind,
-                )
-            except Exception as error:
-                logger.exception(
-                    "java_runtime.jdt.bootstrap.failed stage=%s error_type=%s",
-                    stage,
-                    type(error).__name__,
-                )
-                if compiler is not None:
-                    try:
-                        compiler.close()
-                    finally:
-                        session.clear_compile_session(compiler)
-                session.invalidate_jdt_workspace()
-                error_code = getattr(
-                    error, "error_code", "JDT_COMPILE_SESSION_START_FAILED"
-                )
-                error_details = dict(getattr(error, "context", {}) or {})
-                error_details.setdefault("stage", stage)
-                error_details.setdefault(
-                    "exception_type", type(error).__name__
-                )
-                error_details.setdefault(
-                    "error_summary",
-                    self._redact_build_log_line(_error_summary(error)),
-                )
-                session.fail_jdt_bootstrap(
-                    reason=str(error_code),
-                    details=error_details,
-                    duration_ms=(
-                        (time.monotonic() - bootstrap_started) * 1000
-                    ),
-                )
-            finally:
-                if session.jdt_bootstrap_state == "initializing":
-                    session.fail_jdt_bootstrap(
-                        reason="JDT_COMPILE_SESSION_START_FAILED",
-                        duration_ms=(
-                            (time.monotonic() - bootstrap_started) * 1000
-                        ),
-                    )
-
-        threading.Thread(
-            target=initialize,
-            name=f"jolink-jdt-bootstrap-{attempt_id}",
-            daemon=True,
-        ).start()
 
     def _invalidate_jdt_compile_session(
         self,
@@ -2048,6 +1896,7 @@ class JavaRuntime(Runtime):
                         ),
                         build_system=prepared.build_system,
                         build_offline=prepared.build_offline,
+                        probe_cache_reused=prepared.probe_cache_reused,
                     )
                 )
             context.transition(LaunchPhase.STARTING_JVM)
@@ -2107,11 +1956,6 @@ class JavaRuntime(Runtime):
                     context.attempt_id,
                     startup_ms=startup_ms,
                 )
-                self._start_jdt_compile_session_async(
-                    context.attempt_id,
-                    prepared,
-                    project_session,
-                )
                 context.transition(LaunchPhase.RUNTIME_ACTIVE)
                 runtime_active = True
                 return
@@ -2142,11 +1986,6 @@ class JavaRuntime(Runtime):
                         startup_ms=(
                             (time.monotonic() - startup_started) * 1000
                         ),
-                    )
-                    self._start_jdt_compile_session_async(
-                        context.attempt_id,
-                        prepared,
-                        project_session,
                     )
                     context.transition(LaunchPhase.RUNTIME_ACTIVE)
                     runtime_active = True
@@ -3032,6 +2871,9 @@ class JavaRuntime(Runtime):
             if warnings:
                 snapshot["warnings"] = list(warnings)
             if prepared is not None:
+                snapshot["probe_cache_reused"] = (
+                    prepared.probe_cache_reused
+                )
                 if (
                     project_session is not None
                     and project_session.refresh_compile_ready()
@@ -3436,63 +3278,37 @@ class JavaRuntime(Runtime):
             return RuntimeResult(ok=False, error=data["error"])
         return RuntimeResult(ok=True, data=data)
 
-    @staticmethod
-    def _prepare_fast_compile_candidate(
-        session: JavaProjectSession,
-        staged_classes: Path,
-    ) -> None:
-        current = session.generations.current
-        if current is None:
-            raise ProjectSessionError(
-                "CURRENT_GENERATION_UNAVAILABLE",
-                "No current generation can be extended by reload.",
-            )
-        session.generations.verify_generation(current)
-        scratch = Path(
-            tempfile.mkdtemp(
-                prefix="jolink-candidate-",
-                dir=str(staged_classes.parent),
-            )
-        )
-        candidate_output = scratch / "output"
-        try:
-            shutil.copytree(current.output_directory, candidate_output)
-            for staged in sorted(
-                path for path in staged_classes.rglob("*") if path.is_file()
-            ):
-                relative = staged.relative_to(staged_classes)
-                destination = candidate_output / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(staged, destination)
-            session.generations.prepare_candidate(
-                candidate_output,
-                build_world_fingerprint=session.build_world_fingerprint,
-            )
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
-
     def update(self, action: RuntimeAction) -> RuntimeResult:
         """Compile explicit project sources and HotSwap compatible classes."""
         context = self._project_update_context()
-        if not isinstance(context, RuntimeResult):
-            attempt_id, generation, prepared = context
-            project_session = getattr(prepared, "project_session", None)
-            if (
-                project_session is not None
-                and project_session.refresh_compile_ready()
-                and isinstance(
-                    project_session.compile_session,
-                    PersistentJdtCompileSession,
-                )
-            ):
-                return self._jdt_reload_service.start(
-                    self,
-                    action,
-                    attempt_id=attempt_id,
-                    generation=generation,
-                    prepared=prepared,
-                    project_session=project_session,
-                )
+        if isinstance(context, RuntimeResult):
+            return context
+        if not bool(getattr(action, "hotswap", True)):
+            return self._reload_requires_relaunch_result(
+                reason_code="HOTSWAP_DISABLED",
+                message=(
+                    "reload only applies compatible classes with HotSwap; "
+                    "automatic restart and rollback are not performed."
+                ),
+            )
+        attempt_id, generation, prepared = context
+        project_session = getattr(prepared, "project_session", None)
+        if (
+            project_session is not None
+            and project_session.refresh_compile_ready()
+            and isinstance(
+                project_session.compile_session,
+                PersistentJdtCompileSession,
+            )
+        ):
+            return self._jdt_reload_service.start(
+                self,
+                action,
+                attempt_id=attempt_id,
+                generation=generation,
+                prepared=prepared,
+                project_session=project_session,
+            )
         if not self._update_lock.acquire(blocking=False):
             return RuntimeResult(
                 ok=False,
@@ -3506,10 +3322,6 @@ class JavaRuntime(Runtime):
                 },
             )
         compile_attempt = None
-        candidate_prepared = False
-        candidate_promoted = False
-        candidate_retained = False
-        candidate_session: JavaProjectSession | None = None
         try:
             context = self._project_update_context()
             if isinstance(context, RuntimeResult):
@@ -3584,8 +3396,8 @@ class JavaRuntime(Runtime):
                     },
                 )
 
-            candidate_session = getattr(prepared, "project_session", None)
-            if candidate_session is None:
+            project_session = getattr(prepared, "project_session", None)
+            if project_session is None:
                 return RuntimeResult(
                     ok=False,
                     error="The project Generation session is unavailable.",
@@ -3598,7 +3410,7 @@ class JavaRuntime(Runtime):
                         ),
                     },
                 )
-            current_generation = candidate_session.generations.current
+            current_generation = project_session.generations.current
             if current_generation is None:
                 return RuntimeResult(
                     ok=False,
@@ -3613,7 +3425,7 @@ class JavaRuntime(Runtime):
                     },
                 )
             try:
-                candidate_session.generations.verify_generation(
+                project_session.generations.verify_generation(
                     current_generation
                 )
             except ProjectSessionError as error:
@@ -3817,30 +3629,6 @@ class JavaRuntime(Runtime):
                 )
 
             try:
-                self._prepare_fast_compile_candidate(
-                    candidate_session,
-                    compile_attempt.classes_directory,
-                )
-                candidate_prepared = True
-            except (OSError, ProjectSessionError) as error:
-                return RuntimeResult(
-                    ok=False,
-                    error="A durable candidate Generation could not be prepared.",
-                    data={
-                        "error_code": getattr(
-                            error,
-                            "error_code",
-                            "CANDIDATE_PREPARE_FAILED",
-                        ),
-                        "runtime_code_state": "unchanged",
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Retry reload after local generation storage is available."
-                        ),
-                    },
-                )
-
-            try:
                 jdwp = self._connect()
                 for composite in jdwp.drain_events():
                     self._resume_ignored_suspending_event(
@@ -4022,32 +3810,6 @@ class JavaRuntime(Runtime):
                     },
                 )
 
-            try:
-                candidate_session.generations.promote_candidate()
-                candidate_promoted = True
-            except (OSError, ProjectSessionError):
-                candidate_retained = True
-                self._runtime_overlay_state = "unknown"
-                self._runtime_overlay_sources.update(
-                    all_source_classes.keys()
-                )
-                return RuntimeResult(
-                    ok=False,
-                    error=(
-                        "HotSwap succeeded but the durable Generation could "
-                        "not be promoted."
-                    ),
-                    data={
-                        "error_code": "GENERATION_PROMOTION_FAILED",
-                        "runtime_code_state": "unknown",
-                        "applied": None,
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Restart the application before further runtime "
-                            "verification or reload attempts."
-                        ),
-                    },
-                )
             self._record_applied_updates(updates, all_source_classes)
             breakpoint_refresh = self._refresh_updated_breakpoints(
                 jdwp,
@@ -4094,8 +3856,8 @@ class JavaRuntime(Runtime):
                         update.binary_name for update in updates
                     ),
                     "selection_coverage": "caller_provided",
-                    "persistence": "committed_generation",
-                    "restart_loses_update": False,
+                    "persistence": "runtime_only",
+                    "restart_loses_update": True,
                     "framework_state_refreshed": False,
                     "runtime_code_state": "updated",
                     "breakpoint_refresh_state": breakpoint_refresh["state"],
@@ -4121,13 +3883,6 @@ class JavaRuntime(Runtime):
                 },
             )
         finally:
-            if (
-                candidate_prepared
-                and not candidate_promoted
-                and not candidate_retained
-                and candidate_session is not None
-            ):
-                candidate_session.generations.discard_candidate()
             if compile_attempt is not None:
                 self._fast_compiler.discard(compile_attempt)
             self._update_lock.release()
@@ -4415,61 +4170,43 @@ class JavaRuntime(Runtime):
             digest.update(b"\0")
         return digest.hexdigest()
 
-    @staticmethod
-    def _prepare_jdt_generation_candidate(
-        project_session: JavaProjectSession,
-        result: Any,
-    ) -> None:
-        current = project_session.generations.current
-        if current is None:
-            raise ProjectSessionError(
-                "CURRENT_GENERATION_UNAVAILABLE",
-                "No current Generation exists for reload.",
-            )
-        project_session.generations.verify_generation(current)
-        scratch = Path(
-            tempfile.mkdtemp(
-                prefix="jolink-jdt-candidate-",
-                dir=str(project_session.root),
-            )
-        )
-        output = scratch / "output"
-        try:
-            shutil.copytree(current.output_directory, output)
-            changed = (
-                *result.candidate_changed_classes,
-                *result.candidate_changed_resources,
-            )
-            deleted = (
-                *result.candidate_deleted_classes,
-                *result.candidate_deleted_resources,
-            )
-            for relative in changed:
-                source = result.output_directory / relative
-                if not source.is_file():
-                    raise ProjectSessionError(
-                        "JDT_OUTPUT_DELTA_UNAVAILABLE",
-                        "A changed JDT output file is unavailable.",
-                    )
-                destination = output / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, destination)
-            for relative in deleted:
-                (output / relative).unlink(missing_ok=True)
-            project_session.generations.prepare_candidate(
-                output,
-                build_world_fingerprint=project_session.build_world_fingerprint,
-            )
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+    def _reload_requires_relaunch_result(
+        self,
+        *,
+        reason_code: str,
+        message: str,
+        compile_ms: float | None = None,
+        compiled_source_count: int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> RuntimeResult:
+        data: dict[str, Any] = {
+            "error_code": "RELOAD_REQUIRES_RELAUNCH",
+            "reason_code": reason_code,
+            "applied": False,
+            "restart_required": True,
+            "runtime_code_state": "unchanged",
+            **self._runtime_overlay_snapshot(),
+            "retryable": False,
+            "suggested_next_step": (
+                "Stop the current application, then launch the project again "
+                "so JDT applies this change before the new JVM starts."
+            ),
+        }
+        if compile_ms is not None:
+            data["compile_ms"] = compile_ms
+        if compiled_source_count is not None:
+            data["compiled_source_count"] = compiled_source_count
+        if details:
+            data.update(details)
+        return RuntimeResult(ok=False, error=message, data=data)
 
-    @staticmethod
     def _prepare_jdt_class_updates(
+        self,
         current_generation: Any,
         result: Any,
     ) -> list[StagedClassUpdate]:
         updates: list[StagedClassUpdate] = []
-        for relative in result.candidate_changed_classes:
+        for relative in result.runtime_changed_classes:
             baseline_path = current_generation.output_directory / relative
             staged_path = result.output_directory / relative
             if not baseline_path.is_file():
@@ -4503,7 +4240,11 @@ class JavaRuntime(Runtime):
                         ),
                     },
                 )
-            if baseline.byte_sha256 == staged.byte_sha256:
+            runtime_hash = self._runtime_overlay_class_hashes.get(
+                staged.binary_name,
+                baseline.byte_sha256,
+            )
+            if runtime_hash == staged.byte_sha256:
                 continue
             updates.append(
                 StagedClassUpdate(
@@ -4765,10 +4506,10 @@ class JavaRuntime(Runtime):
                 },
             )
         if not (
-            result.candidate_changed_classes
-            or result.candidate_deleted_classes
-            or result.candidate_changed_resources
-            or result.candidate_deleted_resources
+            result.runtime_changed_classes
+            or result.runtime_deleted_classes
+            or result.runtime_changed_resources
+            or result.runtime_deleted_resources
         ):
             project_session.finish_reload(
                 applied=True,
@@ -4785,126 +4526,84 @@ class JavaRuntime(Runtime):
                     "source_changes_pending": result.source_changes_pending,
                 },
             )
-        project_session.transition_reload(ReloadStage.PREPARING_CANDIDATE)
-        try:
-            self._prepare_jdt_generation_candidate(project_session, result)
-        except (OSError, ProjectSessionError) as error:
+        non_class_delta = bool(
+            result.runtime_changed_resources
+            or result.runtime_deleted_resources
+            or result.runtime_deleted_classes
+        )
+        if non_class_delta:
+            relaunch = self._reload_requires_relaunch_result(
+                reason_code="NON_HOTSWAPPABLE_OUTPUT_DELTA",
+                message=(
+                    "The incremental build changed resources or deleted class "
+                    "files, which cannot be applied with HotSwap."
+                ),
+                compile_ms=result.elapsed_ms,
+                compiled_source_count=result.compiled_source_count,
+                details={
+                    "changed_resource_count": len(
+                        result.runtime_changed_resources
+                    ),
+                    "deleted_resource_count": len(
+                        result.runtime_deleted_resources
+                    ),
+                    "deleted_class_count": len(
+                        result.runtime_deleted_classes
+                    ),
+                    "changed_resources": list(
+                        result.runtime_changed_resources
+                    ),
+                    "deleted_resources": list(
+                        result.runtime_deleted_resources
+                    ),
+                    "deleted_classes": list(
+                        result.runtime_deleted_classes
+                    ),
+                },
+            )
             project_session.finish_reload(
                 applied=False,
                 source_fingerprint_after=source_fingerprint,
-                error_code=getattr(error, "error_code", "CANDIDATE_PREPARE_FAILED"),
+                error_code="RELOAD_REQUIRES_RELAUNCH",
             )
-            return RuntimeResult(
-                ok=False,
-                error=str(error),
-                data={
-                    "error_code": getattr(error, "error_code", "CANDIDATE_PREPARE_FAILED"),
-                    "applied": False,
-                    "stage": "candidate",
-                    "retryable": True,
-                    "suggested_next_step": "Retry reload after storage is available.",
-                },
-            )
+            return relaunch
 
-        def restart_candidate() -> RuntimeResult:
-            configured_ready_port = int(getattr(action, "ready_port", 0) or 0)
-            if configured_ready_port <= 0 and prepared.request is not None:
-                configured_ready_port = prepared.request.ready_port
-            if configured_ready_port <= 0:
-                return RuntimeResult(
-                    ok=False,
-                    error=(
-                        "Candidate restart requires application readiness."
-                    ),
-                    data={
-                        "error_code": "RELOAD_RESTART_REQUIRES_READINESS",
-                        "applied": False,
-                        "restart_required": True,
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Retry reload with ready_port set to the local "
-                            "application service port."
-                        ),
-                    },
-                )
-            return self._restart_candidate_project(action)
-
-        restart_required = bool(
-            result.candidate_changed_resources
-            or result.candidate_deleted_resources
-            or result.candidate_deleted_classes
-            or not bool(getattr(action, "hotswap", True))
-        )
-        restart_reason = (
-            "explicit_restart_or_non_class_delta" if restart_required else None
-        )
-        restart_details: dict[str, Any] = {}
-        updates: list[StagedClassUpdate] = []
-        if not restart_required:
-            try:
-                updates = self._prepare_jdt_class_updates(
-                    current_generation,
-                    result,
-                )
-            except (FastCompileError, ClassFileFormatError) as error:
-                restart_required = True
-                restart_reason = getattr(
-                    error, "error_code", type(error).__name__
-                )
-                restart_details = dict(getattr(error, "context", {}) or {})
-        if restart_required:
-            reload_attempt.source_fingerprint_after = source_fingerprint
-            project_session.transition_reload(ReloadStage.RESTARTING)
-            restarted = restart_candidate()
-            if not restarted.ok:
-                project_session.generations.discard_candidate()
-                if project_session.active_reload is not None:
-                    project_session.finish_reload(
-                        applied=False,
-                        source_fingerprint_after=source_fingerprint,
-                        error_code=(
-                            restarted.data.get("error_code")
-                            or "CANDIDATE_RESTART_FAILED"
-                        ),
-                    )
-                return restarted
-            restarted.data.update(
-                {
-                    "status": "reload_restarting",
-                    "applied": None,
-                    "apply_method": "restart",
-                    "compile_ms": result.elapsed_ms,
-                    "compiled_source_count": result.compiled_source_count,
-                    "restart_reason": restart_reason,
-                    **restart_details,
-                }
+        try:
+            updates = self._prepare_jdt_class_updates(
+                current_generation,
+                result,
             )
-            return restarted
+        except (FastCompileError, ClassFileFormatError) as error:
+            relaunch = self._reload_requires_relaunch_result(
+                reason_code=getattr(error, "error_code", type(error).__name__),
+                message=str(error),
+                compile_ms=result.elapsed_ms,
+                compiled_source_count=result.compiled_source_count,
+                details=dict(getattr(error, "context", {}) or {}),
+            )
+            project_session.finish_reload(
+                applied=False,
+                source_fingerprint_after=source_fingerprint,
+                error_code="RELOAD_REQUIRES_RELAUNCH",
+            )
+            return relaunch
 
         if not updates:
-            project_session.generations.discard_candidate()
-            self._invalidate_jdt_compile_session(
-                attempt_id,
-                prepared,
-                project_session,
-                compiler,
-                reason="JDT_DELTA_NOT_PUBLISHABLE",
+            relaunch = self._reload_requires_relaunch_result(
+                reason_code="JDT_DELTA_NOT_HOTSWAPPABLE",
+                message=(
+                    "The incremental build changed output but produced no "
+                    "class definition that can be applied with HotSwap."
+                ),
+                compile_ms=result.elapsed_ms,
+                compiled_source_count=result.compiled_source_count,
             )
             project_session.finish_reload(
                 applied=False,
                 source_fingerprint_after=source_fingerprint,
-                error_code="JDT_CANDIDATE_WITHOUT_HOTSWAP_DEFINITIONS",
+                error_code="RELOAD_REQUIRES_RELAUNCH",
             )
-            return RuntimeResult(
-                ok=False,
-                error="The JDT Candidate changed but no HotSwap definition was produced.",
-                data={
-                    "error_code": "JDT_CANDIDATE_WITHOUT_HOTSWAP_DEFINITIONS",
-                    "applied": False,
-                    "retryable": False,
-                    "suggested_next_step": "Use reload with hotswap=false.",
-                },
-            )
+            return relaunch
         try:
             jdwp = self._connect()
             for composite in jdwp.drain_events():
@@ -4915,28 +4614,20 @@ class JavaRuntime(Runtime):
                 )
             capabilities = jdwp.capabilities_new()
             if not capabilities.can_redefine_classes:
-                reload_attempt.source_fingerprint_after = source_fingerprint
-                project_session.transition_reload(ReloadStage.RESTARTING)
-                restarted = restart_candidate()
-                if not restarted.ok:
-                    project_session.generations.discard_candidate()
-                    if project_session.active_reload is not None:
-                        project_session.finish_reload(
-                            applied=False,
-                            source_fingerprint_after=source_fingerprint,
-                            error_code="HOT_SWAP_UNSUPPORTED",
-                        )
-                else:
-                    restarted.data.update(
-                        {
-                            "status": "reload_restarting",
-                            "applied": None,
-                            "apply_method": "restart",
-                            "compile_ms": result.elapsed_ms,
-                            "compiled_source_count": result.compiled_source_count,
-                        }
-                    )
-                return restarted
+                relaunch = self._reload_requires_relaunch_result(
+                    reason_code="HOT_SWAP_UNSUPPORTED",
+                    message=(
+                        "The target JVM does not support class redefinition."
+                    ),
+                    compile_ms=result.elapsed_ms,
+                    compiled_source_count=result.compiled_source_count,
+                )
+                project_session.finish_reload(
+                    applied=False,
+                    source_fingerprint_after=source_fingerprint,
+                    error_code="RELOAD_REQUIRES_RELAUNCH",
+                )
+                return relaunch
             definitions = self._resolve_hotswap_definitions(
                 jdwp,
                 updates,
@@ -4960,7 +4651,6 @@ class JavaRuntime(Runtime):
                 or not is_fresh()
                 or final_source_fingerprint != source_fingerprint
             ):
-                project_session.generations.discard_candidate()
                 self._invalidate_jdt_compile_session(
                     attempt_id,
                     prepared,
@@ -5003,34 +4693,27 @@ class JavaRuntime(Runtime):
                 },
             )
         except (JDWPCommandRejected, FastCompileError) as hotswap_rejection:
-            reload_attempt.source_fingerprint_after = source_fingerprint
-            project_session.transition_reload(ReloadStage.RESTARTING)
-            restarted = restart_candidate()
-            if not restarted.ok:
-                project_session.generations.discard_candidate()
-                if project_session.active_reload is not None:
-                    project_session.finish_reload(
-                        applied=False,
-                        source_fingerprint_after=source_fingerprint,
-                        error_code=getattr(
-                            hotswap_rejection,
-                            "error_code",
-                            "HOT_SWAP_REJECTED",
-                        ),
-                    )
-            else:
-                restarted.data.update(
-                    {
-                        "status": "reload_restarting",
-                        "applied": None,
-                        "apply_method": "restart",
-                        "compile_ms": result.elapsed_ms,
-                        "compiled_source_count": result.compiled_source_count,
-                    }
-                )
-            return restarted
+            details = dict(getattr(hotswap_rejection, "context", {}) or {})
+            if isinstance(hotswap_rejection, JDWPCommandRejected):
+                details["jdwp_error_code"] = hotswap_rejection.code
+            relaunch = self._reload_requires_relaunch_result(
+                reason_code=getattr(
+                    hotswap_rejection,
+                    "error_code",
+                    "HOT_SWAP_REJECTED",
+                ),
+                message=str(hotswap_rejection),
+                compile_ms=result.elapsed_ms,
+                compiled_source_count=result.compiled_source_count,
+                details=details,
+            )
+            project_session.finish_reload(
+                applied=False,
+                source_fingerprint_after=source_fingerprint,
+                error_code="RELOAD_REQUIRES_RELAUNCH",
+            )
+            return relaunch
         except (ClassFileFormatError, JDWPError, OSError) as error:
-            project_session.generations.discard_candidate()
             project_session.finish_reload(
                 applied=False,
                 source_fingerprint_after=source_fingerprint,
@@ -5044,25 +4727,6 @@ class JavaRuntime(Runtime):
                     "applied": False,
                     "retryable": True,
                     "suggested_next_step": "Call status and retry reload.",
-                },
-            )
-        try:
-            project_session.generations.promote_candidate()
-        except (OSError, ProjectSessionError) as error:
-            project_session.generations.mark_runtime_unknown()
-            project_session.finish_reload(
-                applied=None,
-                source_fingerprint_after=source_fingerprint,
-                error_code="GENERATION_PROMOTION_FAILED",
-            )
-            return RuntimeResult(
-                ok=False,
-                error=str(error),
-                data={
-                    "error_code": "GENERATION_PROMOTION_FAILED",
-                    "applied": None,
-                    "retryable": False,
-                    "suggested_next_step": "Restart the current Generation.",
                 },
             )
         publication_warnings: list[str] = []
@@ -5100,6 +4764,17 @@ class JavaRuntime(Runtime):
             jdwp,
             {update.signature for update in updates},
         )
+        all_updated_classes = {update.binary_name for update in updates}
+        source_class_map = {
+            source.relative_to(plan.project_root).as_posix(): set(
+                all_updated_classes
+            )
+            for source in source_files
+        }
+        self._record_applied_updates(updates, source_class_map)
+        self._runtime_overlay_state = (
+            "active" if self._runtime_overlay_class_hashes else "none"
+        )
         self._code_revision += 1
         return RuntimeResult(
             ok=True,
@@ -5110,12 +4785,16 @@ class JavaRuntime(Runtime):
                 "compile_ms": result.elapsed_ms,
                 "compiled_source_count": result.compiled_source_count,
                 "source_changes_pending": source_changes_pending,
+                "persistence": "runtime_only",
+                "restart_loses_update": True,
+                "runtime_code_state": "updated",
                 "breakpoint_refresh_state": breakpoint_refresh["state"],
                 "stale_breakpoint_ids": breakpoint_refresh["stale"],
                 "warnings": [
                     *breakpoint_refresh["warnings"],
                     *publication_warnings,
                 ],
+                **self._runtime_overlay_snapshot(),
                 "suggested_next_step": (
                     "Trigger a fresh request and verify runtime behavior."
                 ),

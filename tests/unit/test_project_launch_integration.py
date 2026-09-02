@@ -26,7 +26,6 @@ from jolink_runtime.launch import (
     ProjectLaunchPipeline,
     ProjectLaunchRequest,
 )
-from jolink_runtime.launch.project_session import ReloadStage
 
 
 class _FakeProcess:
@@ -65,27 +64,6 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition was not observed before the deadline")
-
-
-def test_gradle_runtime_requires_make_before_run(tmp_path: Path) -> None:
-    pipeline = ProjectLaunchPipeline()
-    imported = SimpleNamespace(
-        intent=SimpleNamespace(build_before_run=False), warnings=()
-    )
-
-    with pytest.raises(LaunchPipelineFailure) as captured:
-        pipeline._prepare_gradle(
-            None,
-            _request(tmp_path),
-            imported=imported,
-            preferences=None,
-            attempt_directory=tmp_path / "attempt",
-        )
-
-    assert (
-        captured.value.error_code
-        == "GRADLE_RUNTIME_REQUIRES_BUILD_BEFORE_RUN"
-    )
 
 
 def test_source_manifest_detects_edits_between_maven_and_snapshot(
@@ -441,6 +419,11 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
 
     runtime = JavaRuntime()
     runtime._project_pipeline = _PreparedPipeline(tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_jdt_launch_output",
+        lambda _context, _request, prepared, _session: prepared,
+    )
 
     def start(**kwargs: Any) -> ProcessInfo:
         launch_commands.append(tuple(kwargs["command_argv"]))
@@ -543,6 +526,11 @@ def test_project_jvm_start_failure_is_retryable_and_clears_publication(
 ) -> None:
     runtime = JavaRuntime()
     runtime._project_pipeline = _PreparedPipeline(tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_jdt_launch_output",
+        lambda _context, _request, prepared, _session: prepared,
+    )
 
     def failed_start(**kwargs: Any) -> ProcessInfo:
         process = _FakeProcess()
@@ -592,6 +580,11 @@ def test_project_restart_uses_current_generation_without_recompiling(
     runtime = JavaRuntime()
     pipeline = _PreparedPipeline(tmp_path)
     runtime._project_pipeline = pipeline
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_jdt_launch_output",
+        lambda _context, _request, prepared, _session: prepared,
+    )
     commands: list[tuple[str, ...]] = []
 
     def start(**kwargs: Any) -> ProcessInfo:
@@ -654,132 +647,4 @@ def test_project_restart_uses_current_generation_without_recompiling(
     assert "generation-store" in " ".join(commands[1])
     final_status = runtime.status(RuntimeAction(action="status"))
     assert final_status.data["generation"] == 1
-    assert runtime.stop(RuntimeAction(action="stop")).ok is True
-
-
-@pytest.mark.parametrize(
-    "candidate_outcome",
-    ["success", "start_failure", "promotion_failure"],
-)
-def test_candidate_restart_promotes_or_rolls_back_last_good_generation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    candidate_outcome: str,
-) -> None:
-    runtime = JavaRuntime()
-    pipeline = _PreparedPipeline(tmp_path)
-    runtime._project_pipeline = pipeline
-    start_count = 0
-
-    def start(**kwargs: Any) -> ProcessInfo:
-        nonlocal start_count
-        start_count += 1
-        process = _FakeProcess()
-        info = ProcessInfo(
-            process,
-            kwargs["jdwp_port"],
-            kwargs["main_class"],
-            ready_port=kwargs["ready_port"],
-            startup_wait_timeout_seconds=(
-                kwargs["startup_wait_timeout_seconds"]
-            ),
-        )
-        runtime._proc._publish(info)
-        kwargs["on_published"](info)
-        if start_count == 2 and candidate_outcome == "success":
-            reload_source.write_text("source-v3", encoding="utf-8")
-        if start_count == 2 and candidate_outcome == "start_failure":
-            process.returncode = 7
-            raise ProcessStartupError(
-                "candidate failed",
-                failure_type="process_exited_before_jdwp",
-                exit_code=7,
-                cleanup_settled=True,
-            )
-        return info
-
-    monkeypatch.setattr(runtime._proc, "start", start)
-    monkeypatch.setattr(
-        runtime._proc,
-        "observe_readiness",
-        lambda process, refresh=True: {
-            "process_state": "running" if process.is_alive() else "exited",
-            "startup_state": "unverified" if process.is_alive() else "failed",
-            "readiness_configured": False,
-        },
-    )
-    monkeypatch.setattr(
-        ProcessManager,
-        "_stop_posix",
-        staticmethod(lambda process: setattr(process, "returncode", -15)),
-    )
-    monkeypatch.setattr(
-        ProcessManager,
-        "_stop_windows",
-        staticmethod(lambda process: setattr(process, "returncode", -15)),
-    )
-
-    runtime.run_project(RuntimeAction(action="run"), _request(tmp_path))
-    _wait_until(
-        lambda: runtime._launch_controller.snapshot()["launch_phase"]
-        == "runtime_active"
-    )
-    old_attempt = runtime._launch_controller.snapshot()["attempt_id"]
-    session = runtime._project_sessions[old_attempt]
-    candidate_output = tmp_path / "candidate-output"
-    candidate_output.mkdir()
-    (candidate_output / "Application.class").write_bytes(b"candidate")
-    session.generations.prepare_candidate(
-        candidate_output,
-        build_world_fingerprint=session.build_world_fingerprint,
-    )
-    reload_source = tmp_path / "src/App.java"
-    reload_source.parent.mkdir()
-    reload_source.write_text("source-v2", encoding="utf-8")
-    source_fingerprint = runtime._source_selection_fingerprint(
-        (reload_source,)
-    )
-    session.begin_reload(
-        source_fingerprint,
-        source_files=(reload_source,),
-    )
-    session.transition_reload(ReloadStage.PREPARING_CANDIDATE)
-    session.transition_reload(ReloadStage.RESTARTING)
-    if candidate_outcome == "promotion_failure":
-        monkeypatch.setattr(
-            session.generations,
-            "promote_candidate",
-            lambda **_kwargs: (_ for _ in ()).throw(
-                OSError("state persistence unavailable")
-            ),
-        )
-
-    result = runtime._restart_candidate_project(RuntimeAction(action="update"))
-    assert result.ok is True
-    _wait_until(
-        lambda: runtime._launch_controller.snapshot()["launch_phase"]
-        == "runtime_active"
-    )
-
-    status = runtime.status(RuntimeAction(action="status"))
-    if candidate_outcome == "success":
-        assert status.data["generation"] == 2
-        assert session.generations.current.output_directory.joinpath(
-            "Application.class"
-        ).read_bytes() == b"candidate"
-        assert session.public_status()["last_reload"]["applied"] is True
-        assert session.public_status()["last_reload"][
-            "source_changes_pending"
-        ] is True
-        assert start_count == 2
-    else:
-        assert status.data["generation"] == 1
-        assert session.generations.candidate is None
-        assert session.public_status()["last_reload"]["applied"] is False
-        assert session.public_status()["last_reload"]["rolled_back"] is True
-        assert start_count == 3
-        if candidate_outcome == "promotion_failure":
-            assert session.public_status()["last_reload"]["error_code"] == (
-                "GENERATION_PROMOTION_FAILED"
-            )
     assert runtime.stop(RuntimeAction(action="stop")).ok is True

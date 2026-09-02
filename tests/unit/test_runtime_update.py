@@ -20,6 +20,7 @@ from jolink_runtime.adapters.java.jdwp_adapter import (
 )
 from jolink_runtime.adapters.java.jdwp_client import EventKind
 from jolink_runtime.core.models import RuntimeAction
+from jolink_runtime.launch.controller import LaunchPipelineFailure
 from jolink_runtime.launch.fast_compile import (
     FastCompileError,
     FastCompilePlan,
@@ -285,43 +286,7 @@ def test_formal_output_guard_detects_external_build_change(
     assert runtime._formal_outputs_match_launch(plan) is False
 
 
-def test_fast_compile_candidate_materializes_full_current_generation(
-    tmp_path: Path,
-) -> None:
-    runtime = JavaRuntime()
-    session = JavaProjectSession(
-        root=tmp_path / "session",
-        build_world_fingerprint="world",
-    )
-    initial = tmp_path / "initial"
-    (initial / "example").mkdir(parents=True)
-    (initial / "example/Example.class").write_bytes(b"before")
-    (initial / "application.yml").write_bytes(b"stable-resource")
-    session.generations.initialize(
-        initial,
-        build_world_fingerprint="world",
-        runtime_active=True,
-    )
-    staged = tmp_path / "staged"
-    (staged / "example").mkdir(parents=True)
-    (staged / "example/Example.class").write_bytes(b"after")
-
-    runtime._prepare_fast_compile_candidate(session, staged)
-
-    candidate = session.generations.candidate
-    assert candidate is not None
-    assert candidate.output_directory.joinpath(
-        "example/Example.class"
-    ).read_bytes() == b"after"
-    assert candidate.output_directory.joinpath(
-        "application.yml"
-    ).read_bytes() == b"stable-resource"
-    assert session.generations.current.output_directory.joinpath(
-        "example/Example.class"
-    ).read_bytes() == b"before"
-
-
-def test_jdt_reload_hotswap_promotes_durable_generation(
+def test_jdt_reload_hotswap_is_runtime_only(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -359,6 +324,8 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
     )
 
     class FakeJdt(PersistentJdtCompileSession):
+        resource_delta = False
+
         @property
         def ready(self) -> bool:
             return True
@@ -380,7 +347,12 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
                 elapsed_ms=12.0,
                 source_changes_pending=False,
                 output_directory=staged,
-                candidate_changed_classes=("Example.class",),
+                runtime_changed_classes=(
+                    () if self.resource_delta else ("Example.class",)
+                ),
+                runtime_changed_resources=(
+                    ("application.yml",) if self.resource_delta else ()
+                ),
             )
 
         def close(self) -> bool:
@@ -454,25 +426,41 @@ def test_jdt_reload_hotswap_promotes_durable_generation(
         "source_changes_pending"
     ] is True
     assert jdwp.redefined is True
-    assert session.generations.current.ordinal == 2
+    assert session.generations.current.ordinal == 1
     assert session.generations.current.output_directory.joinpath(
         "Example.class"
-    ).read_bytes() == staged_raw
+    ).read_bytes() == baseline_raw
     assert session.generations.candidate is None
+    last_reload = session.public_status()["last_reload"]
+    assert last_reload["persistence"] == "runtime_only"
+    assert last_reload["restart_loses_update"] is True
+    assert last_reload["runtime_overlay_active"] is True
+
+    compiler.resource_delta = True
+    relaunch_started = runtime.update(action)
+    assert relaunch_started.ok is True
+    relaunch_id = relaunch_started.data["reload_id"]
+    deadline = time.monotonic() + 5
+    while (
+        session.public_status()["last_reload"] is None
+        or session.public_status()["last_reload"]["reload_id"] != relaunch_id
+    ):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    relaunch = session.public_status()["last_reload"]
+    assert relaunch["ok"] is False
+    assert relaunch["error_code"] == "RELOAD_REQUIRES_RELAUNCH"
+    assert relaunch["reason_code"] == "NON_HOTSWAPPABLE_OUTPUT_DELTA"
+    assert relaunch["applied"] is False
+    assert session.generations.current.ordinal == 1
 
     restart_action = RuntimeAction(action="update")
     restart_action.source_files = ["src/main/java/Example.java"]
     restart_action.hotswap = False
     rejected = runtime.update(restart_action)
-    assert rejected.ok is True
-    restart_id = rejected.data["reload_id"]
-    deadline = time.monotonic() + 5
-    while session.public_status()["last_reload"]["reload_id"] != restart_id:
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-    assert session.public_status()["last_reload"]["error_code"] == (
-        "RELOAD_RESTART_REQUIRES_READINESS"
-    )
+    assert rejected.ok is False
+    assert rejected.data["error_code"] == "RELOAD_REQUIRES_RELAUNCH"
+    assert rejected.data["reason_code"] == "HOTSWAP_DISABLED"
     assert session.generations.candidate is None
 
 
@@ -694,7 +682,7 @@ def test_poisoned_jdt_reload_clears_ready_product_state(
     assert session.jdt_unavailable_reason == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
 
 
-def test_jdt_bootstrap_failure_survives_attempt_migration(
+def test_jdt_prelaunch_failure_is_reported_before_a_jvm_starts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -703,72 +691,29 @@ def test_jdt_bootstrap_failure_survives_attempt_migration(
         root=tmp_path / "session",
         build_world_fingerprint="world",
     )
-    plan = SimpleNamespace()
-    prepared = ProjectUpdatePlan(
-        fast_compile_plan=None,
-        fast_compile_unavailable_reason="DIRECT_DISABLED",
-        attempt_directory=tmp_path,
-        project_session=session,
-        jdt_build_world_plan=plan,
+    prepared = SimpleNamespace(
+        jdt_build_world_plan=SimpleNamespace(is_fresh=lambda: True),
+        resource_source_roots=(),
     )
-    entered = threading.Event()
-    release = threading.Event()
+    context = SimpleNamespace(check_cancelled=lambda: None)
 
-    def fail_after_restart(_cls):
-        entered.set()
-        assert release.wait(5)
+    def fail_load(_cls):
         raise ValueError("unexpected bootstrap failure")
 
     monkeypatch.setattr(
         JdtCandidate,
         "load_product",
-        classmethod(fail_after_restart),
+        classmethod(fail_load),
     )
-    runtime._project_update_plans["launch_old"] = prepared
-    runtime._project_sessions["launch_old"] = session
-    runtime._start_jdt_compile_session_async(
-        "launch_old",
-        prepared,
-        session,
-    )
-    assert entered.wait(5)
-    runtime._project_update_plans.pop("launch_old")
-    runtime._project_sessions.pop("launch_old")
-    runtime._project_update_plans["launch_new"] = prepared
-    runtime._project_sessions["launch_new"] = session
-    release.set()
-    deadline = time.monotonic() + 5
-    while (
-        session.jdt_bootstrap_state == "initializing"
-        and time.monotonic() < deadline
-    ):
-        time.sleep(0.01)
+    with pytest.raises(LaunchPipelineFailure) as captured:
+        runtime._prepare_jdt_launch_output(
+            context, None, prepared, session
+        )
 
-    assert session.jdt_bootstrap_state == "unavailable"
-    assert session.jdt_unavailable_reason == (
-        "JDT_COMPILE_SESSION_START_FAILED"
-    )
-    assert session.jdt_unavailable_details == {
-        "stage": "candidate_load",
-        "exception_type": "ValueError",
-        "error_summary": "unexpected bootstrap failure",
-    }
-    monkeypatch.setattr(
-        runtime,
-        "_reconcile_project_process_exit",
-        lambda: {
-            "attempt_id": "launch_new",
-            "generation": 2,
-            "launch_phase": "runtime_active",
-        },
-    )
-    result = runtime.update(RuntimeAction(action="update"))
-    assert result.error == (
-        "Persistent JDT reload is unavailable for this launch."
-    )
-    assert result.data["error_code"] == (
-        "JDT_COMPILE_SESSION_START_FAILED"
-    )
+    assert captured.value.error_code == "JDT_STARTUP_FAILED"
+    assert captured.value.context["stage"] == "candidate_load"
+    assert runtime._proc.current is None
+    assert session.compile_session is None
 
 
 def test_formal_output_guard_checks_unselected_classes_and_class_set(

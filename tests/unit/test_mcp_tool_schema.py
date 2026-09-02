@@ -90,8 +90,7 @@ def test_java_application_description_contains_lifecycle_and_reload_signals() ->
         "restart",
         "source_files",
         "hotswap",
-        "candidate",
-        "rollback",
+        "fresh project launch",
     ):
         assert signal in normalized
 

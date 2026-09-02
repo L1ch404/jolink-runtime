@@ -175,12 +175,7 @@ def create_gradle_runtime_build_world(
         "GRADLE_BYTECODE_TRANSFORM_UNMODELED",
         "Gradle Runtime Bootstrap applies an unverified plugin.",
     )
-    expected_tasks = {
-        runtime_execution.get("compileJavaTaskPath"),
-        runtime_execution.get("processResourcesTaskPath"),
-        runtime_execution.get("classesTaskPath"),
-        runtime_execution.get("exportTaskPath"),
-    }
+    expected_tasks = {runtime_execution.get("exportTaskPath")}
     _require(
         None not in expected_tasks
         and set(runtime_execution.get("executedTaskPaths", ()))
@@ -264,22 +259,32 @@ def create_gradle_runtime_build_world(
         "GRADLE_COMPILE_CONFIGURATION_UNMODELED",
         "Gradle compileJava has unsupported Runtime reload configuration.",
     )
-    module_output = Path(compile_task["destinationDirectory"]).resolve(strict=True)
+    module_output = Path(compile_task["destinationDirectory"]).resolve(
+        strict=False
+    )
     _require(
         _paths(main["classesDirectories"]) == (module_output,),
         "GRADLE_MAIN_OUTPUT_UNMODELED",
         "Gradle main SourceSet has multiple or mismatched class outputs.",
     )
-    optional_missing = {
-        Path(value).resolve(strict=False)
-        for value in (main.get("resourcesDirectory"),)
-        if value and not Path(value).resolve(strict=False).exists()
-    }
+    optional_missing = {module_output}
+    if main.get("resourcesDirectory"):
+        optional_missing.add(
+            Path(main["resourcesDirectory"]).resolve(strict=False)
+        )
     dependencies = _existing_paths(
         compile_task["classpath"], optional_missing=optional_missing
     )
-    runtime_classpath = _existing_paths(
-        main["runtimeClasspath"], optional_missing=optional_missing
+    runtime_classpath = _paths(main["runtimeClasspath"])
+    missing_runtime_dependencies = [
+        path
+        for path in runtime_classpath
+        if path not in optional_missing and not path.exists()
+    ]
+    _require(
+        not missing_runtime_dependencies,
+        "GRADLE_CLASSPATH_ENTRY_UNAVAILABLE",
+        "A Gradle Runtime dependency is unavailable.",
     )
     _require(
         runtime_classpath.count(module_output) == 1,
@@ -292,20 +297,10 @@ def create_gradle_runtime_build_world(
         if raw_resource_output
         else None
     )
-    formal_resource_roots = (
-        (resource_output,)
-        if resource_output is not None and resource_output.is_dir()
-        else ()
-    )
-    resource_source_has_files = resource_root.is_dir() and any(
-        path.is_file() for path in resource_root.rglob("*")
-    )
-    _require(
-        not resource_source_has_files or bool(formal_resource_roots),
-        "GRADLE_RESOURCE_OUTPUT_UNAVAILABLE",
-        "Gradle did not produce the main resource output.",
-    )
-    formal_owned = {module_output, *formal_resource_roots}
+    formal_resource_roots = ()
+    formal_owned = {module_output}
+    if resource_output is not None and resource_output in runtime_classpath:
+        formal_owned.add(resource_output)
     generation_input_roots = tuple(
         path for path in runtime_classpath if path in formal_owned
     )
@@ -345,19 +340,25 @@ def create_gradle_runtime_build_world(
         )
     )
     java_compiler = _javac(target_java_home)
+    freshness_entries = tuple(
+        dict.fromkeys(
+            (
+                *dependencies,
+                *(path for path in runtime_classpath if path not in formal_owned),
+            )
+        )
+    )
     fingerprint = fast_compile_fingerprint(
         configuration_inputs=configuration,
         configuration_environment_names=configuration_environment_names,
         javac_executable=java_compiler,
-        compile_classpath=tuple(dict.fromkeys((*dependencies, *runtime_classpath))),
+        compile_classpath=freshness_entries,
     )
     return GradleRuntimeBuildWorld(
         project_root=project,
         module_output=module_output,
         generation_input_roots=generation_input_roots,
-        generation_input_manifest=_merged_runtime_manifest(
-            generation_input_roots
-        ),
+        generation_input_manifest={},
         resource_source_roots=(resource_root,),
         formal_resource_roots=formal_resource_roots,
         runtime_classpath=runtime_classpath,
@@ -380,10 +381,10 @@ def create_gradle_runtime_build_world(
             ),
             javac_executable=java_compiler,
             method_parameters="-parameters" in compiler_args,
-            freshness_entries=tuple(dict.fromkeys((*dependencies, *runtime_classpath))),
-            resource_roots=(resource_root, *formal_resource_roots),
+            freshness_entries=freshness_entries,
+            resource_roots=(resource_root,),
             resource_fingerprint=resource_tree_fingerprint(
-                (resource_root, *formal_resource_roots)
+                (resource_root,)
             ),
         ),
     )

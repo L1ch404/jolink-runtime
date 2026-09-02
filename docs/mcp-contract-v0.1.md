@@ -98,47 +98,45 @@ They support two launch forms:
   `launch_name`.
 
 Project launch imports a supported IntelliJ IDEA Application or Spring Boot
-configuration, uses the selected Maven or Gradle/JDK environment, compiles in
-the background, resolves the runtime classpath, and starts the managed JVM.
+configuration. Maven or Gradle exports the Build World but does not compile
+application classes. JDT is initialized before the JVM: a cold workspace uses
+FULL build, while a reusable workspace calls `workspace_source_changes()` and
+uses INCREMENTAL only when sources changed. The resulting JDT output plus
+current resources is sealed and used to start the managed JVM.
 `project_path` is mutually exclusive with direct JVM launch arguments.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
 
 `reload(source_files)` is available only for the active JVM produced by a
 supported `project_path` launch. It compiles explicit Java sources in a
-persistent private JDT Build World and seals the full output delta as an
-immutable Candidate Generation. Compatible loaded method-body changes use one
-JDWP `RedefineClasses` operation. Structural/JDT-generated-resource/add/delete changes,
-HotSwap rejection, or `hotswap=false` use a managed Candidate restart. The
-restart path requires `ready_port`. The Candidate is promoted only after
-readiness; startup failure restores the
-last-good Generation and reports `rolled_back=true`. It never mutates formal
-output. Success is runtime evidence, not business-correctness proof; a fresh
-request is still required.
+persistent private JDT Build World and applies compatible loaded method-body
+changes with one JDWP `RedefineClasses` operation. Reload never restarts the
+JVM and never mutates formal output. Structural/JDT-generated-resource/add/delete
+changes, HotSwap rejection, an unsupported JVM, or `hotswap=false` return
+`RELOAD_REQUIRES_RELAUNCH` and leave the known current Runtime unchanged. The
+caller must use `stop` followed by `launch` to apply these changes before JVM
+startup.
+Successful HotSwap state is runtime-only and is lost by `restart`. Success is
+runtime evidence, not business-correctness proof; a fresh request is still
+required.
 
-The CompileSession freezes build-authority Java/resource roots, compile dependencies,
-target platform, source encoding, Lombok/JSR-269 processor inputs, and the
-configuration fingerprint. Its initial FULL build is based on the exact source
-snapshot that produced the running Generation; `compile_ready` remains false
-until that baseline succeeds and its declared type set, public API shape, and
-class-file major are compatible with the formal Generation. Java and resource
-manifests before build, after build, and after snapshot copy must match. Every reload
-rechecks BuildWorld, Runtime,
+The CompileSession freezes Probe-derived Java/resource roots, compile
+dependencies, target platform, source encoding, Lombok/JSR-269 processor
+inputs, and the configuration fingerprint. Probe facts are persisted locally;
+unchanged build configuration skips Maven/Gradle entirely on later launches.
+Every reload rechecks BuildWorld, Runtime,
 Generation, process identity, and selected source bytes before applying state.
 Changing those inputs requires a fresh launch rather than silently compiling
 against a different world.
 
-Persistent reload requires a fresh formal build baseline. Maven launches with
-Make disabled expose `JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE`; Gradle G4
-launches currently reject Make-disabled intents before startup. This avoids a
-false `no_changes` result. JDT bootstrap state belongs to `JavaProjectSession` and
-therefore survives a managed `restart` attempt transition.
+The IDEA Make/Build flag is imported as intent metadata but does not run the
+build-system compiler. JDT bootstrap completes before JVM startup.
 
 Static initialization, class schemas, new/deleted classes, and resources are
-not sent through JDWP HotSwap. They select the restart apply path so the new
-JVM initializes from the complete Candidate output.
+not sent through JDWP HotSwap. They require `stop` followed by a new JDT-first
+project launch.
 
-For Gradle, formal classes and resources are sealed into one private,
+For Gradle, JDT classes and copied source resources are sealed into one private,
 collision-checked Generation root. Runtime scope never reads the test world.
 A change under `src/main/resources` invalidates the current Build World and
 requires a new launch; it is not accepted as a Java-only `reload`.

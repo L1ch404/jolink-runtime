@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Gradle Runtime launch, HotSwap, restart candidate, and rollback."""
+"""Validate Gradle Runtime launch, HotSwap, and relaunch-required changes."""
 
 from __future__ import annotations
 
@@ -226,7 +226,11 @@ async def _run(
                     raise RuntimeError(launched)
                 status = await _status(
                     session,
-                    lambda value: value.get("compile_ready") is True,
+                    lambda value: (
+                        value.get("compile_ready") is True
+                        and value.get("launch_phase") == "runtime_active"
+                        and value.get("startup_state") == "ready"
+                    ),
                 )
                 if status.get("startup_state") != "ready":
                     raise RuntimeError(status)
@@ -244,43 +248,55 @@ async def _run(
                 if _message(ready_port) != "before:resource-v1":
                     raise RuntimeError("Gradle baseline behavior mismatch")
 
-                formal_resource = project / "build/resources/main/message.txt"
-                formal_resource.write_text(
-                    "resource-external\n", encoding="utf-8"
+                if project.joinpath("build/classes/java/main").exists():
+                    raise RuntimeError("Gradle compileJava ran during launch")
+                if project.joinpath("build/resources/main").exists():
+                    raise RuntimeError("Gradle processResources ran during launch")
+
+                await _payload(session, "java_application", {"action": "stop"})
+                source.write_text(
+                    source.read_text(encoding="utf-8").replace(
+                        'return "before";', 'return "startup-incremental";'
+                    ),
+                    encoding="utf-8",
                 )
-                old_pid = int(status["pid"])
-                restarted = await _payload(
-                    session, "java_application", {"action": "restart"}
-                )
-                if restarted.get("ok") is not True:
-                    raise RuntimeError(restarted)
-                status = await _status(
-                    session,
-                    lambda value: value.get("launch_phase") == "runtime_active"
-                    and value.get("pid") != old_pid,
-                )
-                if _message(ready_port) != "before:resource-v1":
-                    raise RuntimeError("Formal resource mutation escaped sealing")
-                formal_resource.unlink()
-                old_pid = int(status["pid"])
-                restarted = await _payload(
-                    session, "java_application", {"action": "restart"}
-                )
-                if restarted.get("ok") is not True:
-                    raise RuntimeError(restarted)
-                status = await _status(
-                    session,
-                    lambda value: value.get("launch_phase") == "runtime_active"
-                    and value.get("pid") != old_pid,
-                )
-                if _message(ready_port) != "before:resource-v1":
-                    raise RuntimeError("Deleted formal resource escaped sealing")
-                formal_resource.parent.mkdir(parents=True, exist_ok=True)
-                formal_resource.write_text("resource-v1\n", encoding="utf-8")
+                for expected_kind in ("INCREMENTAL", None):
+                    launched = await _payload(
+                        session,
+                        "java_application",
+                        {
+                            "action": "launch",
+                            "project_path": str(project),
+                            "launch_name": "GradleRuntimeApp",
+                            "jdwp_port": jdwp_port,
+                            "ready_port": ready_port,
+                            "startup_wait_timeout_seconds": 20,
+                        },
+                    )
+                    if launched.get("ok") is not True:
+                        raise RuntimeError(launched)
+                    status = await _status(
+                        session,
+                        lambda value: value.get("launch_phase") == "runtime_active"
+                        and value.get("startup_state") == "ready",
+                    )
+                    if (
+                        status.get("probe_cache_reused") is not True
+                        or status.get("jdt_bootstrap_reused") is not True
+                        or status.get("jdt_bootstrap_build_kind") != expected_kind
+                        or "log_tail" in status.get("build", {})
+                    ):
+                        raise RuntimeError(status)
+                    if _message(ready_port) != "startup-incremental:resource-v1":
+                        raise RuntimeError("Gradle JDT-first cached startup mismatch")
+                    if expected_kind is not None:
+                        await _payload(
+                            session, "java_application", {"action": "stop"}
+                        )
 
                 source.write_text(
                     source.read_text(encoding="utf-8").replace(
-                        'return "before";', 'return "after";'
+                        'return "startup-incremental";', 'return "after";'
                     ),
                     encoding="utf-8",
                 )
@@ -323,52 +339,27 @@ async def _run(
                     {
                         "action": "reload",
                         "source_files": ["src/main/java/example/GradleRuntimeApp.java"],
-                        "hotswap": False,
                     },
                 )
-                if structural.get("ok") is not True:
+                structural_id = structural.get("reload_id")
+                if structural.get("status") != "reload_started" or not structural_id:
                     raise RuntimeError(structural)
                 status = await _status(
                     session,
                     lambda value: (
                         value.get("active_operation") is None
-                        and value.get("pid") != old_pid
+                        and value.get("last_reload", {}).get("reload_id")
+                        == structural_id
                     ),
                 )
-                if _message(ready_port) != "structural:resource-v1":
-                    raise RuntimeError("Gradle Candidate restart mismatch")
-
-                source.write_text(
-                    source.read_text(encoding="utf-8").replace(
-                        "int port = Integer.parseInt(args[0]);",
-                        "if (System.currentTimeMillis() >= 0) {\n"
-                        '            throw new IllegalStateException("candidate");\n'
-                        "        }\n"
-                        "        int port = Integer.parseInt(args[0]);",
-                    ),
-                    encoding="utf-8",
-                )
-                failed_candidate = await _payload(
-                    session,
-                    "java_application",
-                    {
-                        "action": "reload",
-                        "source_files": ["src/main/java/example/GradleRuntimeApp.java"],
-                        "hotswap": False,
-                    },
-                )
-                if failed_candidate.get("ok") is not True:
-                    raise RuntimeError(failed_candidate)
-                rolled_back = await _status(
-                    session,
-                    lambda value: (
-                        value.get("active_operation") is None
-                        and isinstance(value.get("last_reload"), dict)
-                        and value["last_reload"].get("rolled_back") is True
-                    ),
-                )
-                if _message(ready_port) != "structural:resource-v1":
-                    raise RuntimeError("Gradle rollback did not restore behavior")
+                if (
+                    status.get("last_reload", {}).get("error_code")
+                    != "RELOAD_REQUIRES_RELAUNCH"
+                    or status.get("pid") != old_pid
+                ):
+                    raise RuntimeError(status)
+                if _message(ready_port) != "after:resource-v1":
+                    raise RuntimeError("relaunch-required reload changed the JVM")
 
                 resource_source = project / "src/main/resources/message.txt"
                 resource_source.write_text("resource-v2\n", encoding="utf-8")
@@ -425,9 +416,11 @@ compileJava.doLast {
                     "build_system": "gradle",
                     "target_java": int(status["fast_update"]["target_level"]),
                     "baseline_ready": True,
+                    "warm_probe_cache_reused": True,
+                    "warm_incremental_startup": True,
+                    "unchanged_startup_no_compile": True,
                     "hotswap_passed": True,
-                    "candidate_restart_passed": True,
-                    "rollback_passed": rolled_back["last_reload"]["rolled_back"],
+                    "structural_relaunch_required": True,
                     "resources_sealed": True,
                     "resource_drift_rejected": True,
                     "runtime_probe_ignored_test_world": True,

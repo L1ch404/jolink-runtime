@@ -91,16 +91,16 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "launch or Fast Test. Maven launch imports an IntelliJ IDEA "
                 "Application or Spring Boot configuration; Gradle G4 currently "
                 "accepts the verified built-in Java/Application plugin world. "
-                "joLink uses the "
-                "project's build/JDK settings, compiles in the background, "
-                "then starts the resolved classpath. Do not combine with "
+                "Maven/Gradle only export the Build World; JDT compiles before "
+                "the JVM starts. A matching persisted Build World skips the "
+                "build tool and uses workspace_source_changes for incremental "
+                "startup. Do not combine with "
                 "classpath, main_class, jar_path, app_args, or vm_args. "
                 "Fast Test can use a supported single-Project Gradle Java build, "
                 "a headless Maven jar project, or one "
                 "selector-identified jar module in a standard Reactor and "
                 "does not require a running application. Restart never accepts "
-                "project_path; it reuses the current "
-                "sealed Generation without rerunning the formal build."
+                "project_path; it reuses the current sealed Generation."
             ),
         },
         "launch_name": {
@@ -144,8 +144,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "minimum": 1,
             "maximum": 65535,
             "description": (
-                "Local application TCP port for launch/restart readiness. It "
-                "is required when reload must apply a Candidate by restart; "
+                "Local application TCP port for launch/restart readiness; "
                 "must differ from jdwp_port."
             ),
         },
@@ -370,16 +369,17 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "to project_path, including a Reactor module prefix. For reload, paths are "
                 "in the selected "
                 "build module. joLink compiles them in a persistent private JDT "
-                "session, seals a durable Candidate, and applies it by HotSwap "
-                "or managed restart."
+                "session and applies compatible loaded class definitions with "
+                "HotSwap."
             ),
         },
         "hotswap": {
             "type": "boolean",
             "default": True,
             "description": (
-                "For reload, try HotSwap first when true. Set false to apply "
-                "the compiled Candidate by managed restart with rollback."
+                "Reload applies compatible classes only when true. False is "
+                "retained for request compatibility and returns "
+                "RELOAD_REQUIRES_RELAUNCH; reload never restarts the JVM."
             ),
         },
         "tests": {
@@ -541,8 +541,9 @@ JAVA_APPLICATION_DESCRIPTION = (
     "changing a Runtime. For supported Maven or Gradle project launches, "
     "reload accepts explicit source_files and immediately returns a background "
     "reload_id. Call status to observe "
-    "active_operation and last_reload; the Attempt uses HotSwap when safe and "
-    "otherwise restarts the Candidate with automatic rollback."
+    "active_operation and last_reload. The Attempt applies only compatible "
+    "loaded classes with HotSwap; other changes report that a fresh project "
+    "launch is required."
 )
 JAVA_STATUS_DESCRIPTION = (
     "Discover local Java processes, inspect joLink application/build state, or "

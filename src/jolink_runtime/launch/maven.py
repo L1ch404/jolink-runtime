@@ -26,7 +26,10 @@ from .compiler_profile import (
 )
 from .idea_environment import IdeaBuildPreferences
 from .fast_compile import FastCompilePlan, fast_compile_fingerprint
-from .jdt_compile_session import JdtBuildWorldPlan
+from .jdt_compile_session import (
+    JdtBuildWorldPlan,
+    resource_tree_fingerprint,
+)
 from .toolchain import (
     JavaToolchainCandidate,
     JavaToolchainResolver,
@@ -467,8 +470,6 @@ class MavenBuildSystemAdapter:
             arguments.extend(
                 ["-pl", execution.module.relative_path, "-am"]
             )
-        if execution.build_plan.compile_required:
-            arguments.append("compile")
         arguments.extend(
             [
                 _DEPENDENCY_PLUGIN_GOAL,
@@ -492,7 +493,7 @@ class MavenBuildSystemAdapter:
             environment=environment,
             timeout_seconds=None,
             output_capture=execution.build_log,
-            operation_name="maven_compile_and_classpath",
+            operation_name="maven_runtime_classpath_probe",
         )
 
     def create_compile_classpath_operation(
@@ -808,17 +809,6 @@ class MavenBuildSystemAdapter:
     ) -> JdtBuildWorldPlan:
         """Create the Java-8 single-module Build World for persistent JDT."""
 
-        if not execution.build_plan.compile_required:
-            raise MavenResolutionError(
-                LaunchErrorCode.JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE,
-                "Persistent JDT reload requires a fresh Maven compile baseline.",
-                retryable=False,
-                suggested_next_step=(
-                    "Enable Make/Build before run in the IDEA launch, then "
-                    "call launch again."
-                ),
-            )
-
         source_root = execution.module.directory / "src/main/java"
         if not source_root.is_dir() or execution.module.packaging != "jar":
             raise MavenResolutionError(
@@ -903,12 +893,12 @@ class MavenBuildSystemAdapter:
             runtime_jdk=runtime_jdk,
         )
         if (
-            compiler_model["source_level"] != 8
-            or compiler_model["target_level"] != 8
+            compiler_model["source_level"] != compiler_model["target_level"]
+            or compiler_model["target_level"] not in {8, 11}
         ):
             raise MavenResolutionError(
                 LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
-                "The frozen product JDT candidate currently supports Java 8 only.",
+                "The product JDT launch supports equal Java 8 or 11 source/target.",
                 retryable=False,
                 suggested_next_step="Use the formal Maven build for this Java level.",
             )
@@ -995,13 +985,19 @@ class MavenBuildSystemAdapter:
             lombok_entries=lombok_entries,
             target_java_home=runtime_jdk.home,
             source_encoding=self._source_encoding(effective_project),
-            source_level=8,
-            target_level=8,
+            source_level=compiler_model["source_level"],
+            target_level=compiler_model["target_level"],
             fingerprint=fingerprint,
             configuration_inputs=tuple(configuration_inputs),
             configuration_environment_names=_MAVEN_ENVIRONMENT_INPUTS,
             javac_executable=execution.build_jdk.javac_executable,
             method_parameters=argument_profile.method_parameters,
+            resource_roots=(
+                execution.module.directory / "src/main/resources",
+            ),
+            resource_fingerprint=resource_tree_fingerprint(
+                (execution.module.directory / "src/main/resources",)
+            ),
             worker_min_heap_mb=worker_min_heap_mb,
             worker_max_heap_mb=worker_max_heap_mb,
         )
@@ -2194,6 +2190,13 @@ class MavenBuildSystemAdapter:
             if key in seen:
                 continue
             seen.add(key)
+            if (
+                resolved == execution.module.output_directory.resolve(
+                    strict=False
+                )
+            ):
+                normalized.append(resolved)
+                continue
             if not resolved.exists():
                 missing.append(str(resolved))
                 continue
@@ -2210,23 +2213,6 @@ class MavenBuildSystemAdapter:
                 context={"missing_path_count": len(missing)},
             )
 
-        main_class_file = execution.module.output_directory / Path(
-            *intent.main_class.split(".")
-        ).with_suffix(".class")
-        if not main_class_file.is_file():
-            raise MavenResolutionError(
-                LaunchErrorCode.RUNTIME_RESOLUTION_FAILED,
-                "The selected main class was not compiled in the target module.",
-                retryable=True,
-                suggested_next_step=(
-                    "Enable the IDEA Make task or correct the selected Maven "
-                    "module/main class, then retry run."
-                ),
-                context={
-                    "main_class": intent.main_class,
-                    "target_module": execution.module.relative_path,
-                },
-            )
         return JvmLaunchPlan(
             java_executable=runtime_jdk.java_executable,
             classpath=tuple(normalized),

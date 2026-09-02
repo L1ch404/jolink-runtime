@@ -209,11 +209,11 @@ def test_single_module_plan_builds_compile_and_runtime_classpath(
 
     operation = adapter.create_build_operation(execution)
 
-    assert operation.operation_name == "maven_compile_and_classpath"
+    assert operation.operation_name == "maven_runtime_classpath_probe"
+    assert "compile" not in operation.argv
     assert operation.cwd == project
     assert "--batch-mode" in operation.argv
     assert "-T" not in operation.argv
-    assert "compile" in operation.argv
     assert any(
         value.endswith(
             "maven-dependency-plugin:3.6.1:build-classpath"
@@ -628,7 +628,7 @@ def test_jdt_build_world_accepts_jdk_only_module(
     assert plan.lombok_entries == ()
 
 
-def test_reload_models_reject_make_disabled_stale_maven_baseline(
+def test_jdt_model_does_not_require_idea_make_enabled(
     tmp_path: Path,
 ) -> None:
     dependency = tmp_path / "dependency.jar"
@@ -643,15 +643,20 @@ def test_reload_models_reject_make_disabled_stale_maven_baseline(
         build_plan=replace(execution.build_plan, compile_required=False),
     )
 
-    for consume in (
-        adapter.consume_fast_compile_plan,
-        adapter.consume_jdt_build_world_plan,
-    ):
-        with pytest.raises(MavenResolutionError) as captured:
-            consume(execution=execution, runtime_jdk=_jdk(tmp_path))
-        assert captured.value.error_code is (
-            LaunchErrorCode.JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE
+    with pytest.raises(MavenResolutionError) as captured:
+        adapter.consume_fast_compile_plan(
+            execution=execution,
+            runtime_jdk=_jdk(tmp_path),
         )
+    assert captured.value.error_code is (
+        LaunchErrorCode.JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE
+    )
+
+    plan = adapter.consume_jdt_build_world_plan(
+        execution=execution,
+        runtime_jdk=_jdk(tmp_path),
+    )
+    assert plan.source_roots
 
 
 def test_jdt_build_world_rejects_explicit_processor_selection(

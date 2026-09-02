@@ -649,10 +649,10 @@ class JdtCompileResult:
     elapsed_ms: float
     source_changes_pending: bool
     output_directory: Path
-    candidate_changed_classes: tuple[str, ...] = ()
-    candidate_deleted_classes: tuple[str, ...] = ()
-    candidate_changed_resources: tuple[str, ...] = ()
-    candidate_deleted_resources: tuple[str, ...] = ()
+    runtime_changed_classes: tuple[str, ...] = ()
+    runtime_deleted_classes: tuple[str, ...] = ()
+    runtime_changed_resources: tuple[str, ...] = ()
+    runtime_deleted_resources: tuple[str, ...] = ()
     main_compile_ok: bool = True
     test_compile_ok: bool = True
     main_error_count: int = 0
@@ -958,7 +958,12 @@ class PersistentJdtCompileSession:
                 "workspace_project_state"
             ) == "reopened"
 
-    def start(self, *, reuse_workspace: bool = False) -> JdtCompileResult:
+    def start(
+        self,
+        *,
+        reuse_workspace: bool = False,
+        build_on_reuse: bool = True,
+    ) -> JdtCompileResult:
         with self._operation_lock:
             with self._state_lock:
                 if self._poisoned:
@@ -976,7 +981,10 @@ class PersistentJdtCompileSession:
                             "JDT_WORKSPACE_RESTORE_UNAVAILABLE",
                             "The saved JDT workspace is unavailable.",
                         )
-                    self._synchronize_persisted_sources()
+                    if build_on_reuse:
+                        self._synchronize_persisted_sources()
+                    else:
+                        self._restore_persisted_source_map()
                 else:
                     self.root.mkdir(parents=True, exist_ok=False, mode=0o700)
                     self._materialize_sources()
@@ -997,24 +1005,34 @@ class PersistentJdtCompileSession:
                         "JDT_WORKSPACE_NOT_REOPENED",
                         "The Worker did not reopen the saved JDT workspace.",
                     )
-                result = self._build(
-                    "INCREMENTAL" if reuse_workspace else "FULL",
-                    source_changes_pending=False,
-                )
+                if reuse_workspace and not build_on_reuse:
+                    result = JdtCompileResult(
+                        compile_ok=True,
+                        actual_build_kind=None,
+                        compiled_source_count=0,
+                        compiled_source_units=(),
+                        changed_classes=(),
+                        deleted_classes=(),
+                        changed_resources=(),
+                        deleted_resources=(),
+                        error_count=0,
+                        warning_count=0,
+                        diagnostics=(),
+                        diagnostics_truncated=False,
+                        elapsed_ms=0.0,
+                        source_changes_pending=False,
+                        output_directory=self.output_directory,
+                    )
+                else:
+                    result = self._build(
+                        "INCREMENTAL" if reuse_workspace else "FULL",
+                        source_changes_pending=False,
+                    )
                 with self._state_lock:
                     self._native_full_resource_manifest = (
                         self._native_resource_manifest()
                     )
-                if self.baseline_main_output is not None:
-                    self._copy_frozen_resources(
-                        self.baseline_main_output,
-                        self.output_directory,
-                    )
-                if self.baseline_test_output is not None:
-                    self._copy_frozen_resources(
-                        self.baseline_test_output,
-                        self.test_output_directory,
-                    )
+                self._restore_frozen_resources()
                 return result
             except Exception:
                 with self._state_lock:
@@ -1169,6 +1187,11 @@ class PersistentJdtCompileSession:
                     "The private source mirror could not be updated atomically.",
                 ) from error
             result = self._build("INCREMENTAL", source_changes_pending=False)
+            # Eclipse may remove resources that joLink overlaid from the formal
+            # build because they are not owned by the private workspace. Put
+            # those frozen resources back before calculating the Runtime delta;
+            # otherwise a Java-only edit can look like a resource deletion.
+            self._restore_frozen_resources()
             requested_deleted_source_units = {
                 private.relative_to(self.private_project).as_posix()
                 for _source, (private, content, _original, _mapped)
@@ -1298,6 +1321,24 @@ class PersistentJdtCompileSession:
                     self._complete_output_manifest()
                 )
 
+    def reset_publication_baseline(self, output_directory: Path) -> None:
+        """Describe the classes restored by an explicit Runtime restart."""
+
+        root = output_directory.expanduser().resolve(strict=True)
+        manifest = {
+            path.relative_to(root).as_posix(): _sha256_file(path)
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+        with self._operation_lock:
+            with self._state_lock:
+                if self._poisoned or not self._baseline_ready:
+                    raise JdtCompileError(
+                        "JDT_SESSION_NOT_READY",
+                        "The JDT publication baseline cannot be reset.",
+                    )
+                self._published_output_manifest = manifest
+
     def save_workspace(self) -> bool:
         with self._operation_lock:
             with self._state_lock:
@@ -1373,6 +1414,37 @@ class PersistentJdtCompileSession:
                 baseline_roots=self.baseline_test_source_roots,
                 destination_root=self.private_test_source,
             )
+
+    def _restore_persisted_source_map(self) -> None:
+        """Reconnect original source paths without changing the saved mirror."""
+
+        self._source_map.clear()
+        for source_roots, destination_root in (
+            (self.source_roots, self.private_source),
+            (self.test_source_roots, self.private_test_source),
+        ):
+            if not source_roots:
+                continue
+            if not destination_root.is_dir():
+                raise JdtCompileError(
+                    "JDT_WORKSPACE_SOURCE_MIRROR_UNAVAILABLE",
+                    "The saved JDT source mirror is unavailable.",
+                )
+            for source_root in source_roots:
+                relatives = {
+                    path.relative_to(source_root)
+                    for path in source_root.rglob("*.java")
+                    if path.is_file()
+                }
+                relatives.update(
+                    path.relative_to(destination_root)
+                    for path in destination_root.rglob("*.java")
+                    if path.is_file()
+                )
+                for relative in relatives:
+                    self._source_map[
+                        (source_root / relative).resolve(strict=False)
+                    ] = destination_root / relative
 
     def _synchronize_persisted_source_group(
         self,
@@ -1485,6 +1557,39 @@ class PersistentJdtCompileSession:
             destination = output_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
+
+    def _restore_frozen_resources(self) -> None:
+        state_file = self.root / "frozen-resource-paths.json"
+        try:
+            previous = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        current: dict[str, list[str]] = {}
+        for name, source_root, output_root in (
+            ("main", self.baseline_main_output, self.output_directory),
+            ("test", self.baseline_test_output, self.test_output_directory),
+        ):
+            paths = {
+                path.relative_to(source_root).as_posix()
+                for path in source_root.rglob("*")
+                if path.is_file() and path.suffix != ".class"
+            } if source_root is not None else set()
+            for relative in set(previous.get(name, ())) - paths:
+                path = Path(relative)
+                if path.is_absolute() or ".." in path.parts:
+                    continue
+                (output_root / path).unlink(missing_ok=True)
+            if source_root is not None:
+                self._copy_frozen_resources(source_root, output_root)
+            current[name] = sorted(paths)
+        temporary = state_file.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(current, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(state_file)
 
     def _start_worker(
         self,
@@ -1762,16 +1867,16 @@ class PersistentJdtCompileSession:
         )
         deleted = sorted(path for path in published if path not in current)
         return {
-            "candidate_changed_classes": tuple(
+            "runtime_changed_classes": tuple(
                 path for path in changed if path.endswith(".class")
             ),
-            "candidate_deleted_classes": tuple(
+            "runtime_deleted_classes": tuple(
                 path for path in deleted if path.endswith(".class")
             ),
-            "candidate_changed_resources": tuple(
+            "runtime_changed_resources": tuple(
                 path for path in changed if not path.endswith(".class")
             ),
-            "candidate_deleted_resources": tuple(
+            "runtime_deleted_resources": tuple(
                 path for path in deleted if not path.endswith(".class")
             ),
         }

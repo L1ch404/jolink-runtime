@@ -186,7 +186,11 @@ async def _run(
                     raise RuntimeError(launch)
                 status = await _wait_status(
                     session,
-                    lambda value: value.get("compile_ready") is True,
+                    lambda value: (
+                        value.get("compile_ready") is True
+                        and value.get("launch_phase") == "runtime_active"
+                        and value.get("startup_state") == "ready"
+                    ),
                 )
                 if status.get("jdt_worker") != {
                     "java_major": 8,
@@ -241,8 +245,8 @@ async def _run(
                 )
                 if status.get("generation") != hot_generation:
                     raise RuntimeError(status)
-                if _message(ready_port) != "after":
-                    raise RuntimeError("restart lost HotSwap generation")
+                if _message(ready_port) != "before":
+                    raise RuntimeError("restart did not discard Runtime-only HotSwap")
 
                 source.write_text(
                     source.read_text(encoding="utf-8")
@@ -263,63 +267,32 @@ async def _run(
                         "source_files": [
                             "src/main/java/example/HotReloadApp.java"
                         ],
-                        "hotswap": False,
                     },
                 )
-                if structural.get("ok") is not True:
+                structural_id = structural.get("reload_id")
+                if structural.get("status") != "reload_started" or not structural_id:
                     raise RuntimeError(structural)
                 status = await _wait_status(
                     session,
-                    lambda value: value.get("pid") != old_pid
-                    and value.get("active_operation") is None,
-                )
-                if status.get("last_reload", {}).get("applied") is not True:
-                    raise RuntimeError(status)
-                if _message(ready_port) != "structural":
-                    raise RuntimeError("Candidate restart behavior mismatch")
-                structural_generation = status["generation"]
-
-                source.write_text(
-                    source.read_text(encoding="utf-8").replace(
-                        "int port = Integer.parseInt(args[0]);",
-                        'if (true) { throw new IllegalStateException("fail"); }\n'
-                        "        int port = Integer.parseInt(args[0]);",
-                    ),
-                    encoding="utf-8",
-                )
-                old_pid = status["pid"]
-                rollback = await _payload(
-                    session,
-                    "java_application",
-                    {
-                        "action": "reload",
-                        "source_files": [
-                            "src/main/java/example/HotReloadApp.java"
-                        ],
-                        "hotswap": False,
-                    },
-                )
-                if rollback.get("ok") is not True:
-                    raise RuntimeError(rollback)
-                status = await _wait_status(
-                    session,
-                    lambda value: value.get("pid") != old_pid
-                    and value.get("active_operation") is None,
+                    lambda value: value.get("active_operation") is None
+                    and value.get("last_reload", {}).get("reload_id")
+                    == structural_id,
                 )
                 last = status.get("last_reload", {})
-                if last.get("applied") is not False or last.get("rolled_back") is not True:
+                if (
+                    last.get("error_code") != "RELOAD_REQUIRES_RELAUNCH"
+                    or last.get("applied") is not False
+                    or status.get("pid") != old_pid
+                ):
                     raise RuntimeError(status)
-                if status.get("generation") != structural_generation:
-                    raise RuntimeError(status)
-                if _message(ready_port) != "structural":
-                    raise RuntimeError("rollback did not restore last-good behavior")
+                if _message(ready_port) != "before":
+                    raise RuntimeError("relaunch-required reload changed the JVM")
                 await _payload(session, "java_application", {"action": "stop"})
                 return {
                     "worker": status["jdt_worker"],
                     "hot_reload_ms": hot.get("compile_ms"),
-                    "restart_persisted": True,
-                    "candidate_restart": True,
-                    "rollback": last,
+                    "restart_discards_runtime_only_update": True,
+                    "structural_relaunch_required": True,
                 }
 
 

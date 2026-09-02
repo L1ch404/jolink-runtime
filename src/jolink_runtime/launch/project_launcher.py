@@ -20,6 +20,7 @@ from .contracts import (
     BuildOperationSpec,
     BuildPlan,
     JvmLaunchPlan,
+    LaunchIntent,
     LaunchErrorCode,
     LaunchPhase,
 )
@@ -44,6 +45,10 @@ from .gradle_runtime_build_world import (
     create_gradle_runtime_build_world,
 )
 from .jdt_compile_session import JdtBuildWorldPlan
+from .project_launch_cache import (
+    ProjectLaunchCache,
+    stabilize_jdt_plan,
+)
 from .java_command import (
     JavaCommandMaterializer,
     MaterializedJavaCommand,
@@ -94,10 +99,12 @@ class PreparedProjectLaunch:
     fast_compile_unavailable_reason: str | None = None
     jdt_build_world_plan: JdtBuildWorldPlan | None = None
     jdt_unavailable_reason: str | None = None
-    jdt_source_snapshot_roots: tuple[Path, ...] = ()
     source_manifest_fingerprint: str | None = None
     source_manifest_before_ms: float | None = None
     source_manifest_after_ms: float | None = None
+    probe_cache_reused: bool = False
+    launch_intent: LaunchIntent | None = None
+    build_preferences_identity: dict[str, Any] | None = None
 
 
 class ProjectLaunchPipeline:
@@ -112,6 +119,7 @@ class ProjectLaunchPipeline:
         java_toolchains: JavaToolchainResolver | None = None,
         maven_tools: MavenToolResolver | None = None,
         command_materializer: JavaCommandMaterializer | None = None,
+        launch_cache: ProjectLaunchCache | None = None,
     ) -> None:
         self._idea_launches = idea_launches or IdeaLaunchImporter()
         self._idea_environment = (
@@ -121,6 +129,7 @@ class ProjectLaunchPipeline:
         self._java = java_toolchains or JavaToolchainResolver()
         self._maven_tools = maven_tools or MavenToolResolver()
         self._commands = command_materializer or JavaCommandMaterializer()
+        self._launch_cache = launch_cache or ProjectLaunchCache()
 
     def create_attempt_directory(self, attempt_id: str) -> Path:
         directory = Path(
@@ -153,6 +162,12 @@ class ProjectLaunchPipeline:
         preferences = self._idea_environment.import_preferences(
             request.project_path
         )
+        preferences_identity = preferences.redacted_summary()
+        preferences_identity.pop("warnings", None)
+        preferences_identity["jdk_homes_by_name"] = {
+            name: [str(path) for path in paths]
+            for name, paths in preferences.jdk_homes_by_name.items()
+        }
         has_maven = (request.project_path / "pom.xml").is_file()
         has_gradle = (
             (request.project_path / "gradlew").is_file()
@@ -170,15 +185,81 @@ class ProjectLaunchPipeline:
                     "Use a project_path containing one authoritative build."
                 ),
             )
+        build_system = "gradle" if has_gradle else "maven"
+        cached = self._launch_cache.load(
+            project_root=request.project_path,
+            intent=imported.intent,
+            build_system=build_system,
+            ready_port=request.ready_port,
+            startup_wait_timeout_seconds=(
+                request.startup_wait_timeout_seconds
+            ),
+            build_preferences=preferences_identity,
+        )
+        if cached is not None:
+            context.set_build_plan(
+                BuildPlan(
+                    build_system=cached.build_system,
+                    build_root=cached.jdt_plan.project_root,
+                    target_module=str(cached.jdt_plan.module_root),
+                    build_java_executable=cached.build_jdk.java_executable,
+                    compile_required=False,
+                    provider_options={"probe_cache_reused": True},
+                )
+            )
+            context.transition(LaunchPhase.RESOLVING_RUNTIME)
+            plan, command = self.materialize_command(
+                cached.jvm_plan,
+                jdwp_port=request.jdwp_port,
+                attempt_directory=attempt_directory,
+            )
+            context.set_jvm_launch_plan(plan)
+            source_manifest = self.source_manifest_fingerprint(
+                cached.jdt_plan.source_roots
+            )
+            resources = build_input_manifest(
+                (), cached.resource_source_roots
+            )
+            return PreparedProjectLaunch(
+                execution=None,
+                build_system=cached.build_system,
+                build_offline=cached.build_offline,
+                build_jdk=cached.build_jdk,
+                module_output=cached.module_output,
+                generation_input_roots=cached.generation_input_roots,
+                generation_input_manifest={},
+                resource_source_roots=cached.resource_source_roots,
+                resource_input_manifest=resources,
+                build_world_inputs=cached.jdt_plan.configuration_inputs,
+                runtime_jdk=cached.runtime_jdk,
+                jvm_plan=plan,
+                command=command,
+                warnings=(
+                    "Reused the persisted Probe Build World; the build tool "
+                    "was not invoked.",
+                ),
+                attempt_directory=attempt_directory,
+                fast_compile_plan=None,
+                fast_compile_unavailable_reason="DIRECT_RELOAD_NOT_USED",
+                jdt_build_world_plan=cached.jdt_plan,
+                source_manifest_fingerprint=source_manifest,
+                probe_cache_reused=True,
+                launch_intent=imported.intent,
+                build_preferences_identity=preferences_identity,
+            )
         if has_gradle:
             try:
-                return self._prepare_gradle(
+                prepared = self._prepare_gradle(
                     context,
                     request,
                     imported=imported,
                     preferences=preferences,
                     attempt_directory=attempt_directory,
                 )
+                return self._stabilize(replace(
+                    prepared,
+                    build_preferences_identity=preferences_identity,
+                ))
             except GradleProbeError as error:
                 raise LaunchPipelineFailure(
                     error.error_code,
@@ -200,6 +281,20 @@ class ProjectLaunchPipeline:
             )
         except MavenResolutionError as error:
             raise self._maven_failure(error) from error
+        java_modules = tuple(
+            item for item in workspace.modules if item.packaging != "pom"
+        )
+        if len(java_modules) != 1:
+            raise LaunchPipelineFailure(
+                "JDT_MULTI_MODULE_NOT_IMPLEMENTED",
+                "JDT-first launch currently supports one Java module.",
+                retryable=False,
+                suggested_next_step=(
+                    "Use a single-module project while multi-project JDT "
+                    "Build World support is implemented."
+                ),
+                context={"java_module_count": len(java_modules)},
+            )
 
         build_log = attempt_directory / "build.log"
         build_jdk = self._select_java(
@@ -248,10 +343,7 @@ class ProjectLaunchPipeline:
             time.monotonic() - manifest_started
         ) * 1000
 
-        if imported.intent.build_before_run:
-            context.transition(LaunchPhase.COMPILING)
-        else:
-            context.transition(LaunchPhase.RESOLVING_RUNTIME)
+        context.transition(LaunchPhase.RESOLVING_RUNTIME)
         build_result = context.run_operation(
             self._maven.create_build_operation(execution)
         )
@@ -293,8 +385,6 @@ class ProjectLaunchPipeline:
         compile_classpath_result = context.run_operation(
             self._maven.create_compile_classpath_operation(execution)
         )
-        if imported.intent.build_before_run:
-            context.transition(LaunchPhase.RESOLVING_RUNTIME)
         try:
             plan = self._maven.consume_jvm_launch_plan(
                 execution=execution,
@@ -357,7 +447,7 @@ class ProjectLaunchPipeline:
                 "Persistent JDT reload is unavailable for this launch; "
                 "restart remains available.",
             )
-        return PreparedProjectLaunch(
+        return self._stabilize(PreparedProjectLaunch(
             execution=execution,
             build_system="maven",
             build_offline=False,
@@ -365,8 +455,10 @@ class ProjectLaunchPipeline:
             module_output=module.output_directory,
             generation_input_roots=(module.output_directory,),
             generation_input_manifest={},
-            resource_source_roots=(),
-            resource_input_manifest={},
+            resource_source_roots=(module.directory / "src/main/resources",),
+            resource_input_manifest=build_input_manifest(
+                (), (module.directory / "src/main/resources",)
+            ),
             build_world_inputs=(
                 execution.effective_pom_file,
                 execution.classpath_file,
@@ -395,6 +487,57 @@ class ProjectLaunchPipeline:
             source_manifest_fingerprint=source_manifest_after,
             source_manifest_before_ms=source_manifest_before_ms,
             source_manifest_after_ms=source_manifest_after_ms,
+            launch_intent=imported.intent,
+            build_preferences_identity=preferences_identity,
+        ))
+
+    @staticmethod
+    def _stabilize(prepared: PreparedProjectLaunch) -> PreparedProjectLaunch:
+        plan = prepared.jdt_build_world_plan
+        if plan is None:
+            return prepared
+        if prepared.build_system == "maven":
+            plan = replace(
+                plan,
+                configuration_inputs=tuple(dict.fromkeys((
+                    *plan.configuration_inputs,
+                    Path.home() / ".m2/settings.xml",
+                ))),
+            )
+        stable = stabilize_jdt_plan(
+            plan,
+            attempt_directory=prepared.attempt_directory,
+        )
+        return replace(
+            prepared,
+            jdt_build_world_plan=stable,
+            build_world_inputs=stable.configuration_inputs,
+        )
+
+    def save_cache(
+        self,
+        prepared: PreparedProjectLaunch,
+        request: ProjectLaunchRequest,
+    ) -> None:
+        plan = prepared.jdt_build_world_plan
+        if plan is None:
+            return
+        intent = prepared.launch_intent
+        if intent is None:
+            return
+        self._launch_cache.save(
+            project_root=request.project_path,
+            intent=intent,
+            build_system=prepared.build_system,
+            build_offline=prepared.build_offline,
+            build_jdk=prepared.build_jdk,
+            runtime_jdk=prepared.runtime_jdk,
+            module_output=prepared.module_output,
+            generation_input_roots=prepared.generation_input_roots,
+            resource_source_roots=prepared.resource_source_roots,
+            jvm_plan=prepared.jvm_plan,
+            jdt_plan=plan,
+            build_preferences=prepared.build_preferences_identity,
         )
 
     def _resolve_maven_workspace_and_module(
@@ -468,15 +611,6 @@ class ProjectLaunchPipeline:
         attempt_directory: Path,
     ) -> PreparedProjectLaunch:
         project = request.project_path.expanduser().resolve(strict=True)
-        if not imported.intent.build_before_run:
-            raise LaunchPipelineFailure(
-                "GRADLE_RUNTIME_REQUIRES_BUILD_BEFORE_RUN",
-                "Gradle Runtime launch requires IDEA Make/Build before run.",
-                retryable=False,
-                suggested_next_step=(
-                    "Enable Make/Build in the IDEA launch configuration and retry."
-                ),
-            )
         if (project / "buildSrc").exists() or (project / "build-logic").exists():
             raise LaunchPipelineFailure(
                 "GRADLE_BUILD_LOGIC_UNSUPPORTED",
@@ -551,7 +685,7 @@ class ProjectLaunchPipeline:
         source_before = self.source_manifest_fingerprint(source_roots)
         resource_before = build_input_manifest((), resource_roots)
         source_before_ms = (time.monotonic() - manifest_started) * 1000
-        context.transition(LaunchPhase.COMPILING)
+        context.transition(LaunchPhase.RESOLVING_RUNTIME)
         try:
             operation = context.run_operation(
                 BuildOperationSpec(
@@ -648,7 +782,6 @@ class ProjectLaunchPipeline:
             attempt_directory=attempt_directory,
         )
         context.set_jvm_launch_plan(plan)
-        context.transition(LaunchPhase.RESOLVING_RUNTIME)
         return PreparedProjectLaunch(
             execution=None,
             build_system="gradle",
@@ -656,7 +789,7 @@ class ProjectLaunchPipeline:
             build_jdk=build_jdk,
             module_output=world.module_output,
             generation_input_roots=world.generation_input_roots,
-            generation_input_manifest=world.generation_input_manifest,
+            generation_input_manifest={},
             resource_source_roots=world.resource_source_roots,
             resource_input_manifest=resource_after,
             build_world_inputs=world.configuration_inputs,
@@ -671,14 +804,12 @@ class ProjectLaunchPipeline:
             source_manifest_fingerprint=source_after,
             source_manifest_before_ms=source_before_ms,
             source_manifest_after_ms=source_after_ms,
+            launch_intent=imported.intent,
         )
 
     @staticmethod
     def _gradle_inputs(project: Path) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         inputs = list(gradle_configuration_inputs(project))
-        resources = project / "src/main/resources"
-        if resources.is_dir():
-            inputs.extend(path for path in resources.rglob("*") if path.is_file())
         return (
             tuple(dict.fromkeys(path.resolve(strict=False) for path in inputs)),
             gradle_configuration_environment_names(),

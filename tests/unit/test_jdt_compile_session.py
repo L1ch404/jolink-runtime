@@ -35,6 +35,7 @@ class _FakeWorker:
         self.command_error: JdtCompileError | None = None
         self.command_count = 0
         self.resource_value: bytes | None = None
+        self.delete_resource = False
         self.diagnostics = []
         self.diagnostics_truncated = False
 
@@ -51,8 +52,12 @@ class _FakeWorker:
         before = output.read_bytes() if output.exists() else None
         if not self.fail_compile and not self.omit_compilation:
             output.write_bytes(hashlib.sha256(source.read_bytes()).digest())
-        if self.resource_value is not None:
-            resource = self.session.output_directory / "META-INF/generated.json"
+        resource = self.session.output_directory / "META-INF/generated.json"
+        if self.delete_resource:
+            for existing in self.session.output_directory.rglob("*"):
+                if existing.is_file() and existing.suffix != ".class":
+                    existing.unlink()
+        elif self.resource_value is not None:
             resource.parent.mkdir(parents=True, exist_ok=True)
             resource.write_bytes(self.resource_value)
         after = output.read_bytes() if output.exists() else None
@@ -232,7 +237,7 @@ def test_persistent_jdt_session_full_then_incremental(
     assert worker.closed is True
 
 
-def test_local_workspace_file_reopens_without_another_full_build(
+def test_local_workspace_reopens_then_compiles_detected_source_changes(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -309,10 +314,16 @@ def test_local_workspace_file_reopens_without_another_full_build(
         return second_worker
 
     monkeypatch.setattr(second, "_start_worker", reopen)
-    restored = second.start(reuse_workspace=True)
-    assert restored.actual_build_kind == "INCREMENTAL"
-    assert restored.compiled_source_units == ("src/example/App.java",)
+    restored = second.start(
+        reuse_workspace=True,
+        build_on_reuse=False,
+    )
+    assert restored.actual_build_kind is None
     second.accept_baseline()
+    assert second.workspace_source_changes() == (source.resolve(),)
+    incremental = second.compile(second.workspace_source_changes())
+    assert incremental.actual_build_kind == "INCREMENTAL"
+    assert incremental.compiled_source_units == ("src/example/App.java",)
     second_lease.mark_initialized()
     assert second.close() is True
     second_lease.release(clean=second.last_close_clean)
@@ -517,13 +528,13 @@ def test_publication_delta_accumulates_until_runtime_apply_is_confirmed(
     )
     second = session.compile((source,))
 
-    assert first.candidate_changed_classes == ("example/App.class",)
-    assert second.candidate_changed_classes == ("example/App.class",)
+    assert first.runtime_changed_classes == ("example/App.class",)
+    assert second.runtime_changed_classes == ("example/App.class",)
 
     session.mark_published()
     third = session.compile((source,))
     assert third.changed_classes == ()
-    assert third.candidate_changed_classes == ()
+    assert third.runtime_changed_classes == ()
 
 
 def test_compile_failure_keeps_mutable_output_non_publishable(
@@ -568,7 +579,7 @@ def test_compile_failure_keeps_mutable_output_non_publishable(
     assert recovered.compile_ok is True
     assert session.working_compile_state == "valid"
     assert session.last_compile_error_count == 0
-    assert recovered.candidate_changed_classes == ("example/App.class",)
+    assert recovered.runtime_changed_classes == ("example/App.class",)
 
 
 def test_source_drift_is_reported_after_incremental_build(
@@ -914,6 +925,36 @@ def test_full_captures_native_resources_before_formal_overlay(
     assert (
         session.output_directory / "META-INF/generated.json"
     ).read_bytes() == b"formal"
+
+
+def test_incremental_restores_frozen_formal_resources_before_delta(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    formal = tmp_path / "formal-output/message.txt"
+    formal.parent.mkdir(parents=True)
+    formal.write_bytes(b"formal-resource")
+    session.baseline_main_output = formal.parent
+    session.start()
+    session.accept_baseline()
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    worker.delete_resource = True
+
+    result = session.compile((source,))
+
+    assert result.runtime_changed_resources == ()
+    assert result.runtime_deleted_resources == ()
+    assert (session.output_directory / "message.txt").read_bytes() == (
+        b"formal-resource"
+    )
+    formal.unlink()
+    session._restore_frozen_resources()
+    assert not (session.output_directory / "message.txt").exists()
 
 
 def test_close_force_cancels_inflight_compile(

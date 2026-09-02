@@ -17,7 +17,7 @@ import pytest
         ("JOLINK_GRADLE_RUNTIME_GRADLE_814", "8.14", 11, True),
     ),
 )
-def test_real_gradle_runtime_launch_reload_and_rollback(
+def test_real_gradle_runtime_launch_hotswap_and_relaunch_boundary(
     gradle_environment: str,
     gradle_version: str,
     target_java: int,
@@ -69,9 +69,11 @@ def test_real_gradle_runtime_launch_reload_and_rollback(
         "build_system": "gradle",
         "target_java": target_java,
         "baseline_ready": True,
+        "warm_probe_cache_reused": True,
+        "warm_incremental_startup": True,
+        "unchanged_startup_no_compile": True,
         "hotswap_passed": True,
-        "candidate_restart_passed": True,
-        "rollback_passed": True,
+        "structural_relaunch_required": True,
         "resources_sealed": True,
         "resource_drift_rejected": True,
         "runtime_probe_ignored_test_world": True,

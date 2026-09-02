@@ -40,6 +40,30 @@ real user/project reproduction
 → static reasoning only as supporting evidence
 ```
 
+## Improve the product through real use, not speculative perfection
+
+- Prefer the smallest coherent implementation that can be exercised in a real
+  project. Harden it from observed failures instead of trying to predict every
+  possible edge case before users can run it.
+- It is acceptable to move a little aggressively: joLink compiles, launches,
+  tests, reloads, and observes development code. Reversible and clearly
+  reported failures are often more useful than permanent complexity built for
+  hypothetical scenarios.
+- Do not build elaborate state machines, abstractions, or fallback layers only
+  to make the first version look complete. Every durable mechanism should pay
+  for itself in a real workflow.
+- This does not relax the non-negotiable boundaries: never report false
+  success, leak secrets, leave a JVM/thread/suspension behind, or corrupt user
+  source and formal build outputs.
+
+## Review before committing
+
+- Do not automatically commit or push immediately after implementation.
+  Explain the behavior changes, affected files, real validation, and remaining
+  issues so the user can review first.
+- Commit and push only when the user explicitly requests it for the current
+  work. An explicit request to validate and then push is sufficient.
+
 ## Generality is a product requirement
 
 - The expected user is a stranger with an ordinary, previously unseen Java

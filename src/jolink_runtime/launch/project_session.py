@@ -31,11 +31,7 @@ class ProjectSessionError(RuntimeError):
 class ReloadStage(StrEnum):
     PREPARING = "preparing"
     COMPILING = "compiling"
-    PREPARING_CANDIDATE = "preparing_candidate"
     APPLYING_HOTSWAP = "applying_hotswap"
-    RESTARTING = "restarting"
-    WAITING_READINESS = "waiting_readiness"
-    ROLLING_BACK = "rolling_back"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -136,7 +132,6 @@ class ReloadAttempt:
     compiled_sources: int | None = None
     apply_method: str | None = None
     applied: bool | None = None
-    rolled_back: bool = False
     error_code: str | None = None
     finished_at: float | None = None
     cancel_requested: bool = False
@@ -655,14 +650,12 @@ class JavaProjectSession:
         applied: bool | None,
         source_fingerprint_after: str,
         error_code: str | None = None,
-        rolled_back: bool = False,
     ) -> ReloadAttempt:
         with self._lock:
             attempt = self._require_active_reload()
             attempt.applied = applied
             attempt.source_fingerprint_after = source_fingerprint_after
             attempt.error_code = error_code
-            attempt.rolled_back = rolled_back
             attempt.stage = (
                 ReloadStage.SUCCEEDED
                 if applied is True
@@ -893,7 +886,6 @@ class JavaProjectSession:
                     "compile_ms": last.compile_ms,
                     "startup_ms": last.startup_ms,
                     "source_changes_pending": last.source_changes_pending,
-                    "rolled_back": last.rolled_back,
                     "error_code": last.error_code,
                     "total_ms": round(
                         max(

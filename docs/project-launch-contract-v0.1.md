@@ -4,16 +4,16 @@ Contract-Version: `0.1`
 
 Implementation-Status: `implemented for Alpha dogfood`
 
-The P0 contract is implemented and advertised through the existing
-`java_application` Tool. The Alpha paths are IDEA → Maven/Gradle → JVM;
-Eclipse and persisted launch-plan caching remain outside this scope. A bounded
-runtime-only HotSwap path for explicit Java method-body edits is included
-below.
+The current Alpha path is IDEA → cached Probe Build World → JDT → JVM.
+Maven/Gradle application compilation has been removed from project launch.
+The current single-module startup behavior is specified in
+`jdt-first-launch.zh-CN.md`; the older direct-javac details below remain
+lineage documentation, not the preferred project startup path.
 
 This extension lets joLink import an existing IDE launch configuration,
-compile the corresponding Maven or Gradle project, resolve a runtime classpath, and
-launch the application without requiring a prebuilt fat JAR or writing files
-into the user's project.
+resolve a runtime classpath through Probe-only discovery, compile with JDT,
+and launch the application without requiring a prebuilt fat JAR or writing
+files into the user's project.
 
 ## Scope and lifecycle owner
 
@@ -183,10 +183,10 @@ Build progress may include a small, bounded, redacted
 `build.log_tail`. It must never make `status` wait for the complete build or
 return an unbounded log.
 
-The IDEA `Make` intent is implemented by invoking the project's Maven
-`compile` lifecycle. Maven and the configured compiler plugins decide whether
-that build recompiles individual files or the complete module; joLink does not
-claim a separate file-level incremental compiler.
+The IDEA `Make` flag no longer invokes Maven `compile` or Gradle `classes`.
+JDT initializes before the JVM. Reusable workspaces compare persisted source
+mirrors with current sources and invoke incremental compilation only when
+`workspace_source_changes()` is non-empty.
 
 ### `logs`
 

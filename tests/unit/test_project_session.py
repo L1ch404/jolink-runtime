@@ -213,7 +213,7 @@ def test_nonterminal_reload_keeps_applied_unknown_and_active(
         build_world_fingerprint="world",
     )
     session.begin_reload("source")
-    session.transition_reload(ReloadStage.WAITING_READINESS)
+    session.transition_reload(ReloadStage.APPLYING_HOTSWAP)
 
     attempt = session.finish_reload(
         applied=None,
@@ -223,7 +223,7 @@ def test_nonterminal_reload_keeps_applied_unknown_and_active(
     assert attempt.applied is None
     assert session.active_reload is attempt
     assert session.public_status()["active_operation"]["stage"] == (
-        "waiting_readiness"
+        "applying_hotswap"
     )
 
 

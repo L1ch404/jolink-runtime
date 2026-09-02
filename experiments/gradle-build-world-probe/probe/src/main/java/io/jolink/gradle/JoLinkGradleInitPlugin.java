@@ -136,9 +136,9 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         Task task = project.getTasks().create(exportTaskName);
         task.setGroup("joLink");
         task.setDescription("Export a private task-native Java Build World.");
-        task.dependsOn(exportScope.equals("runtime")
-                ? Collections.singletonList("classes")
-                : Arrays.asList("classes", "testClasses"));
+        if (exportScope.equals("test")) {
+            task.dependsOn(Arrays.asList("classes", "testClasses"));
+        }
         task.doLast(ignored -> export(project));
     }
 

@@ -765,7 +765,6 @@ def main() -> int:
                 ):
                     raise AssertionError(surefire_rejected)
                 if not {
-                    "systemPropertyVariables",
                     "jdkToolchain",
                     "useSystemClassLoader",
                 }.issubset(
