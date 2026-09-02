@@ -83,7 +83,9 @@ class JdtReloadService:
             reload_attempt = project_session.begin_reload(
                 source_fingerprint,
                 source_files=source_files,
+                background=True,
             )
+            project_session.mark_jdt_workspace_dirty()
         except (JdtCompileError, OSError, ProjectSessionError) as error:
             return RuntimeResult(
                 ok=False,

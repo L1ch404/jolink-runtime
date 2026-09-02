@@ -142,6 +142,8 @@ class ReloadAttempt:
     cancel_requested: bool = False
     cancel_reason: str | None = None
     result_data: dict[str, Any] = field(default_factory=dict)
+    background: bool = False
+    result_recorded: bool = False
 
     @property
     def source_changes_pending(self) -> bool:
@@ -617,6 +619,7 @@ class JavaProjectSession:
         source_fingerprint: str,
         *,
         source_files: Iterable[Path] = (),
+        background: bool = False,
     ) -> ReloadAttempt:
         with self._lock:
             if self._active_reload is not None:
@@ -630,6 +633,7 @@ class JavaProjectSession:
                 started_at=time.time(),
                 source_fingerprint_before=source_fingerprint,
                 source_files=tuple(source_files),
+                background=bool(background),
             )
             self._active_reload = attempt
             return attempt
@@ -706,6 +710,7 @@ class JavaProjectSession:
         with self._lock:
             if self._active_reload is attempt or self._last_reload is attempt:
                 attempt.result_data = dict(result)
+                attempt.result_recorded = True
 
     def record_successful_startup(self, duration_ms: float) -> None:
         with self._lock:
@@ -829,6 +834,18 @@ class JavaProjectSession:
         if lease is not None:
             lease.release(clean=False)
 
+    def mark_jdt_workspace_dirty(self) -> None:
+        with self._lock:
+            lease = self._jdt_workspace_lease
+        if lease is not None:
+            lease.mark_dirty()
+
+    def checkpoint_jdt_workspace(self) -> None:
+        with self._lock:
+            lease = self._jdt_workspace_lease
+        if lease is not None:
+            lease.checkpoint()
+
     def refresh_compile_ready(self) -> bool:
         with self._lock:
             self.compile_ready = bool(
@@ -864,7 +881,9 @@ class JavaProjectSession:
             active = self._active_reload
             last = self._last_reload
             last_payload: dict[str, object] | None = None
-            if last is not None:
+            if last is not None and (
+                not last.background or last.result_recorded
+            ):
                 last_payload = dict(last.result_data)
                 last_payload.update({
                     "applied": last.applied,

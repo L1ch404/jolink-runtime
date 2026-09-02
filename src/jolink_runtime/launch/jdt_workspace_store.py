@@ -99,6 +99,18 @@ class JdtWorkspaceLease:
         self._write_state(clean_shutdown=False)
         self._initialized = True
 
+    def mark_dirty(self) -> None:
+        if self._initialized and self.root.is_dir():
+            self._write_state(clean_shutdown=False)
+
+    def checkpoint(self) -> None:
+        if not self._initialized or not self.root.is_dir():
+            raise JdtWorkspaceStoreError(
+                "JDT_WORKSPACE_UNAVAILABLE",
+                "The local JDT workspace is unavailable.",
+            )
+        self._write_state(clean_shutdown=True)
+
     def release(self, *, clean: bool) -> None:
         if self._released:
             return

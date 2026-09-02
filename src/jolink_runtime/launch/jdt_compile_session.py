@@ -1298,6 +1298,18 @@ class PersistentJdtCompileSession:
                     self._complete_output_manifest()
                 )
 
+    def save_workspace(self) -> bool:
+        with self._operation_lock:
+            with self._state_lock:
+                client = self._client
+                if self._poisoned or client is None:
+                    return False
+            frame = client.command("SAVE", timeout=5.0)
+            return bool(
+                frame.get("ok") is True
+                and frame.get("status") == "saved"
+            )
+
     def close(self) -> bool:
         operation_owned = self._operation_lock.acquire(blocking=False)
         with self._state_lock:

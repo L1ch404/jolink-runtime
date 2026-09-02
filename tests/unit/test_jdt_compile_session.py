@@ -269,6 +269,15 @@ def test_local_workspace_file_reopens_without_another_full_build(
     assert first.start().actual_build_kind == "FULL"
     first.accept_baseline()
     first_lease.mark_initialized()
+    first_lease.checkpoint()
+    assert json.loads(
+        first_lease.state_file.read_text(encoding="utf-8")
+    )["clean_shutdown"] is True
+    first_lease.mark_dirty()
+    assert json.loads(
+        first_lease.state_file.read_text(encoding="utf-8")
+    )["clean_shutdown"] is False
+    first_lease.checkpoint()
     assert first.close() is True
     first_lease.release(clean=first.last_close_clean)
 

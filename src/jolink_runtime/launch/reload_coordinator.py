@@ -28,6 +28,14 @@ class BackgroundReloadCoordinator:
             try:
                 with update_lock:
                     if project_session.reload_cancel_requested(reload_attempt):
+                        project_session.record_reload_result(
+                            reload_attempt,
+                            {
+                                "ok": False,
+                                "error_code": "RELOAD_CANCELLED",
+                                "applied": False,
+                            },
+                        )
                         project_session.finish_reload(
                             applied=False,
                             source_fingerprint_after=source_fingerprint,
@@ -35,6 +43,24 @@ class BackgroundReloadCoordinator:
                         )
                         return
                     result = operation()
+                    compiler = project_session.compile_session
+                    if (
+                        compiler is not None
+                        and getattr(compiler, "ready", False)
+                        and getattr(
+                            compiler, "working_compile_state", "unknown"
+                        ) == "valid"
+                    ):
+                        try:
+                            if compiler.save_workspace():
+                                project_session.checkpoint_jdt_workspace()
+                        except Exception as error:
+                            self._logger.warning(
+                                "java_runtime.jdt.workspace.checkpoint_failed "
+                                "reload_id=%s error_type=%s",
+                                reload_attempt.attempt_id,
+                                type(error).__name__,
+                            )
                     project_session.record_reload_result(
                         reload_attempt,
                         {
@@ -51,6 +77,19 @@ class BackgroundReloadCoordinator:
                 self._logger.exception(
                     "java_runtime.reload.background_failed reload_id=%s",
                     reload_attempt.attempt_id,
+                )
+                project_session.record_reload_result(
+                    reload_attempt,
+                    {
+                        "ok": False,
+                        "error": str(error),
+                        "error_code": getattr(
+                            error,
+                            "error_code",
+                            "RELOAD_BACKGROUND_FAILED",
+                        ),
+                        "applied": False,
+                    },
                 )
                 if project_session.active_reload is reload_attempt:
                     project_session.finish_reload(

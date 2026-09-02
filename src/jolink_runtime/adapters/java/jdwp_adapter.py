@@ -1920,6 +1920,13 @@ class JavaRuntime(Runtime):
                 stage = "baseline_accept"
                 compiler.accept_baseline()
                 workspace.mark_initialized()
+                stage = "workspace_checkpoint"
+                if not compiler.save_workspace():
+                    raise JdtCompileError(
+                        "JDT_WORKSPACE_SAVE_FAILED",
+                        "The JDT Worker did not save the reusable workspace.",
+                    )
+                workspace.checkpoint()
                 self._reset_runtime_overlay()
                 session.refresh_compile_ready()
                 session.complete_jdt_bootstrap(

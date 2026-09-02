@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -1153,6 +1154,15 @@ public class PersistentFixture {{
                 first = await launch_and_wait(first_session)
                 assert first["jdt_bootstrap_reused"] is False
                 assert first["jdt_bootstrap_build_kind"] == "FULL"
+                states = list(
+                    (tmp_path / "cache/jolink-runtime/jdt-workspaces").glob(
+                        "*/state.json"
+                    )
+                )
+                assert len(states) == 1
+                assert json.loads(states[0].read_text(encoding="utf-8"))[
+                    "clean_shutdown"
+                ] is True
                 assert_ok(await call_payload(first_session, {"action": "stop"}))
 
         with temporary_stderr() as stderr:
@@ -1179,6 +1189,9 @@ public class PersistentFixture {{
                 assert terminal["ok"] is True
                 assert terminal["status"] == "reloaded"
                 assert terminal["applied"] is True
+                assert json.loads(states[0].read_text(encoding="utf-8"))[
+                    "clean_shutdown"
+                ] is True
                 assert await anyio.to_thread.run_sync(request_value) == "after"
                 assert_ok(await call_payload(second_session, {"action": "stop"}))
 
