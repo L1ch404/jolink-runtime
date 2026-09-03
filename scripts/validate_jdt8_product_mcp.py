@@ -245,8 +245,8 @@ async def _run(
                 )
                 if status.get("generation") != hot_generation:
                     raise RuntimeError(status)
-                if _message(ready_port) != "before":
-                    raise RuntimeError("restart did not discard Runtime-only HotSwap")
+                if _message(ready_port) != "after":
+                    raise RuntimeError("restart did not load current JDT output")
 
                 source.write_text(
                     source.read_text(encoding="utf-8")
@@ -285,13 +285,13 @@ async def _run(
                     or status.get("pid") != old_pid
                 ):
                     raise RuntimeError(status)
-                if _message(ready_port) != "before":
+                if _message(ready_port) != "after":
                     raise RuntimeError("relaunch-required reload changed the JVM")
                 await _payload(session, "java_application", {"action": "stop"})
                 return {
                     "worker": status["jdt_worker"],
                     "hot_reload_ms": hot.get("compile_ms"),
-                    "restart_discards_runtime_only_update": True,
+                    "restart_uses_current_jdt_output": True,
                     "structural_relaunch_required": True,
                 }
 

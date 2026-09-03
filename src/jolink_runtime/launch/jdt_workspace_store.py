@@ -48,7 +48,6 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
         with temporary.open("wb") as stream:
             stream.write(_canonical_json(value) + b"\n")
             stream.flush()
-            os.fsync(stream.fileno())
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -148,7 +147,6 @@ class JdtWorkspaceStore:
         reusable = bool(
             state.get("schema") == JdtWorkspaceLease._SCHEMA
             and state.get("identity_fingerprint") == identity_fingerprint
-            and state.get("clean_shutdown") is True
             and root.joinpath("workspace/plain-fixture").is_dir()
         )
         if not reusable:
@@ -159,8 +157,6 @@ class JdtWorkspaceStore:
             identity=identity,
             reusable=reusable,
         )
-        if reusable:
-            lease._write_state(clean_shutdown=False)
         return lease
 
     @staticmethod

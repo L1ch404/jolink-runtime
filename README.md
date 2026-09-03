@@ -297,16 +297,18 @@ java_status(action=status; confirm runtime_active and compile_ready=true)
 `reload` immediately returns `reload_started` plus a `reload_id`; compilation
 and application happen in the background and remain observable through
 `active_operation` and `last_reload`. The JDT workspace is saved under the
-local joLink cache after a clean stop and reopened when the project/module and
-Build World fingerprint still match, avoiding another explicit JDT FULL build.
+local joLink cache on stop and reopened directly. Runtime launch/reload no
+longer rehash dependencies, audit the whole output tree, or SAVE after each edit.
 
 The reload Attempt updates a private persistent JDT Build World and applies
 compatible loaded method-body changes with HotSwap. It never restarts the JVM.
-Structural changes, resources, additions/deletions, an unsupported JVM,
-HotSwap rejection, or `hotswap=false` return `RELOAD_REQUIRES_RELAUNCH` and
-leave the current JVM unchanged. Use `stop` followed by `launch` so JDT applies
-the pending change before starting a new Runtime. A successful HotSwap is runtime-only
-and is lost by `restart`; it is still not proof of business correctness, so a
+The actual JVM accepts or rejects the changed definitions; joLink does not
+preflight schemas or metadata. Deleted/unloaded classes, generated resource
+changes, JVM rejection, or `hotswap=false` require a relaunch. HotSwap does not
+rerun static initialization or refresh Spring metadata. The JVM uses JDT's
+current output directory directly, without a startup class copy. `restart`
+therefore loads the current JDT output; an uncompiled source edit is
+not applied. HotSwap acceptance is still not proof of business correctness, so a
 fresh verification request is required. Breakpoints in redefined classes
 become stale and must be set again against current source.
 
@@ -324,9 +326,9 @@ separate JDK 17.
 
 The imported IDEA Make/Build flag does not cause Maven or Gradle compilation.
 On the first launch, the Probe exports compiler/runtime facts and JDT performs
-FULL compilation. Later launches reuse the persisted Probe model when build
-configuration is unchanged, compare current sources with the persisted JDT
-source mirror, and either start immediately or run one JDT incremental build.
+FULL compilation. Later launches trust the persisted Probe model and use saved
+source size/mtime to detect edits. Configuration/dependency changes require
+manually clearing the project-launch and jdt-workspaces cache before launch.
 
 See [JDT-first startup](docs/jdt-first-launch.zh-CN.md) for the current
 single-module startup and cache behavior.

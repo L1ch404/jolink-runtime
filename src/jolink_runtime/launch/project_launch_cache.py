@@ -14,7 +14,6 @@ from .contracts import JvmLaunchPlan, LaunchIntent
 from .fast_compile import fast_compile_fingerprint
 from .jdt_compile_session import (
     JdtBuildWorldPlan,
-    resource_tree_fingerprint,
 )
 from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
@@ -24,7 +23,7 @@ _SCHEMA = "jolink.project-launch-cache.v1"
 
 
 def _path(value: Any) -> Path:
-    return Path(str(value)).expanduser().resolve(strict=False)
+    return Path(str(value)).expanduser()
 
 
 def _paths(values: Any) -> tuple[Path, ...]:
@@ -148,10 +147,7 @@ class ProjectLaunchCache:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if (
                 raw.get("schema") != _SCHEMA
-                or raw.get("intent") != _intent_payload(intent)
                 or raw.get("build_system") != build_system
-                or raw.get("build_preferences", {})
-                != dict(build_preferences or {})
             ):
                 return None
             plan_raw = raw["jdt_plan"]
@@ -181,19 +177,19 @@ class ProjectLaunchCache:
                 method_parameters=bool(plan_raw["method_parameters"]),
                 freshness_entries=_paths(plan_raw["freshness_entries"]),
                 resource_roots=resource_roots,
-                resource_fingerprint=resource_tree_fingerprint(
-                    resource_roots
-                ),
+                resource_fingerprint=str(plan_raw.get("resource_fingerprint", "")),
                 worker_min_heap_mb=int(plan_raw["worker_min_heap_mb"]),
                 worker_max_heap_mb=int(plan_raw["worker_max_heap_mb"]),
+                worker_java_home=(
+                    _path(plan_raw["worker_java_home"])
+                    if plan_raw.get("worker_java_home") else None
+                ),
+                worker_java_major=plan_raw.get("worker_java_major"),
+                system_entries=_paths(plan_raw.get("system_entries")),
             )
-            if not jdt_plan.is_fresh():
-                return None
             jvm_raw = raw["jvm_plan"]
             runtime_jdk = _toolchain(raw["runtime_jdk"])
             build_jdk = _toolchain(raw["build_jdk"])
-            if not runtime_jdk.java_executable.is_file():
-                return None
             jvm_plan = JvmLaunchPlan(
                 java_executable=runtime_jdk.java_executable,
                 classpath=_paths(jvm_raw["classpath"]),
@@ -300,6 +296,12 @@ class ProjectLaunchCache:
                 ],
                 "worker_min_heap_mb": jdt_plan.worker_min_heap_mb,
                 "worker_max_heap_mb": jdt_plan.worker_max_heap_mb,
+                "worker_java_home": (
+                    str(jdt_plan.worker_java_home) if jdt_plan.worker_java_home else None
+                ),
+                "worker_java_major": jdt_plan.worker_java_major,
+                "system_entries": [str(path) for path in jdt_plan.system_entries],
+                "resource_fingerprint": jdt_plan.resource_fingerprint,
             },
         }
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

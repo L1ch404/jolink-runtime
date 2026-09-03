@@ -12,7 +12,7 @@ from jolink_runtime.launch.project_launch_cache import ProjectLaunchCache
 from jolink_runtime.launch.toolchain import JavaToolchainCandidate
 
 
-def test_cache_reuses_build_world_across_source_changes_and_invalidates_pom(
+def test_cache_reuses_persisted_model_without_revalidating_project_files(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -107,9 +107,7 @@ def test_cache_reuses_build_world_across_source_changes_and_invalidates_pom(
 
     assert reused is not None
     assert reused.jvm_plan.ready_port == 8080
-    assert reused.jdt_plan.resource_fingerprint == resource_tree_fingerprint(
-        reused.jdt_plan.resource_roots
-    )
+    assert reused.jdt_plan.resource_fingerprint == plan.resource_fingerprint
 
     pom.write_text("<project><changed/></project>\n", encoding="utf-8")
     assert cache.load(
@@ -118,4 +116,4 @@ def test_cache_reuses_build_world_across_source_changes_and_invalidates_pom(
         build_system="maven",
         ready_port=8080,
         startup_wait_timeout_seconds=12,
-    ) is None
+    ) is not None

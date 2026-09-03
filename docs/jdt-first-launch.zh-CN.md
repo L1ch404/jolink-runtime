@@ -1,60 +1,72 @@
-# JDT-first 单模块启动
+# JDT-first 单模块启动与快速 reload
 
-当前项目启动不再执行 Maven `compile` 或 Gradle
-`compileJava/processResources/classes`。Maven/Gradle只导出依赖和编译配置；JDT在JVM
-启动前完成编译。
+joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspace 直接复用，
+不再在每次启动或 reload 时重新审计源码、依赖和编译输出。
 
-## 实际顺序
-
-```text
-java_application(launch)
-  → 读取IDEA启动配置
-  → 读取本地Build World JSON
-      ├─ 配置/依赖/JDK身份仍匹配：跳过构建工具
-      └─ 没有缓存或已失效：只执行模型导出并保存结果
-  → 打开持久JDT workspace和旧源码镜像
-      ├─ 首次workspace：JDT FULL
-      └─ 已有workspace：workspace_source_changes()
-          ├─ 无变化：不调用JavaBuilder，直接使用现有输出
-          └─ 有变化：JDT INCREMENTAL编译变化源码
-  → 同步当前resources
-  → 封存本次启动输出
-  → 启动JVM并等待ready_port
-```
-
-`launch`仍立即返回`project_launch_started`，通过`java_status(status)`观察后台进度。
-现在`compile_ready=true`可能先于`runtime_active`出现，调用方仍须等待应用ready。
-
-## 本地持久化
+## 启动
 
 ```text
-<joLink cache>/project-launch/<project+launch hash>/build-world.json
-<joLink cache>/jdt-workspaces/<project+module hash>/state.json
-<joLink cache>/jdt-workspaces/<project+module hash>/workspace/
+读取已有 Build World JSON（没有才运行模型导出）
+→ 使用保存的 Worker/JDK/system libraries
+→ 打开 JDT workspace，不执行 Equinox -clean
+→ workspace_source_changes()
+   ├─ 首次：JDT FULL
+   ├─ 文件大小/修改时间未变：不读取源码内容，不编译
+   └─ 有变更：只同步这些源码并通知 JavaBuilder
+→ JVM直接使用持久JDT workspace的bin目录，不复制class
+→ 启动 JVM
 ```
 
-Build World JSON保存Probe得到的classpath、source roots、JDK、Processor和启动参数。
-源码镜像、JDT输出及JavaBuilder状态保存在workspace中。源码变化不会使Build World
-缓存失效；它由`workspace_source_changes()`处理。
+源码镜像和原文件的大小/mtime索引持久化到workspace。启动时仍需枚举源码文件的元数据
+以发现离线修改，但不再逐个读取新旧源码内容。若外部工具刻意保持mtime和大小不变，
+启动扫描可能看不到该编辑；显式 `reload(source_files)` 会直接读取指定文件。
 
-状态中可观察：
+resources 作为运行classpath中的源码资源目录直接读取，不再每次reload复制整棵资源树。
+上次编译成功或失败的结果随源码索引一起保存；重开workspace时直接读取，
+不会把上次的编译失败包装成“没有变化，启动成功”。
+
+## reload
 
 ```text
-probe_cache_reused=true       本次未调用Maven/Gradle
-jdt_bootstrap_reused=true     恢复了已有JDT workspace
-jdt_bootstrap_build_kind=null 源码无变化，没有执行编译
-jdt_bootstrap_build_kind=INCREMENTAL
-jdt_bootstrap_build_kind=FULL
+接受 source_files，返回 reload_started + reload_id
+→ 只读取并同步指定的源码
+→ 通知 Eclipse 对应文件已更改
+→ JavaBuilder INCREMENTAL
+→ 直接取得 Eclipse output resource delta
+→ 将变化class发给JDWP
+→ 发布last_reload
 ```
 
-## 当前范围
+已删除：
 
-- 单模块Maven jar项目、单Project Gradle Java项目。
-- Java 8或11目标平台，继续使用现有JDT/Lombok/APT能力。
-- 不再把javac输出作为启动基线，也不再做启动时javac/JDT Tier1比较。
-- resources先按普通文件同步，不复制Maven/Gradle自定义资源处理行为。
-- Maven Reactor/Gradle多Project的跨模块JDT构建暂不实现，后续单独推进。
-- Fast Test的Bootstrap不在本次改动范围内。
+- 多轮 Build World freshness 校验和源码指纹复核；
+- Worker 在 BUILD 前后对所有class计算SHA；
+- Python为了计算Runtime delta和更新基线再次扫描整个输出；
+- Runtime reload的resources全量复制；
+- 每次reload等待 SAVE/checkpoint；
+- 启动的多次Generation复制及复制前后哈希审计；
+- 每次启动对已安装Worker依赖重新计算SHA、重复探测同一JDK。
+- 首次成功后重复写入、比对Worker的classpath、编码、编译和Processor配置；
+- JDT对warning/info的生成以及结果层的构造、排序和返回。
 
-`reload`仍然只做HotSwap，不自动restart；结构或资源变化需要`stop → launch`。
-这个新launch会使用JDT增量结果，不会重新执行正式Maven/Gradle编译。
+首次启动把Worker参数和Eclipse工程配置保存在workspace。以后直接使用保存的启动参数
+和工程配置；Worker只打开workspace，不重新设置或逐项回读比对。全量和增量编译都将
+可选warning/info设为ignore，结果仅收集ERROR。`jdt_build_ms`和`diagnostics_ms`分别
+报告JDT build与错误收集耗时。
+
+实际编译错误和JVM拒绝仍按结果返回。结构修改如果被JVM拒绝，就重新launch；
+不再在发送JDWP前进行一套独立的class schema/metadata预检。HotSwap不会重新执行
+静态初始化，也不代表Spring配置或已有对象被刷新，最终以新请求的实际行为为准。
+
+`compile_ms`是Worker BUILD往返时间；`compile_total_ms`包含指定源码同步；
+`apply_ms`是JDWP应用时间；`total_ms`覆盖后台Attempt结束，不再隐藏一次后置SAVE。
+
+## 缓存与生命周期
+
+- 构建配置/依赖变更不再自动做freshness审计。需要重新Probe时，手动清理对应
+  `project-launch` 和 `jdt-workspaces` 缓存后launch。
+- 已安装的Worker按分发目录复用；新的Worker版本使用新的缓存目录。
+- 正常stop/shutdown保存workspace和源码索引。
+- JVM直接读取当前JDT bin；restart使用当前编译输出，不回退到首次启动副本。
+- Worker仍然隶属于当前MCP进程；跨对话/跨MCP保活不在这次改动范围内。
+- Maven Reactor/Gradle多Project仍留后。

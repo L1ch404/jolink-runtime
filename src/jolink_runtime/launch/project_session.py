@@ -95,7 +95,6 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
             json.dump(payload, stream, ensure_ascii=True, sort_keys=True)
             stream.write("\n")
             stream.flush()
-            os.fsync(stream.fileno())
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -108,8 +107,8 @@ class BuildGeneration:
     parent_generation_id: str | None
     build_world_fingerprint: str
     output_directory: Path
-    artifact_count: int
-    output_fingerprint: str
+    artifact_count: int | None
+    output_fingerprint: str | None
     created_at: float
 
     def public_summary(self) -> dict[str, object]:
@@ -150,12 +149,10 @@ class ReloadAttempt:
 
 
 class GenerationStore:
-    """Own immutable outputs for one live joLink server session.
+    """Track Runtime output references; JDT startup uses its workspace directly.
 
-    Generations survive managed JVM restart and are independent from Maven or
-    JDT working output.  They are intentionally deleted when this server-side
-    project session closes; crash recovery across MCP server processes is not
-    part of the first productization slice.
+    Legacy sealed-output operations own their copies under this store. A JDT
+    output reference is borrowed and must survive closing the Runtime session.
     """
 
     _STATE_SCHEMA = "jolink.generation-store.v1"
@@ -272,6 +269,24 @@ class GenerationStore:
                 self._remove_generation(generation)
                 raise
             return generation
+
+    def prepare_startup(self, output_directory: Path) -> BuildGeneration:
+        """Reference the live JDT output without copying or hashing it."""
+        self._ordinal += 1
+        generation_id = f"gen_{self._ordinal}_{uuid.uuid4().hex[:12]}"
+        generation = BuildGeneration(
+            generation_id=generation_id,
+            ordinal=self._ordinal,
+            parent_generation_id=None,
+            build_world_fingerprint="",
+            output_directory=output_directory,
+            artifact_count=None,
+            output_fingerprint=None,
+            created_at=time.time(),
+        )
+        self._items[generation_id] = generation
+        self._candidate_id = generation_id
+        return generation
 
     def prepare_candidate(
         self,
@@ -427,6 +442,9 @@ class GenerationStore:
     def verify_generation(self, generation: BuildGeneration) -> None:
         """Reject mutation of a sealed output before it is trusted or copied."""
 
+        if generation.output_fingerprint is None:
+            return
+
         manifest = _output_manifest(generation.output_directory)
         if (
             len(manifest) != generation.artifact_count
@@ -540,7 +558,7 @@ class GenerationStore:
 
     def _remove_generation(self, generation: BuildGeneration) -> None:
         self._items.pop(generation.generation_id, None)
-        shutil.rmtree(generation.output_directory.parent, ignore_errors=True)
+        shutil.rmtree(self._generations / generation.generation_id, ignore_errors=True)
 
     def _prune_unreferenced(
         self,
@@ -663,7 +681,9 @@ class JavaProjectSession:
                 if applied is False
                 else attempt.stage
             )
-            if applied is not None:
+            if applied is not None or error_code is not None:
+                if error_code is not None:
+                    attempt.stage = ReloadStage.FAILED
                 attempt.finished_at = time.time()
                 self._last_reload = attempt
                 self._active_reload = None

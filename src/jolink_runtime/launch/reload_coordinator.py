@@ -43,24 +43,6 @@ class BackgroundReloadCoordinator:
                         )
                         return
                     result = operation()
-                    compiler = project_session.compile_session
-                    if (
-                        compiler is not None
-                        and getattr(compiler, "ready", False)
-                        and getattr(
-                            compiler, "working_compile_state", "unknown"
-                        ) == "valid"
-                    ):
-                        try:
-                            if compiler.save_workspace():
-                                project_session.checkpoint_jdt_workspace()
-                        except Exception as error:
-                            self._logger.warning(
-                                "java_runtime.jdt.workspace.checkpoint_failed "
-                                "reload_id=%s error_type=%s",
-                                reload_attempt.attempt_id,
-                                type(error).__name__,
-                            )
                     project_session.record_reload_result(
                         reload_attempt,
                         {
@@ -109,7 +91,7 @@ class BackgroundReloadCoordinator:
                     )
                 ):
                     project_session.finish_reload(
-                        applied=(result.data.get("applied") is True),
+                        applied=result.data.get("applied", False),
                         source_fingerprint_after=source_fingerprint,
                         error_code=(
                             result.data.get("error_code")

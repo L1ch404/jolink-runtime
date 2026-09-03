@@ -1221,9 +1221,9 @@ def require_diagnostics_contract(frame: dict[str, Any]) -> None:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise SmokeError(f"Worker diagnostic field {name} is invalid.")
         counts[name] = value
-    if frame.get("diagnostic_selection_policy") != (
-        "errors_first_then_warnings_then_info"
-    ):
+    if frame.get("diagnostic_selection_policy") not in {
+        "errors_first_then_warnings_then_info", "errors_only"
+    }:
         raise SmokeError("Worker diagnostic selection policy is unsupported.")
     diagnostics = frame.get("diagnostics")
     details = frame.get("diagnostic_details")

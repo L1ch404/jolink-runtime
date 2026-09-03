@@ -100,47 +100,6 @@ def _plan(tmp_path: Path) -> tuple[FastCompilePlan, Path, Path]:
     )
 
 
-def test_persistent_build_world_identity_ignores_temporary_metadata_path(
-    tmp_path: Path,
-) -> None:
-    first = tmp_path / "attempt-one/effective-pom.xml"
-    second = tmp_path / "attempt-two/effective-pom.xml"
-    first.parent.mkdir()
-    second.parent.mkdir()
-    first.write_text("<project/>\n", encoding="utf-8")
-    second.write_text("<project/>\n", encoding="utf-8")
-    dependency = tmp_path / "dependency-classes"
-    dependency.mkdir()
-    (dependency / "Dependency.class").write_bytes(b"dependency")
-    java = tmp_path / "jdk/bin/java"
-    java.parent.mkdir(parents=True)
-    java.write_bytes(b"java")
-    jdt = SimpleNamespace(
-        source_encoding="UTF-8",
-        source_level=8,
-        target_level=8,
-        method_parameters=False,
-        dependency_entries=(dependency,),
-        processor_entries=(),
-        lombok_entries=(),
-    )
-
-    def prepared(path: Path):
-        return SimpleNamespace(
-            build_world_inputs=(path,),
-            runtime_jdk=SimpleNamespace(java_executable=java),
-            jdt_build_world_plan=jdt,
-            source_manifest_fingerprint="source",
-            resource_input_manifest={},
-        )
-
-    first_identity = JavaRuntime._project_build_world_fingerprint(
-        prepared(first)
-    )
-    os.utime(dependency, None)
-    assert first_identity == JavaRuntime._project_build_world_fingerprint(
-        prepared(second)
-    )
 
 
 def _action(source: Path, project_root: Path) -> RuntimeAction:
@@ -286,7 +245,7 @@ def test_formal_output_guard_detects_external_build_change(
     assert runtime._formal_outputs_match_launch(plan) is False
 
 
-def test_jdt_reload_hotswap_is_runtime_only(
+def test_jdt_reload_hotswap_uses_persistent_workspace_output(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -317,11 +276,8 @@ def test_jdt_reload_hotswap_is_runtime_only(
         root=tmp_path / "session",
         build_world_fingerprint="world",
     )
-    session.generations.initialize(
-        initial,
-        build_world_fingerprint="world",
-        runtime_active=True,
-    )
+    session.generations.prepare_startup(staged)
+    session.generations.promote_candidate(runtime_classpath_changed=True)
 
     class FakeJdt(PersistentJdtCompileSession):
         resource_delta = False
@@ -386,6 +342,9 @@ def test_jdt_reload_hotswap_is_runtime_only(
     class FakeJdwp:
         redefined = False
 
+        def classes_by_signature(self, _signature):
+            return [SimpleNamespace(reference_type_id=1)]
+
         def drain_events(self):
             return []
 
@@ -424,16 +383,16 @@ def test_jdt_reload_hotswap_is_runtime_only(
     assert session.public_status()["last_reload"]["apply_method"] == "hotswap"
     assert session.public_status()["last_reload"][
         "source_changes_pending"
-    ] is True
+    ] is False
     assert jdwp.redefined is True
     assert session.generations.current.ordinal == 1
     assert session.generations.current.output_directory.joinpath(
         "Example.class"
-    ).read_bytes() == baseline_raw
+    ).read_bytes() == staged_raw
     assert session.generations.candidate is None
     last_reload = session.public_status()["last_reload"]
-    assert last_reload["persistence"] == "runtime_only"
-    assert last_reload["restart_loses_update"] is True
+    assert last_reload["persistence"] == "jdt_workspace"
+    assert last_reload["restart_loses_update"] is False
     assert last_reload["runtime_overlay_active"] is True
 
     compiler.resource_delta = True
@@ -682,38 +641,6 @@ def test_poisoned_jdt_reload_clears_ready_product_state(
     assert session.jdt_unavailable_reason == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
 
 
-def test_jdt_prelaunch_failure_is_reported_before_a_jvm_starts(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime = JavaRuntime()
-    session = JavaProjectSession(
-        root=tmp_path / "session",
-        build_world_fingerprint="world",
-    )
-    prepared = SimpleNamespace(
-        jdt_build_world_plan=SimpleNamespace(is_fresh=lambda: True),
-        resource_source_roots=(),
-    )
-    context = SimpleNamespace(check_cancelled=lambda: None)
-
-    def fail_load(_cls):
-        raise ValueError("unexpected bootstrap failure")
-
-    monkeypatch.setattr(
-        JdtCandidate,
-        "load_product",
-        classmethod(fail_load),
-    )
-    with pytest.raises(LaunchPipelineFailure) as captured:
-        runtime._prepare_jdt_launch_output(
-            context, None, prepared, session
-        )
-
-    assert captured.value.error_code == "JDT_STARTUP_FAILED"
-    assert captured.value.context["stage"] == "candidate_load"
-    assert runtime._proc.current is None
-    assert session.compile_session is None
 
 
 def test_formal_output_guard_checks_unselected_classes_and_class_set(

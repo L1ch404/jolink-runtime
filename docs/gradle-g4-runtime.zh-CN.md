@@ -15,7 +15,7 @@ main SourceSet runtimeClasspath + compileJava/resource authority
                   ↓
     持久JDT workspace：FULL或按源码变化INCREMENTAL
                   ↓
-  JDT classes + source resources合并成sealed Generation
+  JVM直接使用JDT classes；source resources直接放入classpath
                   ↓
              managed JVM + readiness
                   ↓
@@ -35,12 +35,12 @@ main SourceSet runtimeClasspath + compileJava/resource authority
 ```
 
 随后使用已有`reload(source_files, hotswap)`。方法体且class schema兼容时使用
-JDWP HotSwap。`reload`不再自动重启JVM；结构、metadata、JDT/APT生成的resource
+JDWP HotSwap。`reload`不再自动重启JVM；JDT/APT生成的resource
 delta、HotSwap拒绝或显式`hotswap=false`返回`RELOAD_REQUIRES_RELAUNCH`，保持
-当前JVM不变。调用方应执行`stop`后重新`launch`，由正式Gradle构建建立新Runtime。
+当前JVM不变。调用方应执行`stop`后重新`launch`，由JDT编译建立新Runtime。
 
-`src/main/resources`变化不会伪装成一次Java reload。它要求重新launch；启动前同步
-source resources，不执行Gradle processResources。
+`src/main/resources`直接在Runtime classpath中，不复制、不扫描、不执行Gradle
+processResources。应用重新读取文件可以看到变化；框架已经缓存的配置仍需重新启动。
 
 ## Authority边界
 
@@ -72,22 +72,23 @@ Processor               仅无Processor或Lombok；其他Processor暂拒绝
 Launch intent           IDEA Application或Spring Boot配置
 Before launch           IDEA Make/Build不触发Gradle编译
 Runtime                 main SourceSet runtimeClasspath
-Generation              classes/resources连续且无路径冲突后合并seal
+Runtime classpath       JDT bin与resource源码目录，均不做启动副本
 Reload                  显式1～16个项目内Java文件
 Readiness               launch/restart可通过ready_port验证应用就绪
 ```
 
 JPMS、多Project、custom SourceSet、Gradle自定义JavaExec/bootRun语义、任意Compiler
-args仍fail closed。跨编译器metadata不同（例如某些Java 11 `InnerClasses`输出）会
-要求重新launch，而不会把不确定class强行发给JDWP。
+args仍fail closed。reload不再做class结构/metadata预检；实际提交JDWP后，
+根据JVM的接受或拒绝结果返回。接受不代表静态初始化或框架状态已经刷新。
 
 IDEA的Spring Boot configuration类型可以被导入，但应用了Spring Boot Gradle
 plugin的构建仍需单独取得task/action/输出证据；当前插件allowlist会先保守拒绝，
 不会假设它与普通Application完全等价。
 
-JVM及后续restart只引用本次JDT输出封存后的Generation，不读取可变的
-`build/classes`或`build/resources`目录。Build World和JDT workspace都会持久化；
-无配置变化的再次launch不调用Gradle。详见`jdt-first-launch.zh-CN.md`。
+JVM及后续restart直接引用持久JDT workspace的bin，不读取`build/classes`。
+Build World和JDT workspace都会持久化，再次launch直接使用缓存，不自动重验
+构建配置。修改build/settings或依赖后，手动清除该项目缓存再launch。
+详见`jdt-first-launch.zh-CN.md`。
 
 ## 本机真实证据（当前JDT-first链路）
 
@@ -99,8 +100,7 @@ Gradle 8.14 + target Java 11 strict offline闭环     PASS
 managed JVM TCP readiness                            PASS
 方法体增量编译 + JDWP HotSwap                        PASS
 结构变化返回RELOAD_REQUIRES_RELAUNCH且JVM不变        PASS
-外部修改/删除formal resource后restart仍读取sealed v1 PASS
-resource source drift使Build World失效               PASS
+source resource修改后，Runtime新读取直接看到变化     由当前验证脚本覆盖
 runtime Probe忽略缺失test依赖与test秘密              PASS
 runtime Probe私有JSON立即删除                        PASS
 自定义post-compile class修改Task被拒绝               PASS

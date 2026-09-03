@@ -24,6 +24,22 @@ def _output(root: Path, values: dict[str, bytes]) -> Path:
     return root
 
 
+def test_jdt_startup_borrows_output_without_copy_or_delete(tmp_path, monkeypatch):
+    output = _output(tmp_path / "workspace/bin", {"App.class": b"v1"})
+    store = GenerationStore(tmp_path / "store")
+    monkeypatch.setattr(
+        "jolink_runtime.launch.project_session.shutil.copytree",
+        lambda *a, **k: pytest.fail("JDT startup must not copy classes"),
+    )
+    generation = store.prepare_startup(output)
+    assert generation.output_directory == output
+    output.joinpath("App.class").write_bytes(b"v2")
+    assert generation.output_directory.joinpath("App.class").read_bytes() == b"v2"
+    store.discard_candidate()
+    store.close()
+    assert output.joinpath("App.class").read_bytes() == b"v2"
+
+
 def test_candidate_is_durable_but_not_current_until_promoted(
     tmp_path: Path,
 ) -> None:

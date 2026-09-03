@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +17,7 @@ from jolink_runtime.adapters.java.process_manager import (
     ProcessStartupError,
 )
 from jolink_runtime.core.models import RuntimeAction
+from jolink_runtime.launch.project_session import JavaProjectSession
 from jolink_runtime.launch import (
     JvmLaunchPlan,
     LaunchCancelled,
@@ -41,6 +43,22 @@ class _FakeProcess:
 
     def kill(self) -> None:
         self.returncode = -9
+
+
+def _mock_compilation(runtime, monkeypatch):
+    def prepare(context, request, prepared):
+        session = JavaProjectSession(
+            root=prepared.attempt_directory / "session",
+            build_world_fingerprint="fixture",
+        )
+        generation = session.generations.prepare_startup(prepared.module_output)
+        plan = replace(prepared.jvm_plan, classpath=(generation.output_directory,))
+        plan, command = runtime._project_pipeline.materialize_command(
+            plan, jdwp_port=request.jdwp_port,
+            attempt_directory=prepared.attempt_directory,
+        )
+        return replace(prepared, jvm_plan=plan, command=command), session, 0
+    monkeypatch.setattr(runtime, "_prepare_initial_project_generation", prepare)
 
 
 def _request(
@@ -419,11 +437,7 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
 
     runtime = JavaRuntime()
     runtime._project_pipeline = _PreparedPipeline(tmp_path)
-    monkeypatch.setattr(
-        runtime,
-        "_prepare_jdt_launch_output",
-        lambda _context, _request, prepared, _session: prepared,
-    )
+    _mock_compilation(runtime, monkeypatch)
 
     def start(**kwargs: Any) -> ProcessInfo:
         launch_commands.append(tuple(kwargs["command_argv"]))
@@ -489,8 +503,8 @@ def test_project_launch_reaches_runtime_active_and_natural_exit_is_reusable(
     assert first_status.data["generation"] == 1
     assert first_status.data["compile_ready"] is False
     assert first_status.data["last_successful_startup_ms"] is not None
-    assert "generation-store" in " ".join(launch_commands[0])
-    assert "target/classes" not in " ".join(launch_commands[0])
+    assert str(tmp_path / "target/classes") in " ".join(launch_commands[0])
+    assert "generation-store" not in " ".join(launch_commands[0])
     active = runtime.status(RuntimeAction(action="status"))
     assert active.data["launch_phase"] == "runtime_active"
     assert active.data["process_state"] == "running"
@@ -526,11 +540,7 @@ def test_project_jvm_start_failure_is_retryable_and_clears_publication(
 ) -> None:
     runtime = JavaRuntime()
     runtime._project_pipeline = _PreparedPipeline(tmp_path)
-    monkeypatch.setattr(
-        runtime,
-        "_prepare_jdt_launch_output",
-        lambda _context, _request, prepared, _session: prepared,
-    )
+    _mock_compilation(runtime, monkeypatch)
 
     def failed_start(**kwargs: Any) -> ProcessInfo:
         process = _FakeProcess()
@@ -580,11 +590,7 @@ def test_project_restart_uses_current_generation_without_recompiling(
     runtime = JavaRuntime()
     pipeline = _PreparedPipeline(tmp_path)
     runtime._project_pipeline = pipeline
-    monkeypatch.setattr(
-        runtime,
-        "_prepare_jdt_launch_output",
-        lambda _context, _request, prepared, _session: prepared,
-    )
+    _mock_compilation(runtime, monkeypatch)
     commands: list[tuple[str, ...]] = []
 
     def start(**kwargs: Any) -> ProcessInfo:
@@ -643,8 +649,10 @@ def test_project_restart_uses_current_generation_without_recompiling(
 
     assert pipeline.prepare_count == 1
     assert len(commands) == 2
-    assert "generation-store" in " ".join(commands[0])
-    assert "generation-store" in " ".join(commands[1])
+    assert str(tmp_path / "target/classes") in " ".join(commands[0])
+    assert "generation-store" not in " ".join(commands[0])
+    assert str(tmp_path / "target/classes") in " ".join(commands[1])
+    assert "generation-store" not in " ".join(commands[1])
     final_status = runtime.status(RuntimeAction(action="status"))
     assert final_status.data["generation"] == 1
     assert runtime.stop(RuntimeAction(action="stop")).ok is True

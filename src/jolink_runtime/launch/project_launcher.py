@@ -159,15 +159,7 @@ class ProjectLaunchPipeline:
         context.set_intent(imported.intent)
         context.transition(LaunchPhase.RESOLVING_BUILD)
 
-        preferences = self._idea_environment.import_preferences(
-            request.project_path
-        )
-        preferences_identity = preferences.redacted_summary()
-        preferences_identity.pop("warnings", None)
-        preferences_identity["jdk_homes_by_name"] = {
-            name: [str(path) for path in paths]
-            for name, paths in preferences.jdk_homes_by_name.items()
-        }
+        preferences_identity = None
         has_maven = (request.project_path / "pom.xml").is_file()
         has_gradle = (
             (request.project_path / "gradlew").is_file()
@@ -214,12 +206,6 @@ class ProjectLaunchPipeline:
                 attempt_directory=attempt_directory,
             )
             context.set_jvm_launch_plan(plan)
-            source_manifest = self.source_manifest_fingerprint(
-                cached.jdt_plan.source_roots
-            )
-            resources = build_input_manifest(
-                (), cached.resource_source_roots
-            )
             return PreparedProjectLaunch(
                 execution=None,
                 build_system=cached.build_system,
@@ -229,7 +215,7 @@ class ProjectLaunchPipeline:
                 generation_input_roots=cached.generation_input_roots,
                 generation_input_manifest={},
                 resource_source_roots=cached.resource_source_roots,
-                resource_input_manifest=resources,
+                resource_input_manifest={},
                 build_world_inputs=cached.jdt_plan.configuration_inputs,
                 runtime_jdk=cached.runtime_jdk,
                 jvm_plan=plan,
@@ -242,11 +228,20 @@ class ProjectLaunchPipeline:
                 fast_compile_plan=None,
                 fast_compile_unavailable_reason="DIRECT_RELOAD_NOT_USED",
                 jdt_build_world_plan=cached.jdt_plan,
-                source_manifest_fingerprint=source_manifest,
+                source_manifest_fingerprint=None,
                 probe_cache_reused=True,
                 launch_intent=imported.intent,
                 build_preferences_identity=preferences_identity,
             )
+        preferences = self._idea_environment.import_preferences(
+            request.project_path
+        )
+        preferences_identity = preferences.redacted_summary()
+        preferences_identity.pop("warnings", None)
+        preferences_identity["jdk_homes_by_name"] = {
+            name: [str(path) for path in paths]
+            for name, paths in preferences.jdk_homes_by_name.items()
+        }
         if has_gradle:
             try:
                 prepared = self._prepare_gradle(

@@ -27,6 +27,7 @@ from typing import Any, Iterable, Sequence
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .fast_compile import fast_compile_fingerprint
 from .product_assets import canonical_lf_bytes
+from .toolchain import JavaToolchainCandidate
 
 
 class JdtCompileError(RuntimeError):
@@ -110,12 +111,12 @@ class JdtCandidate:
             / identity
         )
         try:
-            return cls._load_root(lock, product_root)
+            return cls._load_root(lock, product_root, verify=False)
         except JdtCompileError:
             pass
         with cls._product_install_lock:
             try:
-                return cls._load_root(lock, product_root)
+                return cls._load_root(lock, product_root, verify=False)
             except JdtCompileError:
                 cls._install_product_candidate(
                     lock,
@@ -125,7 +126,7 @@ class JdtCandidate:
                         cache_base / "jdt-poc/candidates" / candidate_id,
                     ),
                 )
-                return cls._load_root(lock, product_root)
+                return cls._load_root(lock, product_root, verify=False)
 
     @classmethod
     def load(cls, lock_path: Path, cache_root: Path) -> "JdtCandidate":
@@ -155,6 +156,8 @@ class JdtCandidate:
         cls,
         lock: dict[str, Any],
         root: Path,
+        *,
+        verify: bool = True,
     ) -> "JdtCandidate":
         try:
             candidate_id = str(lock["candidate_id"])
@@ -177,58 +180,67 @@ class JdtCandidate:
                 "The JDT Worker candidate lock is unavailable or invalid.",
             ) from error
         root = root.expanduser().resolve(strict=False)
-        for artifact in artifacts:
-            filename = str(artifact["filename"])
-            if Path(filename).name != filename:
+        launcher = root / "plugins" / str(equinox["launcher_filename"])
+        if not verify:
+            if not launcher.is_file() or not (root / "plugins" / str(
+                lock["worker_artifact"]["filename"]
+            )).is_file():
                 raise JdtCompileError(
-                    "JDT_CANDIDATE_LOCK_INVALID",
-                    "The JDT Candidate lock contains an invalid artifact name.",
+                    "JDT_CANDIDATE_UNAVAILABLE", "The installed Worker is absent."
                 )
-            path = root / "plugins" / filename
+        else:
+            for artifact in artifacts:
+                filename = str(artifact["filename"])
+                if Path(filename).name != filename:
+                    raise JdtCompileError(
+                        "JDT_CANDIDATE_LOCK_INVALID",
+                        "The JDT Candidate lock contains an invalid artifact name.",
+                    )
+                path = root / "plugins" / filename
+                if (
+                    not path.is_file()
+                    or _sha256_file(path) != str(artifact["sha256"])
+                ):
+                    raise JdtCompileError(
+                        "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                        f"Locked JDT artifact is missing or changed: {filename}.",
+                        context={"artifact": filename},
+                    )
+            config = root / "configuration/config.ini"
             if (
-                not path.is_file()
-                or _sha256_file(path) != str(artifact["sha256"])
+                not config.is_file()
+                or _sha256_file(config)
+                != str(equinox["configuration_sha256"])
             ):
                 raise JdtCompileError(
                     "JDT_CANDIDATE_INTEGRITY_MISMATCH",
-                    f"Locked JDT artifact is missing or changed: {filename}.",
-                    context={"artifact": filename},
+                    "The locked Equinox configuration is missing or changed.",
+                    context={"artifact": "configuration/config.ini"},
                 )
-        config = root / "configuration/config.ini"
-        if (
-            not config.is_file()
-            or _sha256_file(config)
-            != str(equinox["configuration_sha256"])
-        ):
-            raise JdtCompileError(
-                "JDT_CANDIDATE_INTEGRITY_MISMATCH",
-                "The locked Equinox configuration is missing or changed.",
-                context={"artifact": "configuration/config.ini"},
-            )
-        launcher = root / "plugins" / str(equinox["launcher_filename"])
-        worker_path = root / "plugins" / str(lock["worker_artifact"]["filename"])
-        observed_majors: set[int] = set()
-        try:
-            with zipfile.ZipFile(worker_path) as archive:
-                for name in archive.namelist():
-                    if not name.endswith(".class"):
-                        continue
-                    raw = archive.read(name)
-                    if len(raw) < 8 or raw[:4] != b"\xca\xfe\xba\xbe":
-                        raise ValueError("invalid class")
-                    observed_majors.add(int.from_bytes(raw[6:8], "big"))
-        except (OSError, ValueError, zipfile.BadZipFile) as error:
-            raise JdtCompileError(
-                "JDT_CANDIDATE_INTEGRITY_MISMATCH",
-                "The locked JDT Worker class version cannot be verified.",
-                context={"artifact": worker_path.name},
-            ) from error
-        if not observed_majors or observed_majors != {worker_class_major}:
-            raise JdtCompileError(
-                "JDT_CANDIDATE_INTEGRITY_MISMATCH",
-                "The locked JDT Worker class version does not match its lock.",
-                context={"artifact": worker_path.name},
-            )
+            launcher = root / "plugins" / str(equinox["launcher_filename"])
+            worker_path = root / "plugins" / str(lock["worker_artifact"]["filename"])
+            observed_majors: set[int] = set()
+            try:
+                with zipfile.ZipFile(worker_path) as archive:
+                    for name in archive.namelist():
+                        if not name.endswith(".class"):
+                            continue
+                        raw = archive.read(name)
+                        if len(raw) < 8 or raw[:4] != b"\xca\xfe\xba\xbe":
+                            raise ValueError("invalid class")
+                        observed_majors.add(int.from_bytes(raw[6:8], "big"))
+            except (OSError, ValueError, zipfile.BadZipFile) as error:
+                raise JdtCompileError(
+                    "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                    "The locked JDT Worker class version cannot be verified.",
+                    context={"artifact": worker_path.name},
+                ) from error
+            if not observed_majors or observed_majors != {worker_class_major}:
+                raise JdtCompileError(
+                    "JDT_CANDIDATE_INTEGRITY_MISMATCH",
+                    "The locked JDT Worker class version does not match its lock.",
+                    context={"artifact": worker_path.name},
+                )
         return cls(
             candidate_id=candidate_id,
             root=root,
@@ -661,6 +673,8 @@ class JdtCompileResult:
     test_warning_count: int = 0
     test_output_directory: Path | None = None
     deleted_source_units: tuple[str, ...] = ()
+    jdt_build_ms: float = 0.0
+    diagnostics_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -685,6 +699,9 @@ class JdtBuildWorldPlan:
     resource_fingerprint: str = ""
     worker_min_heap_mb: int = 64
     worker_max_heap_mb: int = 2048
+    worker_java_home: Path | None = None
+    worker_java_major: int | None = None
+    system_entries: tuple[Path, ...] = ()
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == fast_compile_fingerprint(
@@ -790,6 +807,59 @@ def discover_target_system_entries(
     )
 
 
+def select_target_system_home(
+    preferred: Iterable[Path], target_level: int
+) -> Path:
+    """Find an installed JDK matching the bytecode target, not the Runtime JDK."""
+
+    candidates = [path.expanduser() for path in preferred]
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        candidates.append(Path(java_home))
+    candidates.extend(Path.home().glob(".jdks/*"))
+    candidates.extend(Path.home().glob(
+        "Library/Java/JavaVirtualMachines/*/Contents/Home"
+    ))
+    candidates.extend(Path("/Library/Java/JavaVirtualMachines").glob(
+        "*/Contents/Home"
+    ))
+    candidates.extend(Path("/usr/lib/jvm").glob("*"))
+    for environment in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(environment)
+        if base:
+            candidates.extend(Path(base).joinpath("Java").glob("*"))
+    seen: set[str] = set()
+    for candidate in candidates:
+        home = candidate.resolve(strict=False)
+        key = os.path.normcase(str(home))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if int(target_level) == 8:
+                discover_java8_system_entries(home)
+                return home
+            version = JavaToolchainCandidate(
+                home=home,
+                java_executable=home / "bin" / (
+                    "java.exe" if os.name == "nt" else "java"
+                ),
+                javac_executable=home / "bin" / (
+                    "javac.exe" if os.name == "nt" else "javac"
+                ),
+                source="target_system_discovery",
+            ).major_version
+            if int(target_level) == 11 and version == 11:
+                discover_target_system_entries(home, 11)
+                return home
+        except (OSError, JdtCompileError):
+            continue
+    raise JdtCompileError(
+        "JDT_TARGET_PLATFORM_UNAVAILABLE",
+        f"No installed JDK {int(target_level)} target platform was found.",
+    )
+
+
 class PersistentJdtCompileSession:
     """One long-lived JavaBuilder state for one frozen Build World."""
 
@@ -833,9 +903,7 @@ class PersistentJdtCompileSession:
                 "JDT_SOURCE_SNAPSHOT_INVALID",
                 "The frozen source snapshot does not match source roots.",
             )
-        self.classpath_entries = tuple(
-            path.expanduser().resolve(strict=True) for path in classpath_entries
-        )
+        self.classpath_entries = tuple(Path(path) for path in classpath_entries)
         self.test_source_roots = tuple(
             path.expanduser().resolve(strict=True) for path in test_source_roots
         )
@@ -900,6 +968,8 @@ class PersistentJdtCompileSession:
         self.private_test_source = self.private_project / "test-src"
         self.test_output_directory = self.private_project / "test-bin"
         self._source_map: dict[Path, Path] = {}
+        self._source_stamps: dict[Path, tuple[int, int]] = {}
+        self._pending_outputs: dict[str, bool] = {}
         self._client: JdtWorkerClient | None = None
         self._poisoned = False
         self._poison_reason = ""
@@ -907,7 +977,6 @@ class PersistentJdtCompileSession:
         self._working_compile_state = "unknown"
         self._last_compile_diagnostics: tuple[dict[str, Any], ...] = ()
         self._last_compile_error_count = 0
-        self._published_output_manifest: dict[str, str] = {}
         self._native_full_resource_manifest: dict[str, str] = {}
         self._worker_ready_frame: dict[str, Any] = {}
         self._last_close_clean = False
@@ -988,16 +1057,7 @@ class PersistentJdtCompileSession:
                 else:
                     self.root.mkdir(parents=True, exist_ok=False, mode=0o700)
                     self._materialize_sources()
-                (
-                    classpath_file,
-                    processor_file,
-                    test_classpath_file,
-                ) = self._write_worker_inputs()
-                client = self._start_worker(
-                    classpath_file=classpath_file,
-                    processor_file=processor_file,
-                    test_classpath_file=test_classpath_file,
-                )
+                client = self._start_worker(reuse_workspace=reuse_workspace)
                 with self._state_lock:
                     self._client = client
                 if reuse_workspace and not self.workspace_reopened:
@@ -1006,8 +1066,9 @@ class PersistentJdtCompileSession:
                         "The Worker did not reopen the saved JDT workspace.",
                     )
                 if reuse_workspace and not build_on_reuse:
+                    self._baseline_ready = True
                     result = JdtCompileResult(
-                        compile_ok=True,
+                        compile_ok=self._working_compile_state == "valid",
                         actual_build_kind=None,
                         compiled_source_count=0,
                         compiled_source_units=(),
@@ -1015,9 +1076,9 @@ class PersistentJdtCompileSession:
                         deleted_classes=(),
                         changed_resources=(),
                         deleted_resources=(),
-                        error_count=0,
+                        error_count=self._last_compile_error_count,
                         warning_count=0,
-                        diagnostics=(),
+                        diagnostics=self._last_compile_diagnostics,
                         diagnostics_truncated=False,
                         elapsed_ms=0.0,
                         source_changes_pending=False,
@@ -1028,7 +1089,7 @@ class PersistentJdtCompileSession:
                         "INCREMENTAL" if reuse_workspace else "FULL",
                         source_changes_pending=False,
                     )
-                with self._state_lock:
+                if self.test_source_roots or self.baseline_main_output is not None:
                     self._native_full_resource_manifest = (
                         self._native_resource_manifest()
                     )
@@ -1074,33 +1135,18 @@ class PersistentJdtCompileSession:
         return classpath_file, processor_file, test_classpath_file
 
     def compile(self, source_files: Iterable[Path]) -> JdtCompileResult:
+        """Copy only requested edits and consume JavaBuilder's output delta."""
         with self._operation_lock:
-            with self._state_lock:
-                if self._poisoned:
-                    raise self._poisoned_error()
-                if self._client is None:
-                    raise JdtCompileError(
-                        "JDT_SESSION_NOT_READY",
-                        "The JDT CompileSession is not active.",
-                    )
-                if not self._baseline_ready:
-                    raise JdtCompileError(
-                        "JDT_BASELINE_NOT_ACCEPTED",
-                        "The initial JDT FULL baseline has not passed validation.",
-                    )
-            selected = tuple(
-                path.expanduser().resolve(strict=False)
-                for path in source_files
-            )
-            if not selected:
+            if self._poisoned:
+                raise self._poisoned_error()
+            if not self.ready:
                 raise JdtCompileError(
-                    "INVALID_ARGUMENT",
-                    "reload requires at least one Java source file.",
+                    "JDT_SESSION_NOT_READY", "The JDT CompileSession is not active."
                 )
-            snapshots: dict[
-                Path, tuple[Path, bytes | None, bytes | None, bool]
-            ] = {}
-            for source in selected:
+            touched: list[str] = []
+            selected = []
+            for raw in source_files:
+                source = raw.expanduser().resolve(strict=False)
                 private = self._source_map.get(source)
                 if private is None:
                     private = self._private_path_for_workspace_source(source)
@@ -1109,149 +1155,51 @@ class PersistentJdtCompileSession:
                         "SOURCE_OUTSIDE_BUILD_WORLD",
                         "A reload source is outside this CompileSession.",
                     )
-                mapped = source in self._source_map
+                selected.append((source, private))
+            for source, private in selected:
                 content = source.read_bytes() if source.is_file() else None
                 original = private.read_bytes() if private.is_file() else None
-                if content is None and original is None:
-                    # A fresh Bootstrap may already include a requested
-                    # deletion. There is no additional lifecycle delta.
+                self._remember_source(source, private)
+                if content == original:
                     continue
-                snapshots[source] = (private, content, original, mapped)
-            if not snapshots:
-                return self._build("INCREMENTAL", source_changes_pending=False)
-            replaced: list[tuple[Path, bytes | None, Path, bool]] = []
-            changed_private_sources = {
-                private.relative_to(self.private_project).as_posix()
-                for _source, (private, content, original, _mapped)
-                in snapshots.items()
-                if content is not None and content != original
-            }
-            try:
-                for source, (private, content, original, mapped) in snapshots.items():
-                    metadata = private.stat() if private.is_file() else None
-                    private.parent.mkdir(parents=True, exist_ok=True)
-                    if not mapped:
-                        self._source_map[source] = private
-                    replaced.append((private, original, source, mapped))
-                    if content is None:
-                        private.unlink(missing_ok=True)
-                        continue
-                    temporary = private.with_name(
-                        f".{private.name}.{time.time_ns()}.tmp"
-                    )
-                    temporary.write_bytes(content)
-                    temporary.replace(private)
-                    if content != original:
-                        forced_mtime = max(
-                            time.time_ns(),
-                            (
-                                metadata.st_mtime_ns + 2_000_000_000
-                                if metadata is not None
-                                else time.time_ns()
-                            ),
-                        )
-                        os.utime(
-                            private,
-                            ns=(
-                                metadata.st_atime_ns
-                                if metadata is not None
-                                else forced_mtime,
-                                forced_mtime,
-                            ),
-                        )
-                        if (
-                            metadata is not None
-                            and private.stat().st_mtime_ns
-                            <= metadata.st_mtime_ns
-                        ):
-                            raise OSError(
-                                "private source timestamp did not advance"
-                            )
-            except Exception as error:
-                rollback_ok = True
-                for private, original, source, mapped in reversed(replaced):
-                    try:
-                        if original is None:
-                            private.unlink(missing_ok=True)
-                        else:
-                            private.parent.mkdir(parents=True, exist_ok=True)
-                            private.write_bytes(original)
-                        if not mapped:
-                            self._source_map.pop(source, None)
-                    except OSError:
-                        rollback_ok = False
-                if not rollback_ok:
-                    self._poison("SOURCE_MIRROR_ROLLBACK_FAILED")
-                raise JdtCompileError(
-                    "SOURCE_MIRROR_UPDATE_FAILED",
-                    "The private source mirror could not be updated atomically.",
-                ) from error
-            result = self._build("INCREMENTAL", source_changes_pending=False)
-            # Eclipse may remove resources that joLink overlaid from the formal
-            # build because they are not owned by the private workspace. Put
-            # those frozen resources back before calculating the Runtime delta;
-            # otherwise a Java-only edit can look like a resource deletion.
-            self._restore_frozen_resources()
-            requested_deleted_source_units = {
-                private.relative_to(self.private_project).as_posix()
-                for _source, (private, content, _original, _mapped)
-                in snapshots.items()
-                if content is None
-            }
-            missing_deleted_source_units = sorted(
-                requested_deleted_source_units
-                - set(result.deleted_source_units)
-            )
-            if missing_deleted_source_units:
-                self._poison("JDT_SOURCE_DELETION_NOT_OBSERVED")
-                raise JdtCompileError(
-                    "JDT_SOURCE_DELETION_NOT_OBSERVED",
-                    "The JDT Worker did not observe every deleted source file.",
-                    context={
-                        "missing_source_count": len(
-                            missing_deleted_source_units
-                        ),
-                        "missing_sources": missing_deleted_source_units,
-                        "observed_deleted_sources": list(
-                            result.deleted_source_units
-                        ),
-                    },
+                private.parent.mkdir(parents=True, exist_ok=True)
+                if content is None:
+                    private.unlink(missing_ok=True)
+                    self._source_map.pop(source, None)
+                    self._source_stamps.pop(source, None)
+                else:
+                    private.write_bytes(content)
+                    self._source_map[source] = private
+                touched.append(private.relative_to(self.private_project).as_posix())
+            if touched:
+                result = self._build(
+                    "INCREMENTAL",
+                    source_changes_pending=False,
+                    touched_sources=tuple(touched),
                 )
-            missing_compiled_sources = sorted(
-                changed_private_sources - set(result.compiled_source_units)
-            )
-            if missing_compiled_sources:
-                self._poison("JDT_SOURCE_CHANGE_NOT_OBSERVED")
-                raise JdtCompileError(
-                    "JDT_SOURCE_CHANGE_NOT_OBSERVED",
-                    "The JDT Worker did not compile every changed source file.",
-                    context={
-                        "missing_source_count": len(missing_compiled_sources),
-                        "missing_sources": missing_compiled_sources,
-                    },
+                # Fast Test still overlays its baseline test resources. Runtime
+                # keeps resources outside bin, so its reload copies none.
+                if self.baseline_main_output is not None or self.baseline_test_output is not None:
+                    self._restore_frozen_resources()
+            else:
+                result = JdtCompileResult(
+                    compile_ok=self._working_compile_state == "valid",
+                    actual_build_kind=None,
+                    compiled_source_count=0,
+                    compiled_source_units=(),
+                    changed_classes=(),
+                    deleted_classes=(),
+                    changed_resources=(),
+                    deleted_resources=(),
+                    error_count=self._last_compile_error_count,
+                    warning_count=0,
+                    diagnostics=self._last_compile_diagnostics,
+                    diagnostics_truncated=False,
+                    elapsed_ms=0.0,
+                    source_changes_pending=False,
+                    output_directory=self.output_directory,
                 )
-            if result.compile_ok:
-                for source, (_private, content, _original, _mapped) in (
-                    snapshots.items()
-                ):
-                    if content is None:
-                        self._source_map.pop(source, None)
-            pending = any(
-                (
-                    source.exists()
-                    if content is None
-                    else not source.is_file()
-                    or _sha256_file(source)
-                    != hashlib.sha256(content).hexdigest()
-                )
-                for source, (_private, content, _original, _mapped)
-                in snapshots.items()
-            )
-            return replace(
-                result,
-                source_changes_pending=pending,
-                **self._publication_delta(),
-            )
+            return replace(result, **self._publication_delta())
 
     def _private_path_for_workspace_source(self, source: Path) -> Path | None:
         matches: list[Path] = []
@@ -1267,77 +1215,66 @@ class PersistentJdtCompileSession:
         return matches[0]
 
     def accept_baseline(self) -> None:
-        """Publish initial FULL only after Maven/JDT compatibility succeeds."""
+        with self._state_lock:
+            self._pending_outputs.clear()
+            self._baseline_ready = True
+            self._working_compile_state = "valid"
+            self._last_compile_diagnostics = ()
+            self._last_compile_error_count = 0
 
-        with self._operation_lock:
-            with self._state_lock:
-                if self._poisoned or self._client is None:
-                    raise JdtCompileError(
-                        "JDT_SESSION_NOT_READY",
-                        "The JDT baseline cannot be accepted.",
-                    )
-                self._published_output_manifest = (
-                    self._complete_output_manifest()
-                )
-                self._baseline_ready = True
-                self._working_compile_state = "valid"
-                self._last_compile_diagnostics = ()
-                self._last_compile_error_count = 0
+    @staticmethod
+    def _source_stamp(source: Path) -> tuple[int, int] | None:
+        try:
+            metadata = source.stat()
+            return metadata.st_mtime_ns, metadata.st_size
+        except FileNotFoundError:
+            return None
+
+    def _remember_source(self, source: Path, private: Path) -> None:
+        stamp = self._source_stamp(source)
+        if stamp is not None:
+            self._source_map[source] = private
+            self._source_stamps[source] = stamp
 
     def workspace_source_changes(self) -> tuple[Path, ...]:
-        """Return main/test workspace sources that differ from the private mirror."""
-
-        with self._state_lock:
-            mapped = dict(self._source_map)
+        """Find edits using saved size/mtime; do not reread unchanged sources."""
         observed: set[Path] = set()
         changed: set[Path] = set()
         for root in (*self.source_roots, *self.test_source_roots):
-            for source in root.rglob("*.java"):
-                resolved = source.resolve(strict=False)
-                observed.add(resolved)
-                private = mapped.get(resolved)
-                if private is None:
-                    changed.add(resolved)
-                    continue
-                try:
-                    if source.read_bytes() != private.read_bytes():
-                        changed.add(resolved)
-                except OSError:
-                    changed.add(resolved)
-        changed.update(set(mapped) - observed)
+            for path in root.rglob("*.java"):
+                source = path.resolve(strict=False)
+                observed.add(source)
+                if self._source_stamp(source) != self._source_stamps.get(source):
+                    changed.add(source)
+        changed.update(set(self._source_map) - observed)
         return tuple(sorted(changed, key=str))
 
     def mark_published(self) -> None:
-        """Advance the Runtime publication baseline after a confirmed apply."""
+        with self._state_lock:
+            self._pending_outputs.clear()
 
-        with self._operation_lock:
-            with self._state_lock:
-                if self._poisoned or not self._baseline_ready:
-                    raise JdtCompileError(
-                        "JDT_SESSION_NOT_READY",
-                        "The JDT publication baseline cannot be advanced.",
-                    )
-                self._published_output_manifest = (
-                    self._complete_output_manifest()
-                )
+    def reset_publication_baseline(self, _output_directory: Path) -> None:
+        """Restart now loads the current JDT output, including pending edits."""
+        with self._state_lock:
+            self._pending_outputs.clear()
 
-    def reset_publication_baseline(self, output_directory: Path) -> None:
-        """Describe the classes restored by an explicit Runtime restart."""
-
-        root = output_directory.expanduser().resolve(strict=True)
-        manifest = {
-            path.relative_to(root).as_posix(): _sha256_file(path)
-            for path in sorted(root.rglob("*"))
-            if path.is_file()
+    def save_source_index(self) -> None:
+        value = {
+            str(source): [
+                private.relative_to(self.private_project).as_posix(),
+                list(self._source_stamps.get(source, ())),
+            ]
+            for source, private in self._source_map.items()
         }
-        with self._operation_lock:
-            with self._state_lock:
-                if self._poisoned or not self._baseline_ready:
-                    raise JdtCompileError(
-                        "JDT_SESSION_NOT_READY",
-                        "The JDT publication baseline cannot be reset.",
-                    )
-                self._published_output_manifest = manifest
+        path = self.root / "source-index.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({
+            "sources": value,
+            "compile_state": self._working_compile_state,
+            "error_count": self._last_compile_error_count,
+            "diagnostics": self._last_compile_diagnostics,
+        }), encoding="utf-8")
+        temporary.replace(path)
 
     def save_workspace(self) -> bool:
         with self._operation_lock:
@@ -1345,6 +1282,7 @@ class PersistentJdtCompileSession:
                 client = self._client
                 if self._poisoned or client is None:
                     return False
+            self.save_source_index()
             frame = client.command("SAVE", timeout=5.0)
             return bool(
                 frame.get("ok") is True
@@ -1353,6 +1291,11 @@ class PersistentJdtCompileSession:
 
     def close(self) -> bool:
         operation_owned = self._operation_lock.acquire(blocking=False)
+        if operation_owned and self.root.is_dir():
+            try:
+                self.save_source_index()
+            except OSError:
+                pass
         with self._state_lock:
             client = self._client
             self._client = None
@@ -1380,7 +1323,6 @@ class PersistentJdtCompileSession:
             shutil.rmtree(self.root, ignore_errors=True)
         with self._state_lock:
             self._source_map.clear()
-            self._published_output_manifest.clear()
         return settled
 
     def interrupt(self, reason: str = "JDT_SESSION_INTERRUPTED") -> None:
@@ -1419,6 +1361,18 @@ class PersistentJdtCompileSession:
         """Reconnect original source paths without changing the saved mirror."""
 
         self._source_map.clear()
+        index = self.root / "source-index.json"
+        if index.is_file():
+            saved = json.loads(index.read_text(encoding="utf-8"))
+            self._working_compile_state = saved.get("compile_state", "valid")
+            self._last_compile_error_count = saved.get("error_count", 0)
+            self._last_compile_diagnostics = tuple(saved.get("diagnostics", ()))
+            for original, (relative, stamp) in saved.get("sources", saved).items():
+                source = Path(original)
+                self._source_map[source] = self.private_project / relative
+                if len(stamp) == 2:
+                    self._source_stamps[source] = tuple(stamp)
+            return
         for source_roots, destination_root in (
             (self.source_roots, self.private_source),
             (self.test_source_roots, self.private_test_source),
@@ -1545,7 +1499,7 @@ class PersistentJdtCompileSession:
                 destination = destination_root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(baseline_source, destination)
-                self._source_map[source.resolve(strict=False)] = destination
+                self._remember_source(source.resolve(strict=False), destination)
 
     @staticmethod
     def _copy_frozen_resources(source_root: Path, output_root: Path) -> None:
@@ -1559,6 +1513,8 @@ class PersistentJdtCompileSession:
             shutil.copyfile(source, destination)
 
     def _restore_frozen_resources(self) -> None:
+        if self.baseline_main_output is None and self.baseline_test_output is None:
+            return
         state_file = self.root / "frozen-resource-paths.json"
         try:
             previous = json.loads(state_file.read_text(encoding="utf-8"))
@@ -1591,16 +1547,11 @@ class PersistentJdtCompileSession:
         )
         temporary.replace(state_file)
 
-    def _start_worker(
-        self,
-        *,
-        classpath_file: Path,
-        processor_file: Path | None,
-        test_classpath_file: Path | None,
-    ) -> JdtWorkerClient:
-        java = self.candidate.verify_worker_java(
-            self.worker_java_home
-        ).executable
+    def _prepare_worker_command(self) -> list[str]:
+        classpath_file, processor_file, test_classpath_file = self._write_worker_inputs()
+        java = self.worker_java_home / "bin" / (
+            "java.exe" if os.name == "nt" else "java"
+        )
         configuration = self.root / "configuration"
         configuration.mkdir(exist_ok=True)
         template = (
@@ -1611,8 +1562,6 @@ class PersistentJdtCompileSession:
             template.replace("file:plugins/", prefix),
             encoding="utf-8",
         )
-        stderr_path = self.root / "worker.stderr.log"
-        stderr_stream = stderr_path.open("w", encoding="utf-8")
         command = [
             str(java),
             f"-Xms{self.min_heap_mb}m",
@@ -1621,7 +1570,6 @@ class PersistentJdtCompileSession:
             *(f"-javaagent:{agent}" for agent in self.java_agents),
             "-jar",
             str(self.candidate.launcher),
-            "-clean",
             "-nosplash",
             "-install",
             str(self.candidate.root),
@@ -1648,6 +1596,16 @@ class PersistentJdtCompileSession:
             command.extend(
                 ["--test-classpath-file", str(test_classpath_file)]
             )
+        return command
+
+    def _start_worker(self, *, reuse_workspace: bool = False) -> JdtWorkerClient:
+        launch_file = self.root / "worker-launch.json"
+        reused = reuse_workspace and launch_file.is_file()
+        command = (
+            json.loads(launch_file.read_text(encoding="utf-8"))
+            if reused else self._prepare_worker_command()
+        )
+        stderr_stream = (self.root / "worker.stderr.log").open("w", encoding="utf-8")
         try:
             process_options: dict[str, Any] = {}
             if os.name == "nt":
@@ -1677,29 +1635,16 @@ class PersistentJdtCompileSession:
         except Exception:
             client.force_close()
             raise
-        if (
-            ready.get("ok") is not True
-            or ready.get("status") != "ready"
-            or ready.get("java_builder_count") != 1
-            or ready.get("source_encoding_verified") is not True
-            or ready.get("source_level")
-            not in ({"8", "1.8"} if self.source_level == 8 else {"11"})
-            or ready.get("method_parameters")
-            != ("generate" if self.method_parameters else "do not generate")
-            or (
-                test_classpath_file is not None
-                and ready.get("test_model_configured") is not True
-            )
-            or (
-                processor_file is not None
-                and ready.get("apt_factory_path_verified") is not True
-            )
-        ):
+        if ready.get("ok") is not True or ready.get("status") != "ready":
             client.close()
             raise JdtCompileError(
                 "JDT_WORKER_NOT_READY",
-                "The JDT Worker did not verify the requested Build World.",
+                "The JDT Worker did not start successfully.",
             )
+        if not reused:
+            launch_file.write_text(json.dumps(
+                command + ["--reuse-configuration", "true"]
+            ), encoding="utf-8")
         with self._state_lock:
             self._worker_ready_frame = dict(ready)
         return client
@@ -1709,6 +1654,7 @@ class PersistentJdtCompileSession:
         kind: str,
         *,
         source_changes_pending: bool,
+        touched_sources: tuple[str, ...] = (),
     ) -> JdtCompileResult:
         with self._state_lock:
             if self._poisoned:
@@ -1719,10 +1665,15 @@ class PersistentJdtCompileSession:
                 "JDT_SESSION_NOT_READY",
                 "The JDT CompileSession is not active.",
             )
-        resources_before = self._resource_manifest()
         started = time.monotonic()
         try:
-            frame = client.command(f"BUILD\t{kind}")
+            command = f"BUILD\t{kind}"
+            if touched_sources:
+                command += "\t" + "\t".join(
+                    base64.b64encode(path.encode("utf-8")).decode("ascii")
+                    for path in touched_sources
+                )
+            frame = client.command(command)
         except JdtCompileError as error:
             self._poison(error.error_code)
             raise
@@ -1746,17 +1697,8 @@ class PersistentJdtCompileSession:
                 "JDT_WORKER_PROTOCOL_ERROR",
                 "The JDT build result omitted output delta fields.",
             )
-        resources_after = self._resource_manifest()
-        changed_resources = tuple(
-            sorted(
-                path
-                for path, digest in resources_after.items()
-                if resources_before.get(path) != digest
-            )
-        )
-        deleted_resources = tuple(
-            sorted(path for path in resources_before if path not in resources_after)
-        )
+        changed_resources = tuple(frame.get("changed_resources", ()))
+        deleted_resources = tuple(frame.get("deleted_resources", ()))
         raw_diagnostics = frame.get("diagnostic_details", [])
         if not isinstance(raw_diagnostics, list) or not all(
             isinstance(value, dict) for value in raw_diagnostics
@@ -1780,6 +1722,12 @@ class PersistentJdtCompileSession:
         compile_ok = frame.get("compile_ok") is True
         error_count = int(frame.get("error_count", 0))
         with self._state_lock:
+            self._pending_outputs.update(
+                (str(path), False) for path in (*changed, *changed_resources)
+            )
+            self._pending_outputs.update(
+                (str(path), True) for path in (*deleted, *deleted_resources)
+            )
             self._working_compile_state = "valid" if compile_ok else "failed"
             self._last_compile_diagnostics = diagnostics if not compile_ok else ()
             self._last_compile_error_count = error_count if not compile_ok else 0
@@ -1801,6 +1749,8 @@ class PersistentJdtCompileSession:
             diagnostics=diagnostics,
             diagnostics_truncated=frame.get("diagnostics_truncated") is True,
             elapsed_ms=elapsed_ms,
+            jdt_build_ms=float(frame.get("elapsed_ms", 0)),
+            diagnostics_ms=float(frame.get("diagnostics_ms", 0)),
             source_changes_pending=source_changes_pending,
             output_directory=self.output_directory,
             main_compile_ok=frame.get("main_compile_ok") is not False,
@@ -1822,14 +1772,6 @@ class PersistentJdtCompileSession:
             ),
         )
 
-    def _resource_manifest(self) -> dict[str, str]:
-        if not self.output_directory.is_dir():
-            return {}
-        return {
-            path.relative_to(self.output_directory).as_posix(): _sha256_file(path)
-            for path in sorted(self.output_directory.rglob("*"))
-            if path.is_file() and path.suffix != ".class"
-        }
 
     def _native_resource_manifest(self) -> dict[str, str]:
         result: dict[str, str] = {}
@@ -1847,38 +1789,27 @@ class PersistentJdtCompileSession:
                 )
         return result
 
-    def _complete_output_manifest(self) -> dict[str, str]:
-        if not self.output_directory.is_dir():
-            return {}
-        return {
-            path.relative_to(self.output_directory).as_posix(): _sha256_file(path)
-            for path in sorted(self.output_directory.rglob("*"))
-            if path.is_file()
-        }
 
     def _publication_delta(self) -> dict[str, tuple[str, ...]]:
-        current = self._complete_output_manifest()
         with self._state_lock:
-            published = dict(self._published_output_manifest)
-        changed = sorted(
-            path
-            for path, digest in current.items()
-            if published.get(path) != digest
-        )
-        deleted = sorted(path for path in published if path not in current)
+            pending = dict(self._pending_outputs)
         return {
-            "runtime_changed_classes": tuple(
-                path for path in changed if path.endswith(".class")
-            ),
-            "runtime_deleted_classes": tuple(
-                path for path in deleted if path.endswith(".class")
-            ),
-            "runtime_changed_resources": tuple(
-                path for path in changed if not path.endswith(".class")
-            ),
-            "runtime_deleted_resources": tuple(
-                path for path in deleted if not path.endswith(".class")
-            ),
+            "runtime_changed_classes": tuple(sorted(
+                path for path, deleted in pending.items()
+                if not deleted and path.endswith(".class")
+            )),
+            "runtime_deleted_classes": tuple(sorted(
+                path for path, deleted in pending.items()
+                if deleted and path.endswith(".class")
+            )),
+            "runtime_changed_resources": tuple(sorted(
+                path for path, deleted in pending.items()
+                if not deleted and not path.endswith(".class")
+            )),
+            "runtime_deleted_resources": tuple(sorted(
+                path for path, deleted in pending.items()
+                if deleted and not path.endswith(".class")
+            )),
         }
 
     def _poison(self, reason: str) -> None:
@@ -1913,5 +1844,6 @@ __all__ = [
     "PersistentJdtCompileSession",
     "discover_java8_system_entries",
     "discover_target_system_entries",
+    "select_target_system_home",
     "resource_tree_fingerprint",
 ]

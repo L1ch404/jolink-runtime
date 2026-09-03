@@ -1,115 +1,33 @@
-# joLink Product Development Principles
+# joLink 开发原则
 
-joLink is an open-source Java Runtime Interface for Coding Agents. It is not
-a repository-specific tool and must not be optimized only for one company's
-project.
+## 第一原则：事上磨练，用真实运行消除不确定性
 
-## First principle: eliminate uncertainty with real execution evidence
 
-joLink exists to replace uncertain reasoning about program behavior with
-observed runtime facts. joLink development must follow the same rule.
+- 写代码可以稍微激进一点，通过“事上磨练”去完善，而不是提前预判各种事情。
+  不要想一次就把代码写得完美。
+- 优先做直接、简单、能实际使用的流程，再用真实项目暴露和修复问题。
+- 已经成功建立并持久化的模型和编译状态要直接复用。
+  不要为了反复证明同一件事而增加全量扫描、重复哈希、复制和检查。
+- 不自行添加复杂契约、防御状态机、自动回退或发布事务。
+  有具体困难先向用户讲清楚，再决定，不擅自扩方案。
+- 编译失败、JVM拒绝或进程退出就如实报告实际结果；不要靠推断宣布成功。
+- 只操作用户授权的项目和进程。测试需要临时改源码时，先说明，并恢复测试改动。
 
-- Prefer a real repository, real JDK, real Maven/Gradle invocation, real MCP
-  stdio subprocess, real JVM, real filesystem, and real lifecycle over mocks or
-  static reasoning whenever the behavior crosses those boundaries.
-- Unit tests and mocks are useful for local invariants, race control, and
-  failure injection, but they are not acceptance evidence for integration,
-  distribution, configuration resolution, process cleanup, encoding,
-  cross-platform behavior, or product compatibility.
-- Before claiming a capability works, exercise the user-visible path from its
-  real input through its real external systems to its observable result. For
-  build/test/reload/debug features this normally means a real project and a
-  real Java process, not only a fixture that mirrors the expected shape.
-- When the required real environment is unavailable, report an evidence gap.
-  Do not replace missing execution evidence with a confident inference, a
-  green mock, or a newly documented boundary.
-- Every conclusion must distinguish observed facts, inferences, and unknowns.
-  A safe rejection proves safety; it does not prove compatibility or
-  usability.
-- Benchmarks and dogfood are compatibility discovery tools. Investigate why a
-  valid mainstream project did not reach the Fast Path instead of treating a
-  structured `UNSUPPORTED` result as success.
+## 真实项目优先
 
-The preferred evidence order is:
+- 编译、启动、reload、调试和Fast Test的验收优先走真实MCP、真实JVM和真实项目。
+- 单元测试用于局部逻辑，不代替用户可见流程的实际运行。
+- joLink面向普通开源Java项目，不做只适配某家公司的工具。
+- 常见项目不能使用就是产品缺口；“安全拒绝”不等于完成支持。
+- 不按仓库名、公司名或某一份POM写特殊分支。
 
-```text
-real user/project reproduction
-→ real cross-boundary E2E
-→ contract/invariant tests
-→ focused unit tests and mocks
-→ static reasoning only as supporting evidence
-```
+## 保持代码职责清楚
 
-## Improve the product through real use, not speculative perfection
+- 不再往 `jdwp_adapter.py` 增加构建、JDT初始化、缓存或reload编排逻辑。
+- 这些工作归入对应的launch/compiler/service模块；adapter只负责委托和JDWP操作。
+- 移动逻辑后删除旧实现，不保留两套路径，也不为拆分创造空抽象。
 
-- Prefer the smallest coherent implementation that can be exercised in a real
-  project. Harden it from observed failures instead of trying to predict every
-  possible edge case before users can run it.
-- It is acceptable to move a little aggressively: joLink compiles, launches,
-  tests, reloads, and observes development code. Reversible and clearly
-  reported failures are often more useful than permanent complexity built for
-  hypothetical scenarios.
-- Do not build elaborate state machines, abstractions, or fallback layers only
-  to make the first version look complete. Every durable mechanism should pay
-  for itself in a real workflow.
-- This does not relax the non-negotiable boundaries: never report false
-  success, leak secrets, leave a JVM/thread/suspension behind, or corrupt user
-  source and formal build outputs.
+## 提交前先说明
 
-## Review before committing
-
-- Do not automatically commit or push immediately after implementation.
-  Explain the behavior changes, affected files, real validation, and remaining
-  issues so the user can review first.
-- Commit and push only when the user explicitly requests it for the current
-  work. An explicit request to validate and then push is sufficient.
-
-## Generality is a product requirement
-
-- The expected user is a stranger with an ordinary, previously unseen Java
-  repository. They should not need a joLink maintainer to diagnose setup, edit
-  their POM/Gradle build, or add repository-specific workarounds.
-- For the defined mainstream Java scope, persistent JDT compilation, Fast
-  Test, reload, and Runtime observation are core product promises, not optional
-  demonstrations.
-- A structured fail-closed result prevents false confidence, but it is only
-  the minimum safety requirement. `UNSUPPORTED` is not evidence of product
-  completion.
-- Do not describe a run as broadly successful when most real projects did not
-  enter the Fast Path, even if every rejection was safe and well structured.
-
-## How to handle a newly discovered boundary
-
-For every new `UNSUPPORTED`, `UNVERIFIED`, or fallback result:
-
-1. Determine whether the configuration is common inside the documented
-   mainstream Java scope.
-2. If it is common, treat it as a product compatibility gap and continue the
-   investigation; do not close the work merely by documenting the rejection.
-3. Model the underlying Maven, Gradle, javac, JDT, test-runner, or Runtime
-   semantics through a reusable abstraction. Never branch on a repository
-   name, company, or one exact POM shape.
-4. Validate the general solution against company dogfood, public repositories,
-   and benchmark repositories.
-5. Keep a formal-build fallback only as a safety mechanism for clearly
-   out-of-scope/custom build systems or disaster recovery. Fallback does not
-   count as Fast Path support.
-
-## Coverage and reporting
-
-Reports must distinguish:
-
-- **Safety:** no false success, corrupt generation, leaked process, or stale
-  observation.
-- **Usability:** an unfamiliar supported project can use joLink without manual
-  project edits or maintainer assistance.
-- **Fast Path coverage:** the project actually reaches persistent JDT/Fast
-  Test/reload rather than a formal Maven/Gradle fallback.
-
-The product target is at least 98% Fast Path coverage inside a frozen,
-documented mainstream Java scope. The denominator and exclusions must be
-explicit and evidence based. Do not inflate coverage with environment
-failures, invalid benchmark instances, or formal-build fallback.
-
-See `docs/product-generality-principles.zh-CN.md` for the durable product
-decision and detailed acceptance criteria.
+- 默认先说明改了什么、实际测了什么、还有什么问题，交给用户review。
+- 用户明确要求本轮验完提交或推送时才执行；不要沿用以前某一轮的提交授权。

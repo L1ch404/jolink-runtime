@@ -19,6 +19,7 @@ from jolink_runtime.launch.jdt_compile_session import (
     PersistentJdtCompileSession,
     WorkerJavaRuntime,
     lombok_worker_jvm_arguments,
+    select_target_system_home,
 )
 from jolink_runtime.launch.jdt_workspace_store import JdtWorkspaceStore
 
@@ -43,7 +44,7 @@ class _FakeWorker:
         self.command_count += 1
         if self.command_error is not None:
             raise self.command_error
-        assert command in {"BUILD\tFULL", "BUILD\tINCREMENTAL"}
+        assert command.split("\t")[1] in {"FULL", "INCREMENTAL"}
         if self.on_build is not None:
             self.on_build()
         source = self.session.private_source / "example/App.java"
@@ -53,6 +54,7 @@ class _FakeWorker:
         if not self.fail_compile and not self.omit_compilation:
             output.write_bytes(hashlib.sha256(source.read_bytes()).digest())
         resource = self.session.output_directory / "META-INF/generated.json"
+        old_resource = resource.read_bytes() if resource.is_file() else None
         if self.delete_resource:
             for existing in self.session.output_directory.rglob("*"):
                 if existing.is_file() and existing.suffix != ".class":
@@ -76,6 +78,12 @@ class _FakeWorker:
                 ["example/App.class"] if before != after else []
             ),
             "deleted_classes": [],
+            "changed_resources": (
+                ["META-INF/generated.json"]
+                if self.resource_value is not None and self.resource_value != old_resource
+                else []
+            ),
+            "deleted_resources": [],
             "error_count": 1 if self.fail_compile else 0,
             "warning_count": 0,
             "diagnostic_details": list(self.diagnostics),
@@ -179,6 +187,23 @@ def test_lombok_add_opens_depends_on_worker_java_major() -> None:
         "--add-opens=java.base/java.lang=ALL-UNNAMED",
     )
     assert lombok_worker_jvm_arguments(17, lombok_enabled=False) == ()
+
+
+def test_target_java8_platform_is_selected_separately_from_runtime_jdk(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = tmp_path / "runtime-11"
+    runtime.joinpath("lib").mkdir(parents=True)
+    runtime.joinpath("lib/jrt-fs.jar").write_bytes(b"jrt")
+    runtime.joinpath("release").write_text('JAVA_VERSION="11"\n')
+    target = tmp_path / ".jdks/target-8"
+    target.joinpath("jre/lib").mkdir(parents=True)
+    target.joinpath("jre/lib/rt.jar").write_bytes(b"rt")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+
+    assert select_target_system_home((runtime,), 8) == target
 
 
 def _session(tmp_path: Path, monkeypatch) -> tuple[
@@ -334,7 +359,7 @@ def test_local_workspace_reopens_then_compiles_detected_source_changes(
     assert state["clean_shutdown"] is True
 
 
-def test_unclean_local_workspace_forces_a_new_full_lineage(
+def test_saved_workspace_is_reused_without_unclean_shutdown_audit(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -356,8 +381,8 @@ def test_unclean_local_workspace_forces_a_new_full_lineage(
         identity=identity,
     )
 
-    assert second.reusable is False
-    assert second.root.exists() is False
+    assert second.reusable is True
+    assert second.root.exists() is True
 
 
 def test_persistent_jdt_session_supports_test_only_source_roots(
@@ -537,6 +562,56 @@ def test_publication_delta_accumulates_until_runtime_apply_is_confirmed(
     assert third.runtime_changed_classes == ()
 
 
+def test_accept_and_apply_baselines_do_not_hash_output_files(tmp_path, monkeypatch):
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, _source, _worker = _session(tmp_path, monkeypatch)
+    session.start()
+    monkeypatch.setattr(
+        "jolink_runtime.launch.jdt_compile_session._sha256_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("unexpected file hash")),
+    )
+    session.accept_baseline()
+    session.mark_published()
+    session.reset_publication_baseline(tmp_path / "unused-output")
+
+
+def test_unchanged_source_does_not_call_worker_build(tmp_path, monkeypatch):
+    (tmp_path / "dependency.jar").write_bytes(b"dependency")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    worker.command = lambda _command: (_ for _ in ()).throw(
+        AssertionError("unexpected BUILD for unchanged source")
+    )
+    result = session.compile((source,))
+    assert result.compile_ok
+    assert result.compiled_source_count == 0
+    assert result.runtime_changed_classes == ()
+
+
+def test_saved_source_index_remembers_actual_compile_failure(tmp_path, monkeypatch):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    source.write_text("package example; this does not compile", encoding="utf-8")
+    worker.fail_compile = True
+    worker.diagnostics = [{"message": "Syntax error", "severity_name": "error"}]
+    assert session.compile((source,)).compile_ok is False
+    session.save_source_index()
+
+    # Simulate loading the persisted facts in a new compiler instance.
+    session._working_compile_state = "unknown"
+    session._last_compile_error_count = 0
+    session._last_compile_diagnostics = ()
+    session._restore_persisted_source_map()
+    assert session.working_compile_state == "failed"
+    assert session.last_compile_error_count == 1
+    assert session.last_compile_diagnostics[0]["message"] == "Syntax error"
+    before = worker.command_count
+    assert session.compile((source,)).compile_ok is False
+    assert worker.command_count == before
+
+
 def test_compile_failure_keeps_mutable_output_non_publishable(
     tmp_path: Path,
     monkeypatch,
@@ -582,7 +657,7 @@ def test_compile_failure_keeps_mutable_output_non_publishable(
     assert recovered.runtime_changed_classes == ("example/App.class",)
 
 
-def test_source_drift_is_reported_after_incremental_build(
+def test_source_edit_during_compile_is_detected_on_next_source_scan(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -602,55 +677,12 @@ def test_source_drift_is_reported_after_incremental_build(
     result = session.compile((source,))
 
     assert result.compile_ok is True
-    assert result.source_changes_pending is True
+    assert result.source_changes_pending is False
+    assert session.workspace_source_changes() == (source.resolve(),)
 
 
-def test_changed_source_without_worker_compilation_poisons_session(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    (tmp_path / "dependency.jar").write_bytes(b"dependency")
-    session, source, worker = _session(tmp_path, monkeypatch)
-    session.start()
-    session.accept_baseline()
-    source.write_text(
-        "package example; class App { int value() { return 2; } }",
-        encoding="utf-8",
-    )
-    worker.omit_compilation = True
-
-    with pytest.raises(JdtCompileError) as captured:
-        session.compile((source,))
-
-    assert captured.value.error_code == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
-    assert session.ready is False
-    assert worker.closed is True
 
 
-def test_changed_source_must_be_the_source_observed_by_worker(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    (tmp_path / "dependency.jar").write_bytes(b"dependency")
-    session, source, worker = _session(tmp_path, monkeypatch)
-    session.start()
-    session.accept_baseline()
-    source.write_text(
-        "package example; class App { int value() { return 2; } }",
-        encoding="utf-8",
-    )
-    worker.compiled_units_override = ("src/example/Other.java",)
-
-    with pytest.raises(JdtCompileError) as captured:
-        session.compile((source,))
-
-    assert captured.value.error_code == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
-    assert captured.value.context == {
-        "missing_source_count": 1,
-        "missing_sources": ["src/example/App.java"],
-    }
-    assert session.ready is False
-    assert worker.closed is True
 
 
 def test_workspace_source_changes_tracks_unpublished_edits(
@@ -738,43 +770,6 @@ def test_source_addition_and_deletion_update_private_mirror_and_outputs(
     assert session.workspace_source_changes() == ()
 
 
-def test_unobserved_source_deletion_poisons_compile_session(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    (tmp_path / "dependency.jar").write_bytes(b"dependency")
-    session, source, worker = _session(tmp_path, monkeypatch)
-    deleted = source.with_name("Deleted.java")
-    deleted.write_text(
-        "package example; class Deleted {}",
-        encoding="utf-8",
-    )
-    session.start()
-    session.accept_baseline()
-    deleted.unlink()
-    worker.command = lambda _command: {
-        "operation_ok": True,
-        "compile_ok": True,
-        "actual_build_kind": "INCREMENTAL",
-        "compiled_source_units": [],
-        "deleted_source_units": [],
-        "changed_classes": [],
-        "deleted_classes": ["example/Deleted.class"],
-        "error_count": 0,
-        "warning_count": 0,
-        "diagnostic_details": [],
-        "diagnostics_truncated": False,
-    }
-
-    with pytest.raises(JdtCompileError) as captured:
-        session.compile((deleted,))
-
-    assert captured.value.error_code == "JDT_SOURCE_DELETION_NOT_OBSERVED"
-    assert captured.value.context["missing_sources"] == [
-        "src/example/Deleted.java"
-    ]
-    assert session.ready is False
-    assert worker.closed is True
 
 
 def test_interrupt_poison_closes_worker_without_waiting_for_operation_lock(
@@ -826,6 +821,7 @@ def test_timeout_poisons_session_and_rejects_later_build(
     worker.command_error = JdtCompileError(
         "JDT_WORKER_TIMEOUT", "late result"
     )
+    source.write_text("package example; class App { int value() { return 2; } }")
 
     with pytest.raises(JdtCompileError) as timed_out:
         session.compile((source,))
@@ -974,6 +970,7 @@ def test_close_force_cancels_inflight_compile(
         raise JdtCompileError("JDT_WORKER_EXITED", "closed")
 
     worker.command = blocked
+    source.write_text("package example; class App { int value() { return 2; } }")
     worker.force_close = lambda: (released.set() or worker.close())
     errors: list[str] = []
 

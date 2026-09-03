@@ -101,8 +101,8 @@ Project launch imports a supported IntelliJ IDEA Application or Spring Boot
 configuration. Maven or Gradle exports the Build World but does not compile
 application classes. JDT is initialized before the JVM: a cold workspace uses
 FULL build, while a reusable workspace calls `workspace_source_changes()` and
-uses INCREMENTAL only when sources changed. The resulting JDT output plus
-current resources is sealed and used to start the managed JVM.
+uses INCREMENTAL only when sources changed. The managed JVM directly uses the
+persistent JDT class output; resource roots remain direct classpath entries.
 `project_path` is mutually exclusive with direct JVM launch arguments.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
@@ -116,30 +116,28 @@ changes, HotSwap rejection, an unsupported JVM, or `hotswap=false` return
 `RELOAD_REQUIRES_RELAUNCH` and leave the known current Runtime unchanged. The
 caller must use `stop` followed by `launch` to apply these changes before JVM
 startup.
-Successful HotSwap state is runtime-only and is lost by `restart`. Success is
-runtime evidence, not business-correctness proof; a fresh request is still
-required.
+Successful HotSwap updates the persistent JDT output and the live JVM.
+`restart` loads that current JDT output. Success remains runtime evidence, not
+business-correctness proof; a fresh request is still required.
 
 The CompileSession freezes Probe-derived Java/resource roots, compile
 dependencies, target platform, source encoding, Lombok/JSR-269 processor
 inputs, and the configuration fingerprint. Probe facts are persisted locally;
-unchanged build configuration skips Maven/Gradle entirely on later launches.
-Every reload rechecks BuildWorld, Runtime,
-Generation, process identity, and selected source bytes before applying state.
-Changing those inputs requires a fresh launch rather than silently compiling
-against a different world.
+later launches reuse these facts directly without freshness audits. To change
+build configuration/dependencies, clear the project's cached model/workspace.
+Reload synchronizes explicit source files and consumes Eclipse's resource
+delta without full output hashes or repeated source/configuration checks.
 
 The IDEA Make/Build flag is imported as intent metadata but does not run the
 build-system compiler. JDT bootstrap completes before JVM startup.
 
-Static initialization, class schemas, new/deleted classes, and resources are
-not sent through JDWP HotSwap. They require `stop` followed by a new JDT-first
-project launch.
+Changed class bytes are sent to JDWP without schema/metadata preflight. JVM
+rejection and deleted/unloaded classes require a relaunch. Accepted HotSwap
+does not rerun static initialization or imply refreshed framework state.
 
-For Gradle, JDT classes and copied source resources are sealed into one private,
-collision-checked Generation root. Runtime scope never reads the test world.
-A change under `src/main/resources` invalidates the current Build World and
-requires a new launch; it is not accepted as a Java-only `reload`.
+Startup does not copy class output. The JVM reads the current persistent JDT
+output and resource roots directly on its classpath. Runtime scope never reads
+the test world.
 
 After a class is redefined, every logical breakpoint belonging to that class
 is retained for inspection but marked stale. joLink does not rebind the old
@@ -159,7 +157,8 @@ definition blocks breakpoint arming; the error returns all
   rechecks the same port without reading or interpreting application logs.
 - `restart` reuses the prior launched process's readiness configuration when
   the caller does not provide a replacement. It rejects `project_path` and
-  restarts only the current sealed Generation without invoking Maven.
+  starts the current output in the persistent JDT workspace without
+  invoking Maven or Gradle.
 
 ## JDT Candidate distribution
 

@@ -100,7 +100,7 @@ failures or safe source warnings; joLink does not guess their meaning.
 ## Public action semantics
 
 Project launch extends `run`, `status`, `stop`, `restart`, and `logs`, and
-provides one runtime-only `update` action. It does not add another MCP Tool.
+provides one JDT-workspace-backed `update` action. It does not add another MCP Tool.
 
 ### `run`
 
@@ -317,9 +317,9 @@ path is unavailable. Successful results include:
   "status": "updated",
   "update_strategy": "fast_compile_hotswap",
   "selection_coverage": "caller_provided",
-  "persistence": "runtime_only",
+  "persistence": "jdt_workspace",
   "runtime_overlay_active": true,
-  "restart_will_discard_overlay": true,
+  "restart_will_discard_overlay": false,
   "verification_state": "not_verified",
   "stale_breakpoint_ids": ["bp_001"],
   "newly_stale_breakpoint_ids": ["bp_001"],

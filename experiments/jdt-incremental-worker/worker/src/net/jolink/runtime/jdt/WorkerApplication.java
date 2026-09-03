@@ -13,13 +13,13 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.stream.Stream;
 
 import org.eclipse.core.resources.ICommand;
@@ -31,6 +31,9 @@ import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IProjectDescription;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IResourceChangeEvent;
+import org.eclipse.core.resources.IResourceChangeListener;
+import org.eclipse.core.resources.IResourceDelta;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.IWorkspaceDescription;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -58,11 +61,8 @@ import org.eclipse.jdt.core.JavaCore;
 public final class WorkerApplication implements IApplication {
     private static final String PROJECT_NAME = "plain-fixture";
     private static final int MAX_ERROR_DIAGNOSTICS = 128;
-    private static final int MAX_OTHER_DIAGNOSTICS = 32;
     private static final String DIAGNOSTIC_SELECTION_POLICY =
-            "errors_first_then_warnings_then_info";
-    private static final char[] HEX =
-            "0123456789abcdef".toCharArray();
+            "errors_only";
 
     private final NullProgressMonitor monitor = new NullProgressMonitor();
     private PrintWriter protocol;
@@ -71,6 +71,7 @@ public final class WorkerApplication implements IApplication {
     private IJavaProject javaProject;
     private boolean instrumentationEnabled;
     private boolean projectReopened;
+    private boolean configurationReused;
     private String requestedSourceEncoding;
     private String canonicalSourceEncoding;
     private String effectiveSourceEncoding;
@@ -95,6 +96,52 @@ public final class WorkerApplication implements IApplication {
     private Set<String> previousSourceUnits = new LinkedHashSet<>();
     private final Set<String> pendingDeletedSourceUnits =
             new LinkedHashSet<>();
+
+    private static final class OutputChanges implements IResourceChangeListener {
+        final Map<String, Boolean> files = new LinkedHashMap<>();
+        private final IProject project;
+
+        OutputChanges(IProject project) {
+            this.project = project;
+        }
+
+        @Override
+        public void resourceChanged(IResourceChangeEvent event) {
+            IResourceDelta root = event.getDelta();
+            if (root == null) return;
+            IResourceDelta delta = root.findMember(
+                    project.getFullPath().append("bin"));
+            if (delta == null) return;
+            try {
+                delta.accept(item -> {
+                    IResource resource = item.getResource();
+                    if (resource.getType() == IResource.FILE
+                            && (item.getKind() != IResourceDelta.CHANGED
+                                || (item.getFlags() & (IResourceDelta.CONTENT
+                                    | IResourceDelta.REPLACED)) != 0)) {
+                        String name = resource.getProjectRelativePath()
+                                .removeFirstSegments(1).toString();
+                        files.put(name, item.getKind() == IResourceDelta.REMOVED);
+                    }
+                    return true;
+                });
+            } catch (CoreException exception) {
+                throw new IllegalStateException(exception);
+            }
+        }
+
+        List<String> paths(boolean deleted, boolean classes) {
+            List<String> result = new ArrayList<>();
+            for (Map.Entry<String, Boolean> entry : files.entrySet()) {
+                if (entry.getValue() == deleted
+                        && entry.getKey().endsWith(".class") == classes) {
+                    result.add(entry.getKey());
+                }
+            }
+            Collections.sort(result);
+            return result;
+        }
+    }
 
     private static final class ActiveBuild {
         final String requestId;
@@ -206,7 +253,8 @@ public final class WorkerApplication implements IApplication {
                     aptProcessorsFile == null
                             ? null : Paths.get(aptProcessorsFile),
                     testClasspathFile == null
-                            ? null : Paths.get(testClasspathFile));
+                            ? null : Paths.get(testClasspathFile),
+                    "true".equals(arguments.get("reuse-configuration")));
             emitReady();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -255,11 +303,9 @@ public final class WorkerApplication implements IApplication {
             String sourceLevel,
             boolean methodParameters,
             Path aptProcessorsFile,
-            Path testClasspathFile) throws Exception {
+            Path testClasspathFile,
+            boolean reuseConfiguration) throws Exception {
         workspace = ResourcesPlugin.getWorkspace();
-        IWorkspaceDescription workspaceDescription = workspace.getDescription();
-        workspaceDescription.setAutoBuilding(false);
-        workspace.setDescription(workspaceDescription);
 
         project = workspace.getRoot().getProject(PROJECT_NAME);
         projectReopened = project.exists();
@@ -269,6 +315,15 @@ public final class WorkerApplication implements IApplication {
         if (!project.isOpen()) {
             project.open(monitor);
         }
+
+        javaProject = JavaCore.create(project);
+        if (reuseConfiguration && projectReopened) {
+            configurationReused = true;
+            return;
+        }
+        IWorkspaceDescription workspaceDescription = workspace.getDescription();
+        workspaceDescription.setAutoBuilding(false);
+        workspace.setDescription(workspaceDescription);
 
         IProjectDescription projectDescription = project.getDescription();
         boolean descriptionChanged = false;
@@ -308,7 +363,6 @@ public final class WorkerApplication implements IApplication {
                     "Eclipse Resources did not apply the requested source encoding.");
         }
         IFolder output = ensureFolder(project.getFolder("bin"));
-        javaProject = JavaCore.create(project);
         if (!output.getFullPath().equals(javaProject.getOutputLocation())) {
             javaProject.setOutputLocation(output.getFullPath(), monitor);
         }
@@ -325,9 +379,6 @@ public final class WorkerApplication implements IApplication {
             String value = line.trim();
             if (!value.isEmpty()) {
                 Path entry = Paths.get(value);
-                if (!Files.exists(entry)) {
-                    throw new IOException("System library entry is unavailable.");
-                }
                 classpath.add(JavaCore.newLibraryEntry(
                         org.eclipse.core.runtime.Path.fromOSString(
                                 entry.toAbsolutePath().normalize().toString()),
@@ -368,10 +419,6 @@ public final class WorkerApplication implements IApplication {
                     continue;
                 }
                 Path entry = Paths.get(value);
-                if (!Files.exists(entry)) {
-                    throw new IOException(
-                            "Test classpath entry is unavailable.");
-                }
                 classpath.add(JavaCore.newLibraryEntry(
                         org.eclipse.core.runtime.Path.fromOSString(
                                 entry.toAbsolutePath().normalize().toString()),
@@ -392,8 +439,17 @@ public final class WorkerApplication implements IApplication {
             javaProject.setRawClasspath(desiredClasspath, monitor);
         }
 
-        Map<String, String> options = new LinkedHashMap<>(
-                javaProject.getOptions(false));
+        Map<String, String> options = new LinkedHashMap<>(JavaCore.getOptions());
+        options.putAll(javaProject.getOptions(false));
+        // This worker compiles code; IDE-style warning/info diagnostics are
+        // disabled for both full and incremental builds in its private project.
+        for (Map.Entry<String, String> option : options.entrySet()) {
+            if (option.getKey().startsWith(JavaCore.PLUGIN_ID + ".compiler.problem.")
+                    && (JavaCore.WARNING.equals(option.getValue())
+                        || JavaCore.INFO.equals(option.getValue()))) {
+                option.setValue(JavaCore.IGNORE);
+            }
+        }
         String compliance = "11".equals(sourceLevel)
                 ? JavaCore.VERSION_11 : JavaCore.VERSION_1_8;
         JavaCore.setComplianceOptions(compliance, options);
@@ -410,8 +466,6 @@ public final class WorkerApplication implements IApplication {
         if (aptProcessorsFile != null) {
             configureApt(aptProcessorsFile);
         }
-        project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
-        previousSourceUnits = sourceUnits();
         pendingDeletedSourceUnits.clear();
     }
 
@@ -628,7 +682,16 @@ public final class WorkerApplication implements IApplication {
             return false;
         }
         if (line.startsWith("BUILD\t")) {
-            String kind = line.substring("BUILD\t".length());
+            String[] parts = line.split("\t");
+            String kind = parts[1];
+            List<String> touchedSources = null;
+            if (parts.length > 2) {
+                touchedSources = new ArrayList<>();
+                for (int index = 2; index < parts.length; index++) {
+                    touchedSources.add(new String(Base64.getDecoder().decode(
+                            parts[index]), StandardCharsets.UTF_8));
+                }
+            }
             if (kind.equals("FULL")) {
                 build(IncrementalProjectBuilder.FULL_BUILD, kind,
                         new NullProgressMonitor(), null);
@@ -636,7 +699,7 @@ public final class WorkerApplication implements IApplication {
             }
             if (kind.equals("INCREMENTAL")) {
                 build(IncrementalProjectBuilder.INCREMENTAL_BUILD, kind,
-                        new NullProgressMonitor(), null);
+                        new NullProgressMonitor(), null, touchedSources);
                 return true;
             }
             if (kind.equals("CLEAN")) {
@@ -821,69 +884,76 @@ public final class WorkerApplication implements IApplication {
             String requestedKind,
             NullProgressMonitor buildMonitor,
             ActiveBuild active) throws Exception {
-        Map<String, String> before = outputHashes();
+        build(buildKind, requestedKind, buildMonitor, active, null);
+    }
+
+    private void build(
+            int buildKind,
+            String requestedKind,
+            NullProgressMonitor buildMonitor,
+            ActiveBuild active,
+            List<String> touchedSources) throws Exception {
+        OutputChanges outputs = new OutputChanges(project);
         BuildObservation.begin();
         WorkerMetrics.resetPeaks();
         long started = System.nanoTime();
-        project.refreshLocal(IResource.DEPTH_INFINITE, buildMonitor);
-        Set<String> currentSourceUnits = sourceUnits();
-        for (String previous : previousSourceUnits) {
-            if (!currentSourceUnits.contains(previous)) {
-                pendingDeletedSourceUnits.add(previous);
+        Set<String> currentSourceUnits = new LinkedHashSet<>(previousSourceUnits);
+        workspace.addResourceChangeListener(outputs,
+                IResourceChangeEvent.POST_BUILD);
+        try {
+            if (touchedSources == null) {
+                project.refreshLocal(IResource.DEPTH_INFINITE, buildMonitor);
+                currentSourceUnits = sourceUnits();
+                for (String previous : previousSourceUnits) {
+                    if (!currentSourceUnits.contains(previous)) {
+                        pendingDeletedSourceUnits.add(previous);
+                    }
+                }
+                pendingDeletedSourceUnits.removeAll(currentSourceUnits);
+            } else {
+                Set<IContainer> parents = new LinkedHashSet<>();
+                for (String name : touchedSources) {
+                    IFile file = project.getFile(name);
+                    parents.add(file.getParent());
+                    if (Files.isRegularFile(file.getLocation().toFile().toPath())) {
+                        currentSourceUnits.add(name);
+                        pendingDeletedSourceUnits.remove(name);
+                    } else {
+                        currentSourceUnits.remove(name);
+                        pendingDeletedSourceUnits.add(name);
+                    }
+                }
+                for (IContainer parent : parents) {
+                    parent.refreshLocal(IResource.DEPTH_ONE, buildMonitor);
+                }
+                for (String name : touchedSources) {
+                    IFile file = project.getFile(name);
+                    if (file.exists()) file.touch(buildMonitor);
+                }
             }
-        }
-        pendingDeletedSourceUnits.removeAll(currentSourceUnits);
-        project.build(buildKind, buildMonitor);
-        if (buildMonitor.isCanceled()) {
-            throw new OperationCanceledException();
+            project.build(buildKind, buildMonitor);
+            if (buildMonitor.isCanceled()) throw new OperationCanceledException();
+        } finally {
+            workspace.removeResourceChangeListener(outputs);
         }
         long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
-        Map<String, String> after = outputHashes();
         BuildObservation.Snapshot observation = BuildObservation.snapshot();
+        List<String> changed = outputs.paths(false, true);
+        List<String> deleted = outputs.paths(true, true);
 
-        List<String> changed = new ArrayList<>();
-        List<String> deleted = new ArrayList<>();
-        for (Map.Entry<String, String> entry : after.entrySet()) {
-            if (!entry.getValue().equals(before.get(entry.getKey()))) {
-                changed.add(entry.getKey());
-            }
-        }
-        for (String relative : before.keySet()) {
-            if (!after.containsKey(relative)) {
-                deleted.add(relative);
-            }
-        }
-        Collections.sort(changed);
-        Collections.sort(deleted);
-
+        long diagnosticsStarted = System.nanoTime();
         IMarker[] markers = project.findMarkers(
                 IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
         List<ProblemDiagnostic> errorDiagnostics = new ArrayList<>();
-        List<ProblemDiagnostic> warningDiagnostics = new ArrayList<>();
-        List<ProblemDiagnostic> infoDiagnostics = new ArrayList<>();
         for (IMarker marker : markers) {
-            ProblemDiagnostic diagnostic = new ProblemDiagnostic(marker);
-            if (diagnostic.severity == IMarker.SEVERITY_ERROR) {
-                errorDiagnostics.add(diagnostic);
-            } else if (diagnostic.severity == IMarker.SEVERITY_WARNING) {
-                warningDiagnostics.add(diagnostic);
-            } else {
-                infoDiagnostics.add(diagnostic);
+            if (marker.getAttribute(IMarker.SEVERITY, -1) == IMarker.SEVERITY_ERROR) {
+                errorDiagnostics.add(new ProblemDiagnostic(marker));
             }
         }
         Collections.sort(errorDiagnostics);
-        Collections.sort(warningDiagnostics);
-        Collections.sort(infoDiagnostics);
 
-        List<ProblemDiagnostic> selectedDiagnostics = new ArrayList<>();
-        selectedDiagnostics.addAll(errorDiagnostics.subList(
-                0, Math.min(errorDiagnostics.size(), MAX_ERROR_DIAGNOSTICS)));
-        int remainingOther = MAX_OTHER_DIAGNOSTICS;
-        int returnedWarningCount = Math.min(warningDiagnostics.size(), remainingOther);
-        selectedDiagnostics.addAll(warningDiagnostics.subList(0, returnedWarningCount));
-        remainingOther -= returnedWarningCount;
-        int returnedInfoCount = Math.min(infoDiagnostics.size(), remainingOther);
-        selectedDiagnostics.addAll(infoDiagnostics.subList(0, returnedInfoCount));
+        List<ProblemDiagnostic> selectedDiagnostics = errorDiagnostics.subList(
+                0, Math.min(errorDiagnostics.size(), MAX_ERROR_DIAGNOSTICS));
 
         List<String> diagnostics = new ArrayList<>();
         List<String> diagnosticDetails = new ArrayList<>();
@@ -892,13 +962,10 @@ public final class WorkerApplication implements IApplication {
             diagnosticDetails.add(diagnostic.detailJson());
         }
         int errorCount = errorDiagnostics.size();
-        int warningCount = warningDiagnostics.size();
-        int infoCount = infoDiagnostics.size();
         int testErrorCount = diagnosticCount(errorDiagnostics, true);
         int mainErrorCount = errorCount - testErrorCount;
-        int testWarningCount = diagnosticCount(warningDiagnostics, true);
-        int mainWarningCount = warningCount - testWarningCount;
         int returnedErrorCount = Math.min(errorCount, MAX_ERROR_DIAGNOSTICS);
+        double diagnosticsMillis = (System.nanoTime() - diagnosticsStarted) / 1_000_000.0;
 
         String actualBuildKind = observation.actualBuildKind();
         boolean compileOperation = !"CLEAN".equals(requestedKind);
@@ -949,23 +1016,20 @@ public final class WorkerApplication implements IApplication {
                 .append(",\"deleted_source_units\":")
                 .append(jsonArray(deletedSourceUnits))
                 .append(",\"elapsed_ms\":").append(elapsedMillis)
+                .append(",\"diagnostics_ms\":").append(diagnosticsMillis)
                 .append(",\"error_count\":").append(errorCount)
-                .append(",\"warning_count\":").append(warningCount)
+                .append(",\"warning_count\":0,\"warning_info_collected\":false")
                 .append(",\"main_error_count\":").append(mainErrorCount)
                 .append(",\"test_error_count\":").append(testErrorCount)
-                .append(",\"main_warning_count\":").append(mainWarningCount)
-                .append(",\"test_warning_count\":").append(testWarningCount)
+                .append(",\"main_warning_count\":0,\"test_warning_count\":0")
                 .append(",\"main_compile_ok\":")
                 .append(mainErrorCount == 0)
                 .append(",\"test_compile_ok\":")
                 .append(testErrorCount == 0)
-                .append(",\"info_count\":").append(infoCount)
+                .append(",\"info_count\":0")
                 .append(",\"returned_error_count\":")
                 .append(returnedErrorCount)
-                .append(",\"returned_warning_count\":")
-                .append(returnedWarningCount)
-                .append(",\"returned_info_count\":")
-                .append(returnedInfoCount)
+                .append(",\"returned_warning_count\":0,\"returned_info_count\":0")
                 .append(",\"diagnostic_selection_policy\":")
                 .append(json(DIAGNOSTIC_SELECTION_POLICY))
                 .append(",\"compiler_output_eligible\":")
@@ -973,7 +1037,12 @@ public final class WorkerApplication implements IApplication {
                 // The Worker can only report compiler eligibility. Oracle
                 // validation and publication commit belong to the Runner.
                 .append(",\"generation_publishable\":false")
-                .append(",\"class_count\":").append(after.size())
+                .append(",\"class_count\":null")
+                .append(",\"output_delta_basis\":\"eclipse_resource_delta\"")
+                .append(",\"changed_resources\":")
+                .append(jsonArray(outputs.paths(false, false)))
+                .append(",\"deleted_resources\":")
+                .append(jsonArray(outputs.paths(true, false)))
                 .append(",\"changed_classes\":").append(jsonArray(changed))
                 .append(",\"publishable_changed_classes\":[]")
                 .append(",\"deleted_classes\":").append(jsonArray(deleted))
@@ -981,7 +1050,7 @@ public final class WorkerApplication implements IApplication {
                 .append(",\"diagnostic_details\":")
                 .append(jsonObjectsArray(diagnosticDetails))
                 .append(",\"diagnostics_truncated\":")
-                .append(selectedDiagnostics.size() < markers.length)
+                .append(selectedDiagnostics.size() < errorCount)
                 .append(",\"metrics\":")
                 .append(WorkerMetrics.snapshotJson(false));
         if (active != null) {
@@ -1076,48 +1145,6 @@ public final class WorkerApplication implements IApplication {
                 + ",\"protocol_sequence\":" + (++protocolSequence);
     }
 
-    private Map<String, String> outputHashes() throws Exception {
-        Map<String, String> hashes = new TreeMap<>();
-        IFolder output = project.getFolder("bin");
-        if (!output.exists()) {
-            return hashes;
-        }
-        output.accept(resource -> {
-            if (resource.getType() == IResource.FILE
-                    && resource.getName().endsWith(".class")) {
-                IFile file = (IFile) resource;
-                IPath location = file.getLocation();
-                if (location != null) {
-                    try {
-                        Path path = Paths.get(location.toOSString());
-                        String relative = location
-                                .makeRelativeTo(output.getLocation())
-                                .toString();
-                        hashes.put(relative, sha256(path));
-                    } catch (Exception exception) {
-                        throw new CoreException(new org.eclipse.core.runtime.Status(
-                                org.eclipse.core.runtime.IStatus.ERROR,
-                                WorkerApplication.class,
-                                "Unable to hash class output.",
-                                exception));
-                    }
-                }
-            }
-            return true;
-        });
-        return hashes;
-    }
-
-    private static String sha256(Path path) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        try (java.io.InputStream stream = Files.newInputStream(path)) {
-            byte[] buffer = new byte[8192];
-            for (int read; (read = stream.read(buffer)) >= 0;) {
-                digest.update(buffer, 0, read);
-            }
-        }
-        return hex(digest.digest());
-    }
 
     private static boolean isBlank(String value) {
         if (value == null || value.isEmpty()) {
@@ -1131,21 +1158,18 @@ public final class WorkerApplication implements IApplication {
         return true;
     }
 
-    private static String hex(byte[] value) {
-        char[] result = new char[value.length * 2];
-        for (int index = 0; index < value.length; index++) {
-            int current = value[index] & 0xff;
-            result[index * 2] = HEX[current >>> 4];
-            result[index * 2 + 1] = HEX[current & 0x0f];
-        }
-        return new String(result);
-    }
-
     private void saveWorkspace() throws CoreException {
         workspace.save(true, monitor);
     }
 
     private void emitReady() {
+        if (configurationReused) {
+            emit("{\"ok\":true,\"status\":\"ready\","
+                    + "\"workspace_project_state\":\"reopened\","
+                    + "\"configuration_reused\":true,"
+                    + "\"diagnostic_selection_policy\":\"errors_only\"}");
+            return;
+        }
         int builderCount = 0;
         try {
             for (ICommand command : project.getDescription().getBuildSpec()) {
@@ -1159,6 +1183,8 @@ public final class WorkerApplication implements IApplication {
         IFolder source = project.getFolder("src");
         java.net.URI sourceLocation = source.getLocationURI();
         emit("{\"ok\":true,\"status\":\"ready\","
+                + "\"configuration_reused\":false,"
+                + "\"diagnostic_selection_policy\":\"errors_only\","
                 + "\"application_id\":\"net.jolink.runtime.jdt.worker\","
                 + "\"java_builder_id\":" + json(JavaCore.BUILDER_ID) + ","
                 + "\"java_builder_count\":" + builderCount + ","

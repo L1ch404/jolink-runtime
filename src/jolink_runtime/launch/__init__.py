@@ -88,6 +88,7 @@ from .jdt_compile_session import (
     PersistentJdtCompileSession,
     WorkerJavaRuntime,
     discover_java8_system_entries,
+    select_target_system_home,
     discover_target_system_entries,
     lombok_worker_jvm_arguments,
 )

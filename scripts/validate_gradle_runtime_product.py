@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -363,18 +364,10 @@ async def _run(
 
                 resource_source = project / "src/main/resources/message.txt"
                 resource_source.write_text("resource-v2\n", encoding="utf-8")
-                stale = await _payload(
-                    session,
-                    "java_application",
-                    {
-                        "action": "reload",
-                        "source_files": [
-                            "src/main/java/example/GradleRuntimeApp.java"
-                        ],
-                    },
-                )
-                if stale.get("error_code") != "JDT_BUILD_WORLD_STALE":
-                    raise RuntimeError(stale)
+                # Source resources are now direct Runtime classpath entries.
+                # Reading this file afresh observes the edit without a Java build.
+                if _message(ready_port) != "after:resource-v2":
+                    raise RuntimeError("Runtime did not read the source resource")
 
                 stopped = await _payload(
                     session, "java_application", {"action": "stop"}
@@ -391,6 +384,11 @@ compileJava.doLast {
 }
 """
                     )
+                # Model inputs are intentionally trusted after first launch.
+                # This is a new Probe validation, so clear this fixture's model.
+                shutil.rmtree(
+                    Path(environment["XDG_CACHE_HOME"]) / "jolink-runtime/project-launch"
+                )
                 rejected = await _payload(
                     session,
                     "java_application",
@@ -421,8 +419,7 @@ compileJava.doLast {
                     "unchanged_startup_no_compile": True,
                     "hotswap_passed": True,
                     "structural_relaunch_required": True,
-                    "resources_sealed": True,
-                    "resource_drift_rejected": True,
+                    "source_resources_read_directly": True,
                     "runtime_probe_ignored_test_world": True,
                     "private_model_deleted": True,
                     "bytecode_transform_rejected": True,
@@ -454,6 +451,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="jolink-gradle-runtime-") as raw:
         root = Path(raw)
         environment["GRADLE_USER_HOME"] = str(root / "gradle-user-home")
+        environment["XDG_CACHE_HOME"] = str(root / "cache")
         os.environ["GRADLE_USER_HOME"] = environment["GRADLE_USER_HOME"]
         project = root / "project"
         project.mkdir()
