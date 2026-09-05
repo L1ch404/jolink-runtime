@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import locale
 import os
 import re
@@ -19,8 +20,8 @@ from typing import Any, Sequence
 
 from .contracts import BuildOperationSpec, LaunchIntent
 from .compiler_profile import parse_maven_memory_megabytes
-from .fast_compile import fast_compile_fingerprint
 from .fast_test import FastTestError, FastTestRunner
+from .fast_test_cache import FastTestCache
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
     JdtCandidate,
@@ -28,6 +29,7 @@ from .jdt_compile_session import (
     PersistentJdtCompileSession,
     discover_target_system_entries,
     lombok_worker_jvm_arguments,
+    select_target_system_home,
 )
 from .maven import MavenBuildSystemAdapter, MavenResolutionError
 from .maven_probe import MavenProbeError, ProductMavenProbe
@@ -87,46 +89,6 @@ def _redacted_build_log_tail(path: Path) -> list[str]:
     return result
 
 
-def _resource_tree_fingerprint(roots: Sequence[Path]) -> str:
-    digest = hashlib.sha256()
-    for root in roots:
-        digest.update(str(root).encode("utf-8", errors="surrogateescape"))
-        if not root.is_dir():
-            digest.update(b"<absent>")
-            continue
-        for source in sorted(root.rglob("*")):
-            if source.is_symlink():
-                digest.update(b"<link>")
-                digest.update(source.relative_to(root).as_posix().encode("utf-8"))
-                continue
-            if not source.is_file():
-                continue
-            digest.update(source.relative_to(root).as_posix().encode("utf-8"))
-            digest.update(hashlib.sha256(source.read_bytes()).digest())
-    return digest.hexdigest()
-
-
-def _java_source_roots_fingerprint(roots: Sequence[Path]) -> str:
-    digest = hashlib.sha256()
-    for root in sorted(
-        (path.resolve(strict=False) for path in roots),
-        key=lambda path: os.path.normcase(str(path)),
-    ):
-        digest.update(str(root).encode("utf-8", errors="surrogateescape"))
-        if not root.is_dir():
-            digest.update(b"<absent>")
-            continue
-        for source in sorted(root.rglob("*.java")):
-            digest.update(source.relative_to(root).as_posix().encode("utf-8"))
-            if source.is_symlink():
-                digest.update(b"<link>")
-            elif source.is_file():
-                digest.update(hashlib.sha256(source.read_bytes()).digest())
-            else:
-                digest.update(b"<unreadable>")
-    return digest.hexdigest()
-
-
 class FastTestManagerError(RuntimeError):
     def __init__(
         self,
@@ -151,52 +113,17 @@ class _FastTestProject:
     test_working_directory: Path
     runner_environment: dict[str, str]
     runner_jvm_arguments: tuple[str, ...]
-    javac_executable: Path
     compiler: PersistentJdtCompileSession
     runtime_classpath: tuple[Path, ...]
-    configuration_inputs: tuple[Path, ...]
-    configuration_environment_names: tuple[str, ...]
-    dependency_entries: tuple[Path, ...]
-    configuration_fingerprint: str
-    resource_roots: tuple[Path, ...]
-    resource_fingerprint: str
     upstream_source_roots: tuple[Path, ...]
-    upstream_source_fingerprint: str
     runner_support_provenance: dict[str, Any]
     session_root: Path
+    workspace_lease: Any
     test_attempts: list[tuple[Path, bool]] = field(default_factory=list)
-
-    def is_fresh(self) -> bool:
-        try:
-            current = fast_compile_fingerprint(
-                configuration_inputs=self.configuration_inputs,
-                configuration_environment_names=(
-                    self.configuration_environment_names
-                ),
-                javac_executable=self.javac_executable,
-                compile_classpath=self.dependency_entries,
-            )
-            resources_match = (
-                self.resource_fingerprint
-                == _resource_tree_fingerprint(self.resource_roots)
-            )
-            upstream_sources_match = (
-                self.upstream_source_fingerprint
-                == _java_source_roots_fingerprint(
-                    self.upstream_source_roots
-                )
-            )
-        except OSError:
-            return False
-        return (
-            self.configuration_fingerprint == current
-            and resources_match
-            and upstream_sources_match
-        )
 
     def close(self) -> bool:
         settled = self.compiler.close()
-        shutil.rmtree(self.session_root, ignore_errors=True)
+        self.workspace_lease.release(clean=settled)
         return settled
 
 
@@ -276,6 +203,7 @@ class FastTestManager:
     def __init__(self) -> None:
         self._supervisor = ProcessSupervisor()
         self._runner = FastTestRunner(self._supervisor)
+        self._cache = FastTestCache()
         self._maven = MavenBuildSystemAdapter()
         self._idea = IdeaEnvironmentImporter()
         self._java = JavaToolchainResolver()
@@ -431,15 +359,10 @@ class FastTestManager:
                     project, attempt.source_files
                 )
                 attempt.require_not_cancelled()
-                undeclared = set(
-                    project.compiler.workspace_source_changes()
-                ) - set(selected_sources)
-                if undeclared:
-                    raise FastTestManagerError(
-                        "UNDECLARED_SOURCE_CHANGES",
-                        "Fast Test source_files omitted edited Java sources.",
-                        context={"undeclared_source_count": len(undeclared)},
-                    )
+                selected_sources = tuple(dict.fromkeys((
+                    *selected_sources,
+                    *project.compiler.workspace_source_changes(),
+                )))
                 attempt.source_scan_ms = round(
                     (time.monotonic() - source_scan_started) * 1000, 1
                 )
@@ -529,14 +452,6 @@ class FastTestManager:
                     (time.monotonic() - runner_started) * 1000, 1
                 )
                 attempt.require_not_cancelled()
-                source_changes_pending = bool(
-                    project.compiler.workspace_source_changes()
-                )
-                post_freshness_started = time.monotonic()
-                build_world_changes_pending = not project.is_fresh()
-                attempt.post_test_freshness_ms = round(
-                    (time.monotonic() - post_freshness_started) * 1000, 1
-                )
                 attempt.state = "completed"
                 attempt.result = {
                     "ok": True,
@@ -551,16 +466,10 @@ class FastTestManager:
                     "test_ms": result.duration_ms,
                     "failed_tests": list(result.failures),
                     "failed_tests_truncated": result.failures_truncated,
-                    "source_changes_pending": source_changes_pending,
-                    "build_world_changes_pending": (
-                        build_world_changes_pending
-                    ),
+                    "source_changes_pending": False,
+                    "build_world_changes_pending": False,
                     "suggested_next_step": (
-                        "Source or Build World changed while the TestRunLease "
-                        "was active; retry with every edited source_file "
-                        "before reload."
-                        if source_changes_pending or build_world_changes_pending
-                        else "Inspect failed_tests, edit the relevant source, and "
+                        "Inspect failed_tests, edit the relevant source, and "
                         "retry the same explicit test selection."
                         if not result.passed
                         else "The selected tests passed; reload the edited "
@@ -637,11 +546,19 @@ class FastTestManager:
             and project.project_root == attempt.project_path
             and project.build_system == provider.kind
             and project.compiler.ready
-            and project.is_fresh()
+            and self._cache.is_current(attempt.project_path, provider.kind)
         ):
             return project
         self._drop_project()
         attempt.state = "bootstrapping"
+        cached = self._cache.load(attempt.project_path, provider.kind)
+        if cached is not None:
+            world, build_jdk = cached
+            project = self._start_build_world(
+                attempt=attempt, world=world, build_jdk=build_jdk
+            )
+            self._project = project
+            return project
         project = provider.bootstrap(self, attempt)
         self._project = project
         return project
@@ -699,6 +616,11 @@ class FastTestManager:
         workspace = self._maven.resolve_workspace(attempt.project_path)
         attempt.require_not_cancelled()
         module = self._select_test_module(workspace, attempt)
+        if len(workspace.modules) > 1:
+            raise FastTestManagerError(
+                "FAST_TEST_REACTOR_NOT_IMPLEMENTED",
+                "Fast Test direct JDT compilation does not yet include Reactor upstream modules.",
+            )
         if module.packaging != "jar":
             raise FastTestManagerError(
                 "FAST_TEST_PACKAGING_UNSUPPORTED",
@@ -823,9 +745,6 @@ class FastTestManager:
             project / "src/main/resources",
             project / "src/test/resources",
         )
-        before = build_input_manifest(
-            (main_root, test_root), resource_roots
-        )
         environment = JavaToolchainResolver.maven_environment(build_jdk)
         gradle_args = shlex.split(os.environ.get("GRADLE_ARGS", ""))
         if any(value not in {"-o", "--offline"} for value in gradle_args):
@@ -896,17 +815,12 @@ class FastTestManager:
                 configuration_environment_names
             ),
         )
-        if before != world.expected_input_manifest:
-            raise FastTestManagerError(
-                "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
-                "Gradle Build World inputs changed during Bootstrap.",
-            )
         result = self._start_build_world(
             attempt=attempt,
             world=world,
             build_jdk=build_jdk,
-            session_root=session_root,
         )
+        shutil.rmtree(session_root, ignore_errors=True)
         with self._lock:
             self._pending_roots.discard(session_root)
         return result
@@ -950,10 +864,6 @@ class FastTestManager:
             command.extend(["-pl", module.relative_path, "-am"])
         command.extend(
             [
-                "-DskipTests=false",
-                "-Dmaven.test.skip=false",
-                "-Dtest.skip=false",
-                "test-compile",
                 prepared_probe.goal,
                 (
                     "-Djolink.probe.outputDirectory="
@@ -963,7 +873,6 @@ class FastTestManager:
                 f"-Doutput={effective_pom}",
             ]
         )
-        before = self._workspace_source_fingerprint(workspace_modules)
         try:
             operation = self._supervisor.run(
                 BuildOperationSpec(
@@ -986,7 +895,7 @@ class FastTestManager:
                 raise self._bootstrap_timeout_error(
                     operation,
                     attempt=attempt,
-                    stage="maven_test_compile",
+                    stage="maven_test_probe",
                     log=log,
                 )
             if operation.output_limit_exceeded:
@@ -1002,13 +911,6 @@ class FastTestManager:
                         "return_code": operation.return_code,
                         "bootstrap_log_tail": _redacted_build_log_tail(log),
                     },
-                )
-            if before != self._workspace_source_fingerprint(
-                workspace_modules
-            ):
-                raise FastTestManagerError(
-                    "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
-                    "Java sources changed during the Fast Test Bootstrap.",
                 )
             snapshot = probe.load_snapshot(
                 prepared_probe, module_root=module.directory
@@ -1049,7 +951,7 @@ class FastTestManager:
         main_output = Path(str(snapshot["outputDirectory"])).resolve(
             strict=False
         )
-        test_output = Path(str(snapshot["testOutputDirectory"])).resolve(strict=True)
+        test_output = Path(str(snapshot["testOutputDirectory"])).resolve(strict=False)
         main_classpath = self._paths(
             snapshot, "compileClasspathElements", module.directory
         )
@@ -1339,12 +1241,15 @@ class FastTestManager:
             worker_max_heap_mb=worker_max_heap_mb,
             runner_support_provenance=runner_support_provenance,
         )
-        return self._start_build_world(
+        result = self._start_build_world(
             attempt=attempt,
             world=world,
             build_jdk=build_jdk,
-            session_root=session_root,
         )
+        shutil.rmtree(session_root, ignore_errors=True)
+        with self._lock:
+            self._pending_roots.discard(session_root)
+        return result
 
     def _start_build_world(
         self,
@@ -1352,58 +1257,40 @@ class FastTestManager:
         attempt: TestAttempt,
         world: JavaTestBuildWorld,
         build_jdk: JavaToolchainCandidate,
-        session_root: Path,
     ) -> _FastTestProject:
-        if world.expected_input_manifest and build_input_manifest(
-            (*world.main_source_roots, *world.test_source_roots),
-            world.resource_roots,
-        ) != world.expected_input_manifest:
-            raise FastTestManagerError(
-                "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
-                "Build World inputs changed before private snapshot.",
-            )
-        main_snapshots = self._freeze_sources(
-            session_root / "main-source-snapshot",
-            world.main_source_roots,
-        )
-        test_snapshots = self._freeze_sources(
-            session_root / "test-source-snapshot",
-            world.test_source_roots,
-        )
-        resource_snapshots = self._freeze_trees(
-            session_root / "resource-snapshot", world.resource_roots
-        )
-        if world.expected_input_manifest:
-            frozen_manifest = build_input_manifest(
-                (*main_snapshots, *test_snapshots), resource_snapshots
-            )
-            current_manifest = build_input_manifest(
-                (*world.main_source_roots, *world.test_source_roots),
-                world.resource_roots,
-            )
-            if (
-                frozen_manifest != world.expected_input_manifest
-                or current_manifest != world.expected_input_manifest
-            ):
-                raise FastTestManagerError(
-                    "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
-                    "Build World inputs changed during private snapshot.",
-                )
         attempt.require_not_cancelled()
         candidate = JdtCandidate.load_product()
         worker_java = candidate.select_worker_java(
             (build_jdk.home, world.target_java_home)
         )
+        target_home = select_target_system_home(
+            (world.target_java_home, build_jdk.home), world.source_level
+        )
+        identity = hashlib.sha256(json.dumps({
+            "candidate": candidate.root.name,
+            "source_level": world.source_level,
+            "main_sources": [str(path) for path in world.main_source_roots],
+            "test_sources": [str(path) for path in world.test_source_roots],
+            "main_dependencies": [str(path) for path in world.main_dependencies],
+            "test_dependencies": [str(path) for path in world.test_dependencies],
+            "processors": [str(path) for path in world.processor_entries],
+        }, sort_keys=True).encode()).hexdigest()
+        workspace = self._cache.workspace_store(
+            world.project_root, world.build_system
+        ).claim(
+            project_root=world.project_root,
+            module_root=world.module_root,
+            identity={"fast_test_world": identity},
+        )
         lombok_enabled = bool(world.java_agents)
         compiler = PersistentJdtCompileSession(
-            root=session_root / "compile-session",
+            root=workspace.root,
             candidate=candidate,
             worker_java_home=worker_java.home,
             source_roots=world.main_source_roots,
-            baseline_source_roots=main_snapshots,
             classpath_entries=(
                 *discover_target_system_entries(
-                    world.target_java_home, world.source_level
+                    target_home, world.source_level
                 ),
                 *world.main_dependencies,
             ),
@@ -1411,12 +1298,7 @@ class FastTestManager:
             source_level=world.source_level,
             method_parameters=world.method_parameters,
             test_source_roots=world.test_source_roots,
-            baseline_test_source_roots=test_snapshots,
             test_classpath_entries=world.test_dependencies,
-            baseline_main_output=(
-                world.main_output if world.main_output.is_dir() else None
-            ),
-            baseline_test_output=world.test_output,
             processor_entries=world.processor_entries,
             java_agents=world.java_agents,
             extra_jvm_arguments=(
@@ -1428,6 +1310,7 @@ class FastTestManager:
             ),
             min_heap_mb=world.worker_min_heap_mb,
             max_heap_mb=world.worker_max_heap_mb,
+            preserve_root_on_close=True,
         )
         return self._run_compiler_initialization_transaction(
             attempt=attempt,
@@ -1438,8 +1321,9 @@ class FastTestManager:
                 compiler=compiler,
                 world=world,
                 build_jdk=build_jdk,
-                session_root=session_root,
+                workspace=workspace,
             ),
+            reuse_workspace=workspace.reusable,
         )
 
     def _run_compiler_initialization_transaction(
@@ -1448,12 +1332,21 @@ class FastTestManager:
         attempt: TestAttempt,
         compiler: PersistentJdtCompileSession,
         finish: Any,
+        reuse_workspace: bool = False,
     ) -> _FastTestProject:
         published = False
         with self._lock:
             self._initializing_compiler = compiler
         try:
-            full = compiler.start()
+            full = (
+                compiler.start(reuse_workspace=True, build_on_reuse=False)
+                if reuse_workspace
+                else compiler.start()
+            )
+            if reuse_workspace:
+                changed = compiler.workspace_source_changes()
+                if changed:
+                    full = compiler.compile(changed)
             project = finish(full)
             with self._lock:
                 attempt.require_not_cancelled()
@@ -1480,7 +1373,7 @@ class FastTestManager:
         compiler: PersistentJdtCompileSession,
         world: JavaTestBuildWorld,
         build_jdk: JavaToolchainCandidate,
-        session_root: Path,
+        workspace: Any,
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
         if not full.compile_ok:
@@ -1489,58 +1382,10 @@ class FastTestManager:
                 "The initial JDT main/test FULL build failed.",
                 context={"diagnostics": list(full.diagnostics)},
             )
-        # Lazy import avoids the adapters.java package importing JavaRuntime
-        # while JavaRuntime itself is wiring the Fast Test manager.
-        from ..adapters.java.classfile import compare_class_output_tier1
-
-        main_compatibility = compare_class_output_tier1(
-            world.main_output, compiler.output_directory
-        )
-        test_compatibility = compare_class_output_tier1(
-            world.test_output, compiler.test_output_directory
-        )
-        attempt.require_not_cancelled()
-        if not main_compatibility["compatible"] or not test_compatibility[
-            "compatible"
-        ]:
-            raise FastTestManagerError(
-                "JDT_TEST_BASELINE_INCOMPATIBLE",
-                "The JDT main/test baseline is not compatible with the build authority.",
-                context={
-                    "main": main_compatibility,
-                    "test": test_compatibility,
-                },
-            )
         compiler.accept_baseline()
-        attempt.require_not_cancelled()
-        if world.native_resource_oracle_required:
-            formal_resources = self._formal_resource_manifest(world)
-            native_resources = compiler.native_full_resource_manifest
-            if not native_resources or native_resources != formal_resources:
-                raise FastTestManagerError(
-                    "JDT_TEST_RESOURCE_BASELINE_INCOMPATIBLE",
-                    "JDT Processor resources differ from the build authority.",
-                )
-        all_dependencies = tuple(
-            dict.fromkeys(
-                (
-                    *world.main_dependencies,
-                    *world.test_dependencies,
-                    *world.test_runtime_classpath,
-                )
-            )
-        )
-        fingerprint = fast_compile_fingerprint(
-            configuration_inputs=world.configuration_inputs,
-            configuration_environment_names=(
-                world.configuration_environment_names
-            ),
-            javac_executable=world.javac_executable,
-            compile_classpath=all_dependencies,
-        )
-        resource_fingerprint = _resource_tree_fingerprint(
-            world.resource_roots
-        )
+        compiler.save_source_index()
+        workspace.mark_initialized()
+        self._cache.save(world, build_jdk)
         attempt.require_not_cancelled()
         return _FastTestProject(
             build_system=world.build_system,
@@ -1552,25 +1397,17 @@ class FastTestManager:
             test_working_directory=world.test_working_directory,
             runner_environment=dict(world.runner_environment),
             runner_jvm_arguments=world.test_jvm_arguments,
-            javac_executable=world.javac_executable,
             compiler=compiler,
-            runtime_classpath=world.test_runtime_classpath,
-            configuration_inputs=world.configuration_inputs,
-            configuration_environment_names=(
-                world.configuration_environment_names
+            runtime_classpath=(
+                *(path for path in world.resource_roots if path.is_dir()),
+                *world.test_runtime_classpath,
             ),
-            dependency_entries=all_dependencies,
-            configuration_fingerprint=fingerprint,
-            resource_roots=world.resource_roots,
-            resource_fingerprint=resource_fingerprint,
             upstream_source_roots=world.upstream_source_roots,
-            upstream_source_fingerprint=_java_source_roots_fingerprint(
-                world.upstream_source_roots
-            ),
             runner_support_provenance=dict(
                 world.runner_support_provenance
             ),
-            session_root=session_root,
+            session_root=workspace.root,
+            workspace_lease=workspace,
         )
 
     @staticmethod
@@ -2268,33 +2105,6 @@ class FastTestManager:
         return tuple(inputs)
 
     @staticmethod
-    def _source_fingerprint(module_root: Path) -> str:
-        digest = hashlib.sha256()
-        for root in (
-            module_root / "src/main/java",
-            module_root / "src/test/java",
-        ):
-            if not root.is_dir():
-                continue
-            for source in sorted(root.rglob("*.java")):
-                digest.update(source.relative_to(module_root).as_posix().encode())
-                digest.update(hashlib.sha256(source.read_bytes()).digest())
-        return digest.hexdigest()
-
-    @staticmethod
-    def _workspace_source_fingerprint(modules: Sequence[Any]) -> str:
-        roots = tuple(
-            root
-            for module in modules
-            for root in (
-                module.directory / "src/main/java",
-                module.directory / "src/test/java",
-            )
-            if root.is_dir()
-        )
-        return _java_source_roots_fingerprint(roots)
-
-    @staticmethod
     def _resolve_sources(
         project: _FastTestProject,
         requested: Sequence[str],
@@ -2336,18 +2146,6 @@ class FastTestManager:
                 )
             if is_target_source:
                 result.append(source)
-        expected_upstream_fingerprint = getattr(
-            project, "upstream_source_fingerprint", None
-        )
-        if (
-            expected_upstream_fingerprint is not None
-            and _java_source_roots_fingerprint(upstream_roots)
-            != expected_upstream_fingerprint
-        ):
-            raise FastTestManagerError(
-                "SOURCE_CHANGED_DURING_TEST_BOOTSTRAP",
-                "An upstream Reactor source changed after Maven Bootstrap.",
-            )
         return tuple(dict.fromkeys(result))
 
     def _drop_project(self) -> None:

@@ -105,6 +105,8 @@ def main() -> int:
             baseline = run(manager, project)
             if not baseline.get("passed"):
                 raise AssertionError(baseline)
+            if (project / "build/classes").exists():
+                raise AssertionError("Gradle classes/testClasses ran during Fast Test")
             support = baseline.get("test_runtime_support", {})
             if support.get("build_system") != "gradle":
                 raise AssertionError(support)

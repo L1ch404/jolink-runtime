@@ -924,7 +924,7 @@ def test_maven_bootstrap_timeout_is_structured_and_uses_long_budget(
     assert observed_timeout == 900.0
     assert captured.value.error_code == "FAST_TEST_BOOTSTRAP_TIMEOUT"
     assert captured.value.context == {
-        "stage": "maven_test_compile",
+        "stage": "maven_test_probe",
         "timed_out": True,
         "timeout_ms": 900000,
         "termination_forced": True,

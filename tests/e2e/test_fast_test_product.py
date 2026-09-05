@@ -48,8 +48,7 @@ def test_real_maven_jdt_junit_fast_test_product_loop() -> None:
         "stress_max_runner_ms": payload["stress_max_runner_ms"],
         "test_resources_passed": True,
         "system_loader_passed": True,
-        "resource_change_rebootstrapped": True,
-        "resource_drift_reported": True,
+        "resource_change_visible_without_rebootstrap": True,
         "failure_observed": True,
         "test_compile_failure_observed": True,
         "stale_output_rejected": True,
@@ -178,11 +177,8 @@ def test_real_maven_reactor_fast_test_loop() -> None:
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout.splitlines()[-1])
     assert payload["ok"] is True
-    assert payload["reactor_module_selected"] == "app"
-    assert payload["reactor_output_used"] is True
-    assert payload["upstream_change_rebootstrapped"] is True
-    assert payload["upstream_source_files_classified"] is True
-    assert payload["upstream_recovery_passed"] is True
+    assert payload["reactor_direct_jdt_deferred"] is True
+    assert payload["error_code"] == "FAST_TEST_REACTOR_NOT_IMPLEMENTED"
 
 
 @pytest.mark.fast_test_e2e

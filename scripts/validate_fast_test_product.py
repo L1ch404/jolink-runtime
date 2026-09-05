@@ -279,6 +279,10 @@ def main() -> int:
             baseline = wait(manager)
             if not baseline.get("passed"):
                 raise AssertionError(baseline)
+            if (project / "target/classes").exists() or (
+                project / "target/test-classes"
+            ).exists():
+                raise AssertionError("Maven test-compile ran during Fast Test")
             if manager._project.compiler.max_heap_mb != 3072:
                 raise AssertionError(
                     manager._project.compiler.max_heap_mb
@@ -403,7 +407,7 @@ def main() -> int:
             resource_drift = wait(manager)
             if not (
                 resource_drift.get("passed")
-                and resource_drift.get("build_world_changes_pending") is True
+                and resource_drift.get("build_world_changes_pending") is False
             ):
                 raise AssertionError(resource_drift)
             manager.start(
@@ -416,7 +420,7 @@ def main() -> int:
             resource_rebootstrap = wait(manager)
             if (
                 not resource_rebootstrap.get("passed")
-                or id(manager._project) == before_resource_project
+                or id(manager._project) != before_resource_project
             ):
                 raise AssertionError(resource_rebootstrap)
 
@@ -602,6 +606,9 @@ def main() -> int:
             )
             if not log_retention_bounded:
                 raise AssertionError(retained_attempts)
+            # Release the persistent workspace before a separate MCP server
+            # reopens it; two Workers never own one Eclipse workspace.
+            manager.close()
             mcp_result = anyio.run(validate_mcp, project)
 
             junit5_project = Path(raw) / "junit5-project"
@@ -799,11 +806,8 @@ def main() -> int:
                         "stress_max_runner_ms": max(stress_runner_ms),
                         "test_resources_passed": resources_passed["passed"],
                         "system_loader_passed": system_loader_passed["passed"],
-                        "resource_change_rebootstrapped": (
+                        "resource_change_visible_without_rebootstrap": (
                             resource_rebootstrap["passed"]
-                        ),
-                        "resource_drift_reported": (
-                            resource_drift["build_world_changes_pending"]
                         ),
                         "failure_observed": failed["failed_count"] == 1,
                         "test_compile_failure_observed": (

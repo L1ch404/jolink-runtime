@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Sequence
 
-from .test_build_world import JavaTestBuildWorld, build_input_manifest
+from .test_build_world import JavaTestBuildWorld
 
 
 class GradleBuildWorldError(RuntimeError):
@@ -183,8 +183,8 @@ def create_gradle_test_build_world(
             "Gradle JavaCompile has unsupported configuration.",
         )
 
-    main_output = Path(main_compile["destinationDirectory"]).resolve(strict=True)
-    test_output = Path(test_compile["destinationDirectory"]).resolve(strict=True)
+    main_output = Path(main_compile["destinationDirectory"]).resolve(strict=False)
+    test_output = Path(test_compile["destinationDirectory"]).resolve(strict=False)
     _require(
         _paths(model["main"]["classesDirectories"]) == (main_output,),
         "GRADLE_MAIN_OUTPUT_UNMODELED",
@@ -203,6 +203,7 @@ def create_gradle_test_build_world(
         )
         if value and not Path(value).resolve(strict=False).exists()
     }
+    optional_missing.update((main_output, test_output))
     main_dependencies = _existing(
         main_compile["classpath"],
         optional_missing=optional_missing,
@@ -289,11 +290,7 @@ def create_gradle_test_build_world(
         "GRADLE_TEST_CONFIGURATION_UNMODELED",
         "Gradle Test has unsupported runtime configuration.",
     )
-    runtime_paths = _existing(
-        runtime["classpath"],
-        optional_missing=optional_missing,
-        field="test.classpath",
-    )
+    runtime_paths = _paths(runtime["classpath"])
     _require(
         _paths(runtime["testClassesDirectories"]) == (test_output,),
         "GRADLE_TEST_CLASSES_UNMODELED",
@@ -313,13 +310,14 @@ def create_gradle_test_build_world(
         "GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED",
         "Gradle Test classpath omits or duplicates formal class outputs.",
     )
-    _require(
-        runtime_paths[:2] == (test_output, main_output),
-        "GRADLE_TEST_RUNTIME_ORDER_UNMODELED",
-        "Gradle Test formal outputs have unsupported order.",
-    )
-    runtime_dependencies = tuple(
-        path for path in runtime_paths if path not in {test_output, main_output}
+    runtime_dependencies = _existing(
+        (
+            str(path)
+            for path in runtime_paths
+            if path not in {test_output, main_output}
+        ),
+        optional_missing=optional_missing,
+        field="test.classpath",
     )
 
     source_roots = (standard_main, standard_test)
@@ -362,7 +360,6 @@ def create_gradle_test_build_world(
             "test_framework": runtime["framework"],
         },
         native_resource_oracle_required=bool(main_processors),
-        expected_input_manifest=build_input_manifest(source_roots, resource_roots),
     )
 
 
