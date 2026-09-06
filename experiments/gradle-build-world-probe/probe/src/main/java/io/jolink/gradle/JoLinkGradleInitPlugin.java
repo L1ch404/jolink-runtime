@@ -35,13 +35,15 @@ import org.gradle.api.tasks.testing.Test;
 import org.gradle.api.tasks.testing.junit.JUnitOptions;
 import org.gradle.api.tasks.testing.junitplatform.JUnitPlatformOptions;
 import org.gradle.api.tasks.testing.testng.TestNGOptions;
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier;
+import org.gradle.api.artifacts.result.ResolvedComponentResult;
 import org.gradle.jvm.toolchain.JavaCompiler;
 import org.gradle.jvm.toolchain.JavaLauncher;
 
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-spike4";
+    private static final String VERSION = "0.1.0-modules1";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -72,14 +74,10 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
             throw new GradleException(
                     "GRADLE_PROBE_SCOPE_INVALID: " + exportScope);
         }
-        final String targetPath = System.getProperty(
-                "jolink.gradle.targetProject", ":");
         gradle.beforeProject(new Action<Project>() {
             @Override
             public void execute(final Project project) {
-                if (!targetPath.equals(project.getPath())) {
-                    return;
-                }
+                if (project.getParent() == null) registerExportTask(project);
                 project.getPluginManager().withPlugin(
                         "java",
                         ignored -> configureProject(project));
@@ -93,7 +91,6 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                     baselineEnvironments.put(
                             task.getPath(), stringify(task.getEnvironment())));
         }
-        registerExportTask(project);
         registerSlowCompileGate(project);
     }
 
@@ -196,15 +193,68 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     }
 
     private String render(Project project) throws Exception {
+        project = selectTarget(project.getRootProject());
+        if (project.getRootProject().getAllprojects().size() > 1) {
+            GradleModuleGraph graph = new GradleModuleGraph(project, exportScope.equals("test"));
+            Map<String, Object> result = exportScope.equals("test")
+                    ? renderTest(project, project.getExtensions().getByType(SourceSetContainer.class))
+                    : renderRuntime(project, project.getExtensions().getByType(SourceSetContainer.class));
+            List<Map<String, Object>> modules = new ArrayList<>();
+            for (Project module : graph.projects.values()) {
+                SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
+                SourceSet main = sets.getByName("main");
+                Map<String, Object> facts = commonModel(module);
+                facts.put("main", sourceSet(main));
+                facts.put("compileJava", compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
+                if (module.equals(project) && exportScope.equals("test")) {
+                    facts.put("test", result.get("test"));
+                    facts.put("compileTestJava", result.get("compileTestJava"));
+                }
+                modules.add(facts);
+            }
+            result.put("modules", modules);
+            result.put("projectArtifacts", graph.artifacts);
+            List<String> buildFiles = new ArrayList<>();
+            for (Project module : project.getRootProject().getAllprojects()) buildFiles.add(canonical(module.getBuildFile()));
+            result.put("configurationFiles", buildFiles);
+            return json(result) + "\n";
+        }
         SourceSetContainer sourceSets = project.getExtensions()
                 .getByType(SourceSetContainer.class);
         if (exportScope.equals("runtime")) {
-            return renderRuntime(project, sourceSets);
+            return json(renderRuntime(project, sourceSets)) + "\n";
         }
-        return renderTest(project, sourceSets);
+        return json(renderTest(project, sourceSets)) + "\n";
     }
 
-    private String renderRuntime(
+    private Project selectTarget(Project root) throws IOException {
+        String main = System.getProperty("jolink.gradle.mainClass", "");
+        String tests = System.getProperty("jolink.gradle.testClasses", "");
+        String directory = System.getProperty("jolink.gradle.targetDirectory", "");
+        List<Project> matches = new ArrayList<>();
+        for (Project project : root.getAllprojects()) {
+            SourceSetContainer sets = project.getExtensions().findByType(SourceSetContainer.class);
+            if (sets == null || sets.findByName("main") == null) continue;
+            if (!main.isEmpty() || !tests.isEmpty()) {
+                SourceSet sources = sets.findByName(main.isEmpty() ? "test" : "main");
+                if (sources == null) continue;
+                boolean match = true;
+                for (String name : (main.isEmpty() ? tests : main).split(",")) {
+                    String file = name.split("#", 2)[0].split("\\$", 2)[0].replace('.', '/') + ".java";
+                    boolean found = false;
+                    for (File source : sources.getJava().getSrcDirs()) found |= new File(source, file).isFile();
+                    match &= found;
+                }
+                if (!match) continue;
+            } else if (!directory.isEmpty() && !canonical(project.getProjectDir()).equals(directory)) continue;
+            matches.add(project);
+        }
+        if (matches.size() == 1) return matches.get(0);
+        throw boundary("GRADLE_TARGET_PROJECT_UNRESOLVED",
+                "Select a main class or test classes belonging to one Java subproject.");
+    }
+
+    private Map<String, Object> renderRuntime(
             Project project, SourceSetContainer sourceSets) throws Exception {
         validateRuntimeBoundaries(project, sourceSets);
         SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
@@ -221,10 +271,10 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         root.put("compileJava", compileTask(compileJava));
         root.put("runtimeExecution", runtimeExecution(
                 project, main, compileJava));
-        return json(root) + "\n";
+        return root;
     }
 
-    private String renderTest(
+    private Map<String, Object> renderTest(
             Project project, SourceSetContainer sourceSets) throws Exception {
         validateTestBoundaries(project, sourceSets);
         SourceSet main = sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME);
@@ -249,7 +299,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         root.put("compileJava", compileTask(compileJava));
         root.put("compileTestJava", compileTask(compileTestJava));
         root.put("testRuntime", testTask(testTask));
-        return json(root) + "\n";
+        return root;
     }
 
     private Map<String, Object> commonModel(Project project) throws Exception {
@@ -280,17 +330,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return root;
     }
 
-    private static void validateProjectBoundary(Project project) {
-        if (project.getRootProject().getAllprojects().size() != 1) {
-            throw boundary(
-                    "GRADLE_MULTI_PROJECT_UNSUPPORTED",
-                    "The product Probe requires exactly one Gradle Project.");
-        }
-    }
-
     private static void validateRuntimeBoundaries(
             Project project, SourceSetContainer sourceSets) {
-        validateProjectBoundary(project);
         if (sourceSets.findByName(SourceSet.MAIN_SOURCE_SET_NAME) == null) {
             throw boundary(
                     "GRADLE_SOURCE_SET_UNSUPPORTED",
@@ -300,7 +341,6 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
 
     private static void validateTestBoundaries(
             Project project, SourceSetContainer sourceSets) {
-        validateProjectBoundary(project);
         Set<String> sourceSetNames = new LinkedHashSet<>();
         for (SourceSet sourceSet : sourceSets) {
             sourceSetNames.add(sourceSet.getName());
@@ -342,7 +382,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("compileJavaTaskPath", compileJava.getPath());
         result.put("processResourcesTaskPath", processResources.getPath());
         result.put("classesTaskPath", classes.getPath());
-        result.put("exportTaskPath", project.getTasks()
+        result.put("exportTaskPath", project.getRootProject().getTasks()
                 .getByName(exportTaskName).getPath());
         result.put("compileJavaActionCount", compileJava.getActions().size());
         result.put("processResourcesActionCount",
@@ -404,7 +444,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
         result.put("destinationDirectory", canonical(
                 task.getDestinationDirectory().get().getAsFile()));
-        result.put("encoding", task.getOptions().getEncoding());
+        result.put("encoding", task.getOptions().getEncoding() == null
+                ? java.nio.charset.Charset.defaultCharset().name() : task.getOptions().getEncoding());
         result.put("debug", task.getOptions().isDebug());
         result.put("fork", task.getOptions().isFork());
         result.put("incremental", task.getOptions().isIncremental());
@@ -424,9 +465,11 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 task.getOptions().getGeneratedSourceOutputDirectory()));
         result.put("release", task.getOptions().getRelease().getOrNull());
         JavaCompiler compiler = task.getJavaCompiler().getOrNull();
-        result.put("compilerJavaHome", compiler == null ? null : canonical(
+        File fallbackHome = task.getOptions().getForkOptions().getJavaHome();
+        if (fallbackHome == null) fallbackHome = currentJavaHome();
+        result.put("compilerJavaHome", compiler == null ? canonical(fallbackHome) : canonical(
                 compiler.getMetadata().getInstallationPath().getAsFile()));
-        result.put("compilerJavaVersion", compiler == null ? null
+        result.put("compilerJavaVersion", compiler == null ? Integer.parseInt(org.gradle.api.JavaVersion.current().getMajorVersion())
                 : compiler.getMetadata().getLanguageVersion().asInt());
         return result;
     }
@@ -437,21 +480,46 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("framework", framework(task));
         result.put("testClassesDirectories", orderedFiles(
                 task.getTestClassesDirs().getFiles()));
-        result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
+        Set<File> runtimeFiles = new LinkedHashSet<>(task.getClasspath().getFiles());
+        if (task.getOptions() instanceof JUnitPlatformOptions) {
+            // Gradle normally provides the Platform launcher to its own Test worker.
+            // The standalone Runner needs the companion of the resolved engine.
+            String engineVersion = null;
+            boolean launcherPresent = false;
+            SourceSet test = task.getProject().getExtensions().getByType(SourceSetContainer.class).getByName("test");
+            for (ResolvedComponentResult component : task.getProject().getConfigurations()
+                    .getByName(test.getRuntimeClasspathConfigurationName()).getIncoming().getResolutionResult().getAllComponents()) {
+                if (!(component.getId() instanceof ModuleComponentIdentifier)) continue;
+                ModuleComponentIdentifier id = (ModuleComponentIdentifier) component.getId();
+                if (!id.getGroup().equals("org.junit.platform")) continue;
+                if (id.getModule().equals("junit-platform-engine")) engineVersion = id.getVersion();
+                if (id.getModule().equals("junit-platform-launcher")) launcherPresent = true;
+            }
+            if (engineVersion != null && !launcherPresent) {
+                org.gradle.api.artifacts.Configuration support = task.getProject().getConfigurations().detachedConfiguration(
+                        task.getProject().getDependencies().create("org.junit.platform:junit-platform-launcher:" + engineVersion));
+                support.setTransitive(false);
+                runtimeFiles.addAll(support.getFiles());
+            }
+        }
+        result.put("classpath", orderedFiles(runtimeFiles));
         result.put("workingDirectory", canonical(task.getWorkingDir()));
         result.put("enableAssertions", task.getEnableAssertions());
         result.put("debug", task.getDebug());
         result.put("failFast", task.getFailFast());
-        result.put("dryRun", task.getDryRun().getOrElse(false));
+        result.put("dryRun", dryRun(task));
         result.put("scanForTestClasses", task.isScanForTestClasses());
         JavaLauncher launcher = task.getJavaLauncher().getOrNull();
-        result.put("javaHome", launcher == null ? null : canonical(
+        File executable = task.getExecutable() == null
+                ? new File(currentJavaHome(), "bin/" + (File.separatorChar == '\\' ? "java.exe" : "java"))
+                : new File(task.getExecutable());
+        result.put("javaHome", launcher == null ? canonical(currentJavaHome()) : canonical(
                 launcher.getMetadata().getInstallationPath().getAsFile()));
-        result.put("javaExecutable", launcher == null ? null : canonical(
+        result.put("javaExecutable", launcher == null ? canonical(executable) : canonical(
                 launcher.getExecutablePath().getAsFile()));
-        result.put("javaVersion", launcher == null ? null
+        result.put("javaVersion", launcher == null ? Integer.parseInt(org.gradle.api.JavaVersion.current().getMajorVersion())
                 : launcher.getMetadata().getLanguageVersion().asInt());
-        result.put("javaSelectionSource", "resolved_java_launcher");
+        result.put("javaSelectionSource", launcher == null ? "gradle_default_executable" : "resolved_java_launcher");
         result.put("minHeapSize", task.getMinHeapSize());
         result.put("maxHeapSize", task.getMaxHeapSize());
         result.put("jvmArgumentProviderCount",
@@ -516,6 +584,22 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         throw boundary(
                 "GRADLE_TEST_FRAMEWORK_UNSUPPORTED",
                 "The Test task uses an unsupported framework options type.");
+    }
+
+    private static boolean dryRun(Test task) throws Exception {
+        // Gradle added Test.dryRun in 8.3; older versions always execute tests.
+        try {
+            org.gradle.api.provider.Provider<?> value = (org.gradle.api.provider.Provider<?>)
+                    Test.class.getMethod("getDryRun").invoke(task);
+            return Boolean.TRUE.equals(value.getOrNull());
+        } catch (NoSuchMethodException absent) {
+            return false;
+        }
+    }
+
+    private static File currentJavaHome() {
+        File home = new File(System.getProperty("java.home"));
+        return home.getName().equals("jre") ? home.getParentFile() : home;
     }
 
     private static BoundaryException boundary(String code, String message) {

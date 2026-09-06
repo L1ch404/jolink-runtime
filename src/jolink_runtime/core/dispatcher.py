@@ -204,8 +204,11 @@ def parse_project_launch_request(
             ),
         )
 
+    build_system = str(arguments.get("build_system", ""))
+    if build_system not in {"", "maven", "gradle"}:
+        raise ProjectLaunchArgumentError(argument="build_system", message="build_system must be maven or gradle.")
     return ProjectLaunchRequest(
-        project_path=Path(raw_project_path).expanduser(),
+        project_path=Path(raw_project_path).expanduser().resolve(strict=False),
         launch_name=(
             raw_launch_name
             if isinstance(raw_launch_name, str)
@@ -216,6 +219,7 @@ def parse_project_launch_request(
         startup_wait_timeout_seconds=float(
             arguments.get("startup_wait_timeout_seconds", 30)
         ),
+        build_system=build_system,
     )
 
 

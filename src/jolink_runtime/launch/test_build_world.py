@@ -72,10 +72,8 @@ class GradleTestBuildWorldBootstrap:
     kind: str = "gradle"
 
     def detect(self, project_path: Path) -> bool:
-        return (project_path / "gradlew").is_file() and any(
-            (project_path / name).is_file()
-            for name in ("build.gradle", "build.gradle.kts")
-        )
+        from .gradle_probe import gradle_build_root
+        return gradle_build_root(project_path) is not None
 
     def bootstrap(self, manager: Any, attempt: Any) -> Any:
         return manager._bootstrap_gradle(attempt)

@@ -109,6 +109,25 @@ def test_cache_reuses_persisted_model_without_revalidating_project_files(
     assert reused.jvm_plan.ready_port == 8080
     assert reused.jdt_plan.resource_fingerprint == plan.resource_fingerprint
 
+    # Old cache entries may contain an unresolved alias even after callers
+    # start supplying the canonical project path.
+    import json
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(project, target_is_directory=True)
+    except OSError:
+        alias = None
+    if alias is not None:
+        stored = cache._file(project, intent.launch_name)
+        raw = json.loads(stored.read_text())
+        raw["jdt_plan"]["project_root"] = str(alias)
+        raw["jdt_plan"]["module_root"] = str(alias)
+        stored.write_text(json.dumps(raw))
+        restored = cache.load(project_root=project, intent=intent, build_system="maven",
+                              ready_port=8080, startup_wait_timeout_seconds=12)
+        assert restored.jdt_plan.project_root == project.resolve()
+        assert restored.jdt_plan.module_root == project.resolve()
+
     pom.write_text("<project><changed/></project>\n", encoding="utf-8")
     assert cache.load(
         project_root=project,

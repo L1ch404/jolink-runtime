@@ -1,4 +1,4 @@
-"""Local JSON cache for Probe-derived single-module launch facts."""
+"""Local JSON cache for Probe-derived launch facts."""
 
 from __future__ import annotations
 
@@ -17,9 +17,15 @@ from .jdt_compile_session import (
 )
 from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
+from .gradle_probe import environment_input_stamps as _environment_inputs
 
 
 _SCHEMA = "jolink.project-launch-cache.v1"
+
+
+def _configuration_stamps(paths):
+    return {str(path): hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            if Path(path).is_file() else "missing" for path in paths}
 
 
 def _path(value: Any) -> Path:
@@ -151,10 +157,16 @@ class ProjectLaunchCache:
             ):
                 return None
             plan_raw = raw["jdt_plan"]
+            if build_system == "gradle" and plan_raw.get("modules"):
+                stamps = raw.get("gradle_configuration", {})
+                if not stamps or stamps != _configuration_stamps(stamps):
+                    return None
+                if raw.get("gradle_environment") != _environment_inputs(raw.get("gradle_environment", ())):
+                    return None
             resource_roots = _paths(plan_raw.get("resource_roots"))
             jdt_plan = JdtBuildWorldPlan(
-                project_root=_path(plan_raw["project_root"]),
-                module_root=_path(plan_raw["module_root"]),
+                project_root=_path(plan_raw["project_root"]).resolve(strict=False),
+                module_root=_path(plan_raw["module_root"]).resolve(strict=False),
                 source_roots=_paths(plan_raw["source_roots"]),
                 dependency_entries=_paths(plan_raw["dependency_entries"]),
                 processor_entries=_paths(plan_raw["processor_entries"]),
@@ -240,6 +252,10 @@ class ProjectLaunchCache:
         target = self._file(project_root, intent.launch_name)
         value = {
             "schema": _SCHEMA,
+            "gradle_configuration": _configuration_stamps(jdt_plan.configuration_inputs)
+                if build_system == "gradle" and jdt_plan.modules else {},
+            "gradle_environment": _environment_inputs(jdt_plan.configuration_environment_names)
+                if build_system == "gradle" and jdt_plan.modules else {},
             "intent": _intent_payload(intent),
             "build_system": build_system,
             "build_offline": build_offline,

@@ -39,6 +39,7 @@ from .gradle_probe import (
     gradle_configuration_environment_names,
     gradle_configuration_inputs,
     wrapper_version,
+    gradle_build_root,
 )
 from .gradle_runtime_build_world import (
     GradleRuntimeBuildWorldError,
@@ -78,6 +79,7 @@ class ProjectLaunchRequest:
     jdwp_port: int
     ready_port: int
     startup_wait_timeout_seconds: float
+    build_system: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,23 +165,23 @@ class ProjectLaunchPipeline:
 
         preferences_identity = None
         has_maven = (request.project_path / "pom.xml").is_file()
-        has_gradle = (
-            (request.project_path / "gradlew").is_file()
-            or (request.project_path / "gradlew.bat").is_file()
-        ) and any(
-            (request.project_path / name).is_file()
-            for name in ("build.gradle", "build.gradle.kts")
-        )
-        if has_maven and has_gradle:
+        has_gradle = gradle_build_root(request.project_path) is not None
+        if has_maven and has_gradle and not request.build_system:
             raise LaunchPipelineFailure(
                 "BUILD_SYSTEM_AMBIGUOUS",
                 "The project contains both supported Maven and Gradle builds.",
                 retryable=False,
                 suggested_next_step=(
-                    "Use a project_path containing one authoritative build."
+                    "Specify build_system='maven' or 'gradle'."
                 ),
             )
-        build_system = "gradle" if has_gradle else "maven"
+        build_system = request.build_system or ("gradle" if has_gradle else "maven")
+        available = has_gradle if build_system == "gradle" else has_maven
+        if request.build_system and not available:
+            raise LaunchPipelineFailure(
+                "BUILD_SYSTEM_NOT_FOUND", "The selected build system is not present.",
+                retryable=True, suggested_next_step="Check project_path and build_system.",
+            )
         cached = self._launch_cache.load(
             project_root=request.project_path,
             intent=imported.intent,
@@ -244,7 +246,7 @@ class ProjectLaunchPipeline:
             name: [str(path) for path in paths]
             for name, paths in preferences.jdk_homes_by_name.items()
         }
-        if has_gradle:
+        if build_system == "gradle":
             try:
                 prepared = self._prepare_gradle(
                     context,
@@ -661,7 +663,7 @@ class ProjectLaunchPipeline:
         preferences: IdeaBuildPreferences,
         attempt_directory: Path,
     ) -> PreparedProjectLaunch:
-        project = request.project_path.expanduser().resolve(strict=True)
+        project = gradle_build_root(request.project_path) or request.project_path
         if (project / "buildSrc").exists() or (project / "build-logic").exists():
             raise LaunchPipelineFailure(
                 "GRADLE_BUILD_LOGIC_UNSUPPORTED",
@@ -689,13 +691,6 @@ class ProjectLaunchPipeline:
         )
         probe = ProductGradleProbe.load()
         version = wrapper_version(project)
-        if version not in probe.supported_versions:
-            raise LaunchPipelineFailure(
-                "GRADLE_VERSION_UNSUPPORTED",
-                "This Gradle Wrapper version has no product evidence.",
-                retryable=False,
-                suggested_next_step="Use Gradle 8.10 or 8.14 for G4.",
-            )
         wrapper = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
         if not wrapper.is_file():
             raise LaunchPipelineFailure(
@@ -744,6 +739,8 @@ class ProjectLaunchPipeline:
                         wrapper=wrapper,
                         prepared=prepared_probe,
                         offline=offline,
+                        main_class=imported.intent.main_class,
+                        target_directory=request.project_path,
                     ),
                     cwd=project,
                     environment=environment,
@@ -797,7 +794,7 @@ class ProjectLaunchPipeline:
         try:
             world = create_gradle_runtime_build_world(
                 model=model,
-                project_root=project,
+                project_root=request.project_path,
                 configuration_inputs=configuration_inputs,
                 configuration_environment_names=environment_names,
             )

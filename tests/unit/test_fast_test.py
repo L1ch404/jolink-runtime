@@ -613,7 +613,38 @@ def test_cancel_interrupts_an_inflight_jdt_compile(
     assert interrupted.is_set()
     assert cancelled["status"] == "cancel_requested"
     assert manager.status()["status"] == "cancelled"
+    assert manager.status()["error_code"] == "TEST_CANCELLED"
     manager.close()
+
+
+@pytest.mark.parametrize("cancel_requested", [False, True])
+def test_runner_exit_distinguishes_cancellation_from_failure(tmp_path, monkeypatch, cancel_requested):
+    attempt = FastTestAttempt(
+        test_run_id="test-cancel-result", generation=1,
+        owner=AttemptToken("test-cancel-result", 1), project_path=tmp_path,
+        source_files=(), tests=("ExampleTest",), timeout_seconds=30,
+    )
+    compiler = SimpleNamespace(
+        ready=True, working_compile_state="valid", source_roots=(), test_source_roots=(),
+        workspace_source_changes=lambda: (), output_directory=tmp_path, test_output_directory=tmp_path,
+    )
+    project = SimpleNamespace(
+        compiler=compiler, project_root=tmp_path, module_root=tmp_path, session_root=tmp_path,
+        test_java_executable=tmp_path / "java", test_framework="junit4",
+        runtime_classpath=(), test_working_directory=tmp_path, runner_environment={}, runner_jvm_arguments=(),
+    )
+    manager = FastTestManager()
+    monkeypatch.setattr(manager, "_ensure_project", lambda _attempt: project)
+    def runner_exit(**_kwargs):
+        attempt.cancel_requested = cancel_requested
+        raise FastTestError("TEST_RUNNER_FAILED", "no terminal result", context={"return_code":143})
+    monkeypatch.setattr(manager._runner, "run", runner_exit)
+    try:
+        manager._run_attempt(attempt)
+        assert attempt.state == ("cancelled" if cancel_requested else "failed")
+        assert attempt.result["error_code"] == ("TEST_CANCELLED" if cancel_requested else "TEST_RUNNER_FAILED")
+    finally:
+        manager.close()
 
 
 def test_runner_rejects_an_unsettled_process_tree_and_uses_classpath_file(

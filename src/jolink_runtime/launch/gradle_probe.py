@@ -116,6 +116,9 @@ class ProductGradleProbe:
         prepared: PreparedGradleProbe,
         offline: bool,
         scope: str | None = None,
+        main_class: str | None = None,
+        tests: tuple[str, ...] = (),
+        target_directory: Path | None = None,
     ) -> tuple[str, ...]:
         scope = prepared.scope if scope is None else scope
         if scope not in {"test", "runtime"}:
@@ -139,6 +142,12 @@ class ProductGradleProbe:
         ]
         if offline:
             command.append("--offline")
+        if main_class:
+            command.append(f"-Djolink.gradle.mainClass={main_class}")
+        if tests:
+            command.append("-Djolink.gradle.testClasses=" + ",".join(tests))
+        if target_directory is not None:
+            command.append(f"-Djolink.gradle.targetDirectory={target_directory.resolve()}")
         command.append(prepared.task_name)
         return tuple(command)
 
@@ -161,18 +170,12 @@ class ProductGradleProbe:
             or model.get("probeSha256") != prepared.probe_sha256
             or model.get("requestId") != prepared.request_id
             or model.get("exportTaskName") != prepared.task_name
-            or model.get("targetProjectPath") != ":"
+            or not str(model.get("targetProjectPath", "")).startswith(":")
             or model.get("exportScope", "test") != prepared.scope
         ):
             raise GradleProbeError(
                 "GRADLE_PROBE_IDENTITY_MISMATCH",
                 "The Gradle Probe output has invalid identity.",
-            )
-        version = str(model.get("gradleVersion", ""))
-        if version not in self.supported_versions:
-            raise GradleProbeError(
-                "GRADLE_VERSION_UNSUPPORTED",
-                "This Gradle version has no product evidence.",
             )
         return model
 
@@ -201,6 +204,19 @@ def wrapper_version(project: Path) -> str:
             "The Gradle Wrapper distribution version is unavailable.",
         )
     return match.group(1)
+
+
+def gradle_build_root(project: Path) -> Path | None:
+    """A subproject uses its owning build's Wrapper and settings."""
+    for root in (project, *project.parents):
+        if any((root / name).is_file() for name in ("gradlew", "gradlew.bat")):
+            return root
+    return None
+
+
+def environment_input_stamps(names) -> dict[str, str]:
+    return {name: hashlib.sha256(os.environ[name].encode()).hexdigest()
+            if name in os.environ else "unset" for name in names}
 
 
 def gradle_configuration_inputs(project: Path) -> tuple[Path, ...]:

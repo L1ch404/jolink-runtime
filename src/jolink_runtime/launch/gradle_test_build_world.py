@@ -72,6 +72,8 @@ def create_gradle_test_build_world(
     runner_environment: dict[str, str],
     configuration_environment_names: Sequence[str],
 ) -> JavaTestBuildWorld:
+    if model.get("modules"):
+        return _module_test_world(model, project_root, configuration_inputs, runner_environment, configuration_environment_names)
     project = project_root.resolve(strict=True)
     standard_main = (project / "src/main/java").resolve(strict=False)
     standard_test = (project / "src/test/java").resolve(strict=False)
@@ -360,6 +362,101 @@ def create_gradle_test_build_world(
             "test_framework": runtime["framework"],
         },
         native_resource_oracle_required=bool(main_processors),
+    )
+
+
+def _module_test_world(model, project_root, inputs, environment, environment_names):
+    from .gradle_module_world import module_world
+
+    modules, target, classpath = module_world(model)
+    runtime = model["testRuntime"]
+    frameworks = {"junit_platform": "junit5", "junit4": "junit4", "testng": "testng"}
+    _require(
+        runtime["framework"] in frameworks,
+        "GRADLE_TEST_FRAMEWORK_UNSUPPORTED",
+        "Unsupported Gradle test framework.",
+    )
+    _require(
+        not any(
+            runtime[key]
+            for key in (
+                "includePatterns",
+                "excludePatterns",
+                "includeEngines",
+                "excludeEngines",
+                "includeTags",
+                "excludeTags",
+            )
+        ),
+        "GRADLE_TEST_FILTER_UNMODELED",
+        "Gradle test filters are not mapped to the standalone Runner.",
+    )
+    args = list(runtime["jvmArgsPrivate"])
+    if runtime["enableAssertions"]:
+        args.append("-ea")
+    if runtime["minHeapSize"]:
+        args.append("-Xms" + runtime["minHeapSize"])
+    if runtime["maxHeapSize"]:
+        args.append("-Xmx" + runtime["maxHeapSize"])
+    args.extend(
+        "-D" + key + "=" + str(value)
+        for key, value in runtime["systemPropertiesPrivate"].items()
+    )
+    runner_environment = dict(environment)
+    for key, value in runtime["environmentOverridesPrivate"].items():
+        if value is None:
+            runner_environment.pop(key, None)
+        else:
+            runner_environment[key] = value
+    home = Path(target["target_java_home"])
+    outputs = {Path(target["output_directory"]), Path(target["test_output_directory"])}
+    configuration = tuple(
+        dict.fromkeys(
+            (*inputs, *(Path(p) for p in model.get("configurationFiles", ())))
+        )
+    )
+    return JavaTestBuildWorld(
+        build_system="gradle",
+        project_root=project_root,
+        module_root=Path(target["module_root"]),
+        main_source_roots=tuple(Path(p) for m in modules for p in m["source_roots"]),
+        test_source_roots=tuple(Path(p) for p in target["test_source_roots"]),
+        main_output=Path(target["output_directory"]),
+        test_output=Path(target["test_output_directory"]),
+        main_dependencies=tuple(Path(p) for p in target["classpath"]),
+        test_dependencies=tuple(Path(p) for p in target["test_classpath"]),
+        test_runtime_classpath=tuple(p for p in classpath if p not in outputs),
+        resource_roots=tuple(
+            Path(p)
+            for sources in (model["test"], model["main"])
+            for p in sources["resourceDirectories"]
+        ),
+        target_java_home=home,
+        source_encoding=target["source_encoding"],
+        source_level=target["source_level"],
+        method_parameters=target["method_parameters"],
+        processor_entries=tuple(Path(p) for p in target["processor_entries"]),
+        java_agents=tuple(
+            dict.fromkeys(p + "=ECJ" for m in modules for p in m["lombok_entries"])
+        ),
+        extra_worker_jvm_arguments=(),
+        test_java_executable=Path(runtime["javaExecutable"]),
+        test_framework=frameworks[runtime["framework"]],
+        test_working_directory=Path(runtime["workingDirectory"]),
+        test_classes_directories=(Path(target["test_output_directory"]),),
+        runner_environment=runner_environment,
+        javac_executable=javac_executable(home),
+        configuration_inputs=configuration,
+        configuration_environment_names=tuple(
+            dict.fromkeys((*environment_names, *runtime["environmentOverrideNames"]))
+        ),
+        test_jvm_arguments=tuple(args),
+        modules=modules,
+        runner_support_provenance={
+            "build_system": "gradle",
+            "gradle_version": model["gradleVersion"],
+            "test_framework": runtime["framework"],
+        },
     )
 
 

@@ -529,6 +529,15 @@ class FastTestManager:
             self._drop_project()
             self._cleanup_pending_roots()
         finally:
+            if attempt.cancel_requested:
+                attempt.state = "cancelled"
+                attempt.result = {
+                    "ok": False,
+                    "passed": False,
+                    "error_code": "TEST_CANCELLED",
+                    "error": "Fast Test was cancelled by the caller.",
+                    "suggested_next_step": "Start another explicit test when ready.",
+                }
             attempt.finished_at = time.time()
             attempt.total_ms = round(
                 (time.monotonic() - attempt.started_monotonic) * 1000, 1
@@ -709,6 +718,7 @@ class FastTestManager:
         return project
 
     def _bootstrap_gradle(self, attempt: TestAttempt) -> _FastTestProject:
+        from .gradle_probe import gradle_build_root
         attempt.require_not_cancelled()
         session_root = Path(
             tempfile.mkdtemp(prefix="jolink-gradle-fast-test-session-")
@@ -718,7 +728,7 @@ class FastTestManager:
         bootstrap = session_root / "bootstrap"
         bootstrap.mkdir(mode=0o700)
         log = bootstrap / "gradle-test-bootstrap.log"
-        project = attempt.project_path
+        project = gradle_build_root(attempt.project_path) or attempt.project_path
         if (project / "buildSrc").exists() or (
             project / "build-logic"
         ).exists():
@@ -732,11 +742,6 @@ class FastTestManager:
         )
         probe = ProductGradleProbe.load()
         version = wrapper_version(project)
-        if version not in probe.supported_versions:
-            raise FastTestManagerError(
-                "GRADLE_VERSION_UNSUPPORTED",
-                "This Gradle Wrapper version has no product evidence.",
-            )
         wrapper = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
         if not wrapper.is_file():
             raise FastTestManagerError(
@@ -765,6 +770,8 @@ class FastTestManager:
                         wrapper=wrapper,
                         prepared=prepared,
                         offline=offline,
+                        tests=attempt.tests,
+                        target_directory=attempt.project_path,
                     ),
                     cwd=project,
                     environment=environment,
@@ -797,7 +804,7 @@ class FastTestManager:
                     probe.load_model(prepared)
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_FAILED",
-                    "The one-time Gradle classes/testClasses Bootstrap failed.",
+                    "The Gradle Build World Probe failed.",
                     context={
                         "return_code": operation.return_code,
                         "bootstrap_log_tail": _redacted_build_log_tail(log),
@@ -812,7 +819,7 @@ class FastTestManager:
         )
         world = create_gradle_test_build_world(
             model=model,
-            project_root=project,
+            project_root=attempt.project_path,
             configuration_inputs=configuration_inputs,
             runner_environment=environment,
             configuration_environment_names=(

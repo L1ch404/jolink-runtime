@@ -245,9 +245,11 @@ def test_formal_output_guard_detects_external_build_change(
     assert runtime._formal_outputs_match_launch(plan) is False
 
 
+@pytest.mark.parametrize("use_alias", [False, True])
 def test_jdt_reload_hotswap_uses_persistent_workspace_output(
     tmp_path: Path,
     monkeypatch,
+    use_alias: bool,
 ) -> None:
     baseline_raw = _compile_class(
         tmp_path,
@@ -320,8 +322,14 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
     compiler = object.__new__(FakeJdt)
     compiler.output_directory = staged
     session.attach_compile_session(compiler)
+    alias = tmp_path / "project-alias"
+    if use_alias:
+        try:
+            alias.symlink_to(project, target_is_directory=True)
+        except OSError:
+            pytest.skip("Creating directory symlinks is unavailable")
     plan = SimpleNamespace(
-        project_root=project,
+        project_root=alias if use_alias else project,
         source_roots=(project / "src/main/java",),
     )
     prepared = ProjectUpdatePlan(
@@ -395,6 +403,25 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
     assert last_reload["persistence"] == "jdt_workspace"
     assert last_reload["restart_loses_update"] is False
     assert last_reload["runtime_overlay_active"] is True
+
+    for failure in ("published", "breakpoints"):
+        def fail_bookkeeping(*_args):
+            raise RuntimeError("injected post-apply failure")
+        with monkeypatch.context() as patch:
+            if failure == "published":
+                patch.setattr(compiler, "mark_published", fail_bookkeeping)
+            else:
+                patch.setattr(runtime, "_refresh_updated_breakpoints", fail_bookkeeping)
+            accepted = runtime.update(action)
+            deadline = time.monotonic() + 5
+            while session.public_status()["last_reload"]["reload_id"] != accepted.data["reload_id"]:
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+            reported = session.public_status()["last_reload"]
+            assert reported["ok"] is True
+            assert reported["applied"] is True
+            assert reported["post_apply_state"] == "incomplete"
+            assert reported["warnings"]
 
     compiler.resource_delta = True
     relaunch_started = runtime.update(action)

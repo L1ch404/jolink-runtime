@@ -397,7 +397,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "type": "string",
             "enum": ["maven", "gradle"],
             "description": (
-                "Optional authoritative build system for Fast Test. Set this "
+                "Optional authoritative build system for project launch or Fast Test. Set this "
                 "when a project contains both Maven and Gradle builds; omit it "
                 "when exactly one supported build is present."
             ),

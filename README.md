@@ -89,13 +89,14 @@ java_application(action=test,
 `passed=false` means the selected tests executed and found a failure; it is not
 a Tool infrastructure error. Fast Test does not require or modify a running
 application. The first release supports Java 8 or 11 Maven jar projects, one
-explicitly selected jar module in a standard Reactor, and Gradle 8.10/8.14
-single-Project Java builds with standard main/test layouts and default Test
-runtime semantics. Maven Reactor launch and Fast Test resolve the selected
+explicitly selected jar module in a standard Reactor, and Gradle Java builds
+including multi-Project dependencies (tested with 7.4.2, 8.10 and 8.14).
+Maven and Gradle multi-module launch and Fast Test resolve the selected
 module's upstream dependencies into separate JDT projects in one Worker.
 Unchanged modules reuse their output; JavaBuilder propagates changed APIs and
 constants to affected downstream sources. Local module dependencies use current
-workspace output, including test-jar dependencies, rather than installed JARs.
+workspace output rather than installed JARs; Maven also supports test-jar
+dependencies. See [Gradle multi-module flow and evidence](docs/gradle-modules.zh-CN.md).
 
 ## Private diagnostics
 

@@ -37,3 +37,22 @@ def test_reactor_cache_detects_upstream_pom_edit_without_reading_sources(tmp_pat
     assert _inputs(tmp_path, "maven") == before
     (module / "pom.xml").write_text('<project><!-- dependency changed --></project>')
     assert _inputs(tmp_path, "maven") != before
+
+
+def test_gradle_cache_uses_exported_subproject_build_files(tmp_path):
+    from jolink_runtime.launch.project_launch_cache import _configuration_stamps
+    (tmp_path / "settings.gradle").write_text("include 'lib', 'app'")
+    script = tmp_path / "custom-module/location/build.gradle.kts"
+    script.parent.mkdir(parents=True)
+    script.write_text('plugins { `java-library` }')
+    source = script.parent / "src/main/java/Value.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Value {}")
+    before = _inputs(tmp_path, "gradle", (script,))
+    startup = _configuration_stamps((script,))
+    source.write_text("class Value { int n; }")
+    assert _inputs(tmp_path, "gradle", (script,)) == before
+    assert _configuration_stamps(startup) == startup
+    script.write_text('plugins { `java-library` }; dependencies { implementation("g:a:1") }')
+    assert _inputs(tmp_path, "gradle", (script,)) != before
+    assert _configuration_stamps(startup) != startup

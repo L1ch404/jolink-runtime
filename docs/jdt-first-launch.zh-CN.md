@@ -63,11 +63,12 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 
 ## 缓存与生命周期
 
-- 构建配置/依赖变更不再自动做freshness审计。需要重新Probe时，手动清理对应
+- Maven及Gradle单Project构建配置/依赖变更不再自动做完整freshness审计。需要重新Probe时，手动清理对应
   `project-launch` 和 `jdt-workspaces` 缓存后launch。
 - 已安装的Worker按分发目录复用；新的Worker版本使用新的缓存目录。
 - 正常stop/shutdown保存workspace和源码索引。
 - JVM直接读取当前JDT bin；restart使用当前编译输出，不回退到首次启动副本。
 - Worker仍然隶属于当前MCP进程；跨对话/跨MCP保活不在这次改动范围内。
-- Maven Reactor支持目标模块及其上游模块共用一个Worker，多模块流程见
-  [多模块JDT流程](jdt-modules.zh-CN.md)。Gradle多Project接线仍留后。
+- Maven Reactor和Gradle多Project支持目标及所需模块共用一个Worker，多模块流程见
+  [多模块JDT流程](jdt-modules.zh-CN.md)。Gradle多Project会比较已导出的小构建配置，
+  配置变化则重新Probe；不重验整份依赖或输出。

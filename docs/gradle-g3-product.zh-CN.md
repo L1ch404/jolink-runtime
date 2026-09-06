@@ -1,5 +1,9 @@
 # Gradle G3：Fast Test产品接入
 
+> 这是 G3 阶段的历史设计/证据记录，不代表现行流程。现行 Fast Test 不执行
+> `classes/testClasses`；多Project已接通，见[当前Fast Test](fast-test-v0.1.zh-CN.md)
+> 和[Gradle多模块](gradle-modules.zh-CN.md)。
+
 ## 产品结构
 
 G3将Maven和Gradle统一到同一个不可变authority模型：

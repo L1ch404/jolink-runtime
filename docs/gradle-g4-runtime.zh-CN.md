@@ -1,5 +1,8 @@
 # Gradle G4：Runtime Launch 与持久 Reload
 
+> 本页主要保留 G4 单Project路径及阶段证据。后续多Project启动/reload已接通，
+> 使用共享JDT模块模型；多模块当前流程和实测见[Gradle多模块](gradle-modules.zh-CN.md)。
+
 ## 已实现链路
 
 G4把G1-G3已经验证的Gradle task-native authority接入现有Runtime产品链路：

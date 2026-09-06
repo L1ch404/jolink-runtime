@@ -335,6 +335,7 @@ def test_project_launch_routes_without_changing_runtime_action(
             "action": "run",
             "project_path": str(tmp_path),
             "launch_name": " Application ",
+            "build_system": "gradle",
             "jdwp_port": 6006,
             "ready_port": 8080,
             "startup_wait_timeout_seconds": 12,
@@ -349,6 +350,7 @@ def test_project_launch_routes_without_changing_runtime_action(
     assert not hasattr(action, "project_path")
     assert request.project_path == tmp_path
     assert request.launch_name == " Application "
+    assert request.build_system == "gradle"
     assert request.jdwp_port == 6006
     assert request.ready_port == 8080
     assert request.startup_wait_timeout_seconds == 12

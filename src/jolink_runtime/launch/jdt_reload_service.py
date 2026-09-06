@@ -58,6 +58,10 @@ class JdtReloadService:
         })
 
     def apply(self, runtime, compiler, prepared, session, attempt, sources):
+        root = prepared.jdt_build_world_plan.project_root.resolve(strict=False)
+        # Prepare display/recording paths before changing a running JVM.
+        source_names = tuple(source.resolve(strict=False).relative_to(root).as_posix()
+                             for source in sources)
         session.transition_reload(ReloadStage.COMPILING)
         started = time.monotonic()
         try:
@@ -137,15 +141,15 @@ class JdtReloadService:
                 "suggested_next_step": "Restart the application to establish its code state.",
             })
         apply_ms = round((time.monotonic() - started) * 1000, 1)
-        compiler.mark_published()
+        # RedefineClasses has acknowledged the change. Keep that fact even if
+        # subsequent local bookkeeping or breakpoint refresh fails.
+        attempt.applied = True
         attempt.apply_method = "hotswap"
         # These are observations of accepted definitions, not a full class digest.
         runtime._runtime_overlay_state = "active"
-        runtime._runtime_overlay_sources.update(
-            source.relative_to(prepared.jdt_build_world_plan.project_root).as_posix()
-            for source in sources
-        )
+        runtime._runtime_overlay_sources.update(source_names)
         runtime._code_revision += 1
+        compiler.mark_published()
         breakpoints = runtime._refresh_updated_breakpoints(jdwp, signatures)
         return RuntimeResult(ok=True, data={
             **timing, "apply_ms": apply_ms, "status": "reloaded", "applied": True,

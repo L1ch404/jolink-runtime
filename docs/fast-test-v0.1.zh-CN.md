@@ -62,7 +62,8 @@ Test Build World和JDT workspace都保存在joLink本地缓存。MCP关闭后，
 ## 已验证
 
 - Maven JUnit4/5、TestNG、Lombok和Spring Configuration Processor；
-- Gradle 8.10/8.14 JUnit5；
+- Gradle 8.10/8.14 JUnit5；Gradle 7.4.2真实多模块，JUnit4/Vintage/5，
+  上游源码修改、失败恢复及持久workspace，见[Gradle多模块实测](gradle-modules.zh-CN.md)；
 - 编译失败、断言失败、恢复、超时、取消和进程隔离；
 - MCP进程退出后复用Test Build World与JDT workspace；
 - `ss-admin-service`：423个main源码、34个test源码，首次约10.3秒；同MCP后续约
@@ -74,5 +75,7 @@ Test Build World和JDT workspace都保存在joLink本地缓存。MCP关闭后，
 - Runner支持显式Class或Class#method选择；
 - Maven Reactor已将目标和上游模块接入持久JDT工程，支持上游main源码变化，
   也支持显式依赖上游test-jar的测试；完整流程见[多模块JDT](jdt-modules.zh-CN.md)；
+- Gradle多Project使用相同的JDT模块工程；读取解析后的api/implementation/runtimeOnly
+  依赖，只构建所需模块。构建配置改变时重新Probe，普通源码修改只走增量；
 - protobuf/OpenAPI等必须先运行代码生成任务的项目尚未自动执行生成器；
 - Runner JVM尚未保活，Spring测试的大部分后续耗时通常在Runner启动和框架初始化。

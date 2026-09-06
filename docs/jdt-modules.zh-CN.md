@@ -1,13 +1,13 @@
-# Maven 多模块 JDT
+# Maven / Gradle 多模块 JDT
 
 启动和 Fast Test 共用模块模型。一个编译 workspace 中只有一个 Worker JVM，
-每个参与编译的 Maven Java 模块对应一个 JDT 工程。
+每个参与编译的 Java 模块对应一个 JDT 工程。Maven 和 Gradle 共用这个编译链路。
 
 ## 实际流程
 
 1. 根据启动类或测试选择器选定目标模块。
-2. 没有缓存时运行 Maven Probe。Maven 解析继承、版本和依赖，Probe 只导出目标
-   及它需要的上游模块，不执行 compile、test-compile 或 package。
+2. 没有缓存时运行对应的 Probe。Maven / Gradle 解析版本和依赖，Probe 只导出目标
+   及它需要的模块，不执行 compile、test-compile、classes、testClasses 或 package。
 3. 每个模块保留自己的源码目录、编码、Java level、依赖、Processor 和输出。
    本地模块依赖转换成 JDT project reference，外部依赖继续使用已解析的 JAR。
 4. 打开持久 workspace：首次 FULL；以后通过源码mtime/size找变化，通知
@@ -55,7 +55,7 @@ warm测试约783ms。上游`ArithmeticUtils.gcd`临时修改使UserGuide的4项�
 
 ## 尚未覆盖
 
-- Gradle多Project仍需接入同一个模块模型；当前Gradle单Project路径保持不变。
+- Gradle多Project已接入；见 [Gradle多模块流程与实测](gradle-modules.zh-CN.md)。
 - Profile中才出现的目标模块仍需进一步打通发现入口；普通模块不再因为仓库存在
   可选Profile模块而整体拒绝，实际Maven会话仍决定激活哪些模块。
 - 需要先执行protobuf/OpenAPI等生成任务的项目仍需要已有生成源码或后续专门支持。

@@ -1,4 +1,4 @@
-"""Convert Maven-native Gradle Probe facts into one Runtime Build World."""
+"""Convert Gradle Probe facts into the shared Runtime Build World."""
 
 from __future__ import annotations
 
@@ -147,6 +147,8 @@ def create_gradle_runtime_build_world(
     configuration_inputs: Sequence[Path],
     configuration_environment_names: Sequence[str],
 ) -> GradleRuntimeBuildWorld:
+    if model.get("modules"):
+        return _module_runtime_world(model, project_root, configuration_inputs, configuration_environment_names)
     project = project_root.expanduser().resolve(strict=True)
     source_root = (project / "src/main/java").resolve(strict=False)
     resource_root = (project / "src/main/resources").resolve(strict=False)
@@ -387,6 +389,53 @@ def create_gradle_runtime_build_world(
                 (resource_root,)
             ),
         ),
+    )
+
+
+def _module_runtime_world(model, project_root, inputs, environment_names):
+    from .gradle_module_world import module_world, module_fingerprint
+
+    project_root = project_root.expanduser().resolve(strict=False)
+    modules, target, classpath = module_world(model)
+    configuration = tuple(
+        dict.fromkeys(
+            (*inputs, *(Path(p) for p in model.get("configurationFiles", ())))
+        )
+    )
+    home = Path(target["target_java_home"])
+    output = Path(target["output_directory"])
+    resources = tuple(Path(p) for p in target["resource_roots"])
+    plan = JdtBuildWorldPlan(
+        project_root=project_root,
+        module_root=Path(target["module_root"]),
+        source_roots=tuple(Path(p) for m in modules for p in m["source_roots"]),
+        dependency_entries=tuple(Path(p) for p in target["classpath"]),
+        processor_entries=tuple(Path(p) for p in target["processor_entries"]),
+        lombok_entries=tuple(
+            dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])
+        ),
+        target_java_home=home,
+        source_encoding=target["source_encoding"],
+        source_level=target["source_level"],
+        target_level=target["source_level"],
+        fingerprint=module_fingerprint(modules, configuration),
+        configuration_inputs=configuration,
+        configuration_environment_names=tuple(environment_names),
+        javac_executable=_javac(home),
+        method_parameters=target["method_parameters"],
+        resource_roots=resources,
+        modules=modules,
+    )
+    return GradleRuntimeBuildWorld(
+        project_root=project_root,
+        module_output=output,
+        generation_input_roots=(output,),
+        generation_input_manifest={},
+        resource_source_roots=resources,
+        formal_resource_roots=(),
+        runtime_classpath=classpath,
+        jdt_plan=plan,
+        configuration_inputs=configuration,
     )
 
 
