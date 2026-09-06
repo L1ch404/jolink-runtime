@@ -17,7 +17,8 @@ public final class CompilationObserver extends CompilationParticipant {
         return BuildObservation.isEnabled()
                 && project != null
                 && project.getProject().isOpen()
-                && "plain-fixture".equals(project.getElementName());
+                && ("plain-fixture".equals(project.getElementName())
+                    || project.getElementName().startsWith("module_"));
     }
 
     @Override
@@ -31,8 +32,9 @@ public final class CompilationObserver extends CompilationParticipant {
         if (files != null) {
             for (BuildContext file : files) {
                 if (file != null && file.getFile() != null) {
-                    units.add(
-                            file.getFile().getProjectRelativePath().toString());
+                    String name = file.getFile().getProject().getName();
+                    units.add((name.startsWith("module_") ? name + "/" : "")
+                            + file.getFile().getProjectRelativePath().toString());
                 }
             }
         }

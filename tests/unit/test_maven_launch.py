@@ -326,7 +326,7 @@ def test_single_aggregator_is_not_treated_as_a_runnable_module(
     assert captured.value.error_code is LaunchErrorCode.BUILD_MODULE_NOT_FOUND
 
 
-def test_profile_controlled_or_escaping_modules_are_rejected(
+def test_inactive_profile_modules_do_not_block_standard_project_discovery(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "reactor"
@@ -348,13 +348,9 @@ def test_profile_controlled_or_escaping_modules_are_rejected(
         """,
     )
 
-    with pytest.raises(MavenResolutionError) as captured:
-        MavenBuildSystemAdapter().resolve_workspace(project)
-
-    assert (
-        captured.value.error_code
-        is LaunchErrorCode.UNSUPPORTED_BUILD_MODEL
-    )
+    workspace = MavenBuildSystemAdapter().resolve_workspace(project)
+    assert len(workspace.modules) == 1
+    assert workspace.modules[0].artifact_id == "root"
 
 
 def test_classpath_result_is_verified_before_jvm_plan_is_published(

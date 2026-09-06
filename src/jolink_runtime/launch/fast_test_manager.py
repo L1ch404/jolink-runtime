@@ -22,6 +22,8 @@ from .contracts import BuildOperationSpec, LaunchIntent
 from .compiler_profile import parse_maven_memory_megabytes
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
+from .jdt_modules import ModuleCompileSession
+from .maven_module_world import load_module_worlds, combine_effective_poms
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
     JdtCandidate,
@@ -546,6 +548,7 @@ class FastTestManager:
             and project.project_root == attempt.project_path
             and project.build_system == provider.kind
             and project.compiler.ready
+            and self._test_selection_in_module(project.compiler.test_source_roots, attempt.tests)
             and self._cache.is_current(attempt.project_path, provider.kind)
         ):
             return project
@@ -554,14 +557,20 @@ class FastTestManager:
         cached = self._cache.load(attempt.project_path, provider.kind)
         if cached is not None:
             world, build_jdk = cached
-            project = self._start_build_world(
-                attempt=attempt, world=world, build_jdk=build_jdk
-            )
-            self._project = project
-            return project
+            if self._test_selection_in_module(world.test_source_roots, attempt.tests):
+                project = self._start_build_world(
+                    attempt=attempt, world=world, build_jdk=build_jdk
+                )
+                self._project = project
+                return project
         project = provider.bootstrap(self, attempt)
         self._project = project
         return project
+
+    @staticmethod
+    def _test_selection_in_module(roots, tests):
+        return all(any((root / (test.partition("#")[0].split("$")[0].replace(".", "/") + ".java")).is_file()
+                       for root in roots) for test in tests)
 
     def _bootstrap(self, attempt: TestAttempt) -> _FastTestProject:
         return self._select_bootstrap(attempt).bootstrap(self, attempt)
@@ -616,11 +625,6 @@ class FastTestManager:
         workspace = self._maven.resolve_workspace(attempt.project_path)
         attempt.require_not_cancelled()
         module = self._select_test_module(workspace, attempt)
-        if len(workspace.modules) > 1:
-            raise FastTestManagerError(
-                "FAST_TEST_REACTOR_NOT_IMPLEMENTED",
-                "Fast Test direct JDT compilation does not yet include Reactor upstream modules.",
-            )
         if module.packaging != "jar":
             raise FastTestManagerError(
                 "FAST_TEST_PACKAGING_UNSUPPORTED",
@@ -860,19 +864,19 @@ class FastTestManager:
             command.extend(["-P", ",".join(preferences.active_profiles)])
         if offline:
             command.append("--offline")
-        if len(workspace_modules) > 1 and module.relative_path != ".":
-            command.extend(["-pl", module.relative_path, "-am"])
+        multi = len(workspace_modules) > 1
         command.extend(
             [
-                prepared_probe.goal,
+                prepared_probe.goal.replace("export-build-world", "export-reactor-world") if multi else prepared_probe.goal,
+                f"-Djolink.probe.targetDirectory={module.directory}",
                 (
                     "-Djolink.probe.outputDirectory="
                     f"{prepared_probe.output_directory}"
                 ),
-                _HELP_PLUGIN_GOAL,
-                f"-Doutput={effective_pom}",
             ]
         )
+        if not multi:
+            command.extend([_HELP_PLUGIN_GOAL, f"-Doutput={effective_pom}"])
         try:
             operation = self._supervisor.run(
                 BuildOperationSpec(
@@ -906,7 +910,7 @@ class FastTestManager:
             if not operation.succeeded:
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_FAILED",
-                    "The one-time Maven test-compile Bootstrap failed.",
+                    "The Maven Test Build World Probe failed.",
                     context={
                         "return_code": operation.return_code,
                         "bootstrap_log_tail": _redacted_build_log_tail(log),
@@ -915,6 +919,11 @@ class FastTestManager:
             snapshot = probe.load_snapshot(
                 prepared_probe, module_root=module.directory
             )
+            if multi:
+                combine_effective_poms(prepared_probe.output_directory, effective_pom)
+                snapshot["moduleWorlds"] = load_module_worlds(
+                    prepared_probe.output_directory, module.directory, build_jdk, tests=True
+                )
             attempt.require_not_cancelled()
             return snapshot
         finally:
@@ -1072,6 +1081,19 @@ class FastTestManager:
             for value in unsupported_surefire
             if value not in {"skip", "skipTests"}
         ]
+        test_java = build_jdk.java_executable
+        surefire = self._maven._find_build_plugin(effective_project, "maven-surefire-plugin")
+        if surefire is not None:
+            configured_java = surefire.findtext("./{*}configuration/{*}jvm")
+            if configured_java:
+                # Maven's optional <jvm>${property}</jvm> defaults to its
+                # current Java when that property is not set.
+                property_match = re.fullmatch(r"\$\{([^}]+)\}", configured_java.strip())
+                if property_match:
+                    configured_java = effective_project.findtext("./{*}properties/{*}" + property_match[1]) or ""
+            if configured_java is not None and "${" not in configured_java:
+                if configured_java.strip(): test_java = Path(configured_java.strip())
+                unsupported_surefire = [name for name in unsupported_surefire if name != "jvm"]
         (
             unsupported_surefire,
             test_jvm_arguments,
@@ -1227,7 +1249,7 @@ class FastTestManager:
             processor_entries=processor_entries,
             java_agents=tuple(f"{path}=ECJ" for path in lombok),
             extra_worker_jvm_arguments=(),
-            test_java_executable=build_jdk.java_executable,
+            test_java_executable=test_java,
             test_framework=None,
             test_working_directory=module.directory,
             test_classes_directories=(test_output,),
@@ -1240,7 +1262,16 @@ class FastTestManager:
             worker_min_heap_mb=worker_min_heap_mb,
             worker_max_heap_mb=worker_max_heap_mb,
             runner_support_provenance=runner_support_provenance,
+            modules=tuple(snapshot.get("moduleWorlds", ())),
         )
+        if world.modules:
+            own_outputs = {str(main_output), str(test_output)}
+            world = replace(world,
+                main_source_roots=tuple(Path(p) for m in world.modules for p in m["source_roots"]),
+                java_agents=tuple(dict.fromkeys(f"{p}=ECJ" for m in world.modules for p in m["lombok_entries"])),
+                test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support,
+                resource_roots=tuple(self._paths(snapshot,"testResourceDirectories",module.directory)) + tuple(self._paths(snapshot,"resourceDirectories",module.directory)),
+            )
         result = self._start_build_world(
             attempt=attempt,
             world=world,
@@ -1274,6 +1305,7 @@ class FastTestManager:
             "main_dependencies": [str(path) for path in world.main_dependencies],
             "test_dependencies": [str(path) for path in world.test_dependencies],
             "processors": [str(path) for path in world.processor_entries],
+            "modules": world.modules,
         }, sort_keys=True).encode()).hexdigest()
         workspace = self._cache.workspace_store(
             world.project_root, world.build_system
@@ -1283,7 +1315,9 @@ class FastTestManager:
             identity={"fast_test_world": identity},
         )
         lombok_enabled = bool(world.java_agents)
-        compiler = PersistentJdtCompileSession(
+        factory = ModuleCompileSession if world.modules else PersistentJdtCompileSession
+        compiler = factory(
+            **({"modules": world.modules, "target_module": world.module_root} if world.modules else {}),
             root=workspace.root,
             candidate=candidate,
             worker_java_home=worker_java.home,
@@ -1400,7 +1434,7 @@ class FastTestManager:
             compiler=compiler,
             runtime_classpath=(
                 *(path for path in world.resource_roots if path.is_dir()),
-                *world.test_runtime_classpath,
+                *(compiler.runtime_classpath(world.test_runtime_classpath) if world.modules else world.test_runtime_classpath),
             ),
             upstream_source_roots=world.upstream_source_roots,
             runner_support_provenance=dict(
@@ -2119,6 +2153,8 @@ class FastTestManager:
             *project.compiler.source_roots,
             *project.compiler.test_source_roots,
         )
+        if isinstance(project.compiler, ModuleCompileSession):
+            allowed = project.compiler.workspace_source_roots()
         upstream_roots = tuple(
             getattr(project, "upstream_source_roots", ())
         )

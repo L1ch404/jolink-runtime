@@ -186,6 +186,7 @@ class ProjectLaunchCache:
                 ),
                 worker_java_major=plan_raw.get("worker_java_major"),
                 system_entries=_paths(plan_raw.get("system_entries")),
+                modules=tuple(plan_raw.get("modules", ())),
             )
             jvm_raw = raw["jvm_plan"]
             runtime_jdk = _toolchain(raw["runtime_jdk"])
@@ -301,6 +302,7 @@ class ProjectLaunchCache:
                 ),
                 "worker_java_major": jdt_plan.worker_java_major,
                 "system_entries": [str(path) for path in jdt_plan.system_entries],
+                "modules": jdt_plan.modules,
                 "resource_fingerprint": jdt_plan.resource_fingerprint,
             },
         }

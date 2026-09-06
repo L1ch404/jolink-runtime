@@ -702,6 +702,7 @@ class JdtBuildWorldPlan:
     worker_java_home: Path | None = None
     worker_java_major: int | None = None
     system_entries: tuple[Path, ...] = ()
+    modules: tuple[dict[str, Any], ...] = ()
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == fast_compile_fingerprint(
@@ -1214,6 +1215,9 @@ class PersistentJdtCompileSession:
             return None
         return matches[0]
 
+    def class_file(self, relative: str) -> tuple[str, Path]:
+        return relative, self.output_directory / relative
+
     def accept_baseline(self) -> None:
         with self._state_lock:
             self._pending_outputs.clear()
@@ -1240,7 +1244,7 @@ class PersistentJdtCompileSession:
         """Find edits using saved size/mtime; do not reread unchanged sources."""
         observed: set[Path] = set()
         changed: set[Path] = set()
-        for root in (*self.source_roots, *self.test_source_roots):
+        for root in self.workspace_source_roots():
             for path in root.rglob("*.java"):
                 source = path.resolve(strict=False)
                 observed.add(source)
@@ -1248,6 +1252,9 @@ class PersistentJdtCompileSession:
                     changed.add(source)
         changed.update(set(self._source_map) - observed)
         return tuple(sorted(changed, key=str))
+
+    def workspace_source_roots(self) -> tuple[Path, ...]:
+        return (*self.source_roots, *self.test_source_roots)
 
     def mark_published(self) -> None:
         with self._state_lock:
@@ -1712,7 +1719,7 @@ class PersistentJdtCompileSession:
             {
                 key: value
                 for key, value in diagnostic.items()
-                if key in {"resource", "line", "severity_name", "message"}
+                if key in {"resource", "module", "line", "severity_name", "message"}
             }
             for diagnostic in raw_diagnostics
         )

@@ -72,7 +72,7 @@ Test Build World和JDT workspace都保存在joLink本地缓存。MCP关闭后，
 
 - source/target支持Java 8和11；
 - Runner支持显式Class或Class#method选择；
-- Maven Reactor当前返回`FAST_TEST_REACTOR_NOT_IMPLEMENTED`；要保持纯JDT路径，
-  后续需要把上游模块一起加入持久编译模型；
+- Maven Reactor已将目标和上游模块接入持久JDT工程，支持上游main源码变化，
+  也支持显式依赖上游test-jar的测试；完整流程见[多模块JDT](jdt-modules.zh-CN.md)；
 - protobuf/OpenAPI等必须先运行代码生成任务的项目尚未自动执行生成器；
 - Runner JVM尚未保活，Spring测试的大部分后续耗时通常在Runner启动和框架初始化。

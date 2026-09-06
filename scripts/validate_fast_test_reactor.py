@@ -115,17 +115,10 @@ def main() -> int:
         manager = FastTestManager()
         try:
             baseline = run(manager, root)
-            if baseline.get("error_code") == "FAST_TEST_REACTOR_NOT_IMPLEMENTED":
-                print(json.dumps({
-                    "ok": True,
-                    "reactor_direct_jdt_deferred": True,
-                    "error_code": baseline["error_code"],
-                }, separators=(",", ":")))
-                return 0
             if not baseline.get("passed"):
                 raise AssertionError(baseline)
             assert manager._project is not None
-            reactor_output = (root / "lib/target/classes").resolve()
+            reactor_output = manager._project.compiler.runtime_classpath(((root / "lib/target/classes").resolve(),))[0]
             if reactor_output not in manager._project.runtime_classpath:
                 raise AssertionError("Reactor output is absent from runtime classpath")
 
@@ -165,7 +158,7 @@ def main() -> int:
             )
             if (
                 upstream_failed.get("passed") is not False
-                or not upstream_failed.get("bootstrap_ms")
+                or not upstream_failed.get("compile_ms")
             ):
                 raise AssertionError(upstream_failed)
             lib_source.write_text(good_lib, encoding="utf-8")
@@ -176,7 +169,7 @@ def main() -> int:
             )
             if (
                 not upstream_recovered.get("passed")
-                or not upstream_recovered.get("bootstrap_ms")
+                or not upstream_recovered.get("compile_ms")
             ):
                 raise AssertionError(upstream_recovered)
             print(
@@ -188,7 +181,7 @@ def main() -> int:
                         "selected_module_incremental_ms": app_recovered[
                             "compile_ms"
                         ],
-                        "upstream_change_rebootstrapped": True,
+                        "upstream_change_incremental": True,
                         "upstream_source_files_classified": True,
                         "upstream_recovery_passed": True,
                     },

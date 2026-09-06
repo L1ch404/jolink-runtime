@@ -74,6 +74,13 @@ def classify_compiler_arguments(
     while index < len(arguments):
         raw = arguments[index]
         argument = str(raw).strip()
+        if argument in {"-Xlint", "-nowarn", "-deprecation"} or argument.startswith("-Xlint:"):
+            decisions.append(CompilerArgumentDecision(
+                argument=argument, disposition="REDUNDANT_FOR_JDT",
+                category="optional_diagnostics_disabled",
+            ))
+            index += 1
+            continue
         if argument == "-proc:none":
             decisions.append(
                 CompilerArgumentDecision(

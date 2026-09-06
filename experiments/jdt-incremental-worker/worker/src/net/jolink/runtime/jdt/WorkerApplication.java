@@ -69,6 +69,10 @@ public final class WorkerApplication implements IApplication {
     private IWorkspace workspace;
     private IProject project;
     private IJavaProject javaProject;
+    private String projectName = PROJECT_NAME;
+    private ModuleWorkspace modules;
+
+    void useProjectName(String name) { projectName = name; }
     private boolean instrumentationEnabled;
     private boolean projectReopened;
     private boolean configurationReused;
@@ -97,7 +101,7 @@ public final class WorkerApplication implements IApplication {
     private final Set<String> pendingDeletedSourceUnits =
             new LinkedHashSet<>();
 
-    private static final class OutputChanges implements IResourceChangeListener {
+    static final class OutputChanges implements IResourceChangeListener {
         final Map<String, Boolean> files = new LinkedHashMap<>();
         private final IProject project;
 
@@ -159,7 +163,7 @@ public final class WorkerApplication implements IApplication {
         }
     }
 
-    private static final class ProblemDiagnostic
+    static final class ProblemDiagnostic
             implements Comparable<ProblemDiagnostic> {
         final String resource;
         final int line;
@@ -215,6 +219,21 @@ public final class WorkerApplication implements IApplication {
                 new java.io.OutputStreamWriter(System.out, StandardCharsets.UTF_8),
                 true);
         Map<String, String> arguments = parseArguments(context);
+        if (arguments.containsKey("modules-file")) {
+            BuildObservation.setEnabled(true);
+            modules = new ModuleWorkspace();
+            modules.initialize(Paths.get(arguments.get("modules-file")),
+                    "true".equals(arguments.get("reuse-configuration")));
+            workspace = ResourcesPlugin.getWorkspace();
+            emit("{\"ok\":true,\"status\":\"ready\",\"workspace_project_state\":"
+                    + json(modules.reopened ? "reopened" : "created")
+                    + ",\"configuration_reused\":" + modules.reopened + "}");
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+                for (String line; (line = reader.readLine()) != null;) if (!handle(line)) return EXIT_OK;
+            }
+            saveWorkspace();
+            return EXIT_OK;
+        }
         String systemLibrariesFile = arguments.get("system-libraries");
         if (isBlank(systemLibrariesFile)) {
             emitError("MISSING_SYSTEM_LIBRARIES", "Missing --system-libraries.");
@@ -297,7 +316,7 @@ public final class WorkerApplication implements IApplication {
         return result;
     }
 
-    private void initialize(
+    void initialize(
             Path systemLibrariesFile,
             String sourceEncoding,
             String sourceLevel,
@@ -307,7 +326,7 @@ public final class WorkerApplication implements IApplication {
             boolean reuseConfiguration) throws Exception {
         workspace = ResourcesPlugin.getWorkspace();
 
-        project = workspace.getRoot().getProject(PROJECT_NAME);
+        project = workspace.getRoot().getProject(projectName);
         projectReopened = project.exists();
         if (!project.exists()) {
             project.create(monitor);
@@ -368,6 +387,12 @@ public final class WorkerApplication implements IApplication {
         }
 
         List<IClasspathEntry> classpath = new ArrayList<>();
+        Set<String> testsIncluded = new LinkedHashSet<>();
+        if (testClasspathFile != null) {
+            for (String line : Files.readAllLines(testClasspathFile, StandardCharsets.UTF_8))
+                if (line.startsWith("project-tests:")) testsIncluded.add(line.substring(14));
+        }
+        Set<String> mainProjects = new LinkedHashSet<>();
         classpath.add(JavaCore.newSourceEntry(
                 source.getFullPath(),
                 new IPath[0],
@@ -378,6 +403,14 @@ public final class WorkerApplication implements IApplication {
                 systemLibrariesFile, StandardCharsets.UTF_8)) {
             String value = line.trim();
             if (!value.isEmpty()) {
+                if (value.startsWith("project:")) {
+                    mainProjects.add(value.substring(8));
+                    classpath.add(JavaCore.newProjectEntry(
+                            new org.eclipse.core.runtime.Path("/" + value.substring(8)),
+                            new org.eclipse.jdt.core.IAccessRule[0], false,
+                            new IClasspathAttribute[] {JavaCore.newClasspathAttribute("without_test_code", Boolean.toString(!testsIncluded.contains(value.substring(8))))}, false));
+                    continue;
+                }
                 Path entry = Paths.get(value);
                 classpath.add(JavaCore.newLibraryEntry(
                         org.eclipse.core.runtime.Path.fromOSString(
@@ -416,6 +449,20 @@ public final class WorkerApplication implements IApplication {
                     testClasspathFile, StandardCharsets.UTF_8)) {
                 String value = line.trim();
                 if (value.isEmpty()) {
+                    continue;
+                }
+                if (value.startsWith("project-tests:")) {
+                    if (mainProjects.contains(value.substring(14))) continue;
+                    classpath.add(JavaCore.newProjectEntry(
+                            new org.eclipse.core.runtime.Path("/" + value.substring(14)),
+                            new org.eclipse.jdt.core.IAccessRule[0], false, testAttributes, false));
+                    continue;
+                }
+                if (value.startsWith("project:")) {
+                    classpath.add(JavaCore.newProjectEntry(
+                            new org.eclipse.core.runtime.Path("/" + value.substring(8)),
+                            new org.eclipse.jdt.core.IAccessRule[0], false,
+                            new IClasspathAttribute[] {testAttributes[0], JavaCore.newClasspathAttribute("without_test_code", "true")}, false));
                     continue;
                 }
                 Path entry = Paths.get(value);
@@ -893,6 +940,10 @@ public final class WorkerApplication implements IApplication {
             NullProgressMonitor buildMonitor,
             ActiveBuild active,
             List<String> touchedSources) throws Exception {
+        if (modules != null) {
+            emit(modules.build(buildKind, requestedKind, touchedSources, buildMonitor));
+            return;
+        }
         OutputChanges outputs = new OutputChanges(project);
         BuildObservation.begin();
         WorkerMetrics.resetPeaks();
@@ -1260,7 +1311,7 @@ public final class WorkerApplication implements IApplication {
         protocol.flush();
     }
 
-    private static String jsonArray(List<String> values) {
+    static String jsonArray(List<String> values) {
         StringBuilder result = new StringBuilder("[");
         for (int index = 0; index < values.size(); index++) {
             if (index > 0) {
@@ -1271,7 +1322,7 @@ public final class WorkerApplication implements IApplication {
         return result.append(']').toString();
     }
 
-    private static String jsonObjectsArray(List<String> values) {
+    static String jsonObjectsArray(List<String> values) {
         return "[" + String.join(",", values) + "]";
     }
 
@@ -1292,7 +1343,7 @@ public final class WorkerApplication implements IApplication {
         return value == null ? "null" : json(value);
     }
 
-    private static String json(String value) {
+    static String json(String value) {
         StringBuilder result = new StringBuilder("\"");
         for (int index = 0; index < value.length(); index++) {
             char character = value.charAt(index);

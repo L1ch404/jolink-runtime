@@ -45,6 +45,8 @@ from .gradle_runtime_build_world import (
     create_gradle_runtime_build_world,
 )
 from .jdt_compile_session import JdtBuildWorldPlan
+from .maven_probe import ProductMavenProbe
+from .maven_module_world import load_module_worlds
 from .project_launch_cache import (
     ProjectLaunchCache,
     stabilize_jdt_plan,
@@ -279,17 +281,6 @@ class ProjectLaunchPipeline:
         java_modules = tuple(
             item for item in workspace.modules if item.packaging != "pom"
         )
-        if len(java_modules) != 1:
-            raise LaunchPipelineFailure(
-                "JDT_MULTI_MODULE_NOT_IMPLEMENTED",
-                "JDT-first launch currently supports one Java module.",
-                retryable=False,
-                suggested_next_step=(
-                    "Use a single-module project while multi-project JDT "
-                    "Build World support is implemented."
-                ),
-                context={"java_module_count": len(java_modules)},
-            )
 
         build_log = attempt_directory / "build.log"
         build_jdk = self._select_java(
@@ -316,6 +307,11 @@ class ProjectLaunchPipeline:
             build_jdk=build_jdk,
             build_log=build_log,
         )
+        if len(java_modules) > 1:
+            return self._prepare_maven_modules(
+                context, request, imported.intent, preferences, workspace, module,
+                build_jdk, runtime_jdk, maven, attempt_directory, build_log,
+            )
         try:
             execution = self._maven.create_execution_plan(
                 workspace=workspace,
@@ -485,6 +481,66 @@ class ProjectLaunchPipeline:
             launch_intent=imported.intent,
             build_preferences_identity=preferences_identity,
         ))
+
+    def _prepare_maven_modules(self, context, request, intent, preferences, workspace,
+                               module, build_jdk, runtime_jdk, maven, directory, log):
+        import json
+        probe = ProductMavenProbe.load()
+        local_repository = preferences.local_repository or Path.home() / ".m2/repository"
+        settings = preferences.user_settings_file
+        if settings is None and (Path.home() / ".m2/settings.xml").is_file():
+            settings = Path.home() / ".m2/settings.xml"
+        offline = "-o" in shlex.split(os.environ.get("MAVEN_ARGS", "")) or "--offline" in shlex.split(os.environ.get("MAVEN_ARGS", ""))
+        prepared = probe.prepare(attempt_directory=directory / "probe",
+            source_settings=settings, local_repository=local_repository, offline=offline)
+        command = [*maven.argv_prefix, "--batch-mode", "-f", str(workspace.root_pom),
+            "-s", str(prepared.settings_file), f"-Dmaven.repo.local={local_repository}",
+            prepared.goal.replace("export-build-world", "export-reactor-world"),
+            f"-Djolink.probe.targetDirectory={module.directory}",
+            f"-Djolink.probe.outputDirectory={prepared.output_directory}", "-Djolink.probe.scope=runtime"]
+        if offline: command.append("--offline")
+        if preferences.active_profiles: command.extend(["-P", ",".join(preferences.active_profiles)])
+        context.set_build_plan(BuildPlan(build_system="maven", build_root=workspace.build_root,
+            target_module=module.relative_path, build_java_executable=build_jdk.java_executable,
+            compile_required=False))
+        context.transition(LaunchPhase.RESOLVING_RUNTIME)
+        try:
+            result = context.run_operation(BuildOperationSpec(argv=tuple(command),
+                cwd=workspace.build_root, environment=self._java.maven_environment(build_jdk),
+                timeout_seconds=900, output_capture=log, operation_name="maven_module_probe"))
+            if not result.succeeded:
+                raise LaunchPipelineFailure("MAVEN_MODULE_PROBE_FAILED", "Maven module export failed.",
+                    retryable=True, suggested_next_step="Inspect build.log_tail.")
+            modules = load_module_worlds(prepared.output_directory, module.directory, build_jdk, tests=False)
+            target = next(m for m in modules if Path(m["module_root"]) == module.directory)
+            snapshot = probe.load_snapshot(prepared, module_root=module.directory)
+        finally:
+            prepared.settings_file.unlink(missing_ok=True)
+        roots = tuple(Path(p) for m in modules for p in m["source_roots"])
+        resources = tuple(Path(p) for p in target["resource_roots"])
+        plan = JdtBuildWorldPlan(project_root=request.project_path, module_root=module.directory,
+            source_roots=roots, dependency_entries=tuple(Path(p) for p in target["classpath"]),
+            processor_entries=tuple(Path(p) for p in target["processor_entries"]),
+            lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
+            target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
+            source_level=target["source_level"], target_level=target["source_level"],
+            fingerprint=hashlib.sha256(json.dumps(modules, sort_keys=True).encode()).hexdigest(),
+            configuration_inputs=tuple(m.pom_file for m in workspace.modules),
+            configuration_environment_names=(), javac_executable=build_jdk.javac_executable,
+            method_parameters=target["method_parameters"], modules=modules)
+        jvm = JvmLaunchPlan(java_executable=runtime_jdk.java_executable,
+            classpath=tuple(Path(p) for p in snapshot["runtimeClasspathElements"]),
+            main_class=intent.main_class, working_directory=intent.working_directory,
+            jvm_args=intent.jvm_args, program_args=intent.program_args,
+            environment_overrides=dict(intent.environment), ready_port=request.ready_port,
+            startup_wait_timeout_seconds=request.startup_wait_timeout_seconds)
+        jvm, materialized = self.materialize_command(jvm, jdwp_port=request.jdwp_port, attempt_directory=directory)
+        return PreparedProjectLaunch(execution=None, build_system="maven", build_offline=offline,
+            build_jdk=build_jdk, runtime_jdk=runtime_jdk, module_output=module.output_directory,
+            generation_input_roots=(module.output_directory,), generation_input_manifest={},
+            resource_source_roots=resources, resource_input_manifest={},
+            build_world_inputs=plan.configuration_inputs, jvm_plan=jvm, command=materialized,
+            warnings=(), attempt_directory=directory, jdt_build_world_plan=plan, launch_intent=intent)
 
     @staticmethod
     def _stabilize(prepared: PreparedProjectLaunch) -> PreparedProjectLaunch:

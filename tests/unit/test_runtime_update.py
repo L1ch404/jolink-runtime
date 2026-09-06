@@ -318,6 +318,7 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
             return None
 
     compiler = object.__new__(FakeJdt)
+    compiler.output_directory = staged
     session.attach_compile_session(compiler)
     plan = SimpleNamespace(
         project_root=project,

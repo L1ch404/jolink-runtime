@@ -2327,18 +2327,8 @@ class MavenBuildSystemAdapter:
             )
         )
 
-        dynamic_modules = xml_root.findall(
-            "./{*}profiles/{*}profile/{*}modules/{*}module"
-        )
-        if dynamic_modules:
-            raise MavenResolutionError(
-                LaunchErrorCode.UNSUPPORTED_BUILD_MODEL,
-                "Profile-controlled Maven modules are not supported in P0.",
-                retryable=False,
-                suggested_next_step=(
-                    "Use a static reactor module or a direct classpath launch."
-                ),
-            )
+        # Optional profile modules do not block selecting a standard module.
+        # The native Maven session decides which profiles and projects exist.
         for module_element in xml_root.findall(
             "./{*}modules/{*}module"
         ):

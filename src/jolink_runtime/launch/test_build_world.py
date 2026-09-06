@@ -43,6 +43,7 @@ class JavaTestBuildWorld:
     runner_support_provenance: dict[str, object] = field(default_factory=dict)
     native_resource_oracle_required: bool = False
     expected_input_manifest: dict[str, str] = field(default_factory=dict)
+    modules: tuple[dict[str, Any], ...] = ()
 
 
 class TestBuildWorldBootstrap(Protocol):

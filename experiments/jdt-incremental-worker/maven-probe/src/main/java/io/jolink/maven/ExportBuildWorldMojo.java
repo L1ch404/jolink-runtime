@@ -52,7 +52,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest10";
+    private static final String PROBE_VERSION = "0.1.0-fasttest11";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -150,6 +150,15 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     @Parameter(property = "jolink.probe.outputDirectory", required = true)
     private File outputDirectory;
 
+    void exportProject(MavenProject selected, MavenSession activeSession,
+            RepositorySystem repositories, File destination) throws MojoExecutionException {
+        project = selected;
+        session = activeSession;
+        repositorySystem = repositories;
+        outputDirectory = destination;
+        execute();
+    }
+
     @Override
     public void execute() throws MojoExecutionException {
         if (outputDirectory == null) {
@@ -221,7 +230,13 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         out.append('}');
         stringList(out, "requestedGoals", session.getGoals(), true);
         stringList(out, "compileSourceRoots", project.getCompileSourceRoots(), true);
+        booleanField(out, "testSourcesRequired", Boolean.parseBoolean(project.getProperties().getProperty("jolink.probe.testSourcesRequired", "false")), true);
         stringList(out, "compileClasspathElements", classpath, true);
+        try {
+            stringList(out, "runtimeClasspathElements", project.getRuntimeClasspathElements(), true);
+        } catch (DependencyResolutionRequiredException error) {
+            throw new MojoExecutionException("Runtime classpath is unresolved", error);
+        }
         out.append(",\"annotationProcessing\":{");
         field(out, "processingMode", processors.processingMode, false);
         field(out, "discoveryMode", processors.discoveryMode, true);

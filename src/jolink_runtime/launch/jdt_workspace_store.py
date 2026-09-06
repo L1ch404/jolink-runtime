@@ -147,7 +147,7 @@ class JdtWorkspaceStore:
         reusable = bool(
             state.get("schema") == JdtWorkspaceLease._SCHEMA
             and state.get("identity_fingerprint") == identity_fingerprint
-            and root.joinpath("workspace/plain-fixture").is_dir()
+            and root.joinpath("workspace").is_dir()
         )
         if not reusable:
             shutil.rmtree(root, ignore_errors=True)

@@ -15,6 +15,7 @@ from .jdt_compile_session import (
     select_target_system_home,
 )
 from .project_session import JavaProjectSession
+from .jdt_modules import ModuleCompileSession
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,9 @@ class JdtLaunchService:
                 },
             )
             session.attach_jdt_workspace_lease(workspace)
-            compiler = PersistentJdtCompileSession(
+            factory = ModuleCompileSession if plan.modules else PersistentJdtCompileSession
+            compiler = factory(
+                **({"modules": plan.modules, "target_module": plan.module_root} if plan.modules else {}),
                 root=workspace.root, candidate=candidate,
                 worker_java_home=plan.worker_java_home,
                 source_roots=plan.source_roots,
@@ -130,6 +133,8 @@ class JdtLaunchService:
                         inserted = True
                 else:
                     classpath.append(entry)
+            if plan.modules:
+                classpath = list(compiler.runtime_classpath(classpath))
             plan_for_jvm = replace(prepared.jvm_plan, classpath=tuple(classpath))
             plan_for_jvm, command = runtime._project_pipeline.materialize_command(
                 plan_for_jvm, jdwp_port=request.jdwp_port,

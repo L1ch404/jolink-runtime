@@ -22,3 +22,18 @@ def test_maven_cache_tracks_only_small_build_configuration(tmp_path: Path) -> No
     assert _inputs(module, "maven") == before
     parent.write_text("<project><modelVersion>4.0.0</modelVersion><!-- changed --></project>")
     assert _inputs(module, "maven") != before
+
+
+def test_reactor_cache_detects_upstream_pom_edit_without_reading_sources(tmp_path):
+    (tmp_path / "pom.xml").write_text('<project><modules><module>lib</module></modules></project>')
+    module = tmp_path / "lib"
+    module.mkdir()
+    (module / "pom.xml").write_text('<project/>')
+    source = module / "src/main/java/Value.java"
+    source.parent.mkdir(parents=True)
+    source.write_text('class Value {}')
+    before = _inputs(tmp_path, "maven")
+    source.write_text('broken source')
+    assert _inputs(tmp_path, "maven") == before
+    (module / "pom.xml").write_text('<project><!-- dependency changed --></project>')
+    assert _inputs(tmp_path, "maven") != before

@@ -63,3 +63,9 @@ def test_maven_structured_memory_values_are_megabytes_by_default() -> None:
     assert parse_maven_memory_megabytes("2g") == 2048
     assert parse_maven_memory_megabytes("2048k") == 2
     assert parse_maven_memory_megabytes("invalid") is None
+
+
+def test_optional_javac_diagnostics_follow_worker_errors_only_policy():
+    profile = classify_compiler_arguments(["-Xlint:all,-options,-path", "-nowarn", "-Xplugin:Unknown"])
+    assert profile.unresolved_arguments == ("-Xplugin:Unknown",)
+    assert profile.decisions[0].category == "optional_diagnostics_disabled"

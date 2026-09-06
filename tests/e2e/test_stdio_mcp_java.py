@@ -1699,7 +1699,7 @@ public class LazyValue {
     anyio.run(scenario)
 
 
-def test_project_path_reactor_launch_reports_deferred_jdt_support(
+def test_project_path_reactor_launch_uses_current_jdt_upstream(
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
@@ -1953,11 +1953,13 @@ public final class SharedMessage {
                             "action": "status",
                         }))
                         if status["launch_phase"] == "failed":
+                            raise AssertionError(status)
+                        if status["launch_phase"] == "runtime_active":
                             break
                         await anyio.sleep(0.1)
-                    assert status["launch_error"]["error_code"] == (
-                        "JDT_MULTI_MODULE_NOT_IMPLEMENTED"
-                    )
-                    assert status["process_state"] == "absent"
+                    assert status["process_state"] == "running"
+                    assert marker.read_text() == "fresh-workspace-value"
+                    assert status["compile_ready"] is True
+                    assert_ok(await call_payload(session, {"action": "stop"}))
 
     anyio.run(scenario)

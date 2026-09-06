@@ -108,7 +108,8 @@ class JdtReloadService:
         signatures = set()
         names = set()
         for relative in paths:
-            name = relative.removesuffix(".class").replace("/", ".")
+            class_path, file = compiler.class_file(relative)
+            name = class_path.removesuffix(".class").replace("/", ".")
             signature = "L" + name.replace(".", "/") + ";"
             loaded = jdwp.classes_by_signature(signature)
             if len(loaded) != 1:
@@ -117,9 +118,7 @@ class JdtReloadService:
                     message="The JVM has no unique loaded definition for " + name,
                     details=timing,
                 )
-            definitions[loaded[0].reference_type_id] = (
-                result.output_directory / relative
-            ).read_bytes()
+            definitions[loaded[0].reference_type_id] = file.read_bytes()
             names.add(name)
             signatures.add(signature)
         session.transition_reload(ReloadStage.APPLYING_HOTSWAP)

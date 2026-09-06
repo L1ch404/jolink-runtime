@@ -91,8 +91,11 @@ a Tool infrastructure error. Fast Test does not require or modify a running
 application. The first release supports Java 8 or 11 Maven jar projects, one
 explicitly selected jar module in a standard Reactor, and Gradle 8.10/8.14
 single-Project Java builds with standard main/test layouts and default Test
-runtime semantics. Reactor upstream incremental compilation remains a later
-extension; the selected module owns the current persistent JDT model.
+runtime semantics. Maven Reactor launch and Fast Test resolve the selected
+module's upstream dependencies into separate JDT projects in one Worker.
+Unchanged modules reuse their output; JavaBuilder propagates changed APIs and
+constants to affected downstream sources. Local module dependencies use current
+workspace output, including test-jar dependencies, rather than installed JARs.
 
 ## Private diagnostics
 

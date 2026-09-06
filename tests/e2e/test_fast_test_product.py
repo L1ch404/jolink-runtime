@@ -177,8 +177,9 @@ def test_real_maven_reactor_fast_test_loop() -> None:
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout.splitlines()[-1])
     assert payload["ok"] is True
-    assert payload["reactor_direct_jdt_deferred"] is True
-    assert payload["error_code"] == "FAST_TEST_REACTOR_NOT_IMPLEMENTED"
+    assert payload["reactor_output_used"] is True
+    assert payload["upstream_change_incremental"] is True
+    assert payload["upstream_recovery_passed"] is True
 
 
 @pytest.mark.fast_test_e2e

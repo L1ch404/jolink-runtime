@@ -27,23 +27,25 @@ def _input_files(project: Path, build_system: str) -> tuple[Path, ...]:
         )
         return tuple(project / name for name in names if (project / name).is_file())
     result: list[Path] = []
-    pom = project / "pom.xml"
+    pending = [project / "pom.xml"]
     seen: set[Path] = set()
-    while pom.is_file() and pom not in seen:
+    while pending:
+        pom = pending.pop().resolve(strict=False)
+        if not pom.is_file() or pom in seen:
+            continue
         seen.add(pom)
         result.append(pom)
         try:
             root = ET.parse(pom).getroot()
-            parent = next((item for item in root if item.tag.endswith("parent")), None)
-            relative = next(
-                (item.text for item in parent or () if item.tag.endswith("relativePath")),
-                "../pom.xml",
-            )
-            if relative == "":
-                break
-            pom = (pom.parent / str(relative or "../pom.xml")).resolve(strict=False)
+            pending.extend(pom.parent / str(item.text).strip() / "pom.xml"
+                for item in root.findall("./{*}modules/{*}module") if item.text)
+            parent = root.find("{*}parent")
+            if parent is not None:
+                relative = parent.find("{*}relativePath")
+                if relative is None or (relative.text or "").strip():
+                    pending.append(pom.parent / ((relative.text or "").strip() if relative is not None else "../pom.xml"))
         except (ET.ParseError, OSError):
-            break
+            continue
     for name in (".mvn/maven.config", ".mvn/jvm.config"):
         path = project / name
         if path.is_file():
@@ -123,6 +125,7 @@ class FastTestCache:
                     worker_max_heap_mb=int(world["worker_max_heap_mb"]),
                     test_jvm_arguments=tuple(world["test_jvm_arguments"]),
                     runner_support_provenance=dict(world["runner_support_provenance"]),
+                    modules=tuple(world.get("modules", ())),
                 ),
                 JavaToolchainCandidate(
                     home=Path(toolchain["home"]),
@@ -176,6 +179,7 @@ class FastTestCache:
                 "worker_max_heap_mb": world.worker_max_heap_mb,
                 "test_jvm_arguments": list(world.test_jvm_arguments),
                 "runner_support_provenance": world.runner_support_provenance,
+                "modules": world.modules,
             },
         }
         path = self._directory(world.project_root, world.build_system) / "build-world.json"
