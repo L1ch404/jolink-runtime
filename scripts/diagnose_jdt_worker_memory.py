@@ -9,6 +9,7 @@ This is a diagnostic, not an automatic product GC policy.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,12 +30,14 @@ from jolink_runtime.launch.jdt_compile_session import (
 from jolink_runtime.launch.jdt_modules import ModuleCompileSession
 
 
-def measure(project: Path, java_home: Path) -> dict:
+def measure(
+    project: Path, java_home: Path, candidate: JdtCandidate | None = None
+) -> dict:
     cached = FastTestCache().load(project.resolve(), "maven")
     if cached is None:
         raise RuntimeError("Run one successful Fast Test for this project first.")
     world, _ = cached
-    candidate = JdtCandidate.load_product()
+    candidate = candidate or JdtCandidate.load_product()
     release = (java_home / "release").read_text()
     version = next(
         line.split("=", 1)[1].strip('"')
@@ -125,6 +128,16 @@ def measure(project: Path, java_home: Path) -> dict:
             full = compiler.start()
             if not full.compile_ok:
                 raise AssertionError(full.diagnostics)
+            full_classes = {
+                f"{group}/{path.relative_to(directory).as_posix()}": hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for group, directory in (
+                    ("main", compiler.output_directory),
+                    ("test", compiler.test_output_directory),
+                )
+                for path in directory.rglob("*.class")
+            }
             time.sleep(2)
             snapshot(compiler, "idle_2s")
             started = time.monotonic()
@@ -184,6 +197,11 @@ def measure(project: Path, java_home: Path) -> dict:
                 "min_heap_mb": compiler.min_heap_mb,
                 "max_heap_mb": compiler.max_heap_mb,
                 "full_ms": full.elapsed_ms,
+                "candidate_identity": candidate.root.name,
+                "full_class_count": len(full_classes),
+                "full_class_tree_sha256": hashlib.sha256(
+                    json.dumps(full_classes, sort_keys=True).encode()
+                ).hexdigest(),
                 "peak_rss_bytes": peak_rss,
                 "explicit_gc_ms": gc_ms,
                 "gc_requested": gc_result["status"],
@@ -206,10 +224,32 @@ if __name__ == "__main__":
     parser.add_argument("project", type=Path)
     parser.add_argument("--java-home", type=Path, action="append", required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--candidate-ref",
+        help="Developer comparison: use an already-installed Worker lock from this git ref.",
+    )
     args = parser.parse_args()
     reports = []
+    candidate = None
+    if args.candidate_ref:
+        raw = subprocess.check_output(
+            [
+                "git",
+                "show",
+                f"{args.candidate_ref}:src/jolink_runtime/launch/jdt-product-candidate.json",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+        ).replace(b"\r\n", b"\n")
+        lock = json.loads(raw)
+        root = (
+            Path.home()
+            / ".cache/jolink-runtime/jdt-worker/candidates"
+            / lock["candidate_id"]
+            / hashlib.sha256(raw).hexdigest()
+        )
+        candidate = JdtCandidate._load_root(lock, root, verify=False)
     for home in args.java_home:
-        result = measure(args.project, home)
+        result = measure(args.project, home, candidate)
         reports.append(result)
         args.report.write_text(json.dumps(reports, indent=2), encoding="utf-8")
         print(json.dumps(result), flush=True)

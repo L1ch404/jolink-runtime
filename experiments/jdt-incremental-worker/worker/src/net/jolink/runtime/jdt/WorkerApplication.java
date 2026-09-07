@@ -219,6 +219,7 @@ public final class WorkerApplication implements IApplication {
                 new java.io.OutputStreamWriter(System.out, StandardCharsets.UTF_8),
                 true);
         Map<String, String> arguments = parseArguments(context);
+        CompilerOnlyIndexManager.install();
         if (arguments.containsKey("modules-file")) {
             BuildObservation.setEnabled(true);
             modules = new ModuleWorkspace();

@@ -49,6 +49,9 @@ public class EvidenceProcessor extends AbstractProcessor {
               StandardLocation.CLASS_OUTPUT, "", "META-INF/apt-value.txt", root).openWriter()) {
             writer.write(String.valueOf(value));
           } catch (Exception e) { throw new RuntimeException(e); }
+          try (Writer writer = processingEnv.getFiler().createSourceFile("GeneratedValue", root).openWriter()) {
+            writer.write("public class GeneratedValue { public static int value() { return " + value + "; } }");
+          } catch (Exception e) { throw new RuntimeException(e); }
         }
       }
     }
@@ -76,7 +79,10 @@ public class EvidenceProcessor extends AbstractProcessor {
 @Deprecated public class App {{
     private int unused;
     public static final int FLAG = {value};
-    public static void main(String[] args) {{ System.out.print(FLAG); }}
+    public static void main(String[] args) {{
+        java.util.function.IntSupplier generated = GeneratedValue::value;
+        System.out.print(generated.getAsInt());
+    }}
 }}''', encoding="utf-8")
 
     def compiler() -> PersistentJdtCompileSession:
@@ -96,6 +102,8 @@ public class EvidenceProcessor extends AbstractProcessor {
         assert full.warning_count == 0
         assert full.diagnostics == ()
         assert first.output_directory.joinpath("META-INF/apt-value.txt").read_text() == "1"
+        assert first.output_directory.joinpath("GeneratedValue.class").is_file()
+        assert first._client.command("METRICS")["metrics"]["search_indexing"]["queued_jobs"] == 0
         first.accept_baseline()
     finally:
         first.close()

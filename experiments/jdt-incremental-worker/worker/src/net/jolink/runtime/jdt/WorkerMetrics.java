@@ -55,6 +55,7 @@ final class WorkerMetrics {
         }
 
         return "{\"heap_used_bytes\":" + heap.getUsed()
+                + ",\"search_indexing\":" + CompilerOnlyIndexManager.metricsJson()
                 + ",\"heap_committed_bytes\":" + heap.getCommitted()
                 + ",\"heap_max_bytes\":" + heap.getMax()
                 + ",\"thread_count\":" + threads.getThreadCount()
