@@ -1289,12 +1289,17 @@ class PersistentJdtCompileSession:
                 client = self._client
                 if self._poisoned or client is None:
                     return False
-            self.save_source_index()
-            frame = client.command("SAVE", timeout=5.0)
-            return bool(
-                frame.get("ok") is True
-                and frame.get("status") == "saved"
-            )
+            return self._save_workspace_locked(client)
+
+    def _save_workspace_locked(self, client: JdtWorkerClient) -> bool:
+        # start()/compile() already hold the non-reentrant operation lock.
+        # A completed build has written classes, but JavaBuilder's incremental
+        # state stays in the Worker until SAVE (or shutdown).
+        frame = client.command("SAVE", timeout=self.timeout)
+        if frame.get("ok") is not True or frame.get("status") != "saved":
+            return False
+        self.save_source_index()
+        return True
 
     def close(self) -> bool:
         operation_owned = self._operation_lock.acquire(blocking=False)
@@ -1684,7 +1689,6 @@ class PersistentJdtCompileSession:
         except JdtCompileError as error:
             self._poison(error.error_code)
             raise
-        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         if frame.get("operation_ok") is not True:
             self._poison("JDT_BUILD_ABORTED")
             raise JdtCompileError(
@@ -1738,6 +1742,17 @@ class PersistentJdtCompileSession:
             self._working_compile_state = "valid" if compile_ok else "failed"
             self._last_compile_diagnostics = diagnostics if not compile_ok else ()
             self._last_compile_error_count = error_count if not compile_ok else 0
+        try:
+            if not self._save_workspace_locked(client):
+                raise JdtCompileError(
+                    "JDT_WORKSPACE_SAVE_FAILED",
+                    "JDT compilation finished, but saving its workspace failed.",
+                )
+        except JdtCompileError as error:
+            self._poison(error.error_code)
+            raise
+        # Include persistence in the user-visible compilation duration.
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         return JdtCompileResult(
             compile_ok=compile_ok,
             actual_build_kind=(

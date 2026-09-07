@@ -15,6 +15,8 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 ├─ 源码没有变化 → 不编译
 └─ main/test源码有变化 → INCREMENTAL编译实际变化文件
                 ↓
+实际编译完成 → 保存JDT构建状态和源码索引（无改动时跳过）
+                ↓
 启动一次Test Runner JVM
                 ↓
 返回结构化结果
@@ -28,6 +30,10 @@ Test Build World和JDT workspace都保存在joLink本地缓存。MCP关闭后，
 进程可以直接打开；不会重新Probe或FULL。构建配置缓存只检查小型配置文件：Maven
 的当前POM、本地父POM链和`.mvn`配置，或Gradle的build/settings/properties和Wrapper
 配置。依赖目录和源码树不做内容哈希。
+
+FULL/增量完成时立即请求Worker保存完整构建状态，而不是只写joLink自己的
+`state.json`、等Worker退出才保存JDT状态。实现和暂缓处理项见
+[JDT状态持久化记录](jdt-workspace-persistence.zh-CN.md)。
 
 ## 调用
 

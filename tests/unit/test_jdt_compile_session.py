@@ -35,15 +35,23 @@ class _FakeWorker:
         self.on_build = None
         self.command_error: JdtCompileError | None = None
         self.command_count = 0
+        self.commands = []
+        self.save_ok = True
         self.resource_value: bytes | None = None
         self.delete_resource = False
         self.diagnostics = []
         self.diagnostics_truncated = False
 
-    def command(self, command: str):
+    def command(self, command: str, **_kwargs):
         self.command_count += 1
+        self.commands.append(command)
         if self.command_error is not None:
             raise self.command_error
+        if command == "SAVE":
+            return {
+                "ok": self.save_ok,
+                "status": "saved" if self.save_ok else "failed",
+            }
         assert command.split("\t")[1] in {"FULL", "INCREMENTAL"}
         if self.on_build is not None:
             self.on_build()
@@ -409,7 +417,9 @@ def test_persistent_jdt_session_supports_test_only_source_roots(
     )
 
     class TestOnlyWorker(_FakeWorker):
-        def command(self, command: str):
+        def command(self, command: str, **kwargs):
+            if command == "SAVE":
+                return super().command(command, **kwargs)
             self.command_count += 1
             private = self.session.private_test_source / "example/AppTest.java"
             output = self.session.test_output_directory / "example/AppTest.class"
@@ -589,6 +599,52 @@ def test_unchanged_source_does_not_call_worker_build(tmp_path, monkeypatch):
     assert result.runtime_changed_classes == ()
 
 
+def test_build_saves_jdt_state_and_source_index_before_return(tmp_path, monkeypatch):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    assert worker.commands == ["BUILD\tFULL", "SAVE"]
+    index = session.root / "source-index.json"
+    full = json.loads(index.read_text(encoding="utf-8"))
+    assert full["compile_state"] == "valid"
+    assert full["sources"][str(source)][1] == list(session._source_stamp(source))
+
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    result = session.compile((source,))
+    assert result.compile_ok
+    assert worker.commands[-2].startswith("BUILD\tINCREMENTAL\t")
+    assert worker.commands[-1] == "SAVE"
+    updated = json.loads(index.read_text(encoding="utf-8"))
+    assert updated["sources"][str(source)][1] == list(session._source_stamp(source))
+    calls = worker.command_count
+    session.compile((source,))
+    assert worker.command_count == calls
+
+
+def test_save_rejection_does_not_report_compile_success_or_retry_full(
+    tmp_path, monkeypatch
+):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    before = (session.root / "source-index.json").read_bytes()
+    source.write_text(
+        "package example; class App { int value() { return 2; } }",
+        encoding="utf-8",
+    )
+    worker.save_ok = False
+    with pytest.raises(JdtCompileError) as error:
+        session.compile((source,))
+    assert error.value.error_code == "JDT_WORKSPACE_SAVE_FAILED"
+    assert worker.closed
+    assert worker.commands[-2].startswith("BUILD\tINCREMENTAL\t")
+    assert worker.commands[-1] == "SAVE"
+    assert (session.root / "source-index.json").read_bytes() == before
+
+
 def test_saved_source_index_remembers_actual_compile_failure(tmp_path, monkeypatch):
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()
@@ -597,7 +653,7 @@ def test_saved_source_index_remembers_actual_compile_failure(tmp_path, monkeypat
     worker.fail_compile = True
     worker.diagnostics = [{"message": "Syntax error", "severity_name": "error"}]
     assert session.compile((source,)).compile_ok is False
-    session.save_source_index()
+    assert worker.commands[-1] == "SAVE"
 
     # Simulate loading the persisted facts in a new compiler instance.
     session._working_compile_state = "unknown"
@@ -720,7 +776,9 @@ def test_source_addition_and_deletion_update_private_mirror_and_outputs(
     )
     original_command = worker.command
 
-    def lifecycle_command(command: str):
+    def lifecycle_command(command: str, **kwargs):
+        if command == "SAVE":
+            return original_command(command, **kwargs)
         if command.endswith("FULL"):
             return original_command(command)
         private = session.private_source / "example/Added.java"
