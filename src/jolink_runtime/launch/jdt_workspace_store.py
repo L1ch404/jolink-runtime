@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from ..core.diagnostic_logging import log_diagnostic
+
+logger = logging.getLogger(__name__)
 
 
 class JdtWorkspaceStoreError(RuntimeError):
@@ -148,6 +152,30 @@ class JdtWorkspaceStore:
             state.get("schema") == JdtWorkspaceLease._SCHEMA
             and state.get("identity_fingerprint") == identity_fingerprint
             and root.joinpath("workspace").is_dir()
+        )
+        if reusable:
+            reason = "identity_matched"
+        elif not state:
+            reason = "state_unavailable"
+        elif state.get("schema") != JdtWorkspaceLease._SCHEMA:
+            reason = "schema_changed"
+        elif state.get("identity_fingerprint") != identity_fingerprint:
+            reason = "identity_changed"
+        else:
+            reason = "workspace_missing"
+        previous_fields = state.get("identity")
+        if not isinstance(previous_fields, dict):
+            previous_fields = {}
+        changed_fields = sorted(
+            key for key in set(previous_fields) | set(identity)
+            if previous_fields.get(key) != identity.get(key)
+        )
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.workspace.claim workspace=%r reusable=%s reason=%s "
+            "previous_identity=%s current_identity=%s changed_identity_fields=%s",
+            str(root), reusable, reason, state.get("identity_fingerprint"), identity_fingerprint,
+            lambda: json.dumps(changed_fields, ensure_ascii=True),
         )
         if not reusable:
             shutil.rmtree(root, ignore_errors=True)

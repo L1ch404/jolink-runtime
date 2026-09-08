@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import queue
 import re
@@ -28,6 +29,9 @@ from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .fast_compile import fast_compile_fingerprint
 from .product_assets import canonical_lf_bytes
 from .toolchain import JavaToolchainCandidate
+from ..core.diagnostic_logging import log_diagnostic
+
+logger = logging.getLogger(__name__)
 
 
 class JdtCompileError(RuntimeError):
@@ -1251,7 +1255,17 @@ class PersistentJdtCompileSession:
                 if self._source_stamp(source) != self._source_stamps.get(source):
                     changed.add(source)
         changed.update(set(self._source_map) - observed)
-        return tuple(sorted(changed, key=str))
+        result = tuple(sorted(changed, key=str))
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.sources.changed workspace=%r observed_sources=%s changed_sources=%s "
+            "added_sources=%s deleted_sources=%s sample=%s sample_truncated=%s",
+            str(self.root), len(observed), len(result),
+            lambda: len(observed - set(self._source_map)),
+            lambda: len(set(self._source_map) - observed),
+            lambda: json.dumps([str(path) for path in result[:16]], ensure_ascii=True), len(result) > 16,
+        )
+        return result
 
     def workspace_source_roots(self) -> tuple[Path, ...]:
         return (*self.source_roots, *self.test_source_roots)
@@ -1295,11 +1309,34 @@ class PersistentJdtCompileSession:
         # start()/compile() already hold the non-reentrant operation lock.
         # A completed build has written classes, but JavaBuilder's incremental
         # state stays in the Worker until SAVE (or shutdown).
-        frame = client.command("SAVE", timeout=self.timeout)
+        started = time.monotonic()
+        try:
+            frame = client.command("SAVE", timeout=self.timeout)
+        except JdtCompileError as error:
+            log_diagnostic(logger, logging.ERROR, "jdt.workspace.save_failed workspace=%r error_code=%s", str(self.root), error.error_code)
+            raise
         if frame.get("ok") is not True or frame.get("status") != "saved":
+            log_diagnostic(logger, logging.ERROR, "jdt.workspace.save_failed workspace=%r reason=not_acknowledged", str(self.root))
             return False
         self.save_source_index()
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.workspace.saved workspace=%r elapsed_ms=%.1f build_states=%s",
+            str(self.root), (time.monotonic() - started) * 1000,
+            lambda: json.dumps(self._saved_build_states(), ensure_ascii=True),
+        )
         return True
+
+    def _saved_build_states(self) -> dict[str, Any]:
+        """Small diagnostic stat only; this does not decide workspace reuse."""
+        directory = self.root / "workspace/.metadata/.plugins/org.eclipse.core.resources/.projects"
+        try:
+            return {
+                path.parent.parent.name: {"bytes": path.stat().st_size}
+                for path in directory.glob("*/org.eclipse.jdt.core/state.dat")
+            }
+        except OSError as error:
+            return {"unavailable": type(error).__name__}
 
     def close(self) -> bool:
         operation_owned = self._operation_lock.acquire(blocking=False)
@@ -1617,6 +1654,13 @@ class PersistentJdtCompileSession:
             json.loads(launch_file.read_text(encoding="utf-8"))
             if reused else self._prepare_worker_command()
         )
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.worker.start workspace=%r reuse_requested=%s command_reused=%s "
+            "java=%r build_states=%s",
+            str(self.root), reuse_workspace, reused, command[0],
+            lambda: json.dumps(self._saved_build_states(), ensure_ascii=True),
+        )
         stderr_stream = (self.root / "worker.stderr.log").open("w", encoding="utf-8")
         try:
             process_options: dict[str, Any] = {}
@@ -1659,6 +1703,11 @@ class PersistentJdtCompileSession:
             ), encoding="utf-8")
         with self._state_lock:
             self._worker_ready_frame = dict(ready)
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.worker.ready workspace=%r worker_pid=%s project_state=%s configuration_reused=%s",
+            str(self.root), process.pid, ready.get("workspace_project_state"), ready.get("configuration_reused"),
+        )
         return client
 
     def _build(
@@ -1678,6 +1727,14 @@ class PersistentJdtCompileSession:
                 "The JDT CompileSession is not active.",
             )
         started = time.monotonic()
+        build_id = uuid.uuid4().hex[:12]
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.build.started build_id=%s workspace=%r worker_pid=%s requested=%s "
+            "touched_sources=%s build_states=%s",
+            build_id, str(self.root), getattr(client.process, "pid", None), kind,
+            len(touched_sources), lambda: json.dumps(self._saved_build_states(), ensure_ascii=True),
+        )
         try:
             command = f"BUILD\t{kind}"
             if touched_sources:
@@ -1687,6 +1744,7 @@ class PersistentJdtCompileSession:
                 )
             frame = client.command(command)
         except JdtCompileError as error:
+            log_diagnostic(logger, logging.ERROR, "jdt.build.failed build_id=%s error_code=%s", build_id, error.error_code)
             self._poison(error.error_code)
             raise
         if frame.get("operation_ok") is not True:
@@ -1732,6 +1790,19 @@ class PersistentJdtCompileSession:
         )
         compile_ok = frame.get("compile_ok") is True
         error_count = int(frame.get("error_count", 0))
+        actual_kind = frame.get("actual_build_kind")
+        diagnostics_summary = frame.get("build_diagnostics")
+        if not isinstance(diagnostics_summary, dict):
+            diagnostics_summary = {"source": "unavailable"}
+        full_fallback = kind == "INCREMENTAL" and actual_kind == "FULL"
+        log_level = logging.ERROR if not compile_ok else logging.WARNING if full_fallback else logging.INFO
+        log_diagnostic(
+            logger, log_level,
+            "jdt.build.finished build_id=%s workspace=%r requested=%s actual=%s "
+            "full_fallback=%s compiled_sources=%s errors=%s worker_elapsed_ms=%s diagnostics=%s",
+            build_id, str(self.root), kind, actual_kind, full_fallback, len(compiled_source_units),
+            error_count, frame.get("elapsed_ms"), lambda: json.dumps(diagnostics_summary, ensure_ascii=True),
+        )
         with self._state_lock:
             self._pending_outputs.update(
                 (str(path), False) for path in (*changed, *changed_resources)

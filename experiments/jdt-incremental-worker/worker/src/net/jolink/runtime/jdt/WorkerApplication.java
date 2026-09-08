@@ -48,6 +48,7 @@ import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.internal.core.builder.IncrementalImageBuilder;
 
 /**
  * Small headless protocol worker used by the product CompileSession and its
@@ -218,6 +219,8 @@ public final class WorkerApplication implements IApplication {
         protocol = new PrintWriter(
                 new java.io.OutputStreamWriter(System.out, StandardCharsets.UTF_8),
                 true);
+        IncrementalImageBuilder.MaxCompileLoop = 10;
+        BuildDecisionTrace.install();
         Map<String, String> arguments = parseArguments(context);
         CompilerOnlyIndexManager.install();
         if (arguments.containsKey("modules-file")) {
@@ -941,6 +944,17 @@ public final class WorkerApplication implements IApplication {
             NullProgressMonitor buildMonitor,
             ActiveBuild active,
             List<String> touchedSources) throws Exception {
+        BuildDecisionTrace.begin();
+        try {
+            buildWithTrace(buildKind, requestedKind, buildMonitor, active, touchedSources);
+        } finally {
+            BuildDecisionTrace.end();
+        }
+    }
+
+    private void buildWithTrace(
+            int buildKind, String requestedKind, NullProgressMonitor buildMonitor,
+            ActiveBuild active, List<String> touchedSources) throws Exception {
         if (modules != null) {
             emit(modules.build(buildKind, requestedKind, touchedSources, buildMonitor));
             return;
@@ -1104,7 +1118,9 @@ public final class WorkerApplication implements IApplication {
                 .append(",\"diagnostics_truncated\":")
                 .append(selectedDiagnostics.size() < errorCount)
                 .append(",\"metrics\":")
-                .append(WorkerMetrics.snapshotJson(false));
+                .append(WorkerMetrics.snapshotJson(false))
+                .append(",\"build_diagnostics\":")
+                .append(BuildDecisionTrace.snapshotJson());
         if (active != null) {
             result.append(identityFields(
                     active.requestId, active.buildGenerationId))

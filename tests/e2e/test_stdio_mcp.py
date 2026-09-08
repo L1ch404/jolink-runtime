@@ -23,7 +23,12 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown(
             command=sys.executable,
             args=["-m", "jolink_runtime.transport.stdio"],
             cwd=repository_root,
-            env={**os.environ, "XDG_CACHE_HOME": str(tmp_path)},
+            env={
+                **os.environ,
+                "XDG_CACHE_HOME": str(tmp_path),
+                "LOCALAPPDATA": str(tmp_path),
+                "JOLINK_LOG_LEVEL": "INFO",
+            },
         )
         with anyio.fail_after(30):
             async with stdio_client(parameters, errlog=stderr) as (

@@ -108,6 +108,7 @@ final class ModuleWorkspace {
                 + ",\"changed_classes\":" + jsonArray(changed) + ",\"deleted_classes\":" + jsonArray(deleted)
                 + ",\"changed_resources\":" + jsonArray(resources) + ",\"deleted_resources\":" + jsonArray(deletedResources)
                 + ",\"diagnostics\":" + jsonArray(diagnostics) + ",\"diagnostic_details\":" + jsonObjectsArray(details)
+                + ",\"build_diagnostics\":" + BuildDecisionTrace.snapshotJson()
                 + ",\"diagnostics_truncated\":" + (errors>details.size()) + "}";
     }
 }

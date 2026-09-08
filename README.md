@@ -110,9 +110,17 @@ macOS/Linux: $XDG_CACHE_HOME/jolink-runtime/logs/mcp.log
 ```
 
 `java_status(action=status)` returns `server_diagnostics` with the active path
-or `stderr_only` when file logging could not be initialized. A diagnostic-file
+and level, `disabled` when logging is off, or `stderr_only` when file logging could not be initialized. A diagnostic-file
 failure never prevents the MCP server from starting. The file is limited to
 4 MiB with three rotated backups; stdout remains untouched.
+
+Set `JOLINK_LOG_LEVEL` in the MCP server's environment and restart it:
+`WARNING` (default) keeps warnings/errors only; `INFO` records JDT
+cache/source/build/save summaries and native FULL fallback reasons;
+`DEBUG` also retains detailed Worker output; `ERROR` keeps errors only;
+`OFF` disables joLink diagnostic logging. Application logs and tool results are
+unaffected. The Worker uses a fixed incremental propagation limit of 10 rounds.
+See [JDT build diagnostics](docs/jdt-build-diagnostics.zh-CN.md).
 
 The public actions are:
 

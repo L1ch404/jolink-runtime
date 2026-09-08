@@ -9,21 +9,27 @@ import anyio
 import mcp.server.stdio
 from mcp.server.lowlevel import NotificationOptions
 
-from ..core.diagnostic_logging import configure_private_diagnostic_logging
+from ..core.diagnostic_logging import (
+    configure_private_diagnostic_logging,
+    diagnostic_log_level,
+)
 from ..server.mcp_server import create_mcp_server
 
 
 def _configure_stderr_logging() -> None:
     """Keep stdout exclusively reserved for MCP protocol messages."""
+    level = diagnostic_log_level()
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         stream=sys.stderr,
         force=True,
     )
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(level)
     # HTTP trigger URLs and headers may contain application-specific data.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    for name in ("httpx", "httpcore", "mcp"):
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
     diagnostics = configure_private_diagnostic_logging()
     logging.getLogger(__name__).info(
         "jolink.stdio.logging.ready private_log_status=%s private_log=%s",

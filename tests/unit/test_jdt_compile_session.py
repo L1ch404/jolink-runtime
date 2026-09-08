@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import subprocess
 import shutil
 import threading
@@ -622,6 +623,36 @@ def test_build_saves_jdt_state_and_source_index_before_return(tmp_path, monkeypa
     calls = worker.command_count
     session.compile((source,))
     assert worker.command_count == calls
+
+
+def test_build_log_distinguishes_incremental_request_from_full_fallback(tmp_path, monkeypatch, caplog):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    source.write_text("package example; class App { int value() { return 2; } }", encoding="utf-8")
+    original = worker.command
+
+    def command(value, **kwargs):
+        frame = original(value, **kwargs)
+        if value.startswith("BUILD"):
+            frame["actual_build_kind"] = "FULL"
+            frame["build_diagnostics"] = {
+                "source": "jdt_builder_trace",
+                "decisions": [{"project": "plain-fixture", "reason": "INCREMENTAL_LOOP_LIMIT_EXCEEDED"}],
+                "incremental_loop_limit": 10,
+                "truncated": False,
+            }
+        return frame
+
+    worker.command = command
+    with caplog.at_level(logging.INFO):
+        changes = session.workspace_source_changes()
+        result = session.compile(changes)
+    assert result.actual_build_kind == "FULL"
+    assert "changed_sources=1" in caplog.text
+    assert "requested=INCREMENTAL actual=FULL full_fallback=True" in caplog.text
+    assert "INCREMENTAL_LOOP_LIMIT_EXCEEDED" in caplog.text
+    assert "jdt.workspace.saved" in caplog.text
 
 
 def test_save_rejection_does_not_report_compile_success_or_retry_full(
