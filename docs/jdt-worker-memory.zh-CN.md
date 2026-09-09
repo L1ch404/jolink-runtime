@@ -6,8 +6,8 @@
 也不能把该数值全部解释为仍然存活的 Java 对象。本机已在真正的 JDT Worker 中
 复现 FULL 后约 0.9～1.2 GiB RSS，说明这个量级并不意外，值得在常驻前解决。
 
-本节保留改动前的诊断证据。后续工作区已尝试停用搜索索引，见文末实测；
-仍未加入自动 GC，也没有修改默认堆大小。
+本节保留改动前的诊断证据。后续已停用搜索索引，见下方实测。
+2026-09-10 增加可选的编译后 GC，默认关闭，使用方法见文末；默认堆大小未改变。
 
 ## 已确认
 
@@ -48,7 +48,7 @@ JDK 17 第一次 GC 后，heap committed 已从 740 MiB 降为 170 MiB，但 RSS
 JDK 11/17 则有明显回落，但后台索引仍能再次产生分配。以上是短时、单项目样本，
 不是长期泄漏检测，也不能直接代替公司 4000+ 源码、Windows、具体 JDK 的测量。
 
-## 下一步建议
+## 原始诊断阶段的建议
 
 1. 公司先记录 PID、命令行、Worker JDK 与任务管理器具体列，确认是哪一个 JVM。
 2. 分别观察 heap used、heap committed、RSS/工作集，不能只看一个总数。
@@ -100,7 +100,7 @@ uv run python scripts/diagnose_jdt_worker_memory.py /path/to/project \
   重开后都通过。
 - 原MCP调试/生命周期、Maven多模块、Gradle Groovy/Kotlin多模块、JUnit/TestNG、
   Lombok、metadata Processor、reload/重启恢复均通过既有真实回归。
-- 当前Codex连接的真实MCP：`ss-admin-service`6项Mockito测试通过，单文件修改产生
+- 当前Codex连接的真实MCP：本地业务服务样本（项目标识已脱敏）的6项Mockito测试通过，单文件修改产生
   预期2项失败，恢复后6项通过；JsonPath为85通过、11原有跳过，无失败。
 - 当前真实MCP的Spring多模块应用：启动、HTTP Trigger断点、变量读取、resume、
   上游HotSwap和restart后的实际HTTP结果均正确。测试源码及临时配置已恢复。
@@ -123,7 +123,7 @@ uv run python scripts/diagnose_jdt_worker_memory.py /path/to/project \
 heap used约13～14 MiB，没有出现先前的持续回涨。JDK 8虽然heap used也降到
 约14～29 MiB，RSS仍约977 MiB，堆空间归还仍受回收器策略影响。
 
-**不能把GC后的数字当作产品默认常驻内存。** 当前没有自动GC，FULL遗留垃圾和
+**不能把GC后的数字当作产品默认常驻内存。** 这组测量时产品没有自动GC，FULL遗留垃圾和
 已扩张的堆仍可能使刚编译完的RSS很高。本轮解决的是搜索后台工作及其持续分配，
 没有同时改变GC策略。数据来自macOS和457源码工程，不能直接替代Windows/4000+源码验证。
 
@@ -139,3 +139,90 @@ uv run python scripts/diagnose_jdt_worker_memory.py /path/to/project \
 `--candidate-ref`用于开发对照，需要该历史Worker已经安装在本地缓存。
 搜索索引服务不再提供给本Worker；未来若增加Java模型搜索类能力，不能直接假定可用。
 本轮覆盖的编译/调试/测试路径没有发现受影响，尚未证明所有第三方处理器和特殊项目都无影响。
+
+## 可选的编译后 GC（2026-09-10）
+
+在 MCP Server 的 `env` 中配置：
+
+```json
+{
+  "JOLINK_JDT_GC_AFTER_BUILD": "1",
+  "JOLINK_LOG_LEVEL": "INFO"
+}
+```
+
+`JOLINK_JDT_GC_AFTER_BUILD` 默认关闭，设为 `1` 开启；设为 `0` 或删除即可关闭。
+日志级别只影响记录，不影响是否执行 GC。修改 MCP 环境变量后重新连接 MCP。
+
+流程只增加一个调用：
+
+```text
+实际 FULL / INCREMENTAL 完成
+→ 保存 JDT workspace 和源码索引
+→ 开关开启时，向编译 Worker 发送一次 GC
+→ 返回原编译结果
+```
+
+- 无改动直接复用、包括复用上次编译失败状态，不请求 GC。
+- 多模块整轮 BUILD 后一次；不按文件、main/test 分组或模块分别 GC。
+- 正常返回编译错误诊断时同样请求一次 GC，保留原错误，不把它变成成功。
+- 只针对编译 Worker，不触发业务 JVM 或 Test Runner 的 GC。
+- 复用 Worker 已有 `GC` 命令，本次不改 Worker JAR、缓存身份或 `reusable`。
+- 不加定时器、内存阈值、重试、等待 RSS 下降、自动换 GC 算法或常驻 Worker。
+
+GC 请求耗时计入原总编译耗时，`jdt_build_ms` 仍只表示 JDT 编译本体。
+在 INFO/DEBUG 的 `mcp.log` 中，`jdt.gc.requested` 记录 build_id、Worker PID、
+请求耗时，以及返回时的 heap used/committed。它可以通过 build_id 对应前面的
+`jdt.build.finished`。不额外请求一次 METRICS，也不在每次编译后扫描进程内存。
+
+`status=gc_requested` 只表示执行了显式 GC 请求，不保证垃圾全部回收或 RSS 下降。
+尤其 JDK 8 的已提交堆可能继续由 JVM 保留。GC 通信超时或断连沿用现有 Worker
+通道错误处理，不重试，不继续用未消费完响应的连接发送后续 BUILD。
+
+回归入口：
+
+- `tests/unit/test_jdt_compile_session.py`：默认/关闭/开启、BUILD→SAVE→GC 顺序，
+  错误诊断保留、无改动不调用、GC 耗时计入总耗时、通信异常。
+- `tests/e2e/test_jdt_build_gc.py`：真实 stdio MCP，FULL、增量、编译错误及恢复、
+  缓存失败、无改动重开；开关开启时每个实际 build_id 恰好对应一次 GC 请求。
+- `tests/e2e/test_jdt_noop_reopen.py`：Java 8/11，单/多模块，分别开启和关闭 GC；
+  连续无改动重开后仍实际增量只编一个文件，并运行 JVM 验证结果。
+
+### 产品开关实测
+
+macOS，本地业务服务样本源码副本，457 个 main/test 源码，Worker JDK 11。
+开启和关闭各使用独立缓存、新 stdio MCP 与同一份已缓存 Build World；原项目未修改。
+每组 14 次实际编译：首次 FULL、5 轮业务修改/恢复（10 次增量）、编译错误、
+恢复、跨 MCP 重开后的增量；另包含普通 no-op、缓存编译失败和重开 no-op。
+
+两组业务修改均产生预期的 2 个测试失败，恢复后 6/6 通过；编译错误没有启动 Runner。
+开启组 14 个 build_id 恰好对应 14 次 GC，关闭组 0 次；全部后续编译仍为 INCREMENTAL。
+
+| 指标 | GC 关闭 | 每次实际编译后 GC |
+|---|---:|---:|
+| FULL 和首轮测试结束后的 Worker RSS | 581.5 MiB | 294.1 MiB |
+| 同一 Worker 后续采样最高 RSS | 661.1 MiB | 327.0 MiB |
+| 10 次业务修改/恢复的编译总耗时中位数 | 66.4ms | 78.7ms |
+| 对应 Fast Test 总耗时中位数 | 1769.2ms | 1786.3ms |
+| 单次 GC 请求耗时中位数（14 次） | — | 27.0ms |
+
+这是一次本机顺序对照，不是严格性能基准；编译总耗时差不等于单独 GC 耗时，
+JIT、调度和各次编译也有波动。这里只确认实际存在内存收益与额外耗时，
+不能据此保证公司 Windows 大项目也是几十毫秒。
+
+另外用原内存诊断脚本，分别在 Java 8/11、开关关闭/开启的新 Worker 中测量。
+取 FULL 后闲置 2 秒的快照，**早于脚本后续手工 GC 对照**：
+
+| Worker | heap used：关 → 开 | heap committed：关 → 开 | RSS：关 → 开 |
+|---|---:|---:|---:|
+| JDK 8u332 / Parallel | 338.1 → 19.4 MiB | 708 → 704 MiB | 913.0 → 768.3 MiB |
+| JDK 11.0.27 / G1 | 236.1 → 12.8 MiB | 392 → 64 MiB | 617.2 → 341.0 MiB |
+
+四组的 476 个 class 输出 SHA 树一致，后续增量均只编一个源码。Java 8 即使 heap
+used 明显下降，仍保留约 704 MiB 已提交堆；本轮没有改回收器或堆参数。
+
+本机验证：普通测试 `798 passed, 46 skipped`；开关/重开定向真实用例 `10 passed`，
+开启 GC 的真实 MCP 启动/reload、Maven/Gradle 多模块、即时持久化、APT、
+禁用索引（含 100 次增量）回归 `18 passed`；开启 GC 的完整 Fast Test 回归
+`6 passed`。真实环境用例单独开启对应开关，不将 skip 算通过。
+wheel/sdist、`compileall` 与 `git diff --check` 通过。尚未在公司 Windows 大项目验收。

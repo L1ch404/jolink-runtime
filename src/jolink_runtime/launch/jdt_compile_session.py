@@ -1819,10 +1819,15 @@ class PersistentJdtCompileSession:
                     "JDT_WORKSPACE_SAVE_FAILED",
                     "JDT compilation finished, but saving its workspace failed.",
                 )
+            if (
+                actual_kind in {"FULL", "INCREMENTAL"}
+                and os.environ.get("JOLINK_JDT_GC_AFTER_BUILD", "0").strip() == "1"
+            ):
+                self._request_build_gc(client, build_id)
         except JdtCompileError as error:
             self._poison(error.error_code)
             raise
-        # Include persistence in the user-visible compilation duration.
+        # Include persistence and optional GC in the user-visible duration.
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         return JdtCompileResult(
             compile_ok=compile_ok,
@@ -1863,6 +1868,20 @@ class PersistentJdtCompileSession:
                     }
                 )
             ),
+        )
+
+    def _request_build_gc(self, client: JdtWorkerClient, build_id: str) -> None:
+        """One request after the complete workspace build and its saved state."""
+        started = time.monotonic()
+        frame = client.command("GC")
+        metrics = frame.get("metrics", {})
+        log_diagnostic(
+            logger, logging.INFO,
+            "jdt.gc.requested build_id=%s workspace=%r worker_pid=%s status=%s "
+            "elapsed_ms=%.1f heap_used_bytes=%s heap_committed_bytes=%s",
+            build_id, str(self.root), getattr(client.process, "pid", None),
+            frame.get("status"), (time.monotonic() - started) * 1000,
+            metrics.get("heap_used_bytes"), metrics.get("heap_committed_bytes"),
         )
 
 

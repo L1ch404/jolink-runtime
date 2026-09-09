@@ -145,7 +145,7 @@ Worker 的原始 stdout 仅用于 JSON 协议；mcp.log 只接收编译摘要、
 
 上一轮日志初版的本机验证：普通测试 `782 passed, 32 skipped`；新日志 MCP 用例 1 项、
 Java 8/11 持久化/APT/索引关闭 4 项、Maven/Gradle 模块 3 项、启动/reload 4 项真实
-回归均通过。另使用 `ss-admin-service` 源码副本和未加旁路补丁的 stdio MCP 完成
+回归均通过。另使用本地业务服务样本（项目标识已脱敏）的源码副本和未加旁路补丁的 stdio MCP 完成
 457 源码 FULL、预期断言失败、恢复、重新打开后的增量，确认摘要确实写入 mcp.log。
 这些是本机证据，不是公司那一次 FULL 的原因结论。
 

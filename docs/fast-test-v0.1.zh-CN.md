@@ -35,6 +35,11 @@ FULL/增量完成时立即请求Worker保存完整构建状态，而不是只写
 `state.json`、等Worker退出才保存JDT状态。实现和暂缓处理项见
 [JDT状态持久化记录](jdt-workspace-persistence.zh-CN.md)。
 
+可选设置 `JOLINK_JDT_GC_AFTER_BUILD=1`：每轮实际 FULL/增量保存完成后，向编译
+Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，无改动复用不请求；
+默认关闭。GC 耗时包含在相应编译总耗时中，细节见
+[Worker 内存与 GC](jdt-worker-memory.zh-CN.md#可选的编译后-gc2026-09-10)。
+
 ## 调用
 
 ```json
@@ -72,7 +77,7 @@ FULL/增量完成时立即请求Worker保存完整构建状态，而不是只写
   上游源码修改、失败恢复及持久workspace，见[Gradle多模块实测](gradle-modules.zh-CN.md)；
 - 编译失败、断言失败、恢复、超时、取消和进程隔离；
 - MCP进程退出后复用Test Build World与JDT workspace；
-- `ss-admin-service`：423个main源码、34个test源码，首次约10.3秒；同MCP后续约
+- 本地业务服务样本（项目标识已脱敏）：423个main源码、34个test源码，首次约10.3秒；同MCP后续约
   1.52秒；新MCP复用约2.33秒；单main源码增量编译约36～43ms。
 
 ## 当前边界

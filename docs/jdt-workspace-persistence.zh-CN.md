@@ -2,7 +2,7 @@
 
 ## 已定位的问题
 
-2026-09-07 使用 `ss-admin-service` 的副本、457 个 main/test Java 源码和真实
+2026-09-07 使用本地业务服务样本（项目标识已脱敏）的副本、457 个 main/test Java 源码和真实
 stdio MCP 复现：第一次编译及 6 个测试全部结束后，保持旧 Worker 闲置，修改一个
 业务文件，再从另一个 MCP 进程运行测试。两次编译没有重叠。
 
@@ -51,7 +51,7 @@ FULL。本次改动负责在构建完成后及时保存，避免继续依赖进�
 APT 回归 `3 passed`；真实 MCP 启动/reload 和 Maven/Gradle 模块 `14 passed`；
 Fast Test 完整回归 `6 passed`。跳过的真实环境用例另以对应开关运行，不把 skip 算通过。
 
-`ss-admin-service` 副本通过新 stdio MCP 进程再次验证：
+本地业务服务样本副本通过新 stdio MCP 进程再次验证：
 
 | 场景 | 实际构建 | 编译源码数 |
 |---|---|---:|
@@ -68,7 +68,7 @@ Fast Test 完整回归 `6 passed`。跳过的真实环境用例另以对应开�
 也可能在「重开 → 没有源码变化，不执行 BUILD → 正常关闭」之后丢失资源层的
 JavaBuilder 构建树记录，导致下次修改源码时实际 FULL。
 
-本机使用同一份 `ss-admin-service` 副本和真实 stdio MCP 已复现。旧 Worker 的
+本机使用同一份本地业务服务样本副本和真实 stdio MCP 已复现。旧 Worker 的
 `.tree` 在无改动关闭后从 66,456 字节变为 66,394 字节，JavaBuilder 记录消失；
 `state.dat` 的内容及 SHA 却完全没变。下一次只改一个文件，实际重编 457 个文件，
 原因码为 `BUILDER_RECEIVED_FULL`，不是 `INCREMENTAL_LOOP_LIMIT_EXCEEDED`。
@@ -113,7 +113,7 @@ Worker 恢复工程时，通过 `RestoredBuilderState` 将**不支持多配置�
   新增测试中确实返回 FULL，测试失败。
 - 扩展 `tests/e2e/test_stdio_mcp_java.py` 的持久化启动用例：三个新的 MCP 进程
   无改动启动/停止后，再启动增量、reload、restart，以及编译错误与再次重开。
-- `ss-admin-service` 副本：457 个 main/test 源码，三次无改动 MCP 重开均无 BUILD；
+- 本地业务服务样本副本：457 个 main/test 源码，三次无改动 MCP 重开均无 BUILD；
   修改业务逻辑后，日志确认实际增量只编 1 个文件，Worker 编译约 637ms，测试出现
   预期的 2 个断言失败；恢复源码后仍只编 1 个文件，约 636ms，6/6 测试通过。
   资源层 Builder 记录在每次关闭后都保留。使用独立缓存，未修改原项目。

@@ -38,6 +38,7 @@ class _FakeWorker:
         self.command_count = 0
         self.commands = []
         self.save_ok = True
+        self.on_gc = None
         self.resource_value: bytes | None = None
         self.delete_resource = False
         self.diagnostics = []
@@ -53,6 +54,12 @@ class _FakeWorker:
                 "ok": self.save_ok,
                 "status": "saved" if self.save_ok else "failed",
             }
+        if command == "GC":
+            if self.on_gc is not None:
+                self.on_gc()
+            return {"ok": True, "status": "gc_requested", "metrics": {
+                "heap_used_bytes": 1024, "heap_committed_bytes": 4096,
+            }}
         assert command.split("\t")[1] in {"FULL", "INCREMENTAL"}
         if self.on_build is not None:
             self.on_build()
@@ -623,6 +630,123 @@ def test_build_saves_jdt_state_and_source_index_before_return(tmp_path, monkeypa
     calls = worker.command_count
     session.compile((source,))
     assert worker.command_count == calls
+
+
+@pytest.mark.parametrize("setting", [None, "0", "1"])
+def test_optional_gc_follows_saved_full_incremental_and_error(
+    tmp_path, monkeypatch, caplog, setting
+):
+    if setting is None:
+        monkeypatch.delenv("JOLINK_JDT_GC_AFTER_BUILD", raising=False)
+    else:
+        monkeypatch.setenv("JOLINK_JDT_GC_AFTER_BUILD", setting)
+    caplog.set_level(logging.INFO)
+    session, source, worker = _session(tmp_path, monkeypatch)
+    saved_states = []
+
+    def observe_gc():
+        assert worker.commands[-2:] == ["SAVE", "GC"]
+        saved = json.loads((session.root / "source-index.json").read_text())
+        assert saved["sources"][str(source)][1] == list(session._source_stamp(source))
+        saved_states.append(saved["compile_state"])
+
+    worker.on_gc = observe_gc
+    try:
+        assert session.start().compile_ok
+        session.accept_baseline()
+        for fail in (False, True):
+            source.write_text(f"package example; class App {{ int value = {int(fail) + 2}; }}")
+            worker.fail_compile = fail
+            worker.diagnostics = [{"message": "compile error"}] if fail else []
+            result = session.compile((source,))
+            assert result.compile_ok is not fail
+            assert result.error_count == int(fail)
+            assert result.diagnostics == tuple(worker.diagnostics)
+            before = list(worker.commands)
+            # Cached success and cached failure both skip BUILD/SAVE/GC.
+            assert session.compile((source,)).compile_ok is not fail
+            assert worker.commands == before
+        if setting == "1":
+            assert saved_states == ["valid", "valid", "failed"]
+            assert worker.commands.count("GC") == 3
+            assert caplog.text.count("jdt.gc.requested") == 3
+            assert "status=gc_requested" in caplog.text
+            assert "heap_used_bytes=1024 heap_committed_bytes=4096" in caplog.text
+        else:
+            assert "GC" not in worker.commands
+            assert "jdt.gc.requested" not in caplog.text
+    finally:
+        session.close()
+
+
+def test_worker_noop_build_does_not_request_gc(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOLINK_JDT_GC_AFTER_BUILD", "1")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    original_command = worker.command
+
+    def command(value, **kwargs):
+        result = original_command(value, **kwargs)
+        if value.startswith("BUILD"):
+            result["actual_build_kind"] = None
+            result["compiled_source_units"] = []
+        return result
+
+    worker.command = command
+    before = worker.commands.count("GC")
+    try:
+        result = session._build("INCREMENTAL", source_changes_pending=False)
+        assert result.actual_build_kind is None
+        assert worker.commands.count("GC") == before
+    finally:
+        session.close()
+
+
+def test_gc_duration_is_included_in_compilation_duration(tmp_path, monkeypatch):
+    from jolink_runtime.launch import jdt_compile_session as module
+
+    monkeypatch.setenv("JOLINK_JDT_GC_AFTER_BUILD", "1")
+    clock = [10.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    session, _, worker = _session(tmp_path, monkeypatch)
+    worker.on_gc = lambda: clock.__setitem__(0, clock[0] + 0.125)
+    try:
+        result = session.start()
+        assert result.elapsed_ms == 125.0
+        assert result.jdt_build_ms == 0.0
+    finally:
+        session.close()
+
+
+def test_gc_does_not_depend_on_info_logging(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("JOLINK_JDT_GC_AFTER_BUILD", "1")
+    caplog.set_level(logging.ERROR)
+    session, _, worker = _session(tmp_path, monkeypatch)
+    try:
+        assert session.start().compile_ok
+        assert worker.commands == ["BUILD\tFULL", "SAVE", "GC"]
+        assert "jdt.gc.requested" not in caplog.text
+    finally:
+        session.close()
+
+
+def test_gc_transport_failure_uses_existing_worker_error_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOLINK_JDT_GC_AFTER_BUILD", "1")
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    source.write_text("package example; class App { int value = 2; }")
+
+    def fail_gc():
+        raise JdtCompileError("JDT_WORKER_TIMEOUT", "GC reply did not arrive")
+
+    worker.on_gc = fail_gc
+    with pytest.raises(JdtCompileError, match="GC reply did not arrive"):
+        session.compile((source,))
+    assert worker.closed
+    assert worker.commands[-2:] == ["SAVE", "GC"]
+    assert json.loads((session.root / "source-index.json").read_text())["compile_state"] == "valid"
 
 
 def test_build_log_distinguishes_incremental_request_from_full_fallback(tmp_path, monkeypatch, caplog):

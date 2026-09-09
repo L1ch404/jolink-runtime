@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -20,14 +21,23 @@ from jolink_runtime.launch.jdt_workspace_store import JdtWorkspaceStore
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("level", [8, 11])
 @pytest.mark.parametrize("multi_module", [False, True], ids=["single", "modules"])
+@pytest.mark.parametrize("gc_after_build", ["0", "1"], ids=["gc-off", "gc-on"])
 def test_noop_reopen_preserves_incremental_tree(
-    tmp_path: Path, level: int, multi_module: bool
+    tmp_path: Path,
+    level: int,
+    multi_module: bool,
+    gc_after_build: str,
+    monkeypatch,
+    caplog,
 ) -> None:
     if os.environ.get("JOLINK_RUN_MCP_JAVA_E2E") != "1":
         pytest.skip("set JOLINK_RUN_MCP_JAVA_E2E=1")
     home = os.environ.get(f"JOLINK_TEST_JAVA{level}_HOME")
     if not home:
         pytest.skip(f"set JOLINK_TEST_JAVA{level}_HOME")
+    monkeypatch.setenv("JOLINK_JDT_GC_AFTER_BUILD", gc_after_build)
+    caplog.set_level(logging.INFO)
+    expected_gc = int(gc_after_build)
     java = Path(home)
     project = tmp_path / "工程 with spaces"
     base = project / "base" if multi_module else project
@@ -119,6 +129,7 @@ def test_noop_reopen_preserves_incremental_tree(
         compiler.accept_baseline()
         lease.mark_initialized()
         assert_value(compiler, 1)
+        assert caplog.text.count("jdt.gc.requested") == expected_gc
     finally:
         assert compiler.close()
 
@@ -137,9 +148,10 @@ def test_noop_reopen_preserves_incremental_tree(
             assert_value(compiler, 1)
         finally:
             assert compiler.close()
+        assert caplog.text.count("jdt.gc.requested") == expected_gc
 
     # Prove actual incremental work and runtime output, not just state.dat presence.
-    for value in (2, 1):
+    for build_count, value in enumerate((2, 1), start=2):
         edit(value)
         lease, compiler = open_compiler()
         try:
@@ -153,5 +165,6 @@ def test_noop_reopen_preserves_incremental_tree(
             assert built.compiled_source_count == 1, built.compiled_source_units
             assert built.compiled_source_units[0].endswith("src/Leaf.java")
             assert_value(compiler, value)
+            assert caplog.text.count("jdt.gc.requested") == build_count * expected_gc
         finally:
             assert compiler.close()
