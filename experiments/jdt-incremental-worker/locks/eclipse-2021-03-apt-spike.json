@@ -553,16 +553,16 @@
     "symbolic_name": "net.jolink.runtime.jdt.worker",
     "version": "0.1.0",
     "origin_url": "workspace://experiments/jdt-incremental-worker/worker",
-    "sha256": "805da033bf66693ce4a7df6eb6d0be4869f4f5cf5eeb58be52019ef2ebde76ce",
+    "sha256": "3d7828181998fcedff7012e0882195a06b41e802cc56abb735d34a7fea3d0f63",
     "license_identity": "MIT",
-    "compressed_bytes": 42333,
-    "installed_bytes": 42333,
+    "compressed_bytes": 43480,
+    "installed_bytes": 43480,
     "bundle_start_level": 4,
     "activation_policy": "lazy",
     "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar"
   },
   "worker_build": {
-    "source_fingerprint": "15b878d24fd353eab5f00f374481145976cc386e9bd739eb39f35a02a6d5714f",
+    "source_fingerprint": "420833e9c6e52e72dcd5b0b3db29baa791975af72265cf8d84ee4000da27e84c",
     "java_home_identity": {
       "java_binary_sha256": "51d22343531816f78ca0adcbc62a490acedf4bece36927e2ae691ad974362c2e",
       "javac_binary_sha256": "6ef3ab3e7f72f10b23389664082f878d897a8e008572112d9cf6ae093a3915d9"

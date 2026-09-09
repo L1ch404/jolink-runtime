@@ -340,6 +340,9 @@ public final class WorkerApplication implements IApplication {
         }
 
         javaProject = JavaCore.create(project);
+        if (projectReopened) {
+            RestoredBuilderState.normalizeConfigurationNames(project);
+        }
         if (reuseConfiguration && projectReopened) {
             configurationReused = true;
             return;

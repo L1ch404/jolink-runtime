@@ -1205,6 +1205,22 @@ public class PersistentFixture {{
             for line in compiler_options.splitlines()
         )
 
+        # New MCP/Worker processes may start and stop without any source edits.
+        # Their shutdown must retain the resource-layer builder tree as well
+        # as JDT state.dat, so the next real edit can still build incrementally.
+        for _ in range(3):
+            with temporary_stderr() as stderr:
+                async with open_mcp_session(
+                    stderr, environment=environment
+                ) as noop_session:
+                    noop = await launch_and_wait(noop_session)
+                    assert noop["probe_cache_reused"] is True
+                    assert noop["jdt_bootstrap_reused"] is True
+                    assert noop["jdt_bootstrap_build_kind"] is None
+                    assert await anyio.to_thread.run_sync(request_value) == "before"
+                    assert_ok(await call_payload(noop_session, {"action": "stop"}))
+        assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in config_files} == config_before
+
         source.write_text(source_text("startup-incremental"), encoding="utf-8")
         with temporary_stderr() as stderr:
             async with open_mcp_session(
