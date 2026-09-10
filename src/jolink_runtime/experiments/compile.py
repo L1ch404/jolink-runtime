@@ -34,13 +34,13 @@ from jolink_runtime.experiments.lombok_processor import (
     scan_class_hashes,
     validate_compiler_environment,
 )
+from jolink_runtime.experiments.legacy_maven_policy import LegacyMavenPolicy as MavenBuildSystemAdapter
 from jolink_runtime.launch.contracts import BuildOperationSpec, LaunchIntent
 from jolink_runtime.launch.idea_environment import (
     IdeaBuildPreferences,
     IdeaEnvironmentImporter,
 )
 from jolink_runtime.launch.maven import (
-    MavenBuildSystemAdapter,
     MavenExecutionPlan,
     MavenModule,
     MavenResolutionError,

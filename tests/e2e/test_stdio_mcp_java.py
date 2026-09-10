@@ -1121,7 +1121,7 @@ public class PersistentFixture {{
     <option name="MAIN_CLASS_NAME" value="example.PersistentFixture" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
     <option name="PROGRAM_PARAMETERS" value="{ready_port}" />
-    <method v="2"><option name="Make" enabled="true" /></method>
+    <method v="2"><option name="Make" enabled="false" /></method>
   </configuration>
 </component>
 """,

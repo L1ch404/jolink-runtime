@@ -45,6 +45,17 @@ public static void main(String[] args) throws Exception {
     test = project / "app/src/test/java/example/AppTest.java"
     test.parent.mkdir(parents=True)
     test.write_text('package example; public class AppTest { @org.junit.Test public void value() throws Exception { org.junit.Assert.assertEquals(TestHelper.expected(),Core.value()); org.junit.Assert.assertTrue(Base.class.getMethod("identity",int.class).getParameters()[0].isNamePresent()); } }')
+    # Extra Surefire runtime paths must survive Reactor world conversion too.
+    extra = project / "app/runtime-extra"
+    extra.mkdir()
+    (extra / "fixture.txt").write_text("extra runtime resource")
+    app_pom = project / "app/pom.xml"
+    app_pom.write_text(app_pom.read_text().replace("</project>",
+        '<build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId><configuration>'
+        '<additionalClasspathElements><additionalClasspathElement>runtime-extra</additionalClasspathElement></additionalClasspathElements>'
+        '</configuration></plugin></plugins></build></project>'))
+    test.write_text(test.read_text().replace("org.junit.Assert.assertEquals",
+        'org.junit.Assert.assertNotNull(getClass().getClassLoader().getResource("fixture.txt")); org.junit.Assert.assertEquals'))
     port, debug = reserve_local_port(), reserve_local_port()
     (project / ".run").mkdir()
     (project / ".run/App.xml").write_text(f'''<component name="ProjectRunConfigurationManager"><configuration name="App" type="Application"><module name="app"/><option name="MAIN_CLASS_NAME" value="example.App"/><option name="WORKING_DIRECTORY" value="$PROJECT_DIR$"/><option name="PROGRAM_PARAMETERS" value="{port}"/><method v="2"><option name="Make" enabled="true"/></method></configuration></component>''')

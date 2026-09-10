@@ -1,9 +1,9 @@
 """Private Lombok compiler-model experiment.
 
-The production ``update`` action intentionally remains fail-closed for every
-annotation processor.  This module is an isolated evidence collector used to
-answer a narrower question: can direct ``javac`` faithfully replay the
-Lombok-only compiler model of a fresh Maven build?
+This frozen module is an isolated evidence collector used to answer a
+historical question: can direct ``javac`` faithfully replay the Lombok-only
+compiler model of a fresh Maven build? Production compilation uses JDT and
+does not import this experiment or apply its restrictions.
 
 Nothing in this module is registered as an MCP action.  It only writes to a
 private experiment directory and never publishes classes to Maven output or a
@@ -26,9 +26,9 @@ from enum import Enum
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Mapping, Sequence
 
+from jolink_runtime.experiments.legacy_maven_policy import LegacyMavenPolicy as MavenBuildSystemAdapter
 from jolink_runtime.launch.contracts import BuildOperationSpec
 from jolink_runtime.launch.maven import (
-    MavenBuildSystemAdapter,
     MavenExecutionPlan,
     MavenResolutionError,
 )

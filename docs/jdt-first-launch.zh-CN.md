@@ -3,6 +3,10 @@
 joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspace 直接复用，
 不再在每次启动或 reload 时重新审计源码、依赖和编译输出。
 
+产品 direct-javac 后端、Plan 和 fallback 已移除。Maven 单模块与多模块都通过
+已有 Maven-native Probe 准备模型，JDT 不可用时不会改走旧编译器。
+删除范围与回归见 [direct-javac 移除记录](direct-javac-retirement.zh-CN.md)。
+
 ## 启动
 
 ```text
@@ -32,6 +36,7 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 → 只读取并同步指定的源码
 → 通知 Eclipse 对应文件已更改
 → JavaBuilder INCREMENTAL
+→ 实际编译后保存 workspace/源码索引，按开关请求一次 GC
 → 直接取得 Eclipse output resource delta
 → 将变化class发给JDWP
 → 发布last_reload
@@ -43,7 +48,7 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 - Worker 在 BUILD 前后对所有class计算SHA；
 - Python为了计算Runtime delta和更新基线再次扫描整个输出；
 - Runtime reload的resources全量复制；
-- 每次reload等待 SAVE/checkpoint；
+- 无改动reload的额外 SAVE/checkpoint；
 - 启动的多次Generation复制及复制前后哈希审计；
 - 每次启动对已安装Worker依赖重新计算SHA、重复探测同一JDK。
 - 首次成功后重复写入、比对Worker的classpath、编码、编译和Processor配置；
@@ -58,7 +63,7 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 不再在发送JDWP前进行一套独立的class schema/metadata预检。HotSwap不会重新执行
 静态初始化，也不代表Spring配置或已有对象被刷新，最终以新请求的实际行为为准。
 
-`compile_ms`是Worker BUILD往返时间；`compile_total_ms`包含指定源码同步；
+`compile_ms`包含Worker BUILD、实际编译后的SAVE及可选GC；`compile_total_ms`包含指定源码同步；
 `apply_ms`是JDWP应用时间；`total_ms`覆盖后台Attempt结束，不再隐藏一次后置SAVE。
 
 ## 缓存与生命周期

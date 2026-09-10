@@ -42,6 +42,7 @@ from .gradle_probe import (
     gradle_configuration_inputs,
     wrapper_version,
 )
+from .gradle_module_world import GradleModuleError
 from .gradle_test_build_world import (
     GradleBuildWorldError,
     create_gradle_test_build_world,
@@ -61,6 +62,7 @@ _HELP_PLUGIN_GOAL = (
     "org.apache.maven.plugins:maven-help-plugin:3.2.0:effective-pom"
 )
 _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 900.0
+_TEST_DISCOVERY_FILTERS = frozenset({"includes", "excludes"})
 _BUILD_LOG_SECRET = re.compile(
     r"(?i)(password|passwd|token|secret|authorization|cookie|credential|"
     r"api[_-]?key|access[_-]?key|private[_-]?key)"
@@ -491,6 +493,7 @@ class FastTestManager:
             JdtCompileError,
             GradleProbeError,
             GradleBuildWorldError,
+            GradleModuleError,
             MavenProbeError,
             MavenResolutionError,
         ) as error:
@@ -1045,6 +1048,17 @@ class FastTestManager:
         effective_project = self._maven._select_effective_project(
             effective_root, module
         )
+        surefire_configuration = self._surefire_configuration(effective_project)
+        additional_classpath: tuple[Path, ...] = ()
+        if surefire_configuration is not None:
+            for entry in surefire_configuration.findall(
+                "./{*}additionalClasspathElements/{*}additionalClasspathElement"
+            ):
+                value = (entry.text or "").strip()
+                if value:
+                    path = Path(value)
+                    additional_classpath += ((module.directory / path).resolve(strict=False),)
+        runtime_classpath = (*runtime_classpath, *additional_classpath)
         compiler_model = self._maven._compiler_model(
             effective_project,
             build_jdk=build_jdk,
@@ -1074,6 +1088,7 @@ class FastTestManager:
                 raise FastTestManagerError(
                     "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED",
                     f"Fast Test cannot reproduce the {label} Processor discovery mode.",
+                    context={"scope": label, "discovery_mode": processing.get("discoveryMode")},
                 )
             if processing.get("options"):
                 raise FastTestManagerError(
@@ -1125,7 +1140,8 @@ class FastTestManager:
         unsupported_failsafe = [
             value
             for value in unsupported_failsafe
-            if value not in {"skip", "skipTests"}
+            # Fast Test selects explicit tests, not Failsafe's IT discovery.
+            if value not in {"skip", "skipTests"} | _TEST_DISCOVERY_FILTERS
         ]
         if unsupported_failsafe:
             raise FastTestManagerError(
@@ -1184,6 +1200,10 @@ class FastTestManager:
             raise FastTestManagerError(
                 "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED",
                 "Fast Test v1 requires identical main/test Processor paths.",
+                context={
+                    "main_processor_artifacts": [path.name for path in main_processor_paths],
+                    "test_processor_artifacts": [path.name for path in test_processor_paths],
+                },
             )
         attempt.require_not_cancelled()
         lombok = tuple(
@@ -1276,7 +1296,7 @@ class FastTestManager:
             world = replace(world,
                 main_source_roots=tuple(Path(p) for m in world.modules for p in m["source_roots"]),
                 java_agents=tuple(dict.fromkeys(f"{p}=ECJ" for m in world.modules for p in m["lombok_entries"])),
-                test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support,
+                test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support + additional_classpath,
                 resource_roots=tuple(self._paths(snapshot,"testResourceDirectories",module.directory)) + tuple(self._paths(snapshot,"resourceDirectories",module.directory)),
             )
         result = self._start_build_world(
@@ -1708,6 +1728,29 @@ class FastTestManager:
 
         return [name for name in names if not shared(str(name))]
 
+    def _surefire_configuration(self, project: ET.Element) -> ET.Element | None:
+        plugin = self._maven._find_build_plugin(project, "maven-surefire-plugin")
+        if plugin is None:
+            return None
+        configuration = plugin.find("./{*}configuration")
+        for execution in plugin.findall("./{*}executions/{*}execution"):
+            goals = {
+                (goal.text or "").strip()
+                for goal in execution.findall("./{*}goals/{*}goal")
+            }
+            candidate = execution.find("./{*}configuration")
+            if "test" in goals and candidate is not None:
+                # The effective execution overrides matching plugin fields;
+                # absent execution fields still inherit the plugin defaults.
+                merged = ET.Element("configuration")
+                overrides = {self._maven._local_name(item.tag) for item in candidate}
+                if configuration is not None:
+                    merged.extend(item for item in configuration
+                                  if self._maven._local_name(item.tag) not in overrides)
+                merged.extend(candidate)
+                configuration = merged
+        return configuration
+
     def _surefire_runtime_compatibility(
         self,
         project: ET.Element,
@@ -1717,24 +1760,13 @@ class FastTestManager:
     ) -> tuple[list[str], tuple[str, ...]]:
         if not unsupported:
             return [], ()
-        plugin = self._maven._find_build_plugin(
-            project, "maven-surefire-plugin"
-        )
-        if plugin is None:
-            return list(unsupported), ()
-        configuration = plugin.find("./{*}configuration")
-        for execution in plugin.findall("./{*}executions/{*}execution"):
-            goals = {
-                (goal.text or "").strip()
-                for goal in execution.findall("./{*}goals/{*}goal")
-            }
-            candidate = execution.find("./{*}configuration")
-            if "test" in goals and candidate is not None:
-                configuration = candidate
+        configuration = self._surefire_configuration(project)
         if configuration is None:
             return list(unsupported), ()
 
-        modeled: set[str] = set()
+        # Fast Test always receives explicit selectors, like -Dtest: these
+        # override Surefire's discovery includes/excludes for classes too.
+        modeled = set(_TEST_DISCOVERY_FILTERS) | {"additionalClasspathElements"}
         arguments: list[str] = []
         single_method = (
             len(attempt.tests) == 1 and "#" in attempt.tests[0]

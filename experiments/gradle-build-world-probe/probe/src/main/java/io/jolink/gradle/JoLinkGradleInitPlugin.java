@@ -352,14 +352,12 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                     "GRADLE_SOURCE_SET_UNSUPPORTED",
                     "G1.1 requires exactly main and test SourceSets.");
         }
-        Set<String> testTaskNames = new LinkedHashSet<>();
-        for (Test test : project.getTasks().withType(Test.class)) {
-            testTaskNames.add(test.getName());
-        }
-        if (!testTaskNames.equals(Collections.singleton("test"))) {
+        // This export models the default test task. Other Test tasks (retry,
+        // integration tests, etc.) do not change that task's configuration.
+        if (!(project.getTasks().findByName("test") instanceof Test)) {
             throw boundary(
                     "GRADLE_TEST_TASK_UNSUPPORTED",
-                    "G1.1 requires exactly the default test Test task.");
+                    "Fast Test requires a default test Test task.");
         }
     }
 

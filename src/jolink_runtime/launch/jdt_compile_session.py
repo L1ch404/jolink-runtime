@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
-from .fast_compile import fast_compile_fingerprint
+from .build_world_identity import build_world_fingerprint
 from .product_assets import canonical_lf_bytes
 from .toolchain import JavaToolchainCandidate
 from ..core.diagnostic_logging import log_diagnostic
@@ -709,7 +709,7 @@ class JdtBuildWorldPlan:
     modules: tuple[dict[str, Any], ...] = ()
 
     def is_fresh(self) -> bool:
-        configuration_fresh = self.fingerprint == fast_compile_fingerprint(
+        configuration_fresh = self.fingerprint == build_world_fingerprint(
             configuration_inputs=self.configuration_inputs,
             configuration_environment_names=(
                 self.configuration_environment_names

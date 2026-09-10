@@ -873,6 +873,11 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         }
         if (plugin.getExecutions() != null) {
             for (PluginExecution execution : plugin.getExecutions()) {
+                // A named configuration without goals is not executed by
+                // Maven (e.g. an unused Surefire "plain" configuration).
+                if (execution.getGoals().isEmpty()) {
+                    continue;
+                }
                 Object raw = execution.getConfiguration();
                 if (raw instanceof Xpp3Dom) {
                     configurations.add((Xpp3Dom) raw);

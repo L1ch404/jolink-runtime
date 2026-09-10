@@ -7,8 +7,10 @@ Implementation-Status: `implemented for Alpha dogfood`
 The current Alpha path is IDEA → cached Probe Build World → JDT → JVM.
 Maven/Gradle application compilation has been removed from project launch.
 The current single-module startup behavior is specified in
-`jdt-first-launch.zh-CN.md`; the older direct-javac details below remain
-lineage documentation, not the preferred project startup path.
+`jdt-first-launch.zh-CN.md`. The direct-javac product backend, plans and
+fallback have been removed; the older direct-javac sections below are
+historical lineage only, not executable product behavior or current restrictions.
+See `direct-javac-retirement.zh-CN.md` for removal and regression evidence.
 
 This extension lets joLink import an existing IDE launch configuration,
 resolve a runtime classpath through Probe-only discovery, compile with JDT,

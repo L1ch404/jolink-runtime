@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from .fast_compile import fast_compile_fingerprint
+from .build_world_identity import build_world_fingerprint
 from .jdt_compile_session import JdtBuildWorldPlan, resource_tree_fingerprint
 
 
@@ -350,7 +350,7 @@ def create_gradle_runtime_build_world(
             )
         )
     )
-    fingerprint = fast_compile_fingerprint(
+    fingerprint = build_world_fingerprint(
         configuration_inputs=configuration,
         configuration_environment_names=configuration_environment_names,
         javac_executable=java_compiler,

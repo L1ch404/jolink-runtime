@@ -70,6 +70,12 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
         else f"dependencies {{ implementation project(':core'); runtimeOnly project(':runtime'); testImplementation files('{junit.as_posix()}', '{hamcrest.as_posix()}') }}\n"
     )
     base = project / "base/src/main/java/example/Base.java"
+    # An unselected retry task must neither block the default test task nor run.
+    app_build.write_text(app_build.read_text() + (
+        '\ntasks.register<Test>("retryTest") { doFirst { error("retryTest must not run") } }\n'
+        if kotlin else
+        "\ntasks.register('retryTest', Test) { doFirst { throw new GradleException('retryTest must not run') } }\n"
+    ))
     original = "package example; public class Base { public static final int NUMBER=40; public static int value(){return NUMBER;} }"
     base.write_text(original)
     (project / "core/src/main/java/example/Core.java").write_text(

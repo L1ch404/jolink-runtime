@@ -8,11 +8,11 @@ import pytest
 
 from jolink_runtime.experiments import compile as experiment_cli
 from jolink_runtime.experiments import lombok_processor as experiment
+from jolink_runtime.experiments.legacy_maven_policy import LegacyMavenPolicy as MavenBuildSystemAdapter
 from jolink_runtime.launch import (
     IdeaBuildPreferences,
     JavaToolchainCandidate,
     LaunchIntent,
-    MavenBuildSystemAdapter,
     MavenResolutionError,
     MavenToolCandidate,
 )
@@ -304,27 +304,6 @@ def test_explicit_lombok_processor_is_resolved_outside_compile_classpath(
     processing = summary["annotation_processing"]
     assert isinstance(processing, dict)
     assert processing["processor_option_names"] == ["secret.option"]
-
-
-def test_production_fast_update_still_rejects_lombok_configuration(
-    tmp_path: Path,
-) -> None:
-    adapter, execution = _execution(
-        tmp_path,
-        effective_pom=_effective_pom(
-            compiler_configuration=_explicit_configuration()
-        ),
-        compile_entries=(),
-    )
-    output = execution.module.output_directory / "example/App.class"
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00\x34")
-
-    with pytest.raises(MavenResolutionError):
-        adapter.consume_fast_compile_plan(
-            execution=execution,
-            runtime_jdk=execution.build_jdk,
-        )
 
 
 def test_implicit_processor_path_excludes_own_formal_output(

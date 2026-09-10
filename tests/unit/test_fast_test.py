@@ -1195,6 +1195,59 @@ def test_multiple_selectors_keep_surefire_order_and_parallel_boundaries() -> Non
         manager.close()
 
 
+def test_explicit_classes_override_surefire_discovery_not_execution_order() -> None:
+    project = ET.fromstring("""<project><build><plugins><plugin>
+<artifactId>maven-surefire-plugin</artifactId><configuration>
+<includes><include>**/Other.java</include></includes>
+<excludes><exclude>**/One.java</exclude></excludes>
+<additionalClasspathElements><additionalClasspathElement>fixtures</additionalClasspathElement></additionalClasspathElements>
+<runOrder>random</runOrder></configuration></plugin></plugins></build></project>""")
+    manager = FastTestManager()
+    try:
+        remaining, arguments = manager._surefire_runtime_compatibility(
+            project, ["includes", "excludes", "additionalClasspathElements", "runOrder"],
+            attempt=SimpleNamespace(tests=("example.One", "example.Two")),
+        )
+        assert remaining == ["runOrder"]
+        assert arguments == ()
+    finally:
+        manager.close()
+
+
+def test_surefire_execution_retains_unoverridden_plugin_fields() -> None:
+    project = ET.fromstring("""<project><build><plugins><plugin>
+<artifactId>maven-surefire-plugin</artifactId><configuration>
+<argLine>-Dfixture=plugin</argLine>
+<additionalClasspathElements><additionalClasspathElement>fixtures</additionalClasspathElement></additionalClasspathElements>
+</configuration><executions>
+<execution><id>unused</id><configuration><argLine>-Dfixture=unused</argLine></configuration></execution>
+<execution><goals><goal>test</goal></goals><configuration><argLine>-Dfixture=execution</argLine></configuration></execution>
+</executions></plugin></plugins></build></project>""")
+    manager = FastTestManager()
+    try:
+        configuration = manager._surefire_configuration(project)
+        assert configuration.findtext("argLine") == "-Dfixture=execution"
+        assert configuration.findtext("additionalClasspathElements/additionalClasspathElement") == "fixtures"
+    finally:
+        manager.close()
+
+
+def test_gradle_module_failure_preserves_error_code(tmp_path, monkeypatch) -> None:
+    from jolink_runtime.launch.gradle_module_world import GradleModuleError
+
+    manager = FastTestManager()
+    def fail(_attempt):
+        raise GradleModuleError("GRADLE_COMPILE_CONFIGURATION_UNMODELED", "unmodeled compiler arguments")
+    monkeypatch.setattr(manager, "_ensure_project", fail)
+    try:
+        result = manager.start(project_path=tmp_path, source_files=(),
+                               tests=("example.Test",), timeout_seconds=30)
+        assert result["error_code"] == "GRADLE_COMPILE_CONFIGURATION_UNMODELED"
+        assert result["error"] == "unmodeled compiler arguments"
+    finally:
+        manager.close()
+
+
 def test_jacoco_only_argline_is_omitted_from_fast_test_runner() -> None:
     project = ET.fromstring(
         """

@@ -28,7 +28,9 @@ def load_module_worlds(output: Path, target: Path, build_jdk, *, tests: bool) ->
         root = effective[tuple(project[key] for key in ("groupId", "artifactId", "version"))]
         compiler = maven._compiler_model(root, build_jdk=build_jdk, runtime_jdk=build_jdk)
         plugin = maven._find_build_plugin(root, "maven-compiler-plugin")
-        profile = maven._compiler_argument_profile(maven._compiler_configurations(plugin))
+        configurations = maven._compiler_configurations(plugin)
+        profile = maven._compiler_argument_profile(configurations)
+        minimum_heap, maximum_heap = maven._structured_compiler_heap(configurations)
         parameters = plugin.findtext("./{*}configuration/{*}parameters") if plugin is not None else None
         if parameters is None:
             parameters = root.findtext("./{*}properties/{*}maven.compiler.parameters")
@@ -53,6 +55,8 @@ def load_module_worlds(output: Path, target: Path, build_jdk, *, tests: bool) ->
             "resource_roots": snapshot["resourceDirectories"],
             "source_level": compiler["source_level"],
             "source_encoding": maven._source_encoding(root),
+            "worker_min_heap_mb": max(profile.worker_min_heap_mb, minimum_heap),
+            "worker_max_heap_mb": max(profile.worker_max_heap_mb, maximum_heap),
             "target_java_home": str(target_home),
             "method_parameters": profile.method_parameters or parameters == "true",
             "processor_entries": [str(path) for path in processor_paths if str(path) not in lombok],

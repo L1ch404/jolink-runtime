@@ -32,7 +32,6 @@ from .idea_importer import (
     IdeaLaunchImportError,
     IdeaLaunchImporter,
 )
-from .fast_compile import FastCompilePlan
 from .gradle_probe import (
     GradleProbeError,
     ProductGradleProbe,
@@ -45,6 +44,7 @@ from .gradle_runtime_build_world import (
     GradleRuntimeBuildWorldError,
     create_gradle_runtime_build_world,
 )
+from .gradle_module_world import GradleModuleError
 from .jdt_compile_session import JdtBuildWorldPlan
 from .maven_probe import ProductMavenProbe
 from .maven_module_world import load_module_worlds
@@ -99,8 +99,6 @@ class PreparedProjectLaunch:
     command: MaterializedJavaCommand
     warnings: tuple[str, ...]
     attempt_directory: Path
-    fast_compile_plan: FastCompilePlan | None = None
-    fast_compile_unavailable_reason: str | None = None
     jdt_build_world_plan: JdtBuildWorldPlan | None = None
     jdt_unavailable_reason: str | None = None
     source_manifest_fingerprint: str | None = None
@@ -229,8 +227,6 @@ class ProjectLaunchPipeline:
                     "was not invoked.",
                 ),
                 attempt_directory=attempt_directory,
-                fast_compile_plan=None,
-                fast_compile_unavailable_reason="DIRECT_RELOAD_NOT_USED",
                 jdt_build_world_plan=cached.jdt_plan,
                 source_manifest_fingerprint=None,
                 probe_cache_reused=True,
@@ -280,10 +276,6 @@ class ProjectLaunchPipeline:
             )
         except MavenResolutionError as error:
             raise self._maven_failure(error) from error
-        java_modules = tuple(
-            item for item in workspace.modules if item.packaging != "pom"
-        )
-
         build_log = attempt_directory / "build.log"
         build_jdk = self._select_java(
             context,
@@ -309,182 +301,18 @@ class ProjectLaunchPipeline:
             build_jdk=build_jdk,
             build_log=build_log,
         )
-        if len(java_modules) > 1:
-            return self._prepare_maven_modules(
-                context, request, imported.intent, preferences, workspace, module,
-                build_jdk, runtime_jdk, maven, attempt_directory, build_log,
-            )
-        try:
-            execution = self._maven.create_execution_plan(
-                workspace=workspace,
-                module=module,
-                intent=imported.intent,
-                maven=maven,
-                build_jdk=build_jdk,
-                preferences=preferences,
-                attempt_directory=attempt_directory,
-            )
-        except MavenResolutionError as error:
-            raise self._maven_failure(error) from error
-        context.set_build_plan(execution.build_plan)
-        source_roots = (module.directory / "src/main/java",)
-        manifest_started = time.monotonic()
-        source_manifest_before = self.source_manifest_fingerprint(
-            source_roots
+        prepared = self._prepare_maven_probe(
+            context, request, imported.intent, preferences, workspace, module,
+            build_jdk, runtime_jdk, maven, attempt_directory, build_log,
         )
-        source_manifest_before_ms = (
-            time.monotonic() - manifest_started
-        ) * 1000
-
-        context.transition(LaunchPhase.RESOLVING_RUNTIME)
-        build_result = context.run_operation(
-            self._maven.create_build_operation(execution)
-        )
-        if build_result.timed_out:
-            raise LaunchPipelineFailure(
-                LaunchErrorCode.BUILD_TIMEOUT,
-                "The supervised Maven build timed out.",
-                retryable=True,
-                suggested_next_step=(
-                    "Inspect build.log_tail, correct the blocked build, and "
-                    "retry run."
-                ),
-            )
-        if not build_result.succeeded:
-            raise LaunchPipelineFailure(
-                LaunchErrorCode.BUILD_FAILED,
-                "The supervised Maven build failed.",
-                retryable=True,
-                suggested_next_step=(
-                    "Inspect build.log_tail, correct the Maven failure, and "
-                    "retry run."
-                ),
-                context={"return_code": build_result.return_code},
-            )
-        manifest_started = time.monotonic()
-        source_manifest_after = self.source_manifest_fingerprint(source_roots)
-        source_manifest_after_ms = (
-            time.monotonic() - manifest_started
-        ) * 1000
-        if source_manifest_before != source_manifest_after:
-            raise LaunchPipelineFailure(
-                LaunchErrorCode.SOURCE_CHANGED_DURING_BUILD,
-                "Project Java sources changed while Maven was building.",
-                retryable=True,
-                suggested_next_step=(
-                    "Wait for source edits to settle, then call launch again."
-                ),
-            )
-        compile_classpath_result = context.run_operation(
-            self._maven.create_compile_classpath_operation(execution)
-        )
-        try:
-            plan = self._maven.consume_jvm_launch_plan(
-                execution=execution,
-                intent=imported.intent,
-                runtime_jdk=runtime_jdk,
-                ready_port=request.ready_port,
-                startup_wait_timeout_seconds=(
-                    request.startup_wait_timeout_seconds
-                ),
-            )
-        except MavenResolutionError as error:
-            raise self._maven_failure(error) from error
-        plan, command = self.materialize_command(
-            plan,
-            jdwp_port=request.jdwp_port,
-            attempt_directory=attempt_directory,
-        )
-        context.set_jvm_launch_plan(plan)
-        fast_compile_plan: FastCompilePlan | None = None
-        fast_compile_unavailable_reason: str | None = None
-        jdt_build_world_plan: JdtBuildWorldPlan | None = None
-        jdt_unavailable_reason: str | None = None
-        if (
-            compile_classpath_result.succeeded
-            and not execution.build_plan.compile_required
-        ):
-            fast_compile_unavailable_reason = (
-                "JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE"
-            )
-            jdt_unavailable_reason = (
-                "JDT_RELOAD_REQUIRES_FRESH_MAVEN_BASELINE"
-            )
-        elif compile_classpath_result.succeeded:
-            try:
-                fast_compile_plan = self._maven.consume_fast_compile_plan(
-                    execution=execution,
-                    runtime_jdk=runtime_jdk,
-                )
-            except MavenResolutionError as error:
-                fast_compile_unavailable_reason = error.error_code.value
-            try:
-                jdt_build_world_plan = self._maven.consume_jdt_build_world_plan(
-                    execution=execution,
-                    runtime_jdk=runtime_jdk,
-                )
-            except MavenResolutionError as error:
-                jdt_unavailable_reason = error.error_code.value
-        else:
-            fast_compile_unavailable_reason = "COMPILE_CLASSPATH_UNAVAILABLE"
-            jdt_unavailable_reason = "COMPILE_CLASSPATH_UNAVAILABLE"
-        capability_warnings: tuple[str, ...] = ()
-        if fast_compile_plan is None and jdt_build_world_plan is None:
-            capability_warnings = (
-                "Fast runtime-only source update is unavailable for this "
-                "launch; formal Maven build and restart remain available.",
-            )
-        if jdt_build_world_plan is None:
-            capability_warnings = (
-                *capability_warnings,
-                "Persistent JDT reload is unavailable for this launch; "
-                "restart remains available.",
-            )
-        return self._stabilize(PreparedProjectLaunch(
-            execution=execution,
-            build_system="maven",
-            build_offline=False,
-            build_jdk=build_jdk,
-            module_output=module.output_directory,
-            generation_input_roots=(module.output_directory,),
-            generation_input_manifest={},
-            resource_source_roots=(module.directory / "src/main/resources",),
-            resource_input_manifest=build_input_manifest(
-                (), (module.directory / "src/main/resources",)
-            ),
-            build_world_inputs=(
-                execution.effective_pom_file,
-                execution.classpath_file,
-                execution.compile_classpath_file,
-            ),
-            runtime_jdk=runtime_jdk,
-            jvm_plan=plan,
-            command=command,
-            warnings=tuple(
-                dict.fromkeys(
-                    (
-                        *imported.warnings,
-                        *preferences.warnings,
-                        *standalone_module_warning,
-                        *capability_warnings,
-                    )
-                )
-            ),
-            attempt_directory=attempt_directory,
-            fast_compile_plan=fast_compile_plan,
-            fast_compile_unavailable_reason=(
-                fast_compile_unavailable_reason
-            ),
-            jdt_build_world_plan=jdt_build_world_plan,
-            jdt_unavailable_reason=jdt_unavailable_reason,
-            source_manifest_fingerprint=source_manifest_after,
-            source_manifest_before_ms=source_manifest_before_ms,
-            source_manifest_after_ms=source_manifest_after_ms,
-            launch_intent=imported.intent,
+        return self._stabilize(replace(
+            prepared,
+            warnings=tuple(dict.fromkeys((*imported.warnings, *preferences.warnings,
+                                          *standalone_module_warning))),
             build_preferences_identity=preferences_identity,
         ))
 
-    def _prepare_maven_modules(self, context, request, intent, preferences, workspace,
+    def _prepare_maven_probe(self, context, request, intent, preferences, workspace,
                                module, build_jdk, runtime_jdk, maven, directory, log):
         import json
         probe = ProductMavenProbe.load()
@@ -527,9 +355,17 @@ class ProjectLaunchPipeline:
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
             source_level=target["source_level"], target_level=target["source_level"],
             fingerprint=hashlib.sha256(json.dumps(modules, sort_keys=True).encode()).hexdigest(),
-            configuration_inputs=tuple(m.pom_file for m in workspace.modules),
+            configuration_inputs=tuple(dict.fromkeys((
+                *(m.pom_file for m in workspace.modules),
+                *((settings,) if settings is not None else ()),
+                *(workspace.build_root / ".mvn" / name for name in
+                  ("maven.config", "jvm.config", "extensions.xml")),
+            ))),
             configuration_environment_names=(), javac_executable=build_jdk.javac_executable,
-            method_parameters=target["method_parameters"], modules=modules)
+            method_parameters=target["method_parameters"],
+            worker_min_heap_mb=max(m["worker_min_heap_mb"] for m in modules),
+            worker_max_heap_mb=max(m["worker_max_heap_mb"] for m in modules),
+            modules=modules if len(modules) > 1 else ())
         jvm = JvmLaunchPlan(java_executable=runtime_jdk.java_executable,
             classpath=tuple(Path(p) for p in snapshot["runtimeClasspathElements"]),
             main_class=intent.main_class, working_directory=intent.working_directory,
@@ -538,8 +374,8 @@ class ProjectLaunchPipeline:
             startup_wait_timeout_seconds=request.startup_wait_timeout_seconds)
         jvm, materialized = self.materialize_command(jvm, jdwp_port=request.jdwp_port, attempt_directory=directory)
         return PreparedProjectLaunch(execution=None, build_system="maven", build_offline=offline,
-            build_jdk=build_jdk, runtime_jdk=runtime_jdk, module_output=module.output_directory,
-            generation_input_roots=(module.output_directory,), generation_input_manifest={},
+            build_jdk=build_jdk, runtime_jdk=runtime_jdk, module_output=Path(target["output_directory"]),
+            generation_input_roots=(Path(target["output_directory"]),), generation_input_manifest={},
             resource_source_roots=resources, resource_input_manifest={},
             build_world_inputs=plan.configuration_inputs, jvm_plan=jvm, command=materialized,
             warnings=(), attempt_directory=directory, jdt_build_world_plan=plan, launch_intent=intent)
@@ -798,7 +634,7 @@ class ProjectLaunchPipeline:
                 configuration_inputs=configuration_inputs,
                 configuration_environment_names=environment_names,
             )
-        except GradleRuntimeBuildWorldError as error:
+        except (GradleRuntimeBuildWorldError, GradleModuleError) as error:
             raise LaunchPipelineFailure(
                 error.error_code,
                 str(error),
@@ -846,8 +682,6 @@ class ProjectLaunchPipeline:
             command=command,
             warnings=tuple(dict.fromkeys((*imported.warnings, *preferences.warnings))),
             attempt_directory=attempt_directory,
-            fast_compile_plan=None,
-            fast_compile_unavailable_reason="DIRECT_RELOAD_NOT_USED",
             jdt_build_world_plan=world.jdt_plan,
             source_manifest_fingerprint=source_after,
             source_manifest_before_ms=source_before_ms,

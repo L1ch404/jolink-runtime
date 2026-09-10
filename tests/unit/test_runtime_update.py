@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -12,23 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from jolink_runtime.adapters.java.classfile import parse_class_file
 from jolink_runtime.adapters.java.jdwp_adapter import (
     JavaRuntime,
     ProjectUpdatePlan,
-    SuspensionSnapshot,
 )
 from jolink_runtime.adapters.java.jdwp_client import EventKind
 from jolink_runtime.core.models import RuntimeAction
-from jolink_runtime.launch.controller import LaunchPipelineFailure
-from jolink_runtime.launch.fast_compile import (
-    FastCompileError,
-    FastCompilePlan,
-    fast_compile_fingerprint,
-)
 from jolink_runtime.launch.project_session import JavaProjectSession
 from jolink_runtime.launch.jdt_compile_session import (
-    JdtCandidate,
     JdtCompileError,
     JdtCompileResult,
     PersistentJdtCompileSession,
@@ -60,48 +48,6 @@ def _compile_class(tmp_path: Path, variant: str, source: str) -> bytes:
     return (output / "Example.class").read_bytes()
 
 
-def _plan(tmp_path: Path) -> tuple[FastCompilePlan, Path, Path]:
-    source_root = tmp_path / "src" / "main" / "java"
-    source = source_root / "example" / "Example.java"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "package example; public class Example {}\n",
-        encoding="utf-8",
-    )
-    output_root = tmp_path / "target" / "classes"
-    output_root.mkdir(parents=True)
-    config = tmp_path / "pom.xml"
-    config.write_text("<project/>\n", encoding="utf-8")
-    javac_identity = Path(sys.executable)
-    fingerprint = fast_compile_fingerprint(
-        configuration_inputs=(config,),
-        javac_executable=javac_identity,
-        compile_classpath=(output_root,),
-    )
-    return (
-        FastCompilePlan(
-            project_root=tmp_path,
-            module_root=tmp_path,
-            source_root=source_root,
-            output_root=output_root,
-            javac_executable=javac_identity,
-            compile_classpath=(output_root,),
-            build_jdk_major=8,
-            runtime_jdk_major=8,
-            source_level=8,
-            target_level=8,
-            release_level=None,
-            javac_platform_args=("-source", "8", "-target", "8"),
-            configuration_inputs=(config,),
-            configuration_fingerprint=fingerprint,
-        ),
-        source,
-        config,
-    )
-
-
-
-
 def _action(source: Path, project_root: Path) -> RuntimeAction:
     action = RuntimeAction(action="update")
     action.source_files = [source.relative_to(project_root).as_posix()]
@@ -116,133 +62,8 @@ def test_update_requires_an_active_project_launch() -> None:
     result = runtime.update(action)
 
     assert result.ok is False
-    assert result.data["error_code"] == "FAST_COMPILE_UNSUPPORTED"
+    assert result.data["error_code"] == "JDT_SESSION_NOT_READY"
     assert result.data["runtime_code_state"] == "unchanged"
-
-
-def test_update_rejects_a_stale_cached_compile_plan(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime = JavaRuntime()
-    plan, source, config = _plan(tmp_path)
-    prepared = SimpleNamespace(
-        fast_compile_plan=plan,
-        attempt_directory=tmp_path,
-    )
-    monkeypatch.setattr(
-        runtime,
-        "_project_update_context",
-        lambda: ("launch_1", 1, prepared),
-    )
-    config.write_text("<project><changed/></project>\n", encoding="utf-8")
-
-    result = runtime.update(_action(source, tmp_path))
-
-    assert result.ok is False
-    assert result.data["error_code"] == "FAST_COMPILE_PLAN_STALE"
-    assert result.data["runtime_code_state"] == "unchanged"
-
-
-def test_update_rejects_an_active_debug_suspension_before_compiling(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime = JavaRuntime()
-    plan, source, _config = _plan(tmp_path)
-    prepared = SimpleNamespace(
-        fast_compile_plan=plan,
-        attempt_directory=tmp_path,
-    )
-    monkeypatch.setattr(
-        runtime,
-        "_project_update_context",
-        lambda: ("launch_1", 1, prepared),
-    )
-    runtime._active_suspension = SuspensionSnapshot(
-        suspension_id="susp_1",
-        generation=1,
-        request_id=1,
-        thread_id=2,
-        location={},
-        observed_at="now",
-    )
-
-    result = runtime.update(_action(source, tmp_path))
-
-    assert result.ok is False
-    assert result.data["error_code"] == "ACTIVE_SUSPENSION_EXISTS"
-    assert result.data["suspension_id"] == "susp_1"
-    assert result.data["runtime_code_state"] == "unchanged"
-
-
-def test_update_rejects_live_debug_requests_before_compiling(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime = JavaRuntime()
-    plan, source, _config = _plan(tmp_path)
-    prepared = SimpleNamespace(
-        fast_compile_plan=plan,
-        attempt_directory=tmp_path,
-    )
-    monkeypatch.setattr(
-        runtime,
-        "_project_update_context",
-        lambda: ("launch_1", 1, prepared),
-    )
-    runtime._armed_breakpoint_requests[17] = "bp_001"
-
-    result = runtime.update(_action(source, tmp_path))
-
-    assert result.ok is False
-    assert result.data["error_code"] == "ACTIVE_DEBUG_REQUESTS_REMAIN"
-    assert result.data["runtime_code_state"] == "unchanged"
-
-
-def test_update_rejects_an_unknown_previous_hotswap_outcome(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime = JavaRuntime()
-    plan, source, _config = _plan(tmp_path)
-    prepared = SimpleNamespace(
-        fast_compile_plan=plan,
-        attempt_directory=tmp_path,
-    )
-    monkeypatch.setattr(
-        runtime,
-        "_project_update_context",
-        lambda: ("launch_1", 1, prepared),
-    )
-    runtime._runtime_overlay_state = "unknown"
-    runtime._runtime_overlay_sources.add(
-        "src/main/java/example/Example.java"
-    )
-
-    result = runtime.update(_action(source, tmp_path))
-
-    assert result.ok is False
-    assert result.data["error_code"] == "HOT_SWAP_OUTCOME_UNKNOWN"
-    assert result.data["runtime_code_state"] == "unknown"
-    assert result.data["restart_required"] is True
-    assert result.data["verification_state"] == "unknown"
-
-
-def test_formal_output_guard_detects_external_build_change(
-    tmp_path: Path,
-) -> None:
-    runtime = JavaRuntime()
-    plan, _source, _config = _plan(tmp_path)
-    class_file = plan.output_root / "example" / "Example.class"
-    class_file.parent.mkdir(parents=True)
-    class_file.write_bytes(b"launch-bytes")
-    baseline_hash = hashlib.sha256(b"launch-bytes").hexdigest()
-    plan.baseline_class_hashes["example/Example.class"] = baseline_hash
-
-    assert runtime._formal_outputs_match_launch(plan) is True
-    class_file.write_bytes(b"external-build-bytes")
-    assert runtime._formal_outputs_match_launch(plan) is False
 
 
 @pytest.mark.parametrize("use_alias", [False, True])
@@ -333,8 +154,6 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
         source_roots=(project / "src/main/java",),
     )
     prepared = ProjectUpdatePlan(
-        fast_compile_plan=None,
-        fast_compile_unavailable_reason="DIRECT_DISABLED",
         attempt_directory=tmp_path,
         project_session=session,
         jdt_build_world_plan=plan,
@@ -370,13 +189,6 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
 
     jdwp = FakeJdwp()
     monkeypatch.setattr(runtime, "_connect", lambda: jdwp)
-    monkeypatch.setattr(
-        runtime,
-        "_resolve_hotswap_definitions",
-        lambda _jdwp, updates, required_class_names: {
-            1: updates[0].class_bytes
-        },
-    )
     action = RuntimeAction(action="update")
     action.source_files = ["src/main/java/Example.java"]
 
@@ -390,14 +202,15 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
         assert time.monotonic() < deadline
         time.sleep(0.01)
     assert session.public_status()["last_reload"]["apply_method"] == "hotswap"
-    assert session.public_status()["last_reload"][
-        "source_changes_pending"
-    ] is False
+    assert session.public_status()["last_reload"]["source_changes_pending"] is False
     assert jdwp.redefined is True
     assert session.generations.current.ordinal == 1
-    assert session.generations.current.output_directory.joinpath(
-        "Example.class"
-    ).read_bytes() == staged_raw
+    assert (
+        session.generations.current.output_directory.joinpath(
+            "Example.class"
+        ).read_bytes()
+        == staged_raw
+    )
     assert session.generations.candidate is None
     last_reload = session.public_status()["last_reload"]
     assert last_reload["persistence"] == "jdt_workspace"
@@ -405,8 +218,10 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
     assert last_reload["runtime_overlay_active"] is True
 
     for failure in ("published", "breakpoints"):
+
         def fail_bookkeeping(*_args):
             raise RuntimeError("injected post-apply failure")
+
         with monkeypatch.context() as patch:
             if failure == "published":
                 patch.setattr(compiler, "mark_published", fail_bookkeeping)
@@ -414,9 +229,12 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
                 patch.setattr(runtime, "_refresh_updated_breakpoints", fail_bookkeeping)
             accepted = runtime.update(action)
             deadline = time.monotonic() + 5
-            while session.public_status()["last_reload"]["reload_id"] != accepted.data["reload_id"]:
+            while (
+                session.public_status()["last_reload"]["reload_id"]
+                != accepted.data["reload_id"]
+            ):
                 assert time.monotonic() < deadline
-                time.sleep(.01)
+                time.sleep(0.01)
             reported = session.public_status()["last_reload"]
             assert reported["ok"] is True
             assert reported["applied"] is True
@@ -511,8 +329,6 @@ def test_jdt_reload_returns_attempt_before_background_compile_finishes(
         is_fresh=lambda: True,
     )
     prepared = ProjectUpdatePlan(
-        fast_compile_plan=None,
-        fast_compile_unavailable_reason="DIRECT_DISABLED",
         attempt_directory=tmp_path,
         project_session=session,
         jdt_build_world_plan=plan,
@@ -542,6 +358,7 @@ def test_jdt_reload_returns_attempt_before_background_compile_finishes(
         time.sleep(0.01)
     assert session.public_status()["last_reload"]["applied"] is True
 
+
 def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
     tmp_path: Path,
     monkeypatch,
@@ -552,8 +369,6 @@ def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
         build_world_fingerprint="world",
     )
     prepared = ProjectUpdatePlan(
-        fast_compile_plan=None,
-        fast_compile_unavailable_reason="DIRECT_DISABLED",
         attempt_directory=tmp_path,
         project_session=session,
         jdt_build_world_plan=SimpleNamespace(),
@@ -577,14 +392,47 @@ def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
     result = runtime.update(RuntimeAction(action="update"))
 
     assert result.ok is False
-    assert result.error == (
-        "Persistent JDT reload is unavailable for this launch."
-    )
-    assert result.data["error_code"] == (
-        "JDT_CANDIDATE_INTEGRITY_MISMATCH"
-    )
+    assert result.error == ("Persistent JDT reload is unavailable for this launch.")
+    assert result.data["error_code"] == ("JDT_CANDIDATE_INTEGRITY_MISMATCH")
     assert result.data["artifact"] == "worker.jar"
     assert result.data["retryable"] is False
+
+
+@pytest.mark.parametrize("suspended", [False, True])
+def test_jdt_reload_rejects_live_debug_observation_before_build(
+    tmp_path, monkeypatch, suspended
+):
+    class ReadyJdt(PersistentJdtCompileSession):
+        @property
+        def ready(self):
+            return True
+
+        def compile(self, _sources):
+            raise AssertionError("debug observation must be settled before compiling")
+
+    compiler = object.__new__(ReadyJdt)
+    session = JavaProjectSession(
+        root=tmp_path / "session", build_world_fingerprint="world"
+    )
+    session.attach_compile_session(compiler)
+    prepared = ProjectUpdatePlan(
+        attempt_directory=tmp_path,
+        project_session=session,
+        jdt_build_world_plan=SimpleNamespace(),
+    )
+    runtime = JavaRuntime()
+    monkeypatch.setattr(
+        runtime, "_project_update_context", lambda: ("launch_1", 1, prepared)
+    )
+    if suspended:
+        runtime._active_suspension = object()
+    else:
+        runtime._armed_breakpoint_requests = {1: "bp_1"}
+    result = runtime.update(RuntimeAction(action="update"))
+    assert result.ok is False
+    assert result.data["error_code"] == (
+        "ACTIVE_SUSPENSION_EXISTS" if suspended else "ACTIVE_DEBUG_REQUESTS_REMAIN"
+    )
 
 
 def test_poisoned_jdt_reload_clears_ready_product_state(
@@ -636,8 +484,6 @@ def test_poisoned_jdt_reload_clears_ready_product_state(
         is_fresh=lambda: True,
     )
     prepared = ProjectUpdatePlan(
-        fast_compile_plan=None,
-        fast_compile_unavailable_reason="DIRECT_DISABLED",
         attempt_directory=tmp_path,
         project_session=session,
         jdt_build_world_plan=plan,
@@ -667,83 +513,6 @@ def test_poisoned_jdt_reload_clears_ready_product_state(
     assert session.compile_ready is False
     assert session.jdt_bootstrap_state == "unavailable"
     assert session.jdt_unavailable_reason == "JDT_SOURCE_CHANGE_NOT_OBSERVED"
-
-
-
-
-def test_formal_output_guard_checks_unselected_classes_and_class_set(
-    tmp_path: Path,
-) -> None:
-    runtime = JavaRuntime()
-    plan, _source, _config = _plan(tmp_path)
-    selected = plan.output_root / "example" / "Example.class"
-    dependency = plan.output_root / "example" / "Dependency.class"
-    selected.parent.mkdir(parents=True)
-    selected.write_bytes(b"selected-launch-bytes")
-    dependency.write_bytes(b"dependency-launch-bytes")
-    plan.baseline_class_hashes.update(
-        {
-            "example/Example.class": hashlib.sha256(
-                b"selected-launch-bytes"
-            ).hexdigest(),
-            "example/Dependency.class": hashlib.sha256(
-                b"dependency-launch-bytes"
-            ).hexdigest(),
-        }
-    )
-
-    assert runtime._formal_outputs_match_launch(plan) is True
-    dependency.write_bytes(b"dependency-external-build")
-    assert runtime._formal_outputs_match_launch(plan) is False
-    dependency.write_bytes(b"dependency-launch-bytes")
-    (plan.output_root / "example" / "Added.class").write_bytes(b"added")
-    assert runtime._formal_outputs_match_launch(plan) is False
-
-
-def test_static_initializer_change_requires_restart(tmp_path: Path) -> None:
-    baseline_raw = _compile_class(
-        tmp_path,
-        "before-static",
-        'public class Example { public static String VALUE = "old"; }',
-    )
-    staged_raw = _compile_class(
-        tmp_path,
-        "after-static",
-        'public class Example { public static String VALUE = "new"; }',
-    )
-    baseline = parse_class_file(baseline_raw)
-    staged = parse_class_file(staged_raw)
-    source_key = "src/main/java/Example.java"
-    runtime = JavaRuntime()
-
-    with pytest.raises(FastCompileError) as captured:
-        runtime._prepare_class_updates(
-            {
-                source_key: {
-                    "Example": (
-                        baseline,
-                        baseline_raw,
-                        "Example.class",
-                    )
-                }
-            },
-            {
-                source_key: {
-                    "Example": (
-                        staged,
-                        staged_raw,
-                        "Example.class",
-                    )
-                }
-            },
-        )
-
-    assert (
-        captured.value.error_code
-        == "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART"
-    )
-    assert captured.value.context["runtime_code_state"] == "unchanged"
-    assert captured.value.context["restart_required"] is True
 
 
 def test_redefined_class_breakpoints_become_stale_without_line_refresh() -> None:
@@ -791,10 +560,7 @@ def test_redefined_class_breakpoints_become_stale_without_line_refresh() -> None
         ],
     }
     assert updated["stale"] is True
-    assert (
-        updated["stale_reason"]
-        == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
-    )
+    assert updated["stale_reason"] == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
     assert "redefined" in updated["refresh_error"]
     assert untouched == {
         "breakpoint_id": "bp_002",
@@ -831,15 +597,11 @@ def test_stale_redefined_breakpoint_is_listed_and_cannot_be_armed() -> None:
             "line": 10,
             "code_index": 4,
             "stale": True,
-            "stale_reason": (
-                "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
-            ),
+            "stale_reason": ("CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"),
         },
     }
-    runtime._resolve_breakpoint_class = lambda *_args, **_kwargs: (
-        (_ for _ in ()).throw(
-            AssertionError("stale preflight must happen before JDWP resolution")
-        )
+    runtime._resolve_breakpoint_class = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("stale preflight must happen before JDWP resolution")
     )
 
     observation = runtime._breakpoint_observations()[1]
@@ -850,19 +612,13 @@ def test_stale_redefined_breakpoint_is_listed_and_cannot_be_armed() -> None:
     )
 
     assert observation["stale"] is True
-    assert (
-        observation["stale_reason"]
-        == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
-    )
+    assert observation["stale_reason"] == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
     assert result is not None
     assert result.ok is False
     assert result.data["error_code"] == "BREAKPOINT_DEFINITION_STALE"
     assert result.data["breakpoint_id"] == "bp_002"
     assert result.data["stale_breakpoint_ids"] == ["bp_002"]
-    assert (
-        result.data["stale_reason"]
-        == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
-    )
+    assert result.data["stale_reason"] == "CLASS_REDEFINED_BREAKPOINT_REQUIRES_RESET"
     assert runtime._armed_breakpoint_requests == {}
 
 
@@ -957,6 +713,4 @@ def test_stale_arm_error_reports_every_stale_breakpoint() -> None:
         "bp_001",
         "bp_003",
     ]
-    assert "partial breakpoint arming" in result.data[
-        "suggested_next_step"
-    ]
+    assert "partial breakpoint arming" in result.data["suggested_next_step"]

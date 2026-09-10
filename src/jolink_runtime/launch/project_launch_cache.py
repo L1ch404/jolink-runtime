@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .contracts import JvmLaunchPlan, LaunchIntent
-from .fast_compile import fast_compile_fingerprint
+from .build_world_identity import build_world_fingerprint
 from .jdt_compile_session import (
     JdtBuildWorldPlan,
 )
@@ -93,7 +93,7 @@ def stabilize_jdt_plan(
         sorted(set((*plan.configuration_environment_names, "JAVA_HOME")))
     )
     freshness = plan.freshness_entries or plan.dependency_entries
-    fingerprint = fast_compile_fingerprint(
+    fingerprint = build_world_fingerprint(
         configuration_inputs=configuration,
         configuration_environment_names=environment_names,
         javac_executable=plan.javac_executable,

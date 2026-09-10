@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jolink_runtime.launch.contracts import JvmLaunchPlan, LaunchIntent
-from jolink_runtime.launch.fast_compile import fast_compile_fingerprint
+from jolink_runtime.launch.build_world_identity import build_world_fingerprint
 from jolink_runtime.launch.jdt_compile_session import (
     JdtBuildWorldPlan,
     resource_tree_fingerprint,
@@ -34,7 +34,7 @@ def test_cache_reuses_persisted_model_without_revalidating_project_files(
     java.parent.mkdir(parents=True)
     java.write_bytes(b"java")
     javac.write_bytes(b"javac")
-    fingerprint = fast_compile_fingerprint(
+    fingerprint = build_world_fingerprint(
         configuration_inputs=(pom,),
         configuration_environment_names=(),
         javac_executable=javac,

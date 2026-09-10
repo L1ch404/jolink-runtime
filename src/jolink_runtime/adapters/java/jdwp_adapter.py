@@ -28,9 +28,6 @@ from typing import Any
 from ...core.models import RuntimeAction, RuntimeResult, Variable
 from ...core.wait_state import WaitControl
 from ...launch import (
-    FastCompileError,
-    FastCompilePlan,
-    FastCompiler,
     JavaProjectSession,
     JdtCompileError,
     PersistentJdtCompileSession,
@@ -53,19 +50,10 @@ from ...launch.jdt_workspace_store import (
 from ...launch.jdt_reload_service import JdtReloadService
 from ...launch.jdt_launch_service import JdtLaunchService
 from ..base import Runtime
-from .classfile import (
-    ClassFileChangeKind,
-    ClassFileFormatError,
-    ParsedClassFile,
-    compare_class_files,
-    parse_class_file,
-)
 from .jdwp_client import (
     Cmd,
     EventKind,
     JDWPClient,
-    JDWPCommandOutcomeUnknown,
-    JDWPCommandRejected,
     JDWPError,
     SuspendPolicy,
     Tag,
@@ -183,22 +171,12 @@ class BreakpointLocation:
     code_index: int
 
 
-@dataclass(frozen=True)
-class StagedClassUpdate:
-    binary_name: str
-    signature: str
-    baseline: ParsedClassFile
-    staged: ParsedClassFile
-    class_bytes: bytes
-    source_key: str
 
 
 @dataclass(frozen=True)
 class ProjectUpdatePlan:
     """Minimal retained state; excludes launch arguments and environment values."""
 
-    fast_compile_plan: FastCompilePlan | None
-    fast_compile_unavailable_reason: str | None
     attempt_directory: Path
     project_session: JavaProjectSession | None = None
     jvm_plan: Any | None = None
@@ -279,7 +257,6 @@ class JavaRuntime(Runtime):
         self._preserve_project_sessions: set[str] = set()
         self._last_project_request: ProjectLaunchRequest | None = None
         self._last_direct_action: RuntimeAction | None = None
-        self._fast_compiler = FastCompiler()
         self._fast_tests = FastTestManager()
         self._jdt_workspaces = JdtWorkspaceStore()
         self._jdt_reload_service = JdtReloadService(logger)
@@ -287,8 +264,6 @@ class JavaRuntime(Runtime):
         self._code_revision = 0
         self._runtime_overlay_sources: set[str] = set()
         self._runtime_overlay_state = "none"
-        self._runtime_overlay_class_hashes: dict[str, str] = {}
-        self._runtime_overlay_source_classes: dict[str, set[str]] = {}
 
     # ── Lifecycle ──────────────────────────────────────
 
@@ -570,14 +545,6 @@ class JavaRuntime(Runtime):
         self._closing_requested = True
         deadline = time.monotonic() + 2.0
         try:
-            fast_compile_settled = self._fast_compiler.close(
-                deadline=deadline,
-                force=True,
-            )
-        except Exception:
-            logger.exception("java_runtime.fast_compile.force_close_failed")
-            fast_compile_settled = False
-        try:
             fast_test_settled = self._fast_tests.close(deadline=deadline)
         except Exception:
             logger.exception("java_runtime.fast_test.force_close_failed")
@@ -623,8 +590,7 @@ class JavaRuntime(Runtime):
             deadline=deadline,
         )
         settled = (
-            fast_compile_settled
-            and fast_test_settled
+            fast_test_settled
             and controller_settled
             and target_settled
         )
@@ -649,13 +615,6 @@ class JavaRuntime(Runtime):
         self._closing_requested = True
         self._closed = True
         deadline = time.monotonic() + 2.0
-        try:
-            fast_compile_settled = self._fast_compiler.close(
-                deadline=deadline,
-            )
-        except Exception:
-            logger.exception("java_runtime.fast_compile.close_failed")
-            fast_compile_settled = False
         try:
             fast_test_settled = self._fast_tests.close(deadline=deadline)
         except Exception:
@@ -778,8 +737,7 @@ class JavaRuntime(Runtime):
         )
 
         settled = (
-            fast_compile_settled
-            and fast_test_settled
+            fast_test_settled
             and controller_settled
             and target_settled
         )
@@ -1322,10 +1280,6 @@ class JavaRuntime(Runtime):
                 self._project_sessions[context.attempt_id] = project_session
                 self._project_update_plans[context.attempt_id] = (
                     ProjectUpdatePlan(
-                        fast_compile_plan=prepared.fast_compile_plan,
-                        fast_compile_unavailable_reason=(
-                            prepared.fast_compile_unavailable_reason
-                        ),
                         attempt_directory=prepared.attempt_directory,
                         project_session=project_session,
                         jvm_plan=prepared.jvm_plan,
@@ -2365,26 +2319,14 @@ class JavaRuntime(Runtime):
                     unavailable_reason = bootstrap.get("reason")
                     unavailable_details = bootstrap.get("details")
                     if bootstrap.get("state") == "unavailable":
-                        if prepared.fast_compile_plan is not None:
-                            snapshot["fast_update"] = (
-                                prepared.fast_compile_plan.redacted_summary()
-                            )
-                            snapshot["fast_update"]["fallback_reason"] = (
-                                unavailable_reason
-                            )
-                        else:
-                            snapshot["fast_update"] = {
-                                "available": False,
-                                "status": "unavailable",
-                                "reason": unavailable_reason,
-                                "build_system": prepared.build_system,
-                                "offline": prepared.build_offline,
-                                **(
-                                    unavailable_details
-                                    if isinstance(unavailable_details, dict)
-                                    else {}
-                                ),
-                            }
+                        snapshot["fast_update"] = {
+                            "available": False,
+                            "status": "unavailable",
+                            "reason": unavailable_reason,
+                            "build_system": prepared.build_system,
+                            "offline": prepared.build_offline,
+                            **(unavailable_details if isinstance(unavailable_details, dict) else {}),
+                        }
                         warning = (
                             "Persistent JDT reload is unavailable: "
                             f"{unavailable_reason}."
@@ -2401,25 +2343,12 @@ class JavaRuntime(Runtime):
                             "build_system": prepared.build_system,
                             "offline": prepared.build_offline,
                         }
-                elif prepared.fast_compile_plan is not None:
-                    snapshot["fast_update"] = (
-                        prepared.fast_compile_plan.redacted_summary()
-                    )
-                    snapshot["fast_update"]["build_system"] = (
-                        prepared.build_system
-                    )
-                    snapshot["fast_update"]["offline"] = (
-                        prepared.build_offline
-                    )
                 else:
                     snapshot["fast_update"] = {
                         "available": False,
                         "build_system": prepared.build_system,
                         "offline": prepared.build_offline,
-                        "reason": (
-                            prepared.fast_compile_unavailable_reason
-                            or "FAST_COMPILE_UNSUPPORTED"
-                        ),
+                        "reason": prepared.jdt_unavailable_reason or "JDT_SESSION_NOT_READY",
                     }
             build_log = (
                 directory / "build.log"
@@ -2752,583 +2681,10 @@ class JavaRuntime(Runtime):
                 prepared=prepared,
                 project_session=project_session,
             )
-        if not self._update_lock.acquire(blocking=False):
-            return RuntimeResult(
-                ok=False,
-                error="Another runtime update is already in progress.",
-                data={
-                    "error_code": "UPDATE_ALREADY_IN_PROGRESS",
-                    "retryable": True,
-                    "suggested_next_step": (
-                        "Wait for the current update to finish, then retry."
-                    ),
-                },
-            )
-        compile_attempt = None
-        try:
-            context = self._project_update_context()
-            if isinstance(context, RuntimeResult):
-                return context
-            attempt_id, generation, prepared = context
-            plan = prepared.fast_compile_plan
-            assert plan is not None
-
-            try:
-                source_files = plan.resolve_sources(
-                    getattr(action, "source_files", None) or ()
-                )
-            except FastCompileError as error:
-                return self._fast_compile_error_result(error, plan)
-
-            if not plan.is_fresh():
-                return self._fast_compile_plan_stale_result()
-            if self._runtime_overlay_state == "unknown":
-                return RuntimeResult(
-                    ok=False,
-                    error=(
-                        "The current JVM code state is unknown after an "
-                        "unconfirmed HotSwap attempt."
-                    ),
-                    data={
-                        "error_code": "HOT_SWAP_OUTCOME_UNKNOWN",
-                        "runtime_code_state": "unknown",
-                        **self._runtime_overlay_snapshot(),
-                        "restart_required": True,
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Restart the application before compiling or "
-                            "applying another runtime update."
-                        ),
-                    },
-                )
-
-            if self._active_suspension is not None:
-                return RuntimeResult(
-                    ok=False,
-                    error="A debug suspension is active.",
-                    data={
-                        "error_code": "ACTIVE_SUSPENSION_EXISTS",
-                        "suspension_id": (
-                            self._active_suspension.suspension_id
-                        ),
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Resume or clean up the active suspension before "
-                            "updating runtime code."
-                        ),
-                    },
-                )
-            if (
-                self._armed_breakpoint_requests
-                or self._armed_exception_requests
-            ):
-                return RuntimeResult(
-                    ok=False,
-                    error="A debug-event wait is still armed.",
-                    data={
-                        "error_code": "ACTIVE_DEBUG_REQUESTS_REMAIN",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Await or clean up the active wait_event before "
-                            "updating runtime code."
-                        ),
-                    },
-                )
-
-            project_session = getattr(prepared, "project_session", None)
-            if project_session is None:
-                return RuntimeResult(
-                    ok=False,
-                    error="The project Generation session is unavailable.",
-                    data={
-                        "error_code": "PROJECT_SESSION_UNAVAILABLE",
-                        "runtime_code_state": "unchanged",
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Launch the project again before retrying reload."
-                        ),
-                    },
-                )
-            current_generation = project_session.generations.current
-            if current_generation is None:
-                return RuntimeResult(
-                    ok=False,
-                    error="The current Generation is unavailable.",
-                    data={
-                        "error_code": "CURRENT_GENERATION_UNAVAILABLE",
-                        "runtime_code_state": "unchanged",
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Launch the project again before retrying reload."
-                        ),
-                    },
-                )
-            try:
-                project_session.generations.verify_generation(
-                    current_generation
-                )
-            except ProjectSessionError as error:
-                return RuntimeResult(
-                    ok=False,
-                    error=str(error),
-                    data={
-                        "error_code": error.error_code,
-                        "runtime_code_state": "unchanged",
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Launch the project again to rebuild a trusted "
-                            "Generation."
-                        ),
-                    },
-                )
-
-            try:
-                baseline_by_source = self._collect_source_classes(
-                    plan,
-                    source_files,
-                    classes_root=current_generation.output_directory,
-                    require_launch_baseline=False,
-                )
-            except FastCompileError as error:
-                return self._fast_compile_error_result(error, plan)
-
-            baseline_classes = [
-                parsed
-                for classes in baseline_by_source.values()
-                for parsed, _raw, _relative in classes.values()
-            ]
-            try:
-                releases = {
-                    self._java_release_for_class_major(item.major_version)
-                    for item in baseline_classes
-                }
-            except FastCompileError as error:
-                return self._fast_compile_error_result(error, plan)
-            if releases != {plan.target_level}:
-                return RuntimeResult(
-                    ok=False,
-                    error=(
-                        "The formal class output does not match the cached "
-                        "Maven compiler target."
-                    ),
-                    data={
-                        "error_code": "FAST_COMPILE_MODEL_UNVERIFIED",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "expected_target": plan.target_level,
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Use the formal Maven build and restart so joLink "
-                            "can resolve one consistent compiler model."
-                        ),
-                    },
-                )
-            include_parameters = any(
-                any(
-                    name == "MethodParameters"
-                    for name, _value in method.metadata
-                )
-                for item in baseline_classes
-                for method in item.methods
-            )
-
-            try:
-                compile_attempt = self._fast_compiler.compile(
-                    plan,
-                    source_files,
-                    attempt_directory=prepared.attempt_directory,
-                    include_parameters=include_parameters,
-                )
-            except FastCompileError as error:
-                return self._fast_compile_error_result(error, plan)
-
-            current = self._project_update_context()
-            if (
-                isinstance(current, RuntimeResult)
-                or current[0] != attempt_id
-                or current[1] != generation
-                or current[2] is not prepared
-            ):
-                return RuntimeResult(
-                    ok=False,
-                    error="The managed JVM changed while sources were compiled.",
-                    data={
-                        "error_code": "RUNTIME_CHANGED_DURING_UPDATE",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Call status and start a new update against the "
-                            "current project JVM."
-                        ),
-                    },
-                )
-            if not plan.is_fresh():
-                return self._fast_compile_plan_stale_result()
-            if not compile_attempt.sources_unchanged():
-                return RuntimeResult(
-                    ok=False,
-                    error="A requested source changed while it was compiled.",
-                    data={
-                        "error_code": "SOURCE_CHANGED_DURING_UPDATE",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "staging_discarded": True,
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Wait for edits to finish, then retry update with "
-                            "the current explicit source files."
-                        ),
-                    },
-                )
-            if not self._formal_outputs_match_launch(plan):
-                return self._formal_output_changed_result()
-
-            try:
-                staged_by_source = self._collect_source_classes(
-                    plan,
-                    source_files,
-                    classes_root=compile_attempt.classes_directory,
-                    require_launch_baseline=False,
-                )
-                updates, all_source_classes = self._prepare_class_updates(
-                    baseline_by_source,
-                    staged_by_source,
-                )
-            except (FastCompileError, ClassFileFormatError) as error:
-                if isinstance(error, FastCompileError):
-                    return self._fast_compile_error_result(error, plan)
-                return RuntimeResult(
-                    ok=False,
-                    error="A compiled class file could not be validated.",
-                    data={
-                        "error_code": "INVALID_COMPILED_CLASS",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Use the formal Maven build and restart for this "
-                            "change."
-                        ),
-                    },
-                )
-
-            if not updates:
-                stale_breakpoint_ids = [
-                    breakpoint_id
-                    for breakpoint_id, definition in self._breakpoints.items()
-                    if definition.get("stale")
-                ]
-                if stale_breakpoint_ids:
-                    warnings = [
-                        "Stale logical breakpoints remain; remove and set the "
-                        "listed breakpoint ids again before arming another "
-                        "breakpoint wait."
-                    ]
-                    next_step = (
-                        "No runtime bytecode change was required. Remove and "
-                        "set the listed stale breakpoint ids again against "
-                        "the current source before triggering a fresh request."
-                    )
-                else:
-                    warnings = []
-                    next_step = (
-                        "No runtime bytecode change was required. Continue "
-                        "with a fresh request only if other evidence is needed."
-                    )
-                return RuntimeResult(
-                    ok=True,
-                    data={
-                        "status": "no_changes",
-                        "update_strategy": "fast_compile_hotswap",
-                        "compiled_sources": sorted(all_source_classes),
-                        "redefined_classes": [],
-                        "selection_coverage": "caller_provided",
-                        "breakpoint_refresh_state": (
-                            "partial"
-                            if stale_breakpoint_ids
-                            else "complete"
-                        ),
-                        "refreshed_breakpoint_ids": [],
-                        "stale_breakpoint_ids": stale_breakpoint_ids,
-                        "newly_stale_breakpoint_ids": [],
-                        **(
-                            {
-                                "breakpoint_stale_reason": (
-                                    _BREAKPOINT_STALE_AFTER_REDEFINE
-                                )
-                            }
-                            if stale_breakpoint_ids
-                            else {}
-                        ),
-                        "warnings": warnings,
-                        **self._runtime_overlay_snapshot(),
-                        "suggested_next_step": next_step,
-                    },
-                )
-
-            try:
-                jdwp = self._connect()
-                for composite in jdwp.drain_events():
-                    self._resume_ignored_suspending_event(
-                        jdwp,
-                        "update_without_waiter",
-                        composite,
-                    )
-                capabilities = jdwp.capabilities_new()
-            except (JDWPError, RuntimeError, OSError) as error:
-                return RuntimeResult(
-                    ok=False,
-                    error="The target JVM could not be prepared for HotSwap.",
-                    data={
-                        "error_code": "HOT_SWAP_PREPARE_FAILED",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Call status and retry update while the JVM is "
-                            "reachable and no debug wait is active."
-                        ),
-                    },
-                )
-            if not capabilities.can_redefine_classes:
-                return RuntimeResult(
-                    ok=False,
-                    error="The target JVM does not support class redefinition.",
-                    data={
-                        "error_code": "HOT_SWAP_UNSUPPORTED",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Use the formal Maven build and restart the "
-                            "application."
-                        ),
-                    },
-                )
-
-            try:
-                definitions = self._resolve_hotswap_definitions(
-                    jdwp,
-                    updates,
-                    required_class_names={
-                        name
-                        for class_names in all_source_classes.values()
-                        for name in class_names
-                    },
-                )
-            except FastCompileError as error:
-                return self._fast_compile_error_result(error, plan)
-            except (JDWPError, OSError):
-                return RuntimeResult(
-                    ok=False,
-                    error="Loaded class identity could not be resolved safely.",
-                    data={
-                        "error_code": "HOT_SWAP_PREPARE_FAILED",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Call status and retry while the JVM is reachable, "
-                            "or use a formal build and restart."
-                        ),
-                    },
-                )
-
-            # Check the generation immediately before the state-changing JDWP
-            # command. A process can exit independently of MCP serialization.
-            current = self._project_update_context()
-            if (
-                isinstance(current, RuntimeResult)
-                or current[0] != attempt_id
-                or current[1] != generation
-                or current[2] is not prepared
-            ):
-                return RuntimeResult(
-                    ok=False,
-                    error="The managed JVM changed before HotSwap was applied.",
-                    data={
-                        "error_code": "RUNTIME_CHANGED_DURING_UPDATE",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Call status and start a new update against the "
-                            "current JVM."
-                        ),
-                    },
-                )
-            if not plan.is_fresh():
-                return self._fast_compile_plan_stale_result()
-            if not compile_attempt.sources_unchanged():
-                return RuntimeResult(
-                    ok=False,
-                    error="A requested source changed before HotSwap was applied.",
-                    data={
-                        "error_code": "SOURCE_CHANGED_DURING_UPDATE",
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "staging_discarded": True,
-                        "retryable": True,
-                        "suggested_next_step": (
-                            "Wait for edits to finish, then retry update with "
-                            "the current explicit source files."
-                        ),
-                    },
-                )
-            if not self._formal_outputs_match_launch(plan):
-                return self._formal_output_changed_result()
-
-            try:
-                jdwp.redefine_classes(definitions)
-            except JDWPCommandRejected as error:
-                return RuntimeResult(
-                    ok=False,
-                    error="The target JVM rejected the class redefinition.",
-                    data={
-                        "error_code": "HOT_SWAP_REJECTED",
-                        "jdwp_error_code": error.code,
-                        "runtime_code_state": "unchanged",
-                        **self._runtime_overlay_snapshot(),
-                        "staging_discarded": True,
-                        "retryable": False,
-                        "possible_causes": [
-                            "the JVM rejected a class schema change",
-                            "the class file version is unsupported",
-                            "bytecode verification failed",
-                        ],
-                        "suggested_next_step": (
-                            "Use the formal Maven build and restart the "
-                            "application."
-                        ),
-                    },
-                )
-            except JDWPCommandOutcomeUnknown:
-                self._runtime_overlay_state = "unknown"
-                self._runtime_overlay_sources.update(
-                    all_source_classes.keys()
-                )
-                self._disconnect()
-                return RuntimeResult(
-                    ok=False,
-                    error=(
-                        "The JDWP connection failed after HotSwap transmission "
-                        "began; the runtime code outcome is unknown."
-                    ),
-                    data={
-                        "error_code": "HOT_SWAP_OUTCOME_UNKNOWN",
-                        "runtime_code_state": "unknown",
-                        **self._runtime_overlay_snapshot(),
-                        "restart_required": True,
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Restart the application before making any claim "
-                            "about which code is running."
-                        ),
-                    },
-                )
-            except (JDWPError, OSError) as error:
-                self._runtime_overlay_state = "unknown"
-                self._runtime_overlay_sources.update(
-                    all_source_classes.keys()
-                )
-                self._disconnect()
-                return RuntimeResult(
-                    ok=False,
-                    error="The HotSwap result could not be confirmed.",
-                    data={
-                        "error_code": "HOT_SWAP_OUTCOME_UNKNOWN",
-                        "runtime_code_state": "unknown",
-                        **self._runtime_overlay_snapshot(),
-                        "restart_required": True,
-                        "retryable": False,
-                        "suggested_next_step": (
-                            "Restart the application before continuing runtime "
-                            "verification."
-                        ),
-                    },
-                )
-
-            self._record_applied_updates(updates, all_source_classes)
-            breakpoint_refresh = self._refresh_updated_breakpoints(
-                jdwp,
-                {update.signature for update in updates},
-            )
-            self._code_revision += 1
-            self._runtime_overlay_state = (
-                "active"
-                if self._runtime_overlay_class_hashes
-                else "none"
-            )
-            warnings = list(breakpoint_refresh["warnings"])
-            if breakpoint_refresh["stale"]:
-                next_step = (
-                    "Remove and set the listed stale breakpoint ids again "
-                    "against the current source, then trigger a new request "
-                    "and verify the expected runtime behavior. Treat HotSwap "
-                    "acceptance as code-loading evidence, not proof that "
-                    "Spring metadata, existing objects, or business "
-                    "semantics were refreshed."
-                )
-            else:
-                next_step = (
-                    "Trigger a new request and verify the expected runtime "
-                    "behavior. Treat HotSwap acceptance as code-loading "
-                    "evidence, not proof that Spring metadata, existing "
-                    "objects, or business semantics were refreshed."
-                )
-            return RuntimeResult(
-                ok=True,
-                data={
-                    "status": "updated",
-                    "applied": True,
-                    "apply_method": "hotswap",
-                    "compile_ms": round(
-                        compile_attempt.elapsed_seconds * 1000,
-                        1,
-                    ),
-                    "compiled_source_count": len(source_files),
-                    "source_changes_pending": False,
-                    "update_strategy": "fast_compile_hotswap",
-                    "compiled_sources": sorted(all_source_classes),
-                    "redefined_classes": sorted(
-                        update.binary_name for update in updates
-                    ),
-                    "selection_coverage": "caller_provided",
-                    "persistence": "runtime_only",
-                    "restart_loses_update": True,
-                    "framework_state_refreshed": False,
-                    "runtime_code_state": "updated",
-                    "breakpoint_refresh_state": breakpoint_refresh["state"],
-                    "refreshed_breakpoint_ids": breakpoint_refresh[
-                        "refreshed"
-                    ],
-                    "stale_breakpoint_ids": breakpoint_refresh["stale"],
-                    "newly_stale_breakpoint_ids": breakpoint_refresh[
-                        "newly_stale"
-                    ],
-                    **(
-                        {
-                            "breakpoint_stale_reason": (
-                                breakpoint_refresh["reason"]
-                            )
-                        }
-                        if breakpoint_refresh["reason"]
-                        else {}
-                    ),
-                    "warnings": warnings,
-                    **self._runtime_overlay_snapshot(),
-                    "suggested_next_step": next_step,
-                },
-            )
-        finally:
-            if compile_attempt is not None:
-                self._fast_compiler.discard(compile_attempt)
-            self._update_lock.release()
+        return RuntimeResult(
+            ok=False, error="JDT is not running.",
+            data={"error_code": "JDT_SESSION_NOT_READY", "applied": False},
+        )
 
     def _project_update_context(
         self,
@@ -3339,7 +2695,7 @@ class JavaRuntime(Runtime):
                 ok=False,
                 error="No active joLink project launch supports source update.",
                 data={
-                    "error_code": "FAST_COMPILE_UNSUPPORTED",
+                    "error_code": "JDT_SESSION_NOT_READY",
                     "runtime_code_state": "unchanged",
                     "retryable": True,
                     "suggested_next_step": (
@@ -3355,7 +2711,7 @@ class JavaRuntime(Runtime):
                 ok=False,
                 error="The active project generation cannot be identified.",
                 data={
-                    "error_code": "FAST_COMPILE_UNSUPPORTED",
+                    "error_code": "JDT_SESSION_NOT_READY",
                     "runtime_code_state": "unchanged",
                     "retryable": True,
                     "suggested_next_step": (
@@ -3401,13 +2757,7 @@ class JavaRuntime(Runtime):
                 "details": prepared.jdt_unavailable_details or {},
             }
         if prepared is not None and prepared.jdt_build_world_plan is not None:
-            if (
-                not jdt_ready
-                and (
-                    bootstrap.get("state") != "unavailable"
-                    or prepared.fast_compile_plan is None
-                )
-            ):
+            if not jdt_ready:
                 unavailable = bootstrap.get("state") == "unavailable"
                 details = (
                     bootstrap.get("details")
@@ -3447,10 +2797,7 @@ class JavaRuntime(Runtime):
                         ),
                     },
                 )
-        if (
-            prepared is None
-            or (prepared.fast_compile_plan is None and not jdt_ready)
-        ):
+        if prepared is None or not jdt_ready:
             return RuntimeResult(
                 ok=False,
                 error="Fast source update is unavailable for this project launch.",
@@ -3459,11 +2806,10 @@ class JavaRuntime(Runtime):
                         (
                             prepared.jdt_unavailable_reason
                             or str(bootstrap.get("reason") or "")
-                            or prepared.fast_compile_unavailable_reason
-                            or "FAST_COMPILE_UNSUPPORTED"
+                            or "JDT_SESSION_NOT_READY"
                         )
                         if prepared is not None
-                        else "FAST_COMPILE_UNSUPPORTED"
+                        else "JDT_SESSION_NOT_READY"
                     ),
                     "runtime_code_state": "unchanged",
                     "retryable": False,
@@ -3644,470 +2990,15 @@ class JavaRuntime(Runtime):
         return RuntimeResult(ok=False, error=message, data=data)
 
 
-    def _fast_compile_error_result(
-        self,
-        error: FastCompileError,
-        plan,
-    ) -> RuntimeResult:
-        context = dict(error.context)
-        raw_tail = context.pop("compile_log_tail", None)
-        if isinstance(raw_tail, list):
-            project_root = str(plan.project_root)
-            context["compile_log_tail"] = [
-                self._redact_build_log_line(
-                    str(line).replace(project_root, "<project>")
-                )
-                for line in raw_tail
-            ]
-        return RuntimeResult(
-            ok=False,
-            error=str(error),
-            data={
-                "error_code": error.error_code,
-                "applied": False,
-                "stage": "compile",
-                "runtime_code_state": "unchanged",
-                "staging_discarded": True,
-                **self._runtime_overlay_snapshot(),
-                "retryable": error.retryable,
-                **context,
-                "suggested_next_step": error.suggested_next_step,
-            },
-        )
 
-    def _fast_compile_plan_stale_result(self) -> RuntimeResult:
-        return RuntimeResult(
-            ok=False,
-            error="The cached fast compile plan is stale.",
-            data={
-                "error_code": "FAST_COMPILE_PLAN_STALE",
-                "runtime_code_state": "unchanged",
-                **self._runtime_overlay_snapshot(),
-                "retryable": True,
-                "suggested_next_step": (
-                    "Restart the project so joLink resolves the current "
-                    "Maven/JDK compile environment before retrying update."
-                ),
-            },
-        )
 
-    def _formal_outputs_match_launch(
-        self,
-        plan,
-    ) -> bool:
-        try:
-            current_files = sorted(plan.output_root.rglob("*.class"))
-        except OSError:
-            return False
-        if len(current_files) != len(plan.baseline_class_hashes):
-            return False
-        current_relatives: set[str] = set()
-        for class_file in current_files:
-            try:
-                relative = class_file.relative_to(
-                    plan.output_root
-                ).as_posix()
-                current_relatives.add(relative)
-                expected = plan.baseline_class_hashes.get(relative)
-                if expected is None:
-                    return False
-                current = hashlib.sha256(class_file.read_bytes()).hexdigest()
-            except OSError:
-                return False
-            if current != expected:
-                return False
-        return current_relatives == set(plan.baseline_class_hashes)
 
-    def _formal_output_changed_result(self) -> RuntimeResult:
-        return RuntimeResult(
-            ok=False,
-            error="Maven class output changed after this JVM was launched.",
-            data={
-                "error_code": "FORMAL_OUTPUT_CHANGED_SINCE_LAUNCH",
-                "runtime_code_state": "unchanged",
-                **self._runtime_overlay_snapshot(),
-                "staging_discarded": True,
-                "retryable": True,
-                "suggested_next_step": (
-                    "Restart the project so the running JVM and formal class "
-                    "output share one baseline, then retry update."
-                ),
-            },
-        )
 
-    @staticmethod
-    def _java_release_for_class_major(major: int) -> int:
-        release = major - 44
-        if release < 8 or release > 30:
-            raise FastCompileError(
-                "FAST_COMPILE_UNSUPPORTED",
-                "The existing class-file version is outside the supported range.",
-                retryable=False,
-                suggested_next_step=(
-                    "Use the formal Maven build for this Java target."
-                ),
-                context={"class_major_version": major},
-            )
-        return release
 
-    @staticmethod
-    def _class_source_file(parsed: ParsedClassFile) -> str | None:
-        for name, value in parsed.metadata:
-            if name == "SourceFile" and isinstance(value, str):
-                return value
-        return None
 
-    def _collect_source_classes(
-        self,
-        plan,
-        source_files: tuple[Path, ...],
-        *,
-        classes_root: Path,
-        require_launch_baseline: bool,
-    ) -> dict[str, dict[str, tuple[ParsedClassFile, bytes, str]]]:
-        result: dict[
-            str,
-            dict[str, tuple[ParsedClassFile, bytes, str]],
-        ] = {}
-        for source in source_files:
-            source_key = source.relative_to(plan.project_root).as_posix()
-            package_path = source.parent.relative_to(plan.source_root)
-            class_directory = classes_root / package_path
-            classes: dict[str, tuple[ParsedClassFile, bytes, str]] = {}
-            if class_directory.is_dir():
-                candidates = sorted(class_directory.glob("*.class"))
-                if len(candidates) > _MAX_UPDATE_PACKAGE_CLASS_FILES:
-                    raise FastCompileError(
-                        "FAST_COMPILE_LIMIT_EXCEEDED",
-                        "The source package contains too many class files.",
-                        retryable=False,
-                        suggested_next_step=(
-                            "Use the formal Maven build and restart for this "
-                            "large generated package."
-                        ),
-                        context={
-                            "package_class_file_limit": (
-                                _MAX_UPDATE_PACKAGE_CLASS_FILES
-                            ),
-                        },
-                    )
-                for class_file in candidates:
-                    try:
-                        raw = class_file.read_bytes()
-                        parsed = parse_class_file(raw)
-                    except (OSError, ClassFileFormatError) as error:
-                        raise FastCompileError(
-                            (
-                                "INVALID_BASELINE_CLASS"
-                                if require_launch_baseline
-                                else "INVALID_COMPILED_CLASS"
-                            ),
-                            "A class file could not be read and validated.",
-                            retryable=True,
-                            suggested_next_step=(
-                                "Wait for external build activity to finish. "
-                                "If the problem remains, use the formal Maven "
-                                "build and restart."
-                            ),
-                        ) from error
-                    if self._class_source_file(parsed) != source.name:
-                        continue
-                    if len(classes) >= _MAX_UPDATE_CLASSES:
-                        raise FastCompileError(
-                            "FAST_COMPILE_LIMIT_EXCEEDED",
-                            "One source generated too many class files.",
-                            retryable=False,
-                            suggested_next_step=(
-                                "Use the formal Maven build and restart for "
-                                "this generated source."
-                            ),
-                            context={
-                                "generated_class_limit": _MAX_UPDATE_CLASSES,
-                            },
-                        )
-                    relative = class_file.relative_to(classes_root).as_posix()
-                    if require_launch_baseline:
-                        expected_hash = plan.baseline_class_hashes.get(relative)
-                        if (
-                            expected_hash is None
-                            or expected_hash != parsed.byte_sha256
-                        ):
-                            raise FastCompileError(
-                                "FORMAL_OUTPUT_CHANGED_SINCE_LAUNCH",
-                                (
-                                    "Maven class output changed after this JVM "
-                                    "was launched."
-                                ),
-                                retryable=True,
-                                suggested_next_step=(
-                                    "Restart the project so the running JVM and "
-                                    "formal class output share one baseline, "
-                                    "then retry update."
-                                ),
-                            )
-                    classes[parsed.binary_name] = (
-                        parsed,
-                        raw,
-                        relative,
-                    )
-            if not classes:
-                raise FastCompileError(
-                    (
-                        "BASELINE_CLASS_NOT_FOUND"
-                        if require_launch_baseline
-                        else "COMPILED_CLASS_NOT_FOUND"
-                    ),
-                    (
-                        "No compiled class could be mapped to a requested "
-                        "Java source."
-                    ),
-                    retryable=True,
-                    suggested_next_step=(
-                        "Use the formal Maven build and restart, then retry "
-                        "with a source under the selected src/main/java root."
-                    ),
-                    context={"source_file": source_key},
-                )
-            result[source_key] = classes
-        return result
 
-    def _prepare_class_updates(
-        self,
-        baseline_by_source,
-        staged_by_source,
-    ) -> tuple[list[StagedClassUpdate], dict[str, set[str]]]:
-        updates: list[StagedClassUpdate] = []
-        all_source_classes: dict[str, set[str]] = {}
-        total_class_bytes = 0
-        total_generated_classes = 0
-        for source_key, baseline_classes in baseline_by_source.items():
-            staged_classes = staged_by_source.get(source_key, {})
-            baseline_names = set(baseline_classes)
-            staged_names = set(staged_classes)
-            total_generated_classes += len(staged_names)
-            if total_generated_classes > _MAX_UPDATE_CLASSES:
-                raise FastCompileError(
-                    "FAST_COMPILE_LIMIT_EXCEEDED",
-                    "The selected sources generate too many class files.",
-                    retryable=False,
-                    suggested_next_step=(
-                        "Split method-body edits into smaller updates or use "
-                        "the formal Maven build and restart."
-                    ),
-                    context={
-                        "generated_class_limit": _MAX_UPDATE_CLASSES,
-                    },
-                )
-            all_source_classes[source_key] = staged_names
-            if baseline_names != staged_names:
-                raise FastCompileError(
-                    "GENERATED_CLASS_SET_CHANGED",
-                    "The source now generates a different set of classes.",
-                    retryable=False,
-                    suggested_next_step=(
-                        "Use the formal Maven build and restart because adding "
-                        "or deleting top-level, inner, local, or anonymous "
-                        "classes is outside standard HotSwap."
-                    ),
-                    context={
-                        "source_file": source_key,
-                        "baseline_class_count": len(baseline_names),
-                        "staged_class_count": len(staged_names),
-                    },
-                )
-            for binary_name in sorted(staged_names):
-                baseline, _baseline_raw, _relative = baseline_classes[
-                    binary_name
-                ]
-                staged, staged_raw, _staged_relative = staged_classes[
-                    binary_name
-                ]
-                comparison = compare_class_files(baseline, staged)
-                if comparison.kind is ClassFileChangeKind.UNSUPPORTED:
-                    if "static_initializer_changed" in comparison.reasons:
-                        raise FastCompileError(
-                            "STATIC_INITIALIZER_CHANGE_REQUIRES_RESTART",
-                            (
-                                "The source change modifies static "
-                                "initialization, which HotSwap does not run "
-                                "again."
-                            ),
-                            retryable=False,
-                            suggested_next_step=(
-                                "Use the formal Maven build and restart the "
-                                "application so static state is initialized "
-                                "from the new code."
-                            ),
-                            context={
-                                "class": binary_name,
-                                "change_reasons": list(comparison.reasons),
-                                "runtime_code_state": "unchanged",
-                                "restart_required": True,
-                            },
-                        )
-                    raise FastCompileError(
-                        "CLASS_SCHEMA_CHANGED",
-                        (
-                            "The source change modifies class structure or "
-                            "framework-visible metadata."
-                        ),
-                        retryable=False,
-                        suggested_next_step=(
-                            "Use the formal Maven build and restart the "
-                            "application for structural, annotation, constant, "
-                            "signature, or hierarchy changes."
-                        ),
-                        context={
-                            "class": binary_name,
-                            "change_reasons": list(comparison.reasons),
-                        },
-                    )
-                current_hash = self._runtime_overlay_class_hashes.get(
-                    binary_name,
-                    baseline.byte_sha256,
-                )
-                if staged.byte_sha256 == current_hash:
-                    continue
-                total_class_bytes += len(staged_raw)
-                if (
-                    len(updates) >= _MAX_UPDATE_CLASSES
-                    or total_class_bytes > _MAX_UPDATE_CLASS_BYTES
-                ):
-                    raise FastCompileError(
-                        "FAST_COMPILE_LIMIT_EXCEEDED",
-                        "The HotSwap class batch exceeds the update limit.",
-                        retryable=False,
-                        suggested_next_step=(
-                            "Split method-body edits into smaller updates or "
-                            "use the formal Maven build and restart."
-                        ),
-                        context={
-                            "redefine_class_limit": _MAX_UPDATE_CLASSES,
-                            "redefine_byte_limit": _MAX_UPDATE_CLASS_BYTES,
-                        },
-                    )
-                updates.append(
-                    StagedClassUpdate(
-                        binary_name=binary_name,
-                        signature=(
-                            "L"
-                            + staged.internal_name
-                            + ";"
-                        ),
-                        baseline=baseline,
-                        staged=staged,
-                        class_bytes=staged_raw,
-                        source_key=source_key,
-                    )
-                )
-        return updates, all_source_classes
 
-    def _resolve_hotswap_definitions(
-        self,
-        jdwp: JDWPClient,
-        updates: list[StagedClassUpdate],
-        *,
-        required_class_names: set[str],
-    ) -> dict[int, bytes]:
-        candidates: dict[
-            str,
-            list[tuple[int, int]],
-        ] = {}
-        common_loaders: set[int] | None = None
-        updates_by_name = {
-            update.binary_name: update
-            for update in updates
-        }
-        for binary_name in sorted(required_class_names):
-            signature = "L" + binary_name.replace(".", "/") + ";"
-            loaded = jdwp.classes_by_signature(signature)
-            if not loaded:
-                raise FastCompileError(
-                    "CLASS_NOT_LOADED",
-                    "A class generated by the source is not loaded in the current JVM.",
-                    retryable=True,
-                    suggested_next_step=(
-                        "Trigger the code path that loads the class and retry. "
-                        "If the source adds a new class, use a formal build and "
-                        "restart instead."
-                    ),
-                    context={"class": binary_name},
-                )
-            per_class: list[tuple[int, int]] = []
-            for item in loaded:
-                loader = jdwp.reference_type_class_loader(
-                    item.reference_type_id
-                )
-                per_class.append((item.reference_type_id, loader))
-            candidates[binary_name] = per_class
-            loaders = {loader for _reference, loader in per_class}
-            common_loaders = (
-                loaders
-                if common_loaders is None
-                else common_loaders & loaders
-            )
-        if common_loaders is None or len(common_loaders) != 1:
-            raise FastCompileError(
-                "AMBIGUOUS_CLASS_LOADER",
-                "Changed classes do not map to one unique loaded class loader.",
-                retryable=False,
-                suggested_next_step=(
-                    "Use the formal Maven build and restart, or narrow the "
-                    "change to classes loaded once by the application."
-                ),
-            )
-        selected_loader = next(iter(common_loaders))
-        definitions: dict[int, bytes] = {}
-        for binary_name in sorted(required_class_names):
-            matching = [
-                reference
-                for reference, loader in candidates[binary_name]
-                if loader == selected_loader
-            ]
-            if len(matching) != 1:
-                raise FastCompileError(
-                    "AMBIGUOUS_CLASS_LOADER",
-                    "A changed class has multiple definitions in one loader.",
-                    retryable=False,
-                    suggested_next_step=(
-                        "Use the formal Maven build and restart this JVM."
-                    ),
-                    context={"class": binary_name},
-                )
-            update = updates_by_name.get(binary_name)
-            if update is not None:
-                definitions[matching[0]] = update.class_bytes
-        return definitions
 
-    def _record_applied_updates(
-        self,
-        updates: list[StagedClassUpdate],
-        all_source_classes: dict[str, set[str]],
-    ) -> None:
-        for update in updates:
-            if (
-                update.staged.byte_sha256
-                == update.baseline.byte_sha256
-            ):
-                self._runtime_overlay_class_hashes.pop(
-                    update.binary_name,
-                    None,
-                )
-            else:
-                self._runtime_overlay_class_hashes[
-                    update.binary_name
-                ] = update.staged.byte_sha256
-        for source_key, class_names in all_source_classes.items():
-            self._runtime_overlay_source_classes[source_key] = set(
-                class_names
-            )
-            if any(
-                name in self._runtime_overlay_class_hashes
-                for name in class_names
-            ):
-                self._runtime_overlay_sources.add(source_key)
-            else:
-                self._runtime_overlay_sources.discard(source_key)
 
     def _refresh_updated_breakpoints(
         self,
@@ -6069,8 +4960,6 @@ class JavaRuntime(Runtime):
         self._code_revision = 0
         self._runtime_overlay_sources.clear()
         self._runtime_overlay_state = "none"
-        self._runtime_overlay_class_hashes.clear()
-        self._runtime_overlay_source_classes.clear()
 
     def _runtime_overlay_snapshot(self) -> dict[str, Any]:
         active = self._runtime_overlay_state in {"active", "unknown"}

@@ -576,7 +576,7 @@ def boundary_gates(
     task_root = root / "test-task"
     task_project = create_fixture(task_root, kotlin_dsl=False)
     with (task_project / "build.gradle").open("a", encoding="utf-8") as stream:
-        stream.write("\ntasks.register('integrationTest', Test)\n")
+        stream.write("\ntasks.remove(tasks.getByName('test'))\n")
     create_wrapper(
         task_project,
         gradle=gradle,
@@ -593,7 +593,7 @@ def boundary_gates(
         environment=environment,
         expected_code="GRADLE_TEST_TASK_UNSUPPORTED",
     )
-    cases.append(("extra_test_task", "GRADLE_TEST_TASK_UNSUPPORTED", True))
+    cases.append(("missing_default_test_task", "GRADLE_TEST_TASK_UNSUPPORTED", True))
 
     conflict_root = root / "task-conflict"
     conflict = create_fixture(conflict_root, kotlin_dsl=False)
