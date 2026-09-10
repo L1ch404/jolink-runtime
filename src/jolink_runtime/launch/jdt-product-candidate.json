@@ -99,7 +99,7 @@
   ],
   "worker_artifact": {
     "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar",
-    "sha256": "3d7828181998fcedff7012e0882195a06b41e802cc56abb735d34a7fea3d0f63"
+    "sha256": "dc41de0e6b3943aba69df755993dbf0e215eda590bc928d63b46d171241c5ea0"
   },
   "equinox": {
     "configuration_sha256": "259cc0889a11cd5233a025290b1d5e4ee16569f76f92374d59b084611d52894a",
@@ -112,7 +112,7 @@
   },
   "worker_class_major": 52,
   "worker_build_provenance": {
-    "source_fingerprint": "420833e9c6e52e72dcd5b0b3db29baa791975af72265cf8d84ee4000da27e84c",
+    "source_fingerprint": "b04ed918e087c78088602a10663bfcca9917d7f043bfa688dc8ad0047f6ef015",
     "java_version_output": "openjdk version \"1.8.0_332\"",
     "javac_version_output": "javac 1.8.0_332",
     "java_binary_sha256": "51d22343531816f78ca0adcbc62a490acedf4bece36927e2ae691ad974362c2e",

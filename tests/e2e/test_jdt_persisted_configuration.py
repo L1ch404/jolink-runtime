@@ -34,6 +34,11 @@ import javax.tools.*;
 @SupportedAnnotationTypes("*")
 @SupportedSourceVersion(SourceVersion.RELEASE_8)
 public class EvidenceProcessor extends AbstractProcessor {
+  private int initializations;
+  @Override public void init(ProcessingEnvironment environment) {
+    if (++initializations != 1) throw new AssertionError("initialized twice");
+    super.init(environment);
+  }
   public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment round) {
     for (Element root : round.getRootElements()) {
       if (!root.getSimpleName().contentEquals("App")) continue;
@@ -57,6 +62,24 @@ public class EvidenceProcessor extends AbstractProcessor {
     }
     return false;
   }
+  @SupportedAnnotationTypes("*")
+  @SupportedSourceVersion(SourceVersion.RELEASE_8)
+  public static class CompletionProcessor extends AbstractProcessor {
+    private int initializations;
+    @Override public void init(ProcessingEnvironment environment) {
+      if (++initializations != 1) throw new AssertionError("initialized twice");
+      super.init(environment);
+    }
+    public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment round) {
+      for (Element root : round.getRootElements()) {
+        if (!root.getSimpleName().contentEquals("GeneratedValue")) continue;
+        try (Writer writer = processingEnv.getFiler().createSourceFile("GeneratedAnswer", root).openWriter()) {
+          writer.write("public class GeneratedAnswer { public static int value() { return GeneratedValue.value(); } }");
+        } catch (Exception e) { throw new RuntimeException(e); }
+      }
+      return false;
+    }
+  }
 }
 ''', encoding="utf-8")
     processor_classes = tmp_path / "processor-classes"
@@ -68,7 +91,7 @@ public class EvidenceProcessor extends AbstractProcessor {
     with zipfile.ZipFile(processor, "w") as archive:
         for path in processor_classes.rglob("*.class"):
             archive.write(path, path.relative_to(processor_classes).as_posix())
-        archive.writestr("META-INF/services/javax.annotation.processing.Processor", "EvidenceProcessor\n")
+        archive.writestr("META-INF/services/javax.annotation.processing.Processor", "EvidenceProcessor\nEvidenceProcessor$CompletionProcessor\n")
 
     sources = tmp_path / "source"
     sources.mkdir()
@@ -80,7 +103,7 @@ public class EvidenceProcessor extends AbstractProcessor {
     private int unused;
     public static final int FLAG = {value};
     public static void main(String[] args) {{
-        java.util.function.IntSupplier generated = GeneratedValue::value;
+        java.util.function.IntSupplier generated = GeneratedAnswer::value;
         System.out.print(generated.getAsInt());
     }}
 }}''', encoding="utf-8")
@@ -103,6 +126,7 @@ public class EvidenceProcessor extends AbstractProcessor {
         assert full.diagnostics == ()
         assert first.output_directory.joinpath("META-INF/apt-value.txt").read_text() == "1"
         assert first.output_directory.joinpath("GeneratedValue.class").is_file()
+        assert first.output_directory.joinpath("GeneratedAnswer.class").is_file()
         assert first._client.command("METRICS")["metrics"]["search_indexing"]["queued_jobs"] == 0
         first.accept_baseline()
     finally:

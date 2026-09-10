@@ -974,7 +974,7 @@ class MavenBuildSystemAdapter:
                 if service.is_file()
                 else ()
             )
-            return True, providers, (resolved / "lombok").is_dir()
+            return True, providers, (resolved / "lombok/launch/Agent.class").is_file()
         if not resolved.is_file():
             raise MavenResolutionError(
                 LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
@@ -1012,10 +1012,6 @@ class MavenBuildSystemAdapter:
                     if service
                     else ()
                 )
-                try:
-                    manifest = archive.read("META-INF/MANIFEST.MF")
-                except KeyError:
-                    manifest = b""
         except (OSError, zipfile.BadZipFile) as error:
             raise MavenResolutionError(
                 LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
@@ -1023,11 +1019,7 @@ class MavenBuildSystemAdapter:
                 retryable=True,
                 suggested_next_step="Refresh Maven dependencies and retry launch.",
             ) from error
-        lombok = bool(
-            re.search(rb"(?im)^Lombok-Version:\s*", manifest)
-            or any(name.startswith("lombok/") for name in names)
-            or any(provider.startswith("lombok.") for provider in providers)
-        )
+        lombok = "lombok/launch/Agent.class" in names
         return True, providers, lombok
 
     @staticmethod

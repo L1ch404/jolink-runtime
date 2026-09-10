@@ -82,6 +82,10 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 
 ## 当前边界
 
+- Maven 显式 `annotationProcessorPaths` 已接入：Maven 解析完整加载路径（含传递依赖、
+  辅助类和资源 JAR），缓存后交给 Eclipse Factory Path。main/test 不同路径、显式
+  Processor 名称和 `-A` 参数本轮未扩展。普通 MapStruct、MapStruct＋Lombok binding
+  样本均通过；Worker 先完成处理器初始化再按原顺序执行，见[路径接入与实测](maven-processor-path.zh-CN.md)。
 - source/target支持Java 8和11；
 - Runner支持显式Class或Class#method选择；
 - Maven Reactor已将目标和上游模块接入持久JDT工程，支持上游main源码变化，

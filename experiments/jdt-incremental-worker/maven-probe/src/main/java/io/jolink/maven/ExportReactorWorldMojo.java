@@ -25,6 +25,7 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
     @Parameter(property="jolink.probe.scope", defaultValue="test") private String scope;
     @Component private ProjectDependenciesResolver resolver;
     @Component private RepositorySystem repositories;
+    @Component private org.eclipse.aether.RepositorySystem artifactResolver;
 
     public void execute() throws MojoExecutionException {
         try {
@@ -86,7 +87,7 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
                 }
                 p.setArtifacts(artifacts);
                 p.getProperties().setProperty("jolink.probe.testSourcesRequired", Boolean.toString(tests));
-                new ExportBuildWorldMojo().exportProject(p, session, repositories, output);
+                new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, output);
                 String key = Integer.toHexString(p.getBasedir().getCanonicalPath().hashCode());
                 try (java.io.Writer writer = java.nio.file.Files.newBufferedWriter(
                         output.toPath().resolve(key+".pom.xml"), java.nio.charset.StandardCharsets.UTF_8)) {

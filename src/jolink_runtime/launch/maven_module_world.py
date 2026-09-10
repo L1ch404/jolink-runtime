@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 
 from .jdt_compile_session import select_target_system_home
 from .maven import MavenBuildSystemAdapter
+from .processor_path import processor_path, jdt_processor_paths
 
 
 def load_module_worlds(output: Path, target: Path, build_jdk, *, tests: bool) -> tuple[dict, ...]:
@@ -41,8 +42,7 @@ def load_module_worlds(output: Path, target: Path, build_jdk, *, tests: bool) ->
             if path == str(Path(snapshot["outputDirectory"])): continue
             if path in local_outputs or maven._jdt_dependency_facts(Path(path))[0]: classpath.append(path)
         processing = snapshot["annotationProcessing"]
-        processor_paths = [Path(path) for path in processing.get("processorProviderArtifactPaths", ())]
-        lombok = [str(path) for path in processor_paths if maven._jdt_dependency_facts(path)[2]]
+        factories, lombok = jdt_processor_paths(processing, processor_path(processing))
         modules.append({
             "module_root": str(directory),
             "source_roots": [path for path in snapshot["compileSourceRoots"] if Path(path).is_dir()],
@@ -59,8 +59,8 @@ def load_module_worlds(output: Path, target: Path, build_jdk, *, tests: bool) ->
             "worker_max_heap_mb": max(profile.worker_max_heap_mb, maximum_heap),
             "target_java_home": str(target_home),
             "method_parameters": profile.method_parameters or parameters == "true",
-            "processor_entries": [str(path) for path in processor_paths if str(path) not in lombok],
-            "lombok_entries": lombok,
+            "processor_entries": [str(path) for path in factories],
+            "lombok_entries": [str(path) for path in lombok],
         })
     return tuple(modules)
 

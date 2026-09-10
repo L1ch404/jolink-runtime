@@ -7,6 +7,11 @@
 2026-09-10，基于 `5d4877b` 后的工作区。原报告固定基线为 `e5b139e`；本轮不改写
 原报告，也不把越过一个入口检查算作项目全流程通过。原始请求/响应和诊断留在本地。
 
+第二项 Processor 后续进展：显式 Maven Processor 加载路径已接入，普通 MapStruct
+样本真实 MCP 测试通过；后续接入初始化前置后，原样 MapStruct/Lombok binding 组合
+也通过了真实 MCP FULL、测试及增量恢复。详见
+[本轮实现、通用回归和剩余兼容问题](maven-processor-path.zh-CN.md)。
+
 ## 本轮处理
 
 1. **显式选类不再被测试发现过滤拦住。** Fast Test 总是明确提供 Class/Class#method，

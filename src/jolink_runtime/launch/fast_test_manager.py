@@ -24,6 +24,7 @@ from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
 from .jdt_modules import ModuleCompileSession
 from .maven_module_world import load_module_worlds, combine_effective_poms
+from .processor_path import processor_path, jdt_processor_paths
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
     JdtCandidate,
@@ -1084,6 +1085,7 @@ class FastTestManager:
             if processing.get("discoveryMode") not in {
                 "DISABLED",
                 "IMPLICIT_COMPILE_CLASSPATH",
+                "EXPLICIT_PROCESSOR_PATH",
             }:
                 raise FastTestManagerError(
                     "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED",
@@ -1159,7 +1161,11 @@ class FastTestManager:
         unsupported_test_compiler = [
             value
             for value in unsupported_test_compiler
-            if value != "testCompile.parameters"
+            if value not in {
+                "testCompile.parameters",
+                "testCompile.annotationProcessorPaths",
+                "testCompile.annotationProcessorPathsUseDepMgmt",
+            }
         ]
         unsupported_test_compiler = self._unshared_test_compiler_configuration(
             effective_project,
@@ -1184,19 +1190,9 @@ class FastTestManager:
                     )[:16]
                 },
             )
-        main_processor_paths = tuple(
-            Path(str(value)).resolve(strict=True)
-            for value in main_processing.get(
-                "processorProviderArtifactPaths", []
-            )
-        )
-        test_processor_paths = tuple(
-            Path(str(value)).resolve(strict=True)
-            for value in test_processing.get(
-                "processorProviderArtifactPaths", []
-            )
-        )
-        if set(test_processor_paths) != set(main_processor_paths):
+        main_processor_paths = processor_path(main_processing)
+        test_processor_paths = processor_path(test_processing)
+        if test_processor_paths != main_processor_paths:
             raise FastTestManagerError(
                 "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED",
                 "Fast Test v1 requires identical main/test Processor paths.",
@@ -1206,16 +1202,7 @@ class FastTestManager:
                 },
             )
         attempt.require_not_cancelled()
-        lombok = tuple(
-            path
-            for path in main_processor_paths
-            if self._maven._jdt_dependency_facts(path)[2]
-        )
-        processor_entries = tuple(
-            path
-            for path in main_processor_paths
-            if path not in lombok
-        )
+        processor_entries, lombok = jdt_processor_paths(main_processing, main_processor_paths)
         method_parameters = self._compiler_method_parameters(
             effective_project
         ) or self._compiler_argument_method_parameters(

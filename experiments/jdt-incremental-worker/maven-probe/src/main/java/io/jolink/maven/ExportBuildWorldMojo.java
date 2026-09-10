@@ -52,7 +52,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest11";
+    private static final String PROBE_VERSION = "0.1.0-fasttest15";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -63,12 +63,16 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
 
     @Component
     private RepositorySystem repositorySystem;
+    @Component
+    private org.eclipse.aether.RepositorySystem artifactResolver;
+    private org.eclipse.aether.RepositorySystemSession processorRepositorySession;
 
     private static final class ProcessorFacts {
         final String processingMode;
         final String discoveryMode;
         final boolean compileClasspathDiscovery;
         final List<String> providerArtifactPaths;
+        List<String> processorPath;
         final List<String> providers;
         final List<String> options;
         final List<String> explicitProcessorNames;
@@ -102,6 +106,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             this.discoveryMode = discoveryMode;
             this.compileClasspathDiscovery = compileClasspathDiscovery;
             this.providerArtifactPaths = providerArtifactPaths;
+            this.processorPath = providerArtifactPaths;
             this.providers = providers;
             this.options = options;
             this.explicitProcessorNames = explicitProcessorNames;
@@ -151,10 +156,14 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     private File outputDirectory;
 
     void exportProject(MavenProject selected, MavenSession activeSession,
-            RepositorySystem repositories, File destination) throws MojoExecutionException {
+            RepositorySystem repositories, org.eclipse.aether.RepositorySystem resolver,
+            org.eclipse.aether.RepositorySystemSession repositorySession,
+            File destination) throws MojoExecutionException {
         project = selected;
         session = activeSession;
         repositorySystem = repositories;
+        artifactResolver = resolver;
+        processorRepositorySession = repositorySession;
         outputDirectory = destination;
         execute();
     }
@@ -175,8 +184,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         String json = render(
             classpath,
             testClasspath,
-            processorFacts(classpath),
-            processorFacts(testClasspath)
+            processorFacts(classpath, "compile"),
+            processorFacts(testClasspath, "testCompile")
         );
         try {
             Path directory = outputDirectory.getCanonicalFile().toPath();
@@ -289,6 +298,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             true
         );
         stringList(out, "providers", processors.providers, true);
+        stringList(out, "processorPath", processors.processorPath, true);
         stringList(out, "options", processors.options, true);
         stringList(
             out,
@@ -332,6 +342,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             true
         );
         stringList(out, "providers", testProcessors.providers, true);
+        stringList(out, "processorPath", testProcessors.processorPath, true);
         stringList(out, "options", testProcessors.options, true);
         out.append('}');
         field(
@@ -654,10 +665,13 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         return result;
     }
 
-    private ProcessorFacts processorFacts(List<String> classpath)
+    private ProcessorFacts processorFacts(List<String> classpath, String goal)
         throws MojoExecutionException {
         Plugin plugin = compilerPlugin();
-        Xpp3Dom configuration = pluginConfiguration(plugin);
+        // Maven merges plugin defaults with each standard execution for us.
+        Xpp3Dom configuration = project.getGoalConfiguration(
+            "org.apache.maven.plugins", "maven-compiler-plugin", "default-" + goal, goal);
+        if (configuration == null) configuration = pluginConfiguration(plugin);
         String proc = childValue(configuration, "proc");
         String processingMode = processingMode(proc);
         List<String> options = compilerOptions(configuration);
@@ -673,7 +687,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         int unmodeledCompilerArgCount =
             unmodeledProcessorCompilerArgCount(configuration);
         boolean executionConfiguration =
-            hasExecutionProcessorConfiguration(plugin);
+            hasExecutionProcessorConfiguration(plugin, false);
         if (procPropertyCount > 0) {
             return new ProcessorFacts(
                 processingMode,
@@ -712,24 +726,13 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
                 unmodeledCompilerArgCount
             );
         }
-        if (executionConfiguration) {
-            return new ProcessorFacts(
-                processingMode,
-                "EXECUTION_CONFIG_UNRESOLVED",
-                false,
-                Collections.<String>emptyList(),
-                Collections.<String>emptyList(),
-                options,
-                explicitNames,
-                explicitPathCount,
-                true,
-                legacyOptionCount > 0,
-                legacyOptionCount,
-                false,
-                0,
-                false,
-                0
-            );
+        if (hasExecutionProcessorConfiguration(plugin, true)) {
+            // Standard executions above are resolved by Maven. Keep the
+            // existing boundary for additional, separately configured runs.
+            return new ProcessorFacts(processingMode, "EXECUTION_CONFIG_UNRESOLVED", false,
+                Collections.<String>emptyList(), Collections.<String>emptyList(), options,
+                explicitNames, explicitPathCount, true, legacyOptionCount > 0,
+                legacyOptionCount, false, 0, false, 0);
         }
         if ("none".equalsIgnoreCase(proc)) {
             return new ProcessorFacts(
@@ -749,6 +752,25 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
                 false,
                 0
             );
+        }
+        if (explicitPathCount > 0 && explicitNames.isEmpty()) {
+            List<String> resolvedProcessorPath = ProcessorPathResolver.resolve(project, artifactResolver,
+                    processorRepositorySession == null ? session.getRepositorySession() : processorRepositorySession,
+                    explicitPaths, Boolean.parseBoolean(childValue(configuration, "annotationProcessorPathsUseDepMgmt")));
+            List<String> artifacts = new ArrayList<>();
+            Set<String> providers = new LinkedHashSet<>();
+            for (String path : resolvedProcessorPath) {
+                List<String> discovered = processorProviders(new File(path));
+                if (!discovered.isEmpty()) {
+                    artifacts.add(path);
+                    providers.addAll(discovered);
+                }
+            }
+            ProcessorFacts facts = new ProcessorFacts(processingMode, "EXPLICIT_PROCESSOR_PATH", false,
+                artifacts, new ArrayList<>(providers), options, explicitNames, explicitPathCount,
+                executionConfiguration, legacyOptionCount > 0, legacyOptionCount, false, 0, false, 0);
+            facts.processorPath = resolvedProcessorPath;
+            return facts;
         }
         if (explicitPathCount > 0) {
             return new ProcessorFacts(
@@ -943,11 +965,15 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             ? (Xpp3Dom) configuration : null;
     }
 
-    private static boolean hasExecutionProcessorConfiguration(Plugin plugin) {
+    private static boolean hasExecutionProcessorConfiguration(Plugin plugin, boolean customOnly) {
         if (plugin == null || plugin.getExecutions() == null) {
             return false;
         }
         for (PluginExecution execution : plugin.getExecutions()) {
+            if (customOnly && ("default-compile".equals(execution.getId())
+                || "default-testCompile".equals(execution.getId())
+                || (!execution.getGoals().contains("compile")
+                    && !execution.getGoals().contains("testCompile")))) continue;
             Object raw = execution.getConfiguration();
             if (raw instanceof Xpp3Dom
                 && hasProcessorConfiguration((Xpp3Dom) raw)) {

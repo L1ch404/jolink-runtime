@@ -223,6 +223,7 @@ public final class WorkerApplication implements IApplication {
         BuildDecisionTrace.install();
         Map<String, String> arguments = parseArguments(context);
         CompilerOnlyIndexManager.install();
+        InitializedAnnotationProcessorManager.install();
         if (arguments.containsKey("modules-file")) {
             BuildObservation.setEnabled(true);
             modules = new ModuleWorkspace();
