@@ -41,6 +41,7 @@ final class ModuleWorkspace {
                     Boolean.parseBoolean(properties.getProperty(prefix + "parameters")),
                     processors == null ? null : Paths.get(processors),
                     tests == null ? null : Paths.get(tests), reopened);
+            module.configureProcessorSettings(properties.getProperty(prefix + "apt_settings"));
         }
     }
 

@@ -45,6 +45,8 @@ class JavaTestBuildWorld:
     expected_input_manifest: dict[str, str] = field(default_factory=dict)
     modules: tuple[dict[str, Any], ...] = ()
     test_run_order: str = ""
+    processor_names: tuple[str, ...] = ()
+    processor_options: dict[str, str | None] = field(default_factory=dict)
 
 
 class TestBuildWorldBootstrap(Protocol):

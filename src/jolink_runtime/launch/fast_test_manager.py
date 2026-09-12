@@ -25,7 +25,7 @@ from .fast_test_cache import FastTestCache
 from .jdt_modules import ModuleCompileSession
 from .maven_module_world import load_module_worlds, combine_effective_poms
 from .maven_compile_scope import compiler_scope, compiler_parameters
-from .processor_path import processor_path, jdt_processor_paths
+from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
     JdtCandidate,
@@ -1069,11 +1069,6 @@ class FastTestManager:
                     f"Fast Test cannot reproduce the {label} Processor discovery mode.",
                     context={"scope": label, "discovery_mode": processing.get("discoveryMode")},
                 )
-            if processing.get("options"):
-                raise FastTestManagerError(
-                    "FAST_TEST_PROCESSOR_OPTIONS_UNSUPPORTED",
-                    "Fast Test v1 does not reproduce Maven Processor -A options.",
-                )
         unsupported_surefire = test_runtime.get(
             "unsupportedSurefireConfigurationNames", []
         )
@@ -1142,6 +1137,7 @@ class FastTestManager:
                 "testCompile.parameters",
                 "testCompile.annotationProcessorPaths",
                 "testCompile.annotationProcessorPathsUseDepMgmt",
+                "testCompile.annotationProcessors",
                 # Maven's stale-source selection does not configure JDT's builder.
                 "testCompile.useIncrementalCompilation",
                 "testRelease", "testSource", "testTarget", "testEncoding",
@@ -1228,6 +1224,7 @@ class FastTestManager:
             source_level=target_level,
             method_parameters=method_parameters,
             processor_entries=processor_entries,
+            **processor_settings(main_processing),
             java_agents=tuple(f"{path}=ECJ" for path in lombok),
             extra_worker_jvm_arguments=(),
             test_java_executable=test_java,
@@ -1288,6 +1285,8 @@ class FastTestManager:
             "main_dependencies": [str(path) for path in world.main_dependencies],
             "test_dependencies": [str(path) for path in world.test_dependencies],
             "processors": [str(path) for path in world.processor_entries],
+            "processor_names": world.processor_names,
+            "processor_options": world.processor_options,
             "modules": world.modules,
         }, sort_keys=True).encode()).hexdigest()
         workspace = self._cache.workspace_store(
@@ -1317,6 +1316,8 @@ class FastTestManager:
             test_source_roots=world.test_source_roots,
             test_classpath_entries=world.test_dependencies,
             processor_entries=world.processor_entries,
+            processor_names=world.processor_names,
+            processor_options=world.processor_options,
             java_agents=world.java_agents,
             extra_jvm_arguments=(
                 *world.extra_worker_jvm_arguments,

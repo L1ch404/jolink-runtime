@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from .compiler_profile import classify_compiler_arguments
 from .maven import MavenBuildSystemAdapter
 
 
@@ -28,6 +29,43 @@ def jdt_processor_paths(
     factories = (
         paths
         if processing.get("discoveryMode") == "EXPLICIT_PROCESSOR_PATH"
+        or processing.get("explicitProcessorNames")
         else tuple(path for path in paths if path not in lombok)
     )
     return factories, lombok
+
+
+def processor_settings(processing: dict) -> dict:
+    return {
+        "processor_names": list(processing.get("explicitProcessorNames", ())),
+        "processor_options": classify_compiler_arguments(
+            processing.get("options", ())
+        ).processor_options,
+    }
+
+
+def write_processor_settings(path: Path, names, options) -> Path:
+    """UTF-8 Java Properties in the existing private workspace; flags stay null."""
+
+    def escape(value):
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+            .replace(" ", "\\ ")
+            .replace("=", "\\=")
+            .replace(":", "\\:")
+        )
+
+    lines = ["names=" + escape(",".join(names))]
+    lines.extend(
+        ("flag." if value is None else "option.")
+        + escape(key)
+        + "="
+        + ("" if value is None else escape(value))
+        for key, value in options.items()
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

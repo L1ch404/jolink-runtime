@@ -35,6 +35,28 @@ JUnit 尚未执行，不能写成 MyBatis 已完整通过。
 
 ## 本轮处理
 
+### 2026-09-12 后续：Processor 名称/参数与 Checkstyle 参数
+
+前一轮已提交为 `21c8fe7`；本轮按用户指定的两项继续，不接入外部生成任务、
+不升级 JDT，也不静默关闭 Error Prone。
+
+- Processor 名称和 `-A` 已接入启动及 Fast Test，复用 Eclipse 加载和 APT配置。
+  显式名称不依赖服务声明，未选中处理器不初始化；main/test 配置各自保存与复用。
+  详情、JDT3.25 无值 flag 的实际 NPE 及适配见[Processor 记录](maven-processor-path.zh-CN.md)。
+- Checkstyle 的 `-Xpkginfo:always` 经实际输出验证，当前 JDT 默认已实现相同行为，
+  因此只补共享参数分类，不加编译器补丁、不统一放开其他参数。Maven/javac 对照与
+  真实 MCP 均验证空说明、SOURCE/RUNTIME 包注解、增量修改/删除/恢复、跨 MCP复用。
+- Checkstyle 原 SHA `b54819d1f783a10ca8df13c5987ec0ac28052b3a`、JDK17运行环境、
+  Java11源码，原样执行 CommonUtilTest，已经越过参数拦截并发起 JDT FULL。
+  本次实际错误为缺少 grammar.java / grammar.javadoc 下 ANTLR 生成类（如
+  JavaLanguageParserBaseVisitor、JavaLanguageParser、JavadocParser），不是原参数拒绝。
+  生成任务按约定未执行，所以不能写成 Checkstyle 测试通过。源码/POM未修改。
+
+本机收尾：普通测试711 passed / 7 skipped；相关真实 JVM/MCP 回归40项通过，
+Fast Test专项6项通过；wheel/sdist、compileall、diff检查通过。新增场景包括没有服务
+声明的指定处理器、未选中处理器哨兵、无值/空字符串/Unicode参数、缺失名称与恢复、
+配置缓存重开，以及参数同时用于应用启动。临时MapStruct配置已恢复。
+
 ### 2026-09-12：测试排序与 main/test 编译配置分离
 
 本轮只处理已确认的排序与配置表达，不升级 JDT，不接入 javac 专属质量检查。

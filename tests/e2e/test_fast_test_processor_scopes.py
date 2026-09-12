@@ -1,5 +1,6 @@
 """Separate factory paths really generate code in separate main/test projects."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -16,8 +17,9 @@ from test_fast_test_scopes import environment, run
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("build_system", ["maven", "gradle"])
 @pytest.mark.parametrize("main_processor", [False, True])
+@pytest.mark.parametrize("selection", ["service", "explicit"])
 def test_independent_processor_loading_and_generated_outputs(
-    tmp_path, build_system, main_processor
+    tmp_path, build_system, main_processor, selection
 ):
     env = environment(tmp_path)
     home = Path(env["JAVA_HOME"])
@@ -68,12 +70,34 @@ public class Generator extends AbstractProcessor {
         )
         classes = source.parent / "classes"
         classes.mkdir()
+        trap = source.with_name("Trap.java")
+        trap.write_text("""package processor;
+@javax.annotation.processing.SupportedAnnotationTypes("*")
+public class Trap extends javax.annotation.processing.AbstractProcessor {
+ static { if (System.getProperty("never.initialize") == null) throw new AssertionError("unselected static initializer"); }
+ public Trap() { throw new AssertionError("unselected constructor"); }
+ public void init(javax.annotation.processing.ProcessingEnvironment env) { throw new AssertionError("unselected init"); }
+ public boolean process(java.util.Set<? extends javax.lang.model.element.TypeElement> a, javax.annotation.processing.RoundEnvironment r) { throw new AssertionError("unselected process"); }
+}""")
+        if selection != "service":
+            source.write_text(
+                source.read_text().replace(
+                    "Object value=",
+                    """
+    java.util.Map<String,String> options=processingEnv.getOptions();
+    if(!options.containsKey("flag") || options.get("flag")!=null || !"".equals(options.get("empty"))
+       || !"0".equals(options.get("offset")) || !"SCOPE = 世界 with spaces".equals(options.get("label")))
+       throw new AssertionError("processor options differ: "+options);
+    Object value=""".replace("SCOPE", scope),
+                )
+            )
         command(
             [
                 str(home / ("bin/javac.exe" if os.name == "nt" else "bin/javac")),
                 "-d",
                 str(classes),
                 str(source),
+                str(trap),
             ]
         )
         jar = source.parent / (scope + ".jar")
@@ -82,7 +106,9 @@ public class Generator extends AbstractProcessor {
                 archive.write(path, path.relative_to(classes).as_posix())
             archive.writestr(
                 "META-INF/services/javax.annotation.processing.Processor",
-                "processor.Generator\n",
+                "processor.Trap\n"
+                if selection != "service"
+                else "processor.Generator\n",
             )
         artifacts[scope] = jar
         if build_system == "maven":
@@ -123,8 +149,15 @@ public class Generator extends AbstractProcessor {
         executions = ""
         for scope in ("main", "test") if main_processor else ("test",):
             goal = "compile" if scope == "main" else "testCompile"
+            settings = (
+                f"""<annotationProcessors><annotationProcessor>processor.Generator</annotationProcessor></annotationProcessors>
+<compilerArgs><arg>-Aoffset=99</arg><arg>-Aoffset=0</arg><arg>-Aflag</arg><arg>-Aempty=</arg><arg>-Alabel={scope} = 世界 with spaces</arg></compilerArgs>"""
+                if selection != "service"
+                else ""
+            )
             executions += f"""<execution><id>default-{goal}</id><goals><goal>{goal}</goal></goals><configuration>
 <annotationProcessorPaths><path><groupId>{group}</groupId><artifactId>{scope}</artifactId><version>1</version></path></annotationProcessorPaths>
+{settings}
 </configuration></execution>"""
         (project / "pom.xml").write_text(f"""<project><modelVersion>4.0.0</modelVersion>
 <groupId>example</groupId><artifactId>processor-scopes</artifactId><version>1</version>
@@ -160,6 +193,38 @@ tasks.withType(JavaCompile).configureEach {{ options.encoding='UTF-8'; doFirst {
 test {{ doFirst {{ throw new GradleException('native test must not run') }} }}
 """)
 
+    if selection == "classpath":
+        import xml.etree.ElementTree as ET
+
+        pom = project / "pom.xml"
+        xml = ET.fromstring(pom.read_text())
+        config = xml.find("./build/plugins/plugin/executions/execution/configuration")
+        config.remove(config.find("annotationProcessorPaths"))
+        dependency = ET.SubElement(xml.find("dependencies"), "dependency")
+        for name, value in {
+            "groupId": group,
+            "artifactId": "test",
+            "version": "1",
+            "scope": "test",
+        }.items():
+            ET.SubElement(dependency, name).text = value
+        pom.write_text(ET.tostring(xml, encoding="unicode"))
+        # This JAR is deliberately a test dependency in this variant.
+        test.write_text(
+            test.read_text().replace(
+                'try {Class.forName("processor.Generator"); org.junit.Assert.fail("processor leaked into test runtime");}\n  catch(ClassNotFoundException expected){}',
+                'org.junit.Assert.assertNotNull(Class.forName("processor.Generator"));',
+            )
+        )
+
+    if build_system == "gradle" and selection == "explicit":
+        build = project / "build.gradle"
+        settings = ""
+        for scope in ("main", "test") if main_processor else ("test",):
+            task = "compileJava" if scope == "main" else "compileTestJava"
+            settings += f"\n{task}.options.compilerArgs.addAll(['-processor', 'processor.Generator', '-Aoffset=99', '-Aoffset=0', '-Aflag', '-Aempty=', '-Alabel={scope} = 世界 with spaces'])\n"
+        build.write_text(build.read_text() + settings)
+
     async def scenario():
         for cycle in range(2):
             with temporary_stderr() as stderr:
@@ -169,7 +234,7 @@ test {{ doFirst {{ throw new GradleException('native test must not run') }} }}
                         return await run(session, project, ["example.ScopeTest"])
 
                     result = await check()
-                    assert result.get("passed"), result
+                    assert result.get("passed"), json.dumps(result, ensure_ascii=False)
                     if cycle:
                         assert result["compiled_source_count"] == 0, result
                         continue
@@ -193,6 +258,32 @@ test {{ doFirst {{ throw new GradleException('native test must not run') }} }}
                     assert result.get("ok") is False, result
                     main.write_text(original)
                     assert (await check())["passed"]
+        if selection != "service":
+            config = project / (
+                "pom.xml" if build_system == "maven" else "build.gradle"
+            )
+            original_config = config.read_text()
+            with temporary_stderr() as stderr:
+                async with open_mcp_session(stderr, environment=env) as session:
+                    try:
+                        config.write_text(
+                            original_config.replace(
+                                "processor.Generator", "processor.Missing"
+                            )
+                        )
+                        missing = await run(session, project, ["example.ScopeTest"])
+                        assert missing.get("ok") is False, missing
+                    finally:
+                        config.write_text(original_config)
+                    restored = await run(session, project, ["example.ScopeTest"])
+                    assert restored.get("passed"), restored
         assert not (project / "target").exists()
 
     anyio.run(scenario)
+
+
+@pytest.mark.mcp_java_e2e
+def test_named_processor_without_service_uses_default_compile_classpath(tmp_path):
+    test_independent_processor_loading_and_generated_outputs(
+        tmp_path, "maven", False, "classpath"
+    )

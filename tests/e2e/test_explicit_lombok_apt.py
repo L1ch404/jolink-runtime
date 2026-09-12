@@ -143,7 +143,27 @@ def test_lombok_agent_and_explicit_apt_entry_work_together(
                 different = await run(session)
                 assert different.get("passed") is True, different
                 unchanged = await run(session)
-                assert unchanged["passed"] and unchanged["compiled_source_count"] == 0, unchanged
+                assert (
+                    unchanged["passed"] and unchanged["compiled_source_count"] == 0
+                ), unchanged
+        # Selecting only MapStruct must not silently keep Lombok's AST agent
+        # enabled just because the Lombok JAR is still on the Factory Path.
+        compiler = tree.find("./build/plugins/plugin")
+        compiler.remove(compiler.find("executions"))
+        names = ET.SubElement(compiler.find("configuration"), "annotationProcessors")
+        ET.SubElement(
+            names, "annotationProcessor"
+        ).text = "org.mapstruct.ap.MappingProcessor"
+        pom.write_text(ET.tostring(tree, encoding="unicode"))
+        with temporary_stderr() as stderr:
+            async with open_mcp_session(stderr, environment=env) as session:
+                excluded = await run(session)
+                assert excluded.get("ok") is False, excluded
+                ET.SubElement(
+                    names, "annotationProcessor"
+                ).text = "lombok.launch.AnnotationProcessorHider$AnnotationProcessor"
+                pom.write_text(ET.tostring(tree, encoding="unicode"))
+                assert (await run(session))["passed"]
         assert not (project / "target").exists()
 
     anyio.run(scenario)

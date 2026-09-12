@@ -279,6 +279,7 @@ public final class WorkerApplication implements IApplication {
                     testClasspathFile == null
                             ? null : Paths.get(testClasspathFile),
                     "true".equals(arguments.get("reuse-configuration")));
+            configureProcessorSettings(arguments.get("apt-settings-file"));
             emitReady();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -319,6 +320,10 @@ public final class WorkerApplication implements IApplication {
             }
         }
         return result;
+    }
+
+    void configureProcessorSettings(String settings) throws Exception {
+        if (settings != null && !configurationReused) ProcessorConfiguration.configure(javaProject, Paths.get(settings));
     }
 
     void initialize(
@@ -559,7 +564,7 @@ public final class WorkerApplication implements IApplication {
                 continue;
             }
             Path path = Paths.get(value).toAbsolutePath().normalize();
-            if (!Files.isRegularFile(path)) {
+            if (!Files.exists(path)) {
                 throw new IOException("APT processor path entry is unavailable.");
             }
             processors.add(path.toFile());

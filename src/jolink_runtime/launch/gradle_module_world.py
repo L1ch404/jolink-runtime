@@ -32,7 +32,10 @@ def _compiler_settings(task: dict) -> dict:
     processors, lombok = [], []
     for path in task["annotationProcessorPath"] if "-proc:none" not in args else []:
         _, is_lombok = _processor_facts(Path(path))
-        (lombok if is_lombok else processors).append(path)
+        if is_lombok:
+            lombok.append(path)
+        if not is_lombok or profile.processor_names:
+            processors.append(path)
     return {
         "source_level": level,
         "source_encoding": task["encoding"],
@@ -42,6 +45,8 @@ def _compiler_settings(task: dict) -> dict:
         "method_parameters": profile.method_parameters,
         "processor_entries": processors,
         "lombok_entries": lombok,
+        "processor_names": list(profile.processor_names),
+        "processor_options": profile.processor_options,
     }
 
 

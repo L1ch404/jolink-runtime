@@ -351,6 +351,8 @@ class ProjectLaunchPipeline:
         plan = JdtBuildWorldPlan(project_root=request.project_path, module_root=module.directory,
             source_roots=roots, dependency_entries=tuple(Path(p) for p in target["classpath"]),
             processor_entries=tuple(Path(p) for p in target["processor_entries"]),
+            processor_names=tuple(target.get("processor_names", ())),
+            processor_options=target.get("processor_options", {}),
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
             source_level=target["source_level"], target_level=target["source_level"],

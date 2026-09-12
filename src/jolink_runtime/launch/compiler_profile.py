@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
-
-_MEMORY_ARGUMENT = re.compile(
-    r"-J-Xm(?P<kind>[sx])(?P<size>\d+)(?P<unit>[kKmMgG]?)"
-)
+_MEMORY_ARGUMENT = re.compile(r"-J-Xm(?P<kind>[sx])(?P<size>\d+)(?P<unit>[kKmMgG]?)")
 _MAVEN_MEMORY = re.compile(r"(?P<size>\d+)(?P<unit>[kKmMgG]?)")
 
 
@@ -26,13 +23,13 @@ class CompilerArgumentProfile:
     worker_max_heap_mb: int
     decisions: tuple[CompilerArgumentDecision, ...]
     method_parameters: bool = False
+    processor_names: tuple[str, ...] = ()
+    processor_options: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def unresolved_arguments(self) -> tuple[str, ...]:
         return tuple(
-            item.argument
-            for item in self.decisions
-            if item.disposition == "UNRESOLVED"
+            item.argument for item in self.decisions if item.disposition == "UNRESOLVED"
         )
 
 
@@ -70,15 +67,40 @@ def classify_compiler_arguments(
     max_heap = int(default_max_heap_mb)
     decisions: list[CompilerArgumentDecision] = []
     method_parameters = False
+    processor_names: tuple[str, ...] = ()
+    processor_options: dict[str, str | None] = {}
     index = 0
     while index < len(arguments):
         raw = arguments[index]
         argument = str(raw).strip()
-        if argument in {"-Xlint", "-nowarn", "-deprecation"} or argument.startswith("-Xlint:"):
-            decisions.append(CompilerArgumentDecision(
-                argument=argument, disposition="REDUNDANT_FOR_JDT",
-                category="optional_diagnostics_disabled",
-            ))
+        if argument.startswith("-A") and len(argument) > 2:
+            key, equals, value = str(raw).lstrip()[2:].partition("=")
+            processor_options[key] = value if equals else None
+            decisions.append(
+                CompilerArgumentDecision(argument, "MAPPED_TO_JDT", "processor_option")
+            )
+            index += 1
+            continue
+        if argument == "-processor" and index + 1 < len(arguments):
+            processor_names = tuple(str(arguments[index + 1]).split(","))
+            decisions.extend(
+                CompilerArgumentDecision(
+                    str(value), "MAPPED_TO_JDT", "processor_selection"
+                )
+                for value in arguments[index : index + 2]
+            )
+            index += 2
+            continue
+        if argument in {"-Xlint", "-nowarn", "-deprecation"} or argument.startswith(
+            "-Xlint:"
+        ):
+            decisions.append(
+                CompilerArgumentDecision(
+                    argument=argument,
+                    disposition="REDUNDANT_FOR_JDT",
+                    category="optional_diagnostics_disabled",
+                )
+            )
             index += 1
             continue
         if argument == "-proc:none":
@@ -87,6 +109,14 @@ def classify_compiler_arguments(
                     argument=argument,
                     disposition="MAPPED_TO_JDT",
                     category="annotation_processing_disabled",
+                )
+            )
+            index += 1
+            continue
+        if argument == "-Xpkginfo:always":
+            decisions.append(
+                CompilerArgumentDecision(
+                    argument, "REDUNDANT_FOR_JDT", "package_info_always_generated"
                 )
             )
             index += 1
@@ -157,6 +187,8 @@ def classify_compiler_arguments(
         worker_max_heap_mb=max_heap,
         decisions=tuple(decisions),
         method_parameters=method_parameters,
+        processor_names=processor_names,
+        processor_options=processor_options,
     )
 
 

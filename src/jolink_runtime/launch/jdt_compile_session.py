@@ -21,7 +21,7 @@ import time
 import urllib.request
 import uuid
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -707,6 +707,8 @@ class JdtBuildWorldPlan:
     worker_java_major: int | None = None
     system_entries: tuple[Path, ...] = ()
     modules: tuple[dict[str, Any], ...] = ()
+    processor_names: tuple[str, ...] = ()
+    processor_options: dict[str, str | None] = field(default_factory=dict)
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(
@@ -891,6 +893,8 @@ class PersistentJdtCompileSession:
         baseline_main_output: Path | None = None,
         baseline_test_output: Path | None = None,
         processor_entries: Sequence[Path] = (),
+        processor_names: Sequence[str] = (),
+        processor_options: dict[str, str | None] | None = None,
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
         min_heap_mb: int = 64,
@@ -952,6 +956,8 @@ class PersistentJdtCompileSession:
             path.expanduser().resolve(strict=True) for path in processor_entries
         )
         self.java_agents = tuple(java_agents)
+        self.processor_names = tuple(processor_names)
+        self.processor_options = dict(processor_options or {})
         self.extra_jvm_arguments = tuple(extra_jvm_arguments)
         if not 32 <= int(min_heap_mb) <= 8192:
             raise JdtCompileError(
@@ -1646,6 +1652,11 @@ class PersistentJdtCompileSession:
         ]
         if processor_file is not None:
             command.extend(["--apt-processors-file", str(processor_file)])
+        if self.processor_names or self.processor_options:
+            from .processor_path import write_processor_settings
+            settings = write_processor_settings(self.root / "apt-settings.properties",
+                self.processor_names, self.processor_options)
+            command.extend(["--apt-settings-file", str(settings)])
         if test_classpath_file is not None:
             command.extend(
                 ["--test-classpath-file", str(test_classpath_file)]

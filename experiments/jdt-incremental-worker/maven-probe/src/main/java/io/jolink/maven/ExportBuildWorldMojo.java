@@ -52,7 +52,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest16";
+    private static final String PROBE_VERSION = "0.1.0-fasttest18";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -344,6 +344,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "providers", testProcessors.providers, true);
         stringList(out, "processorPath", testProcessors.processorPath, true);
         stringList(out, "options", testProcessors.options, true);
+        stringList(out, "explicitProcessorNames", testProcessors.explicitProcessorNames, true);
         out.append('}');
         field(
             out,
@@ -680,6 +681,12 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             "annotationProcessor"
         );
         Xpp3Dom explicitPaths = child(configuration, "annotationProcessorPaths");
+        List<String> arguments = compilerArguments(configuration);
+        for (int i = 0; i + 1 < arguments.size(); i++) {
+            if ("-processor".equals(arguments.get(i))) {
+                explicitNames = new ArrayList<>(java.util.Arrays.asList(arguments.get(++i).split(",")));
+            }
+        }
         int explicitPathCount = explicitPaths == null
             ? 0 : explicitPaths.getChildCount();
         int legacyOptionCount = legacyProcessorOptionCount(configuration);
@@ -753,7 +760,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
                 0
             );
         }
-        if (explicitPathCount > 0 && explicitNames.isEmpty()) {
+        if (explicitPathCount > 0) {
             List<String> resolvedProcessorPath = ProcessorPathResolver.resolve(project, artifactResolver,
                     processorRepositorySession == null ? session.getRepositorySession() : processorRepositorySession,
                     explicitPaths, Boolean.parseBoolean(childValue(configuration, "annotationProcessorPathsUseDepMgmt")));
@@ -772,25 +779,6 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             facts.processorPath = resolvedProcessorPath;
             return facts;
         }
-        if (explicitPathCount > 0) {
-            return new ProcessorFacts(
-                processingMode,
-                "EXPLICIT_DECLARED_UNRESOLVED",
-                false,
-                Collections.<String>emptyList(),
-                Collections.<String>emptyList(),
-                options,
-                explicitNames,
-                explicitPathCount,
-                false,
-                legacyOptionCount > 0,
-                legacyOptionCount,
-                false,
-                0,
-                false,
-                0
-            );
-        }
 
         List<String> artifacts = new ArrayList<String>();
         Set<String> providers = new LinkedHashSet<String>();
@@ -804,7 +792,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         }
         List<String> sortedProviders = new ArrayList<String>(providers);
         Collections.sort(sortedProviders);
-        return new ProcessorFacts(
+        ProcessorFacts facts = new ProcessorFacts(
             processingMode,
             "IMPLICIT_COMPILE_CLASSPATH",
             true,
@@ -821,6 +809,13 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             false,
             0
         );
+        if (!explicitNames.isEmpty()) {
+            facts.processorPath = new ArrayList<>();
+            // Explicit names do not require META-INF/services; keep helper
+            // dependencies on javac's default processor loading path as well.
+            for (String path : classpath) if (new File(path).exists()) facts.processorPath.add(path);
+        }
+        return facts;
     }
 
     private Plugin compilerPlugin() {
@@ -1053,7 +1048,6 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
                 String name = item.getName().toLowerCase(Locale.ROOT);
                 if (
                     "proc".equals(name)
-                    || "processor".equals(name)
                     || "processorpath".equals(name)
                     || "processor-path".equals(name)
                     || "processor-module-path".equals(name)
@@ -1072,7 +1066,6 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         for (String token : normalized.split("\\s+")) {
             if (
                 token.startsWith("-proc:")
-                || isOption(token, "-processor")
                 || isOption(token, "-processorpath")
                 || isOption(token, "--processor-path")
                 || isOption(token, "--processor-module-path")
@@ -1171,20 +1164,39 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
 
     private static List<String> compilerOptions(Xpp3Dom configuration) {
         List<String> options = new ArrayList<String>();
+        for (String argument : compilerArguments(configuration)) {
+            if (argument.startsWith("-A")) options.add(argument);
+        }
+        return options;
+    }
+
+    private static List<String> compilerArguments(Xpp3Dom configuration) {
+        List<String> options = new ArrayList<>();
         Xpp3Dom arguments = child(configuration, "compilerArgs");
         if (arguments != null) {
-            for (Xpp3Dom item : arguments.getChildren("arg")) {
-                String value = value(item);
-                if (value.startsWith("-A")) {
-                    options.add(value);
-                }
+            for (Xpp3Dom item : arguments.getChildren()) {
+                if ("arg".equals(item.getName()) || "compilerArg".equals(item.getName()))
+                    options.add(item.getValue() == null ? "" : item.getValue());
             }
         }
         String argument = childValue(configuration, "compilerArgument");
-        if (argument.startsWith("-A")) {
-            options.add(argument);
+        if (!argument.isEmpty()) {
+            try {
+                options.addAll(java.util.Arrays.asList(org.codehaus.plexus.util.cli.CommandLineUtils.translateCommandline(argument)));
+            } catch (Exception error) {
+                throw new IllegalArgumentException("Invalid compilerArgument quoting.", error);
+            }
         }
-        Collections.sort(options);
+        Xpp3Dom legacy = child(configuration, "compilerArguments");
+        if (legacy != null) {
+            for (Xpp3Dom item : legacy.getChildren()) {
+                if (item.getName().startsWith("A")) options.add("-" + item.getName()
+                    + (item.getValue() == null ? "" : "=" + item.getValue()));
+                if ("processor".equals(item.getName())) {
+                    options.add("-processor"); options.add(value(item));
+                }
+            }
+        }
         return options;
     }
 

@@ -88,7 +88,7 @@ class FastTestCache:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if raw.get("schema") != "jolink.fast-test-world.v2":
+            if raw.get("schema") != "jolink.fast-test-world.v3":
                 return None
             if build_system == "gradle" and raw.get("environment_inputs") != _environment_inputs(raw.get("environment_inputs", ())):
                 return None
@@ -99,6 +99,8 @@ class FastTestCache:
             return (
                 JavaTestBuildWorld(
                     test_run_order=world.get("test_run_order", ""),
+                    processor_names=tuple(world.get("processor_names", ())),
+                    processor_options=dict(world.get("processor_options", {})),
                     build_system=build_system,
                     project_root=Path(world["project_root"]),
                     module_root=Path(world["module_root"]),
@@ -149,7 +151,7 @@ class FastTestCache:
         configuration = world.configuration_inputs if world.build_system == "gradle" else tuple(
             dict.fromkeys((world.module_root / "pom.xml", *(Path(m["module_root"]) / "pom.xml" for m in world.modules))))
         payload = {
-            "schema": "jolink.fast-test-world.v2",
+            "schema": "jolink.fast-test-world.v3",
             "inputs": _inputs(world.project_root, world.build_system, configuration),
             "configuration_files": values(configuration),
             "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
@@ -190,6 +192,8 @@ class FastTestCache:
                 "runner_support_provenance": world.runner_support_provenance,
                 "modules": world.modules,
                 "test_run_order": world.test_run_order,
+                "processor_names": world.processor_names,
+                "processor_options": world.processor_options,
             },
         }
         path = self._directory(world.project_root, world.build_system) / "build-world.json"

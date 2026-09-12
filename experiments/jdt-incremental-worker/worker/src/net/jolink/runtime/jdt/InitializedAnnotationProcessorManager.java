@@ -14,6 +14,14 @@ public final class InitializedAnnotationProcessorManager extends IdeAnnotationPr
     private Queue<ProcessorInfo> initialized;
 
     @Override
+    public void configureFromPlatform(org.eclipse.jdt.internal.compiler.Compiler compiler,
+            Object locator, Object project, boolean test) {
+        super.configureFromPlatform(compiler, locator, project, test);
+        ProcessorConfiguration.restoreFlags((org.eclipse.jdt.core.IJavaProject) project, _processingEnv);
+        ProcessorConfiguration.select((org.eclipse.jdt.core.IJavaProject) project);
+    }
+
+    @Override
     public ProcessorInfo discoverNextProcessor() {
         if (initialized == null) {
             initialized = new ArrayDeque<>();

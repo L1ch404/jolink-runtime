@@ -121,8 +121,12 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
 import javax.tools.*;
 @SupportedAnnotationTypes("*") @SupportedSourceVersion(SourceVersion.RELEASE_8)
+@SupportedOptions({"marker", "flag"})
 public class Generator extends AbstractProcessor {
  public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment round) {
+  if (!"startup and test".equals(processingEnv.getOptions().get("marker"))
+      || !processingEnv.getOptions().containsKey("flag") || processingEnv.getOptions().get("flag") != null)
+      throw new AssertionError("Processor options were not applied");
   for(Element root : round.getRootElements()) {
    if(!root.getSimpleName().contentEquals("Input")) continue;
    for(Element member : root.getEnclosedElements()) {
@@ -193,6 +197,8 @@ public class Generator extends AbstractProcessor {
 <exclusions><exclusion><groupId>{group}</groupId><artifactId>excluded-missing</artifactId></exclusion></exclusions>
 </path></annotationProcessorPaths>
 <annotationProcessorPathsUseDepMgmt>{str(manage_transitives).lower()}</annotationProcessorPathsUseDepMgmt>
+<annotationProcessors><annotationProcessor>custom.Generator</annotationProcessor></annotationProcessors>
+<compilerArgs><arg>-Amarker=startup and test</arg><arg>-Aflag</arg></compilerArgs>
 </configuration></plugin><plugin><artifactId>maven-surefire-plugin</artifactId><version>3.2.5</version></plugin></plugins></build>
 </project>""")
     baseline = tmp_path / "native"
@@ -350,8 +356,7 @@ public class Generator extends AbstractProcessor {
 
     anyio.run(scenario)
 
-    # Resolve the standard main/test execution configurations independently;
-    # this does not make a single Worker use two different Factory Paths.
+    # Resolve the standard main/test execution configurations independently.
     pom = project / "pom.xml"
     original = pom.read_text()
     for execution, expected in (
@@ -360,10 +365,11 @@ public class Generator extends AbstractProcessor {
     ):
         pom.write_text(
             original.replace(
-                "</annotationProcessorPathsUseDepMgmt>\n</configuration>",
-                "</annotationProcessorPathsUseDepMgmt>\n</configuration><executions><execution>"
+                "</configuration></plugin>",
+                "</configuration><executions><execution>"
                 f"<id>{execution}</id><goals><goal>testCompile</goal></goals>"
-                "<configuration><proc>none</proc></configuration></execution></executions>",
+                "<configuration><proc>none</proc></configuration></execution></executions></plugin>",
+                1,
             )
         )
         command(

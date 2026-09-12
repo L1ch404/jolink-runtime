@@ -9,7 +9,7 @@ from pathlib import Path
 from .jdt_compile_session import select_target_system_home
 from .maven import MavenBuildSystemAdapter
 from .maven_compile_scope import compiler_parameters, compiler_scope
-from .processor_path import jdt_processor_paths, processor_path
+from .processor_path import jdt_processor_paths, processor_path, processor_settings
 
 
 def load_module_worlds(
@@ -103,6 +103,7 @@ def load_module_worlds(
                 "method_parameters": compiler_parameters(main_scope),
                 "processor_entries": [str(path) for path in factories],
                 "lombok_entries": [str(path) for path in lombok],
+                **processor_settings(processing),
             }
         )
         if include_tests:
@@ -125,6 +126,7 @@ def load_module_worlds(
                 "method_parameters": compiler_parameters(scoped),
                 "processor_entries": [str(path) for path in factories],
                 "lombok_entries": [str(path) for path in lombok],
+                **processor_settings(processing),
                 "classpath": [
                     p
                     for p in snapshot["testClasspathElements"]

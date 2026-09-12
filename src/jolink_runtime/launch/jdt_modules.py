@@ -10,6 +10,7 @@ from .jdt_compile_session import (
     PersistentJdtCompileSession,
     discover_target_system_entries,
 )
+from .processor_path import write_processor_settings
 
 
 def module_name(directory: str | Path) -> str:
@@ -183,6 +184,10 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                     + "processors="
                     + write_paths(".processors.txt", module["processor_entries"])
                 )
+            if module.get("processor_names") or module.get("processor_options"):
+                settings = write_processor_settings(self.root / (name + ".apt.properties"),
+                    module.get("processor_names", ()), module.get("processor_options", {}))
+                properties.append(prefix + "apt_settings=" + settings.as_posix())
             if module.get("test_source_roots"):
                 test_entries = [
                     "project-tests:" + test_outputs[str(Path(p))]

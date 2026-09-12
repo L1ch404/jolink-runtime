@@ -86,6 +86,8 @@ class JdtLaunchService:
                 source_level=plan.source_level,
                 method_parameters=plan.method_parameters,
                 processor_entries=plan.processor_entries,
+                processor_names=plan.processor_names,
+                processor_options=plan.processor_options,
                 java_agents=tuple(f"{path}=ECJ" for path in plan.lombok_entries),
                 extra_jvm_arguments=lombok_worker_jvm_arguments(
                     plan.worker_java_major, lombok_enabled=bool(plan.lombok_entries)

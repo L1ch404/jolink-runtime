@@ -21,7 +21,7 @@ from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import configuration_file_stamps as _configuration_stamps
 
 
-_SCHEMA = "jolink.project-launch-cache.v1"
+_SCHEMA = "jolink.project-launch-cache.v2"
 
 
 def _path(value: Any) -> Path:
@@ -166,6 +166,8 @@ class ProjectLaunchCache:
                 source_roots=_paths(plan_raw["source_roots"]),
                 dependency_entries=_paths(plan_raw["dependency_entries"]),
                 processor_entries=_paths(plan_raw["processor_entries"]),
+                processor_names=tuple(plan_raw.get("processor_names", ())),
+                processor_options=dict(plan_raw.get("processor_options", {})),
                 lombok_entries=_paths(plan_raw["lombok_entries"]),
                 target_java_home=_path(plan_raw["target_java_home"]),
                 source_encoding=str(plan_raw["source_encoding"]),
@@ -315,6 +317,8 @@ class ProjectLaunchCache:
                 "worker_java_major": jdt_plan.worker_java_major,
                 "system_entries": [str(path) for path in jdt_plan.system_entries],
                 "modules": jdt_plan.modules,
+                "processor_names": jdt_plan.processor_names,
+                "processor_options": jdt_plan.processor_options,
                 "resource_fingerprint": jdt_plan.resource_fingerprint,
             },
         }

@@ -110,8 +110,9 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 ## 当前边界
 
 - Maven 显式 `annotationProcessorPaths` 已接入：Maven 解析完整加载路径（含传递依赖、
-  辅助类和资源 JAR），缓存后交给 Eclipse Factory Path。main/test 不同路径已支持；显式
-  Processor 名称和 `-A` 参数本轮未扩展。普通 MapStruct、MapStruct＋Lombok binding
+  辅助类和资源 JAR），缓存后交给 Eclipse Factory Path。main/test 不同路径、显式
+  Processor 名称和 `-A` 参数均已接入。指定名称时只加载所选处理器，不要求服务声明；
+  Maven 未指定 Processor 路径时使用其编译 classpath。普通 MapStruct、MapStruct＋Lombok binding
   样本均通过；Worker 先完成处理器初始化再按原顺序执行，见[路径接入与实测](maven-processor-path.zh-CN.md)。
 - source/target支持Java 8和11；
 - JDT 3.25 本体不支持 `--release 17`，在 JDK17 上运行该编译器也不能改变这一点。
@@ -119,6 +120,8 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 - Error Prone 等 javac 专属插件不在本轮接入。后续方向是快速流程不执行这些质量
   检查、正式构建/CI保留；本轮只记录，尚未删除对应参数拒绝，也不静默忽略未知参数。
 - Runner支持显式Class或Class#method选择；
+- `-Xpkginfo:always` 已映射为 JDT 默认输出行为：空包说明、SOURCE/RUNTIME 注解均有
+  package-info.class，并验证了增量修改、删除、恢复；没有统一忽略其他 javac 参数；
 - Maven Reactor已将目标和上游模块接入持久JDT工程，支持上游main源码变化，
   也支持显式依赖上游test-jar的测试；完整流程见[多模块JDT](jdt-modules.zh-CN.md)；
 - Gradle多Project使用相同的JDT模块工程；读取解析后的api/implementation/runtimeOnly
@@ -128,3 +131,6 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 
 本轮 main/test 工程布局与缓存模型发生变化：旧 Test Build World 会重新导出并建立
 一次新 workspace；新布局建立后继续复用。不是每次 test 都重建。
+
+2026-09-12 后续的名称/参数接入同时更新启动与 Test 缓存模型；旧缓存需要重新导出一次，
+避免复用之前未保存显式名称的模型。实现及真实结果见[Processor 配置](maven-processor-path.zh-CN.md)。

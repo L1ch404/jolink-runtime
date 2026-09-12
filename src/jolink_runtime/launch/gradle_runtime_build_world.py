@@ -414,6 +414,8 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
         source_roots=tuple(Path(p) for m in modules for p in m["source_roots"]),
         dependency_entries=tuple(Path(p) for p in target["classpath"]),
         processor_entries=tuple(Path(p) for p in target["processor_entries"]),
+        processor_names=tuple(target.get("processor_names", ())),
+        processor_options=target.get("processor_options", {}),
         lombok_entries=tuple(
             dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])
         ),

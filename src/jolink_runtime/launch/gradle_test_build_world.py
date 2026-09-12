@@ -437,6 +437,8 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         source_level=target["source_level"],
         method_parameters=target["method_parameters"],
         processor_entries=tuple(Path(p) for p in target["processor_entries"]),
+        processor_names=tuple(target.get("processor_names", ())),
+        processor_options=target.get("processor_options", {}),
         java_agents=tuple(
             dict.fromkeys(p + "=ECJ" for m in modules
                 for p in (*m["lombok_entries"], *m.get("test_compiler", {}).get("lombok_entries", ())))

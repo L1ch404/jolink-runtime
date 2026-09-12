@@ -1,5 +1,41 @@
 # Maven 显式 Processor 路径接入与实测
 
+## 2026-09-12：显式名称与 -A 参数
+
+在已完成 main/test 分离的基础上，接入 Maven `annotationProcessors`、编译参数
+`-processor` 和 `-Akey=value`。Gradle 的原生 compilerArgs 经过同一个参数映射器，
+使用相同 Worker 能力；启动、Fast Test、缓存重开均传递对应配置。
+
+- 显式名称保留声明顺序，不要求 Processor 类存在于 META-INF/services。Maven 未声明
+  annotationProcessorPaths 时，保留完整编译加载路径及辅助依赖，而非仅保留有服务
+  声明的 JAR。test 的 Probe 输出也补上 explicitProcessorNames，避免只接 main。
+- Worker 在发现和初始化前安装所选工厂；复用 Eclipse FactoryPath、处理环境、
+  轮次调度和由 Eclipse 关闭的 ClassLoader。未选中处理器的静态初始化、构造、init、
+  process 都不得执行。没有修改 JDT/ECJ 编译器算法，也没有按用户项目名称做适配。
+- `-A` 配置通过 AptConfig.setProcessorOptions 保存到各 JDT 工程。顺序不排序，
+  重复键最后一个生效，保留空字符串、无值 flag、Unicode、空格和等号。
+- 真实测试额外发现 JDT3.25 的 IdeProcessingEnvImpl.getOptions 对无值 flag 调用
+  matcher(null) 导致 NPE。适配层先让 Eclipse 展开字符串选项，再在原 ProcessingEnvironment
+  的选项缓存里恢复 null flag；不使用代理环境替换 Filer/Elements/Types，也不把 null
+  偷换成空字符串。此处与显式选择所用的内部字段需随未来 JDT 升级一起检查。
+- Worker 显式声明已在候选包中的 org.eclipse.jdt.apt.core 依赖，避免编译通过但
+  Equinox 运行时找不到 AptConfig。没有新增下载依赖或独立服务。
+
+真实 MCP 覆盖：Maven/Gradle main-only/test-only/不同路径，指定的 Processor 没有
+服务声明、同路径有会在初始化时失败的未选中处理器，主测试参数隔离，生成物实际运行，
+源码增量、错误恢复、缺失处理器名称及恢复、新 MCP 无改动复用。Maven 的完整加载路径
+回归还验证显式名称和 -A 同时用于应用启动。
+
+MapStruct 官方示例固定 SHA `df4dbeaae5eea82edcfad28ce31d137116af0907` 的独立副本，
+临时指定 MappingProcessor 并切换 suppressGeneratorTimestamp：false 时生成源码有 date，
+true 时没有 date，两次均2/2通过；新 MCP 复用仍2/2、编译文件数0。测试结束恢复POM，
+没有修改业务源码。原始 MCP JSONL 与生成源码证据仅留在本机。
+
+Maven Probe 为 `0.1.0-fasttest18`；旧启动/Test模型缓存更新一次，随后继续复用。
+未扩展 processor-module-path、外部生成器、Java17 source 或 Error Prone。
+
+以下保留此前路径接入的历史记录。
+
 最新进展：显式路径接入后，已直接接入处理器初始化前置。原样官方 MapStruct＋Lombok
 项目已通过真实 MCP FULL、Fast Test、增量修改和恢复，不再停在初始化顺序故障上。
 
