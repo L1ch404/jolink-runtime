@@ -13,6 +13,7 @@ from .jdt_workspace_store import JdtWorkspaceStore, jolink_cache_root
 from .test_build_world import JavaTestBuildWorld
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
+from .configuration_inputs import configuration_file_stamps
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -55,10 +56,8 @@ def _input_files(project: Path, build_system: str) -> tuple[Path, ...]:
 
 
 def _inputs(project: Path, build_system: str, additional=()) -> dict[str, str]:
-    return {
-        str(path): hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
-        for path in dict.fromkeys((*_input_files(project, build_system), *(Path(p) for p in additional)))
-    }
+    return configuration_file_stamps(dict.fromkeys(
+        (*_input_files(project, build_system), *(Path(p) for p in additional))))
 
 
 class FastTestCache:
@@ -89,7 +88,7 @@ class FastTestCache:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if raw.get("schema") != "jolink.fast-test-world.v1":
+            if raw.get("schema") != "jolink.fast-test-world.v2":
                 return None
             if build_system == "gradle" and raw.get("environment_inputs") != _environment_inputs(raw.get("environment_inputs", ())):
                 return None
@@ -99,6 +98,7 @@ class FastTestCache:
             toolchain = raw["build_jdk"]
             return (
                 JavaTestBuildWorld(
+                    test_run_order=world.get("test_run_order", ""),
                     build_system=build_system,
                     project_root=Path(world["project_root"]),
                     module_root=Path(world["module_root"]),
@@ -146,10 +146,12 @@ class FastTestCache:
 
     def save(self, world: JavaTestBuildWorld, build_jdk: JavaToolchainCandidate) -> None:
         def values(paths): return [str(path) for path in paths]
+        configuration = world.configuration_inputs if world.build_system == "gradle" else tuple(
+            dict.fromkeys((world.module_root / "pom.xml", *(Path(m["module_root"]) / "pom.xml" for m in world.modules))))
         payload = {
-            "schema": "jolink.fast-test-world.v1",
-            "inputs": _inputs(world.project_root, world.build_system, world.configuration_inputs if world.build_system == "gradle" else ()),
-            "configuration_files": values(world.configuration_inputs) if world.build_system == "gradle" else [],
+            "schema": "jolink.fast-test-world.v2",
+            "inputs": _inputs(world.project_root, world.build_system, configuration),
+            "configuration_files": values(configuration),
             "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
             "build_jdk": {
                 "home": str(build_jdk.home), "java_executable": str(build_jdk.java_executable),
@@ -187,6 +189,7 @@ class FastTestCache:
                 "test_jvm_arguments": list(world.test_jvm_arguments),
                 "runner_support_provenance": world.runner_support_provenance,
                 "modules": world.modules,
+                "test_run_order": world.test_run_order,
             },
         }
         path = self._directory(world.project_root, world.build_system) / "build-world.json"

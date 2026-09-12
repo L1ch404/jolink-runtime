@@ -59,19 +59,8 @@ public final class TestRunner {
             configureProjectClasspath(Paths.get(classpathFile));
             ClassLoader loader = ClassLoader.getSystemClassLoader();
             Thread.currentThread().setContextClassLoader(loader);
-            Result result;
-            if ("junit4".equals(framework)) {
-                result = runJUnit4(selectors, loader);
-            } else if ("junit5".equals(framework)) {
-                result = runJUnit5(selectors, loader);
-            } else if ("testng".equals(framework)) {
-                result = runTestNG(selectors, loader);
-            } else if ("auto".equals(framework)) {
-                result = runAuto(selectors, loader);
-            } else {
-                throw new IllegalArgumentException(
-                        "Unsupported test framework.");
-            }
+            String order = options.get("run-order");
+            Result result = runSelected(selectors, loader, framework, order);
             emit(protocol, resultJson(
                     token,
                     runId,
@@ -96,6 +85,44 @@ public final class TestRunner {
         // The Test Runner is disposable and must terminate after its protocol
         // terminal frame has been flushed and the socket has been closed.
         System.exit(0);
+    }
+
+    private static Result runSelected(List<String> selectors, ClassLoader loader,
+            String framework, String order) throws Exception {
+        if ("alphabetical".equals(order) || "reversealphabetical".equals(order)) {
+            Map<String, List<String>> classes = new java.util.TreeMap<String, List<String>>(
+                    "reversealphabetical".equals(order)
+                        ? Collections.reverseOrder() : java.util.Comparator.naturalOrder());
+            for (String selector : selectors) {
+                classes.computeIfAbsent(Selector.parse(selector).className,
+                        key -> new ArrayList<String>()).add(selector);
+            }
+            boolean allTestNG = "testng".equals(framework);
+            if ("auto".equals(framework)) {
+                allTestNG = true;
+                for (String selector : selectors) {
+                    allTestNG &= "testng".equals(selectorFramework(selector, loader));
+                }
+            }
+            if (allTestNG) {
+                List<String> ordered = new ArrayList<String>();
+                for (List<String> group : classes.values()) ordered.addAll(group);
+                return runTestNG(ordered, loader);
+            }
+            // Discovery selector order is not an execution-order guarantee in
+            // JUnit Platform. Execute each class group, retaining method selectors.
+            Result total = new Result();
+            total.framework = framework;
+            for (List<String> group : classes.values()) {
+                total.merge(runSelected(group, loader, framework, ""));
+            }
+            return total;
+        }
+        if ("junit4".equals(framework)) return runJUnit4(selectors, loader);
+        if ("junit5".equals(framework)) return runJUnit5(selectors, loader);
+        if ("testng".equals(framework)) return runTestNG(selectors, loader);
+        if ("auto".equals(framework)) return runAuto(selectors, loader);
+        throw new IllegalArgumentException("Unsupported test framework.");
     }
 
     private static Result runJUnit4(
@@ -317,12 +344,14 @@ public final class TestRunner {
         Object test = testType.getConstructor(suiteType).newInstance(suite);
         testType.getMethod("setName", String.class)
                 .invoke(test, "explicit selectors");
+        testType.getMethod("setPreserveOrder", Boolean.class).invoke(test, Boolean.TRUE);
 
         Map<String, Set<String>> selected =
                 new LinkedHashMap<String, Set<String>>();
         Set<String> wholeClasses = new LinkedHashSet<String>();
         for (String raw : selectors) {
             Selector selector = Selector.parse(raw);
+            selected.computeIfAbsent(selector.className, key -> new LinkedHashSet<String>());
             if (selector.methodName == null) {
                 wholeClasses.add(selector.className);
             } else {

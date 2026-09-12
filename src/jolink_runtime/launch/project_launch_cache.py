@@ -18,14 +18,10 @@ from .jdt_compile_session import (
 from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
+from .configuration_inputs import configuration_file_stamps as _configuration_stamps
 
 
 _SCHEMA = "jolink.project-launch-cache.v1"
-
-
-def _configuration_stamps(paths):
-    return {str(path): hashlib.sha256(Path(path).read_bytes()).hexdigest()
-            if Path(path).is_file() else "missing" for path in paths}
 
 
 def _path(value: Any) -> Path:

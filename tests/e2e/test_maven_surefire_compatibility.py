@@ -13,7 +13,10 @@ from java_support import open_mcp_session, require_real_mcp_java_e2e, temporary_
 
 
 @pytest.mark.mcp_java_e2e
-def test_explicit_classes_with_unused_execution_and_extra_classpath(tmp_path: Path):
+@pytest.mark.parametrize("maven_incremental", [False, True])
+def test_explicit_classes_with_unused_execution_and_extra_classpath(
+    tmp_path: Path, maven_incremental: bool,
+):
     require_real_mcp_java_e2e()
     home = os.environ.get("JOLINK_TEST_JAVA8_HOME")
     maven = shutil.which("mvn")
@@ -30,7 +33,7 @@ def test_explicit_classes_with_unused_execution_and_extra_classpath(tmp_path: Pa
     data = project / "extra-runtime"
     data.mkdir()
     (data / "fixture.txt").write_text("runtime-only")
-    (project / "pom.xml").write_text("""<project><modelVersion>4.0.0</modelVersion>
+    (project / "pom.xml").write_text(f"""<project><modelVersion>4.0.0</modelVersion>
 <groupId>example</groupId><artifactId>surefire-compat</artifactId><version>1</version>
 <properties><maven.compiler.source>8</maven.compiler.source><maven.compiler.target>8</maven.compiler.target><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
 <dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId><version>4.13.2</version><scope>test</scope></dependency></dependencies>
@@ -40,6 +43,8 @@ def test_explicit_classes_with_unused_execution_and_extra_classpath(tmp_path: Pa
 <executions><execution><id>unused</id><configuration><runOrder>random</runOrder><argLine>-Dunused=must-not-apply</argLine></configuration></execution></executions>
 </plugin><plugin><artifactId>maven-failsafe-plugin</artifactId><configuration>
 <includes><include>**/Integration*.java</include></includes></configuration>
+</plugin><plugin><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>
+<configuration><useIncrementalCompilation>{str(maven_incremental).lower()}</useIncrementalCompilation></configuration>
 </plugin></plugins></build></project>""")
     for name in ("SelectedOne", "SelectedTwo"):
         (tests / f"{name}.java").write_text(f"""package example; public class {name} {{
@@ -71,6 +76,7 @@ def test_explicit_classes_with_unused_execution_and_extra_classpath(tmp_path: Pa
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert native.returncode == 0, native.stdout + native.stderr
 
@@ -108,16 +114,19 @@ def test_explicit_classes_with_unused_execution_and_extra_classpath(tmp_path: Pa
             async with open_mcp_session(stderr, environment=env) as session:
                 cold = await run(session)
                 assert cold.get("passed") is True and cold["tests"] == 2, cold
-                assert (await run(session))["passed"]
+                unchanged = await run(session)
+                assert unchanged["passed"] and unchanged["compiled_source_count"] == 0, unchanged
                 original = main.read_text()
                 main.write_text(original.replace("return 1", "return 2"))
                 failed = await run(session)
                 assert failed["failed_count"] == 2, failed
+                assert failed["compiled_source_count"] >= 1, failed
                 main.write_text(original)
                 assert (await run(session))["passed"]
         with temporary_stderr() as stderr:
             async with open_mcp_session(stderr, environment=env) as session:
-                assert (await run(session))["passed"]
+                reopened = await run(session)
+                assert reopened["passed"] and reopened["compiled_source_count"] == 0, reopened
         assert not (project / "target").exists()
 
     anyio.run(scenario)

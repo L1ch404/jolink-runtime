@@ -18,12 +18,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from .contracts import BuildOperationSpec, LaunchIntent
+from .contracts import BuildOperationSpec
 from .compiler_profile import parse_maven_memory_megabytes
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
 from .jdt_modules import ModuleCompileSession
 from .maven_module_world import load_module_worlds, combine_effective_poms
+from .maven_compile_scope import compiler_scope, compiler_parameters
 from .processor_path import processor_path, jdt_processor_paths
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
@@ -34,14 +35,13 @@ from .jdt_compile_session import (
     lombok_worker_jvm_arguments,
     select_target_system_home,
 )
-from .maven import MavenBuildSystemAdapter, MavenResolutionError
+from .maven import MavenBuildSystemAdapter, MavenModule, MavenResolutionError, MavenWorkspace
 from .maven_probe import MavenProbeError, ProductMavenProbe
 from .gradle_probe import (
     GradleProbeError,
     ProductGradleProbe,
     gradle_configuration_environment_names,
     gradle_configuration_inputs,
-    wrapper_version,
 )
 from .gradle_module_world import GradleModuleError
 from .gradle_test_build_world import (
@@ -55,13 +55,9 @@ from .test_build_world import (
     JavaTestBuildWorld,
     MavenTestBuildWorldBootstrap,
     TestBuildWorldBootstrap,
-    build_input_manifest,
 )
 
 
-_HELP_PLUGIN_GOAL = (
-    "org.apache.maven.plugins:maven-help-plugin:3.2.0:effective-pom"
-)
 _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 900.0
 _TEST_DISCOVERY_FILTERS = frozenset({"includes", "excludes"})
 _BUILD_LOG_SECRET = re.compile(
@@ -124,6 +120,7 @@ class _FastTestProject:
     runner_support_provenance: dict[str, Any]
     session_root: Path
     workspace_lease: Any
+    test_run_order: str = ""
     test_attempts: list[tuple[Path, bool]] = field(default_factory=list)
 
     def close(self) -> bool:
@@ -437,6 +434,7 @@ class FastTestManager:
                             *project.runtime_classpath,
                         ),
                         selectors=attempt.tests,
+                        run_order=project.test_run_order,
                         working_directory=project.test_working_directory,
                         environment=project.runner_environment,
                         jvm_arguments=project.runner_jvm_arguments,
@@ -635,14 +633,9 @@ class FastTestManager:
         bootstrap.mkdir(mode=0o700)
         log = bootstrap / "maven-test-bootstrap.log"
         preferences = self._idea.import_preferences(attempt.project_path)
-        workspace = self._maven.resolve_workspace(attempt.project_path)
+        root = attempt.project_path.resolve(strict=True)
+        workspace = MavenWorkspace(root, root, root / "pom.xml", ())
         attempt.require_not_cancelled()
-        module = self._select_test_module(workspace, attempt)
-        if module.packaging != "jar":
-            raise FastTestManagerError(
-                "FAST_TEST_PACKAGING_UNSUPPORTED",
-                "Fast Test v1 requires Maven jar packaging.",
-            )
         build_jdk = self._select_build_jdk(
             preferences, workspace.build_root, log, attempt
         )
@@ -650,24 +643,6 @@ class FastTestManager:
             preferences, workspace.project_root, build_jdk, log, attempt
         )
         attempt.require_not_cancelled()
-        intent = LaunchIntent(
-            source="maven_fast_test",
-            launch_name="fast-test",
-            launch_type="test",
-            main_class="",
-            working_directory=module.directory,
-            ide_module_name=module.relative_path,
-            build_before_run=True,
-        )
-        self._maven.create_execution_plan(
-            workspace=workspace,
-            module=module,
-            intent=intent,
-            maven=maven,
-            build_jdk=build_jdk,
-            preferences=preferences,
-            attempt_directory=bootstrap,
-        )
         source_settings = preferences.user_settings_file
         if source_settings is None:
             default_settings = Path.home() / ".m2/settings.xml"
@@ -696,7 +671,6 @@ class FastTestManager:
                 maven=maven,
                 preferences=preferences,
                 workspace=workspace,
-                module=module,
                 build_jdk=build_jdk,
                 local_repository=local_repository,
                 offline=offline,
@@ -706,6 +680,15 @@ class FastTestManager:
         finally:
             prepared_probe.settings_file.unlink(missing_ok=True)
         attempt.require_not_cancelled()
+        native = snapshot["project"]
+        directory = Path(native["baseDirectory"])
+        module = MavenModule(
+            relative_path=Path(os.path.relpath(directory, workspace.project_root)).as_posix(),
+            directory=directory, pom_file=directory / "pom.xml",
+            group_id=native["groupId"], artifact_id=native["artifactId"],
+            name=native.get("name"), packaging=native["packaging"],
+            output_directory=Path(snapshot["outputDirectory"]),
+        )
         project = self._create_project_from_snapshot(
             attempt=attempt,
             session_root=session_root,
@@ -733,31 +716,17 @@ class FastTestManager:
         bootstrap.mkdir(mode=0o700)
         log = bootstrap / "gradle-test-bootstrap.log"
         project = gradle_build_root(attempt.project_path) or attempt.project_path
-        if (project / "buildSrc").exists() or (
-            project / "build-logic"
-        ).exists():
-            raise FastTestManagerError(
-                "GRADLE_BUILD_LOGIC_UNSUPPORTED",
-                "Gradle buildSrc/build-logic is not supported in v0.1.",
-            )
         preferences = self._idea.import_preferences(project)
         build_jdk = self._select_build_jdk(
             preferences, project, log, attempt
         )
         probe = ProductGradleProbe.load()
-        version = wrapper_version(project)
         wrapper = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
         if not wrapper.is_file():
             raise FastTestManagerError(
                 "GRADLE_WRAPPER_UNAVAILABLE",
                 "The Gradle Wrapper executable is unavailable.",
             )
-        main_root = project / "src/main/java"
-        test_root = project / "src/test/java"
-        resource_roots = (
-            project / "src/main/resources",
-            project / "src/test/resources",
-        )
         environment = JavaToolchainResolver.maven_environment(build_jdk)
         gradle_args = shlex.split(os.environ.get("GRADLE_ARGS", ""))
         if any(value not in {"-o", "--offline"} for value in gradle_args):
@@ -849,7 +818,6 @@ class FastTestManager:
         maven: Any,
         preferences: Any,
         workspace: Any,
-        module: Any,
         build_jdk: JavaToolchainCandidate,
         local_repository: Path,
         offline: bool,
@@ -857,9 +825,6 @@ class FastTestManager:
         log: Path,
     ) -> dict[str, Any]:
         attempt.require_not_cancelled()
-        workspace_modules = tuple(
-            getattr(workspace, "modules", (module,))
-        )
         command = [
             *maven.argv_prefix,
             "--batch-mode",
@@ -875,19 +840,19 @@ class FastTestManager:
             command.extend(["-P", ",".join(preferences.active_profiles)])
         if offline:
             command.append("--offline")
-        multi = len(workspace_modules) > 1
         command.extend(
             [
-                prepared_probe.goal.replace("export-build-world", "export-reactor-world") if multi else prepared_probe.goal,
-                f"-Djolink.probe.targetDirectory={module.directory}",
+                prepared_probe.goal.replace("export-build-world", "export-reactor-world"),
+                f"-Djolink.probe.targetDirectory={attempt.project_path}",
                 (
                     "-Djolink.probe.outputDirectory="
                     f"{prepared_probe.output_directory}"
                 ),
             ]
         )
-        if not multi:
-            command.extend([_HELP_PLUGIN_GOAL, f"-Doutput={effective_pom}"])
+        command.append("-Djolink.probe.testClasses=" + ",".join(attempt.tests))
+        if attempt.source_files:
+            command.append("-Djolink.probe.sourceFiles=" + ",".join(attempt.source_files))
         try:
             operation = self._supervisor.run(
                 BuildOperationSpec(
@@ -919,6 +884,12 @@ class FastTestManager:
                     "The Maven Fast Test Bootstrap exceeded the 16 MiB log limit.",
                 )
             if not operation.succeeded:
+                selection = prepared_probe.output_directory / "selection-error.txt"
+                if selection.is_file():
+                    code, *candidates = selection.read_text(encoding="utf-8").splitlines()
+                    raise FastTestManagerError(code,
+                        "Select test classes from one Maven jar module, or specify its project_path.",
+                        context={"candidate_modules": candidates})
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_FAILED",
                     "The Maven Test Build World Probe failed.",
@@ -927,14 +898,14 @@ class FastTestManager:
                         "bootstrap_log_tail": _redacted_build_log_tail(log),
                     },
                 )
-            snapshot = probe.load_snapshot(
-                prepared_probe, module_root=module.directory
+            module_root = Path(
+                (prepared_probe.output_directory / "selected-module.txt").read_text(encoding="utf-8"))
+            snapshot = probe.load_snapshot(prepared_probe, module_root=module_root)
+            combine_effective_poms(prepared_probe.output_directory, effective_pom)
+            worlds = load_module_worlds(
+                prepared_probe.output_directory, module_root, build_jdk, tests=True
             )
-            if multi:
-                combine_effective_poms(prepared_probe.output_directory, effective_pom)
-                snapshot["moduleWorlds"] = load_module_worlds(
-                    prepared_probe.output_directory, module.directory, build_jdk, tests=True
-                )
+            snapshot["moduleWorlds"] = worlds
             attempt.require_not_cancelled()
             return snapshot
         finally:
@@ -1061,7 +1032,7 @@ class FastTestManager:
                     additional_classpath += ((module.directory / path).resolve(strict=False),)
         runtime_classpath = (*runtime_classpath, *additional_classpath)
         compiler_model = self._maven._compiler_model(
-            effective_project,
+            compiler_scope(effective_project),
             build_jdk=build_jdk,
             runtime_jdk=build_jdk,
         )
@@ -1078,6 +1049,12 @@ class FastTestManager:
                     "target_level": compiler_model["target_level"],
                 },
             )
+        test_scope = compiler_scope(effective_project, test=True)
+        test_model = self._maven._compiler_model(test_scope, build_jdk=build_jdk, runtime_jdk=build_jdk)
+        if test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in {8, 11}:
+            raise FastTestManagerError("FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
+                "The bundled JDT supports Java 8/11 test compilation; Java 17 needs a compiler upgrade.",
+                context={"scope": "test", **test_model})
         for label, processing in (
             ("main", main_processing),
             ("test", test_processing),
@@ -1165,6 +1142,10 @@ class FastTestManager:
                 "testCompile.parameters",
                 "testCompile.annotationProcessorPaths",
                 "testCompile.annotationProcessorPathsUseDepMgmt",
+                # Maven's stale-source selection does not configure JDT's builder.
+                "testCompile.useIncrementalCompilation",
+                "testRelease", "testSource", "testTarget", "testEncoding",
+                "testCompile.release", "testCompile.source", "testCompile.target", "testCompile.encoding",
             }
         ]
         unsupported_test_compiler = self._unshared_test_compiler_configuration(
@@ -1191,23 +1172,9 @@ class FastTestManager:
                 },
             )
         main_processor_paths = processor_path(main_processing)
-        test_processor_paths = processor_path(test_processing)
-        if test_processor_paths != main_processor_paths:
-            raise FastTestManagerError(
-                "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED",
-                "Fast Test v1 requires identical main/test Processor paths.",
-                context={
-                    "main_processor_artifacts": [path.name for path in main_processor_paths],
-                    "test_processor_artifacts": [path.name for path in test_processor_paths],
-                },
-            )
         attempt.require_not_cancelled()
         processor_entries, lombok = jdt_processor_paths(main_processing, main_processor_paths)
-        method_parameters = self._compiler_method_parameters(
-            effective_project
-        ) or self._compiler_argument_method_parameters(
-            effective_project
-        )
+        method_parameters = compiler_parameters(compiler_scope(effective_project))
         target_level = int(compiler_model["target_level"])
         target_java_home = self._select_target_java(
             preferences,
@@ -1269,6 +1236,7 @@ class FastTestManager:
             test_classes_directories=(test_output,),
             runner_environment={},
             test_jvm_arguments=test_jvm_arguments,
+            test_run_order=self._maven._config_text(surefire_configuration, "runOrder") if surefire_configuration is not None else "",
             javac_executable=build_jdk.javac_executable,
             configuration_inputs=configuration_inputs,
             configuration_environment_names=(),
@@ -1282,7 +1250,8 @@ class FastTestManager:
             own_outputs = {str(main_output), str(test_output)}
             world = replace(world,
                 main_source_roots=tuple(Path(p) for m in world.modules for p in m["source_roots"]),
-                java_agents=tuple(dict.fromkeys(f"{p}=ECJ" for m in world.modules for p in m["lombok_entries"])),
+                java_agents=tuple(dict.fromkeys(f"{p}=ECJ" for m in world.modules
+                    for p in (*m["lombok_entries"], *m.get("test_compiler", {}).get("lombok_entries", ())))),
                 test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support + additional_classpath,
                 resource_roots=tuple(self._paths(snapshot,"testResourceDirectories",module.directory)) + tuple(self._paths(snapshot,"resourceDirectories",module.directory)),
             )
@@ -1331,7 +1300,7 @@ class FastTestManager:
         lombok_enabled = bool(world.java_agents)
         factory = ModuleCompileSession if world.modules else PersistentJdtCompileSession
         compiler = factory(
-            **({"modules": world.modules, "target_module": world.module_root} if world.modules else {}),
+            **({"modules": world.modules, "target_module": world.module_root, "split_tests": True} if world.modules else {}),
             root=workspace.root,
             candidate=candidate,
             worker_java_home=worker_java.home,
@@ -1445,6 +1414,7 @@ class FastTestManager:
             test_working_directory=world.test_working_directory,
             runner_environment=dict(world.runner_environment),
             runner_jvm_arguments=world.test_jvm_arguments,
+            test_run_order=world.test_run_order,
             compiler=compiler,
             runtime_classpath=(
                 *(path for path in world.resource_roots if path.is_dir()),
@@ -1474,70 +1444,6 @@ class FastTestManager:
                     ] = hashlib.sha256(path.read_bytes()).hexdigest()
         return result
 
-    @staticmethod
-    def _select_test_module(workspace: Any, attempt: TestAttempt) -> Any:
-        modules = [
-            module for module in workspace.modules if module.packaging == "jar"
-        ]
-        if len(modules) == 1:
-            return modules[0]
-        if not modules:
-            raise FastTestManagerError(
-                "FAST_TEST_PACKAGING_UNSUPPORTED",
-                "Fast Test requires a Maven jar module.",
-            )
-
-        test_classes = {
-            selector.partition("#")[0] for selector in attempt.tests
-        }
-        matches = []
-        for module in modules:
-            if all(
-                (
-                    module.directory
-                    / "src/test/java"
-                    / Path(*class_name.split("."))
-                ).with_suffix(".java").is_file()
-                for class_name in test_classes
-            ):
-                matches.append(module)
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            raise FastTestManagerError(
-                "FAST_TEST_MODULE_AMBIGUOUS",
-                "Fast Test selectors match multiple Maven jar modules.",
-                context={
-                    "candidate_modules": [
-                        module.relative_path for module in matches[:16]
-                    ]
-                },
-            )
-
-        requested_paths = tuple(
-            (attempt.project_path / raw).resolve(strict=False)
-            for raw in attempt.source_files
-        )
-        if requested_paths:
-            source_matches = [
-                module
-                for module in modules
-                if all(
-                    path.is_relative_to(module.directory)
-                    for path in requested_paths
-                )
-            ]
-            if len(source_matches) == 1:
-                return source_matches[0]
-        raise FastTestManagerError(
-            "FAST_TEST_MODULE_AMBIGUOUS",
-            "Fast Test selectors do not identify one Maven jar module.",
-            context={
-                "candidate_modules": [
-                    module.relative_path for module in modules[:16]
-                ]
-            },
-        )
 
     def _select_build_jdk(
         self,
@@ -1754,6 +1660,8 @@ class FastTestManager:
         # Fast Test always receives explicit selectors, like -Dtest: these
         # override Surefire's discovery includes/excludes for classes too.
         modeled = set(_TEST_DISCOVERY_FILTERS) | {"additionalClasspathElements"}
+        if self._maven._config_text(configuration, "runOrder") in {"alphabetical", "reversealphabetical"}:
+            modeled.add("runOrder")
         arguments: list[str] = []
         single_method = (
             len(attempt.tests) == 1 and "#" in attempt.tests[0]
@@ -1877,15 +1785,6 @@ class FastTestManager:
                     "argument_categories": ["compiler_extension"],
                 },
             )
-        if main_profile.method_parameters != test_profile.method_parameters:
-            raise FastTestManagerError(
-                "FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED",
-                "Main and test compiler argument profiles disagree.",
-                context={
-                    "unresolved_argument_count": 0,
-                    "argument_categories": ["main_test_profile_difference"],
-                },
-            )
         worker_min_heap_mb = max(
             main_profile.worker_min_heap_mb,
             test_profile.worker_min_heap_mb,
@@ -1923,84 +1822,6 @@ class FastTestManager:
                 },
             )
         return remaining, worker_min_heap_mb, worker_max_heap_mb
-
-    def _compiler_argument_method_parameters(
-        self,
-        project: ET.Element,
-    ) -> bool:
-        compiler = self._maven._find_build_plugin(
-            project, "maven-compiler-plugin"
-        )
-        main_profile = self._maven._compiler_argument_profile(
-            self._maven._compiler_configurations(compiler)
-        )
-        test_profile = self._maven._compiler_argument_profile(
-            self._maven._test_compiler_configurations(compiler)
-        )
-        return bool(
-            main_profile.method_parameters
-            or test_profile.method_parameters
-        )
-
-    def _compiler_method_parameters(self, project: Any) -> bool:
-        plugin = self._maven._find_build_plugin(
-            project, "maven-compiler-plugin"
-        )
-        direct: list[str] = []
-        main: list[str] = []
-        test: list[str] = []
-        if plugin is not None:
-            configuration = plugin.find("./{*}configuration")
-            if configuration is not None:
-                value = self._maven._config_text(
-                    configuration, "parameters"
-                )
-                if value:
-                    direct.append(value)
-            for execution in plugin.findall(
-                "./{*}executions/{*}execution"
-            ):
-                goals = {
-                    (goal.text or "").strip()
-                    for goal in execution.findall("./{*}goals/{*}goal")
-                }
-                configuration = execution.find("./{*}configuration")
-                if configuration is None:
-                    continue
-                value = self._maven._config_text(
-                    configuration, "parameters"
-                )
-                if not value:
-                    continue
-                if "compile" in goals:
-                    main.append(value)
-                if "testCompile" in goals:
-                    test.append(value)
-        property_element = project.find(
-            "./{*}properties/{*}maven.compiler.parameters"
-        )
-        if property_element is not None and (property_element.text or "").strip():
-            direct.append((property_element.text or "").strip())
-
-        def resolve(values: Sequence[str]) -> bool:
-            normalized = {value.casefold() for value in values}
-            if not normalized:
-                return False
-            if not normalized <= {"true", "false"} or len(normalized) != 1:
-                raise FastTestManagerError(
-                    "FAST_TEST_COMPILER_CONFIGURATION_UNSUPPORTED",
-                    "Maven method-parameter metadata configuration is ambiguous.",
-                )
-            return normalized == {"true"}
-
-        main_value = resolve((*direct, *main))
-        test_value = resolve((*direct, *test))
-        if main_value != test_value:
-            raise FastTestManagerError(
-                "FAST_TEST_COMPILER_CONFIGURATION_UNSUPPORTED",
-                "Fast Test requires equal main/test method-parameter metadata.",
-            )
-        return main_value
 
     @staticmethod
     def _read_log_segment(path: Path, start: int, end: int) -> str:

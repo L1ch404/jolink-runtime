@@ -4,15 +4,15 @@
   "maven_probe": {
     "artifact_id": "jolink-maven-probe",
     "group_id": "io.jolink",
-    "implementation_id": "c5528ab088aac7ed1fc053251795990a1b8c66bc5875e9cffeef56b5383d64e0",
-    "pom_sha256": "77e782df63772a6d9154feaab6296e88b3c8d5ef706667ef860a22c969aa1d2f",
+    "implementation_id": "817bc4fc88ac55537b716cf98c71ec58838b577e7bcf00c3a21f622196a6bc39",
+    "pom_sha256": "ba9d8aced4ce422901e689902bf84e2d305826c29784afcebdc57c3a3a85cbb6",
     "schema": "jolink.maven-build-world-probe.v2",
-    "sha256": "8ca9ae36c036b4aeada895d76251da3dfb8ba320f4275d0bad07a86546f1c1ad",
-    "version": "0.1.0-fasttest15"
+    "sha256": "1200a565252ea84de07e6100ac1a4101d2ba86857a71471b2d72b02e8dd57778",
+    "version": "0.1.0-fasttest16"
   },
   "schema_version": 1,
   "test_runner": {
     "main_class": "net.jolink.runtime.test.TestRunner",
-    "sha256": "fb3b78eb18fafd7dc960b1ca6b6319495257577ba02a10138c73f87f233f282a"
+    "sha256": "c33470dd8e340274546a8e0d9eb24a828e1bf1eb595ea62b22b6f2b581544400"
   }
 }

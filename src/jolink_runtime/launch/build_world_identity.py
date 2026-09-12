@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 from typing import Iterable
+from .configuration_inputs import expand_configuration_inputs
 
 
 def build_world_fingerprint(
@@ -16,7 +17,7 @@ def build_world_fingerprint(
     """Hash configuration content and dependency identity, never source output."""
     digest = hashlib.sha256()
     for path in sorted(
-        (Path(item).resolve(strict=False) for item in configuration_inputs),
+        (Path(item).resolve(strict=False) for item in expand_configuration_inputs(configuration_inputs)),
         key=lambda item: os.path.normcase(str(item)),
     ):
         digest.update(b"config\0")

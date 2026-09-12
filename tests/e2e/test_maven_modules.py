@@ -11,7 +11,8 @@ from java_support import open_mcp_session, temporary_stderr, require_real_mcp_ja
 
 
 @pytest.mark.mcp_java_e2e
-def test_three_module_mcp_compile_reload_test_and_reopen(tmp_path: Path):
+@pytest.mark.parametrize("custom_test_root", [False, True])
+def test_three_module_mcp_compile_reload_test_and_reopen(tmp_path: Path, custom_test_root):
     require_real_mcp_java_e2e()
     project = tmp_path / "模块 workspace"
     project.mkdir()
@@ -19,6 +20,12 @@ def test_three_module_mcp_compile_reload_test_and_reopen(tmp_path: Path):
 <groupId>example.modules</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging>
 <properties><maven.compiler.source>8</maven.compiler.source><maven.compiler.target>8</maven.compiler.target><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
 <modules><module>base</module><module>core</module><module>app</module><module>unused</module></modules></project>''')
+    test_root = "checks/java" if custom_test_root else "src/test/java"
+    if custom_test_root:
+        pom = project / "pom.xml"
+        pom.write_text(pom.read_text().replace("</properties>",
+            "<test.location>checks/java</test.location></properties><build>"
+            "<testSourceDirectory>${project.basedir}/${test.location}</testSourceDirectory></build>"))
     for name, upstream in (("base",None),("core","base"),("app","core"),("unused",None)):
         module = project / name
         (module / "src/main/java/example").mkdir(parents=True)
@@ -31,7 +38,7 @@ def test_three_module_mcp_compile_reload_test_and_reopen(tmp_path: Path):
     base = project / "base/src/main/java/example/Base.java"
     original = 'package example; public class Base { public static final int NUMBER=40; public static int value(){return NUMBER;} public static int identity(int input){return input;} }'
     base.write_text(original)
-    helper = project / "base/src/test/java/example/TestHelper.java"
+    helper = project / "base" / test_root / "example/TestHelper.java"
     helper.parent.mkdir(parents=True)
     helper.write_text('package example; public class TestHelper { public static int expected(){ return 42; } }')
     (project / "core/src/main/java/example/Core.java").write_text('package example; public class Core { public static int value(){ return Base.value()+Base.NUMBER-40+2; } }')
@@ -42,7 +49,7 @@ public static void main(String[] args) throws Exception {
   while(true) { try(java.net.Socket socket=server.accept()) { socket.getOutputStream().write(String.valueOf(Core.value()).getBytes("UTF-8")); } }
  }
 }}''')
-    test = project / "app/src/test/java/example/AppTest.java"
+    test = project / "app" / test_root / "example/AppTest.java"
     test.parent.mkdir(parents=True)
     test.write_text('package example; public class AppTest { @org.junit.Test public void value() throws Exception { org.junit.Assert.assertEquals(TestHelper.expected(),Core.value()); org.junit.Assert.assertTrue(Base.class.getMethod("identity",int.class).getParameters()[0].isNamePresent()); } }')
     # Extra Surefire runtime paths must survive Reactor world conversion too.
@@ -133,6 +140,22 @@ public static void main(String[] args) throws Exception {
                         assert completed["last_reload"]["applied"] is True, completed
                         assert await anyio.to_thread.run_sync(value) == expected
                     assert (await call("java_application",{"action":"stop"}))["ok"]
+        duplicate = project / "unused" / test_root / "example/AppTest.java"
+        duplicate.parent.mkdir(parents=True)
+        duplicate.write_text("package example; class AppTest {}")
+        ambiguous_env = {**env, "XDG_CACHE_HOME": str(tmp_path / "ambiguous-cache")}
+        if os.name == "nt": ambiguous_env["LOCALAPPDATA"] = str(tmp_path / "ambiguous-cache")
+        with temporary_stderr() as stderr:
+            async with open_mcp_session(stderr, environment=ambiguous_env) as session:
+                ambiguous = dict((await session.call_tool("java_application", {
+                    "action":"test", "project_path":str(project), "tests":["example.AppTest"], "timeout":20,
+                })).structuredContent or {})
+                with anyio.fail_after(60):
+                    while ambiguous.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
+                        await anyio.sleep(.05)
+                        ambiguous = dict((await session.call_tool("java_status", {"action":"status"})).structuredContent["fast_test"])
+                assert ambiguous.get("error_code") == "FAST_TEST_MODULE_AMBIGUOUS", ambiguous
+        duplicate.unlink()
         for name in ("base","core","app","unused"):
             assert not (project/name/"target").exists()
         assert len(list((tmp_path/"cache").rglob("modules.properties"))) == 2

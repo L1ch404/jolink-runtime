@@ -12,7 +12,104 @@
 也通过了真实 MCP FULL、测试及增量恢复。详见
 [本轮实现、通用回归和剩余兼容问题](maven-processor-path.zh-CN.md)。
 
+### 2026-09-11：MyBatis 的 Maven 增量参数拦截
+
+已移除 `testCompile.useIncrementalCompilation` 对 JDT Fast Test 的拦截。
+该字段是 Maven Compiler Plugin 自己的源码选择策略，不控制 JDT 的依赖分析；
+保留 Probe 原始信息，产品继续按自己的持久源码索引与 JDT 状态复用/增量编译。
+没有修改 MyBatis POM、语言级别、Processor、Worker 或其他参数规则。
+
+真实 stdio MCP 使用 MyBatis 3.5.19 原 SHA `ee0d4f4831ffdd311b0183c202f4ad6492a3f404`
+的独立副本、JDK17，执行 MetaObjectTest / SqlSessionTest。两次均越过旧配置拒绝，
+Worker ready 后实际发起 FULL，随后返回 `JDT_BUILD_ABORTED`。保留的 Worker stderr
+显示 `ResourceException` 包含 `AbortIncrementalBuildException`，发生在
+`NameEnvironment.findClass` / 类型解析阶段。后续只读 jdb 定位到 record_type.Property，
+源码是 Java record，而实际 JDT source/compliance/target 全为1.8；MyBatis 要求
+testRelease17。这属于已知 main/test 编译级别未分开及 Java17 支持缺口，本轮未继续修。
+不能把异常类名当作本次请求了 INCREMENTAL；外部请求明确为 FULL。
+JUnit 尚未执行，不能写成 MyBatis 已完整通过。
+
+新增 true/false 两组真实 MCP 回归均通过：冷编译、无改动复用、修改后预期断言失败、
+恢复及新 MCP 无改动复用；普通测试 707 passed / 52 skipped。原始回归报告保持不变，
+新的 MCP JSONL、mcp.log 和异常栈仅保留在本地。
+
 ## 本轮处理
+
+### 2026-09-12：测试排序与 main/test 编译配置分离
+
+本轮只处理已确认的排序与配置表达，不升级 JDT，不接入 javac 专属质量检查。
+
+- Surefire alphabetical/reversealphabetical 排序交给 Runner 实际按类执行；
+  JUnit4/5、TestNG 均有正序、逆序和跨 MCP 回归，TestNG suite 生命周期保留。
+- Maven 与 Gradle 均使用同一个 Worker 内的独立 main/test JDT 工程。配置分别保存
+  在原有模块模型中；test 依赖 main，持久化、增量和上游传播复用现有多工程机制。
+- 已实测 main Java8 / test Java11、不同参数元数据，以及 test-only Processor、
+  main/test 各自不同 Processor（两个 JAR 可含相同处理器类名），生成物实际运行、
+  main/test 增量、编译错误恢复和跨 MCP 无改动复用。main 看不到 test 生成的类型。
+- Commons Lang 原固定版本、JDK8、未修改源码/POM，通过真实 MCP 完成 JDT编译，
+  StringUtilsEmptyBlankTest 12/12通过。原 test-only JMH Processor 路径阻断已消除；
+  新 MCP 重开后仍12/12，编译文件数0，总耗时约1.8秒。
+- Guava 原双类选择器已越过 runOrder 阻断，仍在 JDT FULL 返回13项泛型错误；
+  这是之前已观察到的编译兼容问题，不能计为 Guava 测试通过。
+- Java17 本机直接执行打包的 JDT3.25：`--release 17 -version` 返回
+  `release version 17 is not supported`。不是仅有产品限制；不放开校验伪装支持。
+  MyBatis 原 SHA 真实 MCP 已识别 test Java17，返回 `JDT_TARGET_PLATFORM_UNSUPPORTED`，
+  不再套用 main Java8 编译 record，也不把编译器限制误报成未安装 JDK17。
+- javac 专属检查决定先不支持并记录。后续可明确把这类质量检查留给正式构建/CI；
+  本轮没有修改 Error Prone 参数处理，TestNG/Mockito 仍需后续处理这个入口。
+
+旧 main/test 共用配置缓存不能表达新布局，Test缓存schema更新一次。新workspace
+建立后按原流程保存与复用，不增加每次构建的全量检查。
+
+本轮收尾：普通测试709 passed / 7 skipped（另60项显式E2E未在普通命令执行）；
+单独开启的相关真实 JVM/MCP 用例35项通过，其中新增排序、配置分离和处理器隔离12项；
+Fast Test专项6项全部通过。既有Lombok/MapStruct“main/test路径顺序不同时应拒绝”
+断言已更新为实际执行成功及无改动复用。wheel/sdist、compileall、diff检查通过。
+Guava13项泛型错误、Java17及javac专属检查仍不计为支持。
+
+### 2026-09-11 后续：真实源码目录与 Gradle 构建逻辑
+
+- Maven 冷测试入口移除 Python 静态选模块和固定 `src/test/java` 查找。现有 aggregator
+  Probe 在 Maven 已解析的项目中按真实 test source roots 选模块，只解析目标及所需
+  上游依赖，并一起输出 effective model；选模块和导出共用一次 Probe 调用，不增加
+  第二次 Maven 模型加载，不执行业务编译。
+  同名测试无法唯一定位时保留明确错误，不按目录顺序随意挑选。旧静态选模块测试由
+  真实 MCP 的标准目录/父 POM 属性继承自定义目录、同名冲突回归替代。
+- Gradle 的启动和 Fast Test 两处 buildSrc/build-logic 目录拦截均移除。沿用 Wrapper＋
+  原生 Probe，不新增 Buildship/JDT LS 服务；读取的是 Gradle 配置后的对象。
+  单项目也使用现有模块模型，真实源码/资源目录不再落到旧单项目固定布局检查。
+- 各实际加载的 Gradle build 输出配置输入，包含任意名称、嵌套 included build 的
+  原生 SourceSet 源码/资源目录。现有启动/Test 缓存共用文件/目录输入处理，覆盖新增、
+  修改、删除。业务源码不列为构建配置输入。修正脚本 glob 会匹配 `.gradle` 目录的
+  情况，避免把瞬时缓存写入误当成配置变化。
+- compilerArgumentProviders 由 Gradle 求值并导出实际参数，与直接 compilerArgs 合并。
+  没有按 Provider 类名分支，也没有静默删除 Error Prone 等参数。
+
+Maven Probe 为 `0.1.0-fasttest16`，Gradle Probe 为 `0.1.0-modules2`；Worker、Runner
+和 jdwp_adapter 未修改。没有新增用户配置目录、MCP action 或独立缓存服务。
+
+真实 MCP 回归：Maven 标准/自定义继承目录、多模块上游修改、启动/reload、测试和
+跨 MCP；Gradle Groovy/Kotlin 多模块，以及 buildSrc、任意命名 included build 加
+嵌套构建逻辑。后者验证：构建插件改变源码目录会刷新配置并改变测试结果；普通源码
+修改不重新运行 Probe；动态 `-parameters` 通过反射确认生效；启动和测试跨 MCP 复用。
+测试的业务 Gradle compile/test task 带失败哨兵，确认产品没有执行它们。
+
+真实开源项目仍按实际可达阶段报告：
+
+| 项目 | 本轮已确认 | 后续仍未解决 |
+|---|---|---|
+| Guava / JDK8 / 原 SHA | Probe 选中 guava-tests，真实 test root 为 guava-tests/test，并导出 guava、guava-testlib 所需源码根；原模块定位错误消失 | 原双类选择器仍被 Surefire runOrder 阻断。补充单方法选择通过既有单方法路径进入 JDT 后，报告 TypeTokenSubtypeTest 和 ClassToInstanceMap 的泛型类型错误；未修改源码或宣称全套测试通过 |
+| TestNG asserts、core / JDK17 / 原 SHA | build-logic、build-logic-commons 正常加载、原生模型导出成功；目录拒绝与“Provider 尚未求值”不再阻断 | main/test 的 compilerArgs 不同：都含 Error Prone，test 多 XepCompilingTestOnlyCode；当前停在 GRADLE_TEST_COMPILER_CONFIGURATION_UNMODELED。两边 release 均为11，不是 Java17 源码问题 |
+
+TestNG 首先遇到官方仓库 TLS/离线缓存缺失；沿用上轮记录的本机仓库 URL 标识后离线
+完成模型导出，没有启动新转发器或跳过远端证书校验。仅在独立测试副本调整仓库配置，
+并通过 --no-scan 禁止 Build Scan 发布；测试结束恢复这些修改。原始报告不改写，
+本轮 MCP JSONL、原生模型及环境记录仅保留本地。后续错误不在本轮继续修复。
+
+本机收尾：普通测试 706 passed / 55 skipped；相关真实 JVM/MCP 用例去重23项通过，
+Fast Test 专项6项通过；wheel/sdist 构建和 diff 检查通过。未验证的平台不计入通过。
+
+以下为前一轮历史记录，不覆盖上述最新状态。
 
 1. **显式选类不再被测试发现过滤拦住。** Fast Test 总是明确提供 Class/Class#method，
    按 Maven `-Dtest` 的语义覆盖 Surefire `includes/excludes`；不只对单方法处理。

@@ -240,12 +240,12 @@ def gradle_configuration_inputs(project: Path) -> tuple[Path, ...]:
         gradle_home / "init.gradle.kts",
         Path(__file__).parent / "gradle-build-world-probe-lock.json",
     ]
-    candidates.extend(root.glob("*.gradle"))
-    candidates.extend(root.glob("*.gradle.kts"))
+    candidates.extend(path for path in root.glob("*.gradle") if path.is_file())
+    candidates.extend(path for path in root.glob("*.gradle.kts") if path.is_file())
     for directory in (root / "gradle", gradle_home / "init.d"):
         if directory.is_dir():
-            candidates.extend(directory.rglob("*.gradle"))
-            candidates.extend(directory.rglob("*.gradle.kts"))
+            candidates.extend(path for path in directory.rglob("*.gradle") if path.is_file())
+            candidates.extend(path for path in directory.rglob("*.gradle.kts") if path.is_file())
     return tuple(dict.fromkeys(path.resolve(strict=False) for path in candidates))
 
 

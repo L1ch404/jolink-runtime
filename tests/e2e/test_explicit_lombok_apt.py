@@ -124,8 +124,8 @@ def test_lombok_agent_and_explicit_apt_entry_work_together(
         with temporary_stderr() as stderr:
             async with open_mcp_session(stderr, environment=env) as session:
                 assert (await run(session))["passed"]
-        # The existing shared-main/test model must compare ordered paths, not
-        # sets: the same three jars in another order do not describe one setup.
+        # Main/test now keep independent ordered Factory Paths. A different
+        # order no longer needs a shared-project configuration rejection.
         pom = project / "pom.xml"
         tree = ET.fromstring(pom.read_text())
         plugin = tree.find("./build/plugins/plugin")
@@ -141,10 +141,9 @@ def test_lombok_agent_and_explicit_apt_entry_work_together(
         with temporary_stderr() as stderr:
             async with open_mcp_session(stderr, environment=env) as session:
                 different = await run(session)
-                assert (
-                    different.get("error_code")
-                    == "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED"
-                ), different
+                assert different.get("passed") is True, different
+                unchanged = await run(session)
+                assert unchanged["passed"] and unchanged["compiled_source_count"] == 0, unchanged
         assert not (project / "target").exists()
 
     anyio.run(scenario)

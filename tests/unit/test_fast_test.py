@@ -422,93 +422,6 @@ def test_fast_test_accepts_shared_test_compile_source_target_encoding() -> None:
         manager.close()
 
 
-def test_reactor_module_is_selected_by_explicit_test_class(
-    tmp_path: Path,
-) -> None:
-    lib = tmp_path / "lib"
-    app = tmp_path / "app"
-    test = app / "src/test/java/example/AppTest.java"
-    test.parent.mkdir(parents=True)
-    test.write_text("package example; class AppTest {}\n", encoding="utf-8")
-    modules = (
-        SimpleNamespace(
-            packaging="pom", directory=tmp_path, relative_path="."
-        ),
-        SimpleNamespace(
-            packaging="jar", directory=lib, relative_path="lib"
-        ),
-        SimpleNamespace(
-            packaging="jar", directory=app, relative_path="app"
-        ),
-    )
-    attempt = SimpleNamespace(
-        project_path=tmp_path,
-        source_files=(),
-        tests=("example.AppTest#works",),
-    )
-
-    selected = FastTestManager._select_test_module(
-        SimpleNamespace(modules=modules), attempt
-    )
-
-    assert selected.relative_path == "app"
-
-
-def test_reactor_test_selector_wins_over_upstream_source_owner(
-    tmp_path: Path,
-) -> None:
-    lib = tmp_path / "lib"
-    app = tmp_path / "app"
-    upstream = lib / "src/main/java/example/Value.java"
-    test = app / "src/test/java/example/AppTest.java"
-    upstream.parent.mkdir(parents=True)
-    test.parent.mkdir(parents=True)
-    upstream.write_text("package example; class Value {}\n", encoding="utf-8")
-    test.write_text("package example; class AppTest {}\n", encoding="utf-8")
-    modules = tuple(
-        SimpleNamespace(
-            packaging="jar",
-            directory=directory,
-            relative_path=name,
-        )
-        for name, directory in (("lib", lib), ("app", app))
-    )
-    attempt = SimpleNamespace(
-        project_path=tmp_path,
-        source_files=("lib/src/main/java/example/Value.java",),
-        tests=("example.AppTest#works",),
-    )
-
-    selected = FastTestManager._select_test_module(
-        SimpleNamespace(modules=modules), attempt
-    )
-
-    assert selected.relative_path == "app"
-
-
-def test_reactor_module_selection_fails_closed_when_ambiguous(
-    tmp_path: Path,
-) -> None:
-    modules = tuple(
-        SimpleNamespace(
-            packaging="jar",
-            directory=tmp_path / name,
-            relative_path=name,
-        )
-        for name in ("one", "two")
-    )
-    attempt = SimpleNamespace(
-        project_path=tmp_path,
-        source_files=(),
-        tests=("example.MissingTest",),
-    )
-
-    with pytest.raises(FastTestManagerError) as captured:
-        FastTestManager._select_test_module(
-            SimpleNamespace(modules=modules), attempt
-        )
-
-    assert captured.value.error_code == "FAST_TEST_MODULE_AMBIGUOUS"
 
 
 def test_java_application_schema_exposes_fast_test_without_new_tool() -> None:
@@ -632,6 +545,7 @@ def test_runner_exit_distinguishes_cancellation_from_failure(tmp_path, monkeypat
         compiler=compiler, project_root=tmp_path, module_root=tmp_path, session_root=tmp_path,
         test_java_executable=tmp_path / "java", test_framework="junit4",
         runtime_classpath=(), test_working_directory=tmp_path, runner_environment={}, runner_jvm_arguments=(),
+        test_run_order="",
     )
     manager = FastTestManager()
     monkeypatch.setattr(manager, "_ensure_project", lambda _attempt: project)
@@ -839,6 +753,7 @@ def test_probe_settings_are_deleted_when_maven_bootstrap_fails(
     pom.write_text("<project/>\n", encoding="utf-8")
     attempt = SimpleNamespace(
         owner=AttemptToken("test_settings", 1),
+        project_path=tmp_path, tests=("example.Test",), source_files=(),
         timeout_seconds=30.0,
         require_not_cancelled=lambda: None,
     )
@@ -870,7 +785,6 @@ def test_probe_settings_are_deleted_when_maven_bootstrap_fails(
             maven=SimpleNamespace(argv_prefix=("mvn",)),
             preferences=SimpleNamespace(active_profiles=()),
             workspace=SimpleNamespace(root_pom=pom, build_root=tmp_path),
-            module=SimpleNamespace(directory=tmp_path),
             build_jdk=SimpleNamespace(
                 java_executable=tmp_path / "java",
                 source="PATH",
@@ -900,6 +814,7 @@ def test_maven_bootstrap_timeout_is_structured_and_uses_long_budget(
     log.write_text("still downloading\n", encoding="utf-8")
     attempt = SimpleNamespace(
         owner=AttemptToken("test_timeout", 1),
+        project_path=tmp_path, tests=("example.Test",), source_files=(),
         timeout_seconds=30.0,
         bootstrap_timeout_seconds=900.0,
         require_not_cancelled=lambda: None,
@@ -940,7 +855,6 @@ def test_maven_bootstrap_timeout_is_structured_and_uses_long_budget(
             maven=SimpleNamespace(argv_prefix=("mvn",)),
             preferences=SimpleNamespace(active_profiles=()),
             workspace=SimpleNamespace(root_pom=pom, build_root=tmp_path),
-            module=SimpleNamespace(directory=tmp_path),
             build_jdk=SimpleNamespace(
                 java_executable=tmp_path / "java",
                 source="PATH",
@@ -1013,7 +927,8 @@ def test_fast_test_reads_method_parameters_from_compiler_arguments() -> None:
     )
     manager = FastTestManager()
     try:
-        assert manager._compiler_argument_method_parameters(project) is True
+        from jolink_runtime.launch.maven_compile_scope import compiler_parameters, compiler_scope
+        assert compiler_parameters(compiler_scope(project)) is True
     finally:
         manager.close()
 
@@ -1046,7 +961,8 @@ def test_fast_test_accepts_legacy_compiler_arg_children() -> None:
             )
         )
         assert remaining == []
-        assert manager._compiler_argument_method_parameters(project) is True
+        from jolink_runtime.launch.maven_compile_scope import compiler_parameters, compiler_scope
+        assert compiler_parameters(compiler_scope(project)) is True
     finally:
         manager.close()
 

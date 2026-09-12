@@ -10,6 +10,7 @@ import static net.jolink.runtime.jdt.WorkerApplication.*;
 /** Several Java projects in one workspace and one Worker JVM. */
 final class ModuleWorkspace {
     final List<IProject> projects = new ArrayList<>();
+    final Set<IProject> testProjects = new HashSet<>();
     boolean reopened;
     private IWorkspace workspace;
 
@@ -26,6 +27,7 @@ final class ModuleWorkspace {
             if (!project.exists()) { project.create(null); reopened = false; }
             if (!project.isOpen()) project.open(null);
             projects.add(project);
+            if ("test".equals(properties.getProperty(name + ".scope"))) testProjects.add(project);
         }
         for (String name : names) {
             WorkerApplication module = new WorkerApplication();
@@ -81,7 +83,7 @@ final class ModuleWorkspace {
                 if (marker.getAttribute(IMarker.SEVERITY, -1) != IMarker.SEVERITY_ERROR) continue;
                 errors++;
                 ProblemDiagnostic diagnostic = new ProblemDiagnostic(marker);
-                if (diagnostic.resource.startsWith("test-src/")) testErrors++;
+                if (testProjects.contains(project) || diagnostic.resource.startsWith("test-src/")) testErrors++;
                 if (details.size() < 128) {
                     details.add(diagnostic.detailJson().replace("\"resource\":", "\"module\":" + json(project.getName()) + ",\"resource\":"));
                     diagnostics.add(project.getName() + "/" + diagnostic.compact());

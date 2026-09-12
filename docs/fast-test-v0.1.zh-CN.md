@@ -26,6 +26,33 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 resource快照，不比较Maven/JDT class输出，也不在测试前后全量哈希Build World。
 main/test resource源码目录直接加入Runner classpath。
 
+同一个 Worker 内，每个参与测试的模块分别使用 main / test 两个持久 JDT 工程。
+test 工程依赖 main；语言级别、编码、`-parameters` 和 Processor 路径各自配置，
+不再要求两边相同。依赖构建顺序与增量传播仍交给 Eclipse Java Builder，一轮
+workspace build 后保存一次，不为每个工程启动 Worker。
+
+Maven Surefire 的 `runOrder=alphabetical/reversealphabetical` 已映射到 Runner 的
+实际测试类执行顺序，不只排列发现列表。JUnit4/5 和 TestNG 均有真实 MCP 回归；
+TestNG 保持同一次 suite 执行，不因排序重复运行 BeforeSuite/AfterSuite。
+其他随机、历史耗时等排序模式本轮不扩展。
+
+Maven 冷入口由 Probe 在同一次 Maven session 中，按各模块解析后的真实测试源码根
+定位测试类，再导出目标及所需上游模块；不再先按 `src/test/java` 猜模块，也不额外
+调用 help:effective-pom。普通项目与自定义目录、父 POM 继承的目录使用同一条路径。
+
+Gradle 正常加载 buildSrc 和 included builds 后，Probe 读取配置完成的 SourceSet/
+JavaCompile/Test 对象。单项目与多项目共用现有模块转换；构建逻辑目录不再触发拒绝。
+编译 ArgumentProvider 通过其 asArguments() 导出实际参数，不因 Provider 的存在而
+笼统拒绝；具体 javac 专用参数仍按实际能力处理。
+
+Gradle 加载配置时可能编译构建插件本身，这不等于执行业务 compileJava/test 任务。
+构建文件、构建逻辑实际源码/资源目录参与现有缓存；业务源码改动仍只走 JDT。
+目录中的新增、修改、删除会刷新模型；`.gradle` 临时缓存不作为脚本目录纳入。
+
+Maven 的 `useIncrementalCompilation` 只控制 Maven Compiler Plugin 的源码选择策略，
+不配置 JDT。无论它是 `true` 还是 `false`，Fast Test 都继续使用持久 JDT workspace
+和实际源码变化进行复用/增量编译，不因该参数拒绝项目。
+
 Test Build World和JDT workspace都保存在joLink本地缓存。MCP关闭后，下一个MCP
 进程可以直接打开；不会重新Probe或FULL。构建配置缓存只检查小型配置文件：Maven
 的当前POM、本地父POM链和`.mvn`配置，或Gradle的build/settings/properties和Wrapper
@@ -83,10 +110,14 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 ## 当前边界
 
 - Maven 显式 `annotationProcessorPaths` 已接入：Maven 解析完整加载路径（含传递依赖、
-  辅助类和资源 JAR），缓存后交给 Eclipse Factory Path。main/test 不同路径、显式
+  辅助类和资源 JAR），缓存后交给 Eclipse Factory Path。main/test 不同路径已支持；显式
   Processor 名称和 `-A` 参数本轮未扩展。普通 MapStruct、MapStruct＋Lombok binding
   样本均通过；Worker 先完成处理器初始化再按原顺序执行，见[路径接入与实测](maven-processor-path.zh-CN.md)。
 - source/target支持Java 8和11；
+- JDT 3.25 本体不支持 `--release 17`，在 JDK17 上运行该编译器也不能改变这一点。
+  Java17 后续需要升级 JDT 并验证，不只放开产品校验。main/test 分离本轮先验证8/11；
+- Error Prone 等 javac 专属插件不在本轮接入。后续方向是快速流程不执行这些质量
+  检查、正式构建/CI保留；本轮只记录，尚未删除对应参数拒绝，也不静默忽略未知参数。
 - Runner支持显式Class或Class#method选择；
 - Maven Reactor已将目标和上游模块接入持久JDT工程，支持上游main源码变化，
   也支持显式依赖上游test-jar的测试；完整流程见[多模块JDT](jdt-modules.zh-CN.md)；
@@ -94,3 +125,6 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
   依赖，只构建所需模块。构建配置改变时重新Probe，普通源码修改只走增量；
 - protobuf/OpenAPI等必须先运行代码生成任务的项目尚未自动执行生成器；
 - Runner JVM尚未保活，Spring测试的大部分后续耗时通常在Runner启动和框架初始化。
+
+本轮 main/test 工程布局与缓存模型发生变化：旧 Test Build World 会重新导出并建立
+一次新 workspace；新布局建立后继续复用。不是每次 test 都重建。

@@ -23,6 +23,8 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
     @Parameter(property="jolink.probe.outputDirectory", required=true) private File output;
     @Parameter(property="jolink.probe.targetDirectory", required=true) private File target;
     @Parameter(property="jolink.probe.scope", defaultValue="test") private String scope;
+    @Parameter(property="jolink.probe.testClasses") private String testClasses;
+    @Parameter(property="jolink.probe.sourceFiles") private String sourceFiles;
     @Component private ProjectDependenciesResolver resolver;
     @Component private RepositorySystem repositories;
     @Component private org.eclipse.aether.RepositorySystem artifactResolver;
@@ -35,8 +37,14 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
                 projects.put(p.getGroupId()+":"+p.getArtifactId()+":"+p.getVersion(), p);
                 if (p.getBasedir().getCanonicalFile().equals(target.getCanonicalFile())) selected = p;
             }
-            if (selected == null) throw new MojoExecutionException("Target module is not in this reactor");
             output.mkdirs();
+            if (testClasses != null && !testClasses.trim().isEmpty()) {
+                selected = TestModuleSelection.select(session.getProjects(), selected, target,
+                        testClasses, sourceFiles, output.toPath());
+            }
+            if (selected == null) throw new MojoExecutionException("Target module is not in this reactor");
+            java.nio.file.Files.write(output.toPath().resolve("selected-module.txt"),
+                    selected.getBasedir().getCanonicalPath().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             final WorkspaceReader previous = session.getRepositorySession().getWorkspaceReader();
             DefaultRepositorySystemSession repositorySession = new DefaultRepositorySystemSession(session.getRepositorySession());
             repositorySession.setWorkspaceReader(new WorkspaceReader() {

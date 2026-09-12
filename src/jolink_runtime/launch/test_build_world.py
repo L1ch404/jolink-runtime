@@ -44,6 +44,7 @@ class JavaTestBuildWorld:
     native_resource_oracle_required: bool = False
     expected_input_manifest: dict[str, str] = field(default_factory=dict)
     modules: tuple[dict[str, Any], ...] = ()
+    test_run_order: str = ""
 
 
 class TestBuildWorldBootstrap(Protocol):

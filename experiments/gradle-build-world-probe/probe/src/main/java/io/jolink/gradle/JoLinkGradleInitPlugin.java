@@ -43,7 +43,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules1";
+    private static final String VERSION = "0.1.0-modules2";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -83,6 +83,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                         ignored -> configureProject(project));
             }
         });
+        gradle.projectsEvaluated(build -> GradleConfigurationInputs.capture(build, outputPath()));
     }
 
     private void configureProject(final Project project) {
@@ -194,37 +195,27 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
 
     private String render(Project project) throws Exception {
         project = selectTarget(project.getRootProject());
-        if (project.getRootProject().getAllprojects().size() > 1) {
-            GradleModuleGraph graph = new GradleModuleGraph(project, exportScope.equals("test"));
-            Map<String, Object> result = exportScope.equals("test")
-                    ? renderTest(project, project.getExtensions().getByType(SourceSetContainer.class))
-                    : renderRuntime(project, project.getExtensions().getByType(SourceSetContainer.class));
-            List<Map<String, Object>> modules = new ArrayList<>();
-            for (Project module : graph.projects.values()) {
-                SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
-                SourceSet main = sets.getByName("main");
-                Map<String, Object> facts = commonModel(module);
-                facts.put("main", sourceSet(main));
-                facts.put("compileJava", compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
-                if (module.equals(project) && exportScope.equals("test")) {
-                    facts.put("test", result.get("test"));
-                    facts.put("compileTestJava", result.get("compileTestJava"));
-                }
-                modules.add(facts);
+        GradleModuleGraph graph = new GradleModuleGraph(project, exportScope.equals("test"));
+        Map<String, Object> result = exportScope.equals("test")
+                ? renderTest(project, project.getExtensions().getByType(SourceSetContainer.class))
+                : renderRuntime(project, project.getExtensions().getByType(SourceSetContainer.class));
+        List<Map<String, Object>> modules = new ArrayList<>();
+        for (Project module : graph.projects.values()) {
+            SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
+            SourceSet main = sets.getByName("main");
+            Map<String, Object> facts = commonModel(module);
+            facts.put("main", sourceSet(main));
+            facts.put("compileJava", compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
+            if (module.equals(project) && exportScope.equals("test")) {
+                facts.put("test", result.get("test"));
+                facts.put("compileTestJava", result.get("compileTestJava"));
             }
-            result.put("modules", modules);
-            result.put("projectArtifacts", graph.artifacts);
-            List<String> buildFiles = new ArrayList<>();
-            for (Project module : project.getRootProject().getAllprojects()) buildFiles.add(canonical(module.getBuildFile()));
-            result.put("configurationFiles", buildFiles);
-            return json(result) + "\n";
+            modules.add(facts);
         }
-        SourceSetContainer sourceSets = project.getExtensions()
-                .getByType(SourceSetContainer.class);
-        if (exportScope.equals("runtime")) {
-            return json(renderRuntime(project, sourceSets)) + "\n";
-        }
-        return json(renderTest(project, sourceSets)) + "\n";
+        result.put("modules", modules);
+        result.put("projectArtifacts", graph.artifacts);
+        result.putAll(GradleConfigurationInputs.collect(project.getRootProject(), outputPath()));
+        return json(result) + "\n";
     }
 
     private Project selectTarget(Project root) throws IOException {
@@ -449,12 +440,13 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("incremental", task.getOptions().isIncremental());
         result.put("compilerArgumentProviderCount",
                 task.getOptions().getCompilerArgumentProviders().size());
-        result.put("compilerArgumentProvidersUnmodeled",
-                !task.getOptions().getCompilerArgumentProviders().isEmpty());
-        result.put("compilerArgsPrivate", new ArrayList<>(
-                task.getOptions().getCompilerArgs()));
-        result.put("compilerArgsIdentity", identity(
-                task.getOptions().getCompilerArgs()));
+        List<String> compilerArgs = new ArrayList<>(task.getOptions().getCompilerArgs());
+        for (org.gradle.process.CommandLineArgumentProvider provider : task.getOptions().getCompilerArgumentProviders()) {
+            for (String argument : provider.asArguments()) compilerArgs.add(argument);
+        }
+        result.put("compilerArgumentProvidersUnmodeled", false);
+        result.put("compilerArgsPrivate", compilerArgs);
+        result.put("compilerArgsIdentity", identity(compilerArgs));
         result.put("annotationProcessorPath", orderedFiles(
                 task.getOptions().getAnnotationProcessorPath() == null
                         ? Collections.<File>emptySet()

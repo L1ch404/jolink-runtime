@@ -16,9 +16,36 @@ class GradleModuleError(RuntimeError):
         self.error_code = code
 
 
-def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]:
+def _compiler_settings(task: dict) -> dict:
     from .gradle_runtime_build_world import _processor_facts
 
+    args = task["compilerArgsPrivate"]
+    profile = classify_compiler_arguments(args)
+    if profile.unresolved_arguments or task.get("compilerArgumentProvidersUnmodeled"):
+        raise GradleModuleError(
+            "GRADLE_COMPILE_CONFIGURATION_UNMODELED",
+            "Gradle compiler arguments cannot be mapped to JDT.",
+        )
+    level = int(
+        str(task.get("release") or task["targetCompatibility"]).removeprefix("1.")
+    )
+    processors, lombok = [], []
+    for path in task["annotationProcessorPath"] if "-proc:none" not in args else []:
+        _, is_lombok = _processor_facts(Path(path))
+        (lombok if is_lombok else processors).append(path)
+    return {
+        "source_level": level,
+        "source_encoding": task["encoding"],
+        "target_java_home": str(
+            select_target_system_home((Path(task["compilerJavaHome"]),), level)
+        ),
+        "method_parameters": profile.method_parameters,
+        "processor_entries": processors,
+        "lombok_entries": lombok,
+    }
+
+
+def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]:
     facts = {item["projectDirectory"]: item for item in model["modules"]}
     selected = model["projectDirectory"]
     output_sources = {}
@@ -55,49 +82,13 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         main = item["main"]
         compile = item["compileJava"]
         test = item.get("compileTestJava")
-        args = compile["compilerArgsPrivate"]
-        profile = classify_compiler_arguments(args)
-        if test and any(
-            test.get(key) != compile.get(key)
-            for key in (
-                "sourceCompatibility",
-                "targetCompatibility",
-                "release",
-                "encoding",
-                "annotationProcessorPath",
-                "compilerArgsPrivate",
-            )
-        ):
-            raise GradleModuleError(
-                "GRADLE_TEST_COMPILER_CONFIGURATION_UNMODELED",
-                "Main and test need different JDT compiler/Processor settings; this module currently shares one JDT project.",
-            )
-        if profile.unresolved_arguments or compile.get(
-            "compilerArgumentProvidersUnmodeled"
-        ):
-            raise GradleModuleError(
-                "GRADLE_COMPILE_CONFIGURATION_UNMODELED",
-                "Gradle compiler arguments cannot be mapped to JDT.",
-            )
+        settings = _compiler_settings(compile)
         for sources in (main, item.get("test", {})):
             if any(sources.get(field) for field in ("javaIncludes", "javaExcludes")):
                 raise GradleModuleError(
                     "GRADLE_SOURCE_PATTERN_UNMODELED",
                     "Gradle Java source include/exclude patterns are not mapped to the JDT source index.",
                 )
-        level = int(
-            str(compile.get("release") or compile["targetCompatibility"]).removeprefix(
-                "1."
-            )
-        )
-        home = select_target_system_home((Path(compile["compilerJavaHome"]),), level)
-        processors, lombok = [], []
-        processor_path = (
-            compile["annotationProcessorPath"] if "-proc:none" not in args else []
-        )
-        for path in processor_path:
-            _, is_lombok = _processor_facts(Path(path))
-            (lombok if is_lombok else processors).append(path)
         output = compile["destinationDirectory"]
         test_output = (
             test["destinationDirectory"]
@@ -123,14 +114,16 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                 if test
                 else [],
                 "resource_roots": main["resourceDirectories"],
-                "source_level": level,
-                "source_encoding": compile["encoding"],
-                "target_java_home": str(home),
-                "method_parameters": profile.method_parameters,
-                "processor_entries": processors,
-                "lombok_entries": lombok,
+                **settings,
             }
         )
+        if test:
+            modules[-1]["test_compiler"] = {
+                **_compiler_settings(test),
+                "classpath": [
+                    p for p in classpath(test["classpath"]) if p != test_output
+                ],
+            }
     target = next(item for item in modules if item["module_root"] == selected)
     runtime = (
         model["testRuntime"]["classpath"]

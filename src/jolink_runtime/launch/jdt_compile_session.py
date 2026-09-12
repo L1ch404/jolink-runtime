@@ -817,6 +817,11 @@ def select_target_system_home(
 ) -> Path:
     """Find an installed JDK matching the bytecode target, not the Runtime JDK."""
 
+    if int(target_level) not in {8, 11}:
+        raise JdtCompileError(
+            "JDT_TARGET_PLATFORM_UNSUPPORTED",
+            "The bundled JDT supports target 8 or 11; a newer target needs a JDT upgrade, not another JDK installation.",
+        )
     candidates = [path.expanduser() for path in preferred]
     java_home = os.environ.get("JAVA_HOME")
     if java_home:

@@ -500,13 +500,6 @@ class ProjectLaunchPipeline:
         attempt_directory: Path,
     ) -> PreparedProjectLaunch:
         project = gradle_build_root(request.project_path) or request.project_path
-        if (project / "buildSrc").exists() or (project / "build-logic").exists():
-            raise LaunchPipelineFailure(
-                "GRADLE_BUILD_LOGIC_UNSUPPORTED",
-                "Gradle buildSrc/build-logic is not supported in G4.",
-                retryable=False,
-                suggested_next_step="Use the formal Gradle launch for this project.",
-            )
         build_log = attempt_directory / "build.log"
         build_jdk = self._select_java(
             context,

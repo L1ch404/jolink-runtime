@@ -338,7 +338,9 @@ def create_gradle_runtime_build_world(
     target_java_home = Path(compile_task["compilerJavaHome"]).resolve(strict=True)
     configuration = tuple(
         dict.fromkeys(
-            path.expanduser().resolve(strict=False) for path in configuration_inputs
+            path.expanduser().resolve(strict=False) for path in (
+                *configuration_inputs, *(Path(p) for p in model.get("configurationFiles", ())),
+                *(Path(p) for p in model.get("configurationDirectories", ())))
         )
     )
     java_compiler = _javac(target_java_home)
@@ -399,7 +401,8 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
     modules, target, classpath = module_world(model)
     configuration = tuple(
         dict.fromkeys(
-            (*inputs, *(Path(p) for p in model.get("configurationFiles", ())))
+            (*inputs, *(Path(p) for p in model.get("configurationFiles", ())),
+             *(Path(p) for p in model.get("configurationDirectories", ())))
         )
     )
     home = Path(target["target_java_home"])

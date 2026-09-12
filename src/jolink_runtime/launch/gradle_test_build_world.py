@@ -412,7 +412,8 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
     outputs = {Path(target["output_directory"]), Path(target["test_output_directory"])}
     configuration = tuple(
         dict.fromkeys(
-            (*inputs, *(Path(p) for p in model.get("configurationFiles", ())))
+            (*inputs, *(Path(p) for p in model.get("configurationFiles", ())),
+             *(Path(p) for p in model.get("configurationDirectories", ())))
         )
     )
     return JavaTestBuildWorld(
@@ -437,7 +438,8 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         method_parameters=target["method_parameters"],
         processor_entries=tuple(Path(p) for p in target["processor_entries"]),
         java_agents=tuple(
-            dict.fromkeys(p + "=ECJ" for m in modules for p in m["lombok_entries"])
+            dict.fromkeys(p + "=ECJ" for m in modules
+                for p in (*m["lombok_entries"], *m.get("test_compiler", {}).get("lombok_entries", ())))
         ),
         extra_worker_jvm_arguments=(),
         test_java_executable=Path(runtime["javaExecutable"]),

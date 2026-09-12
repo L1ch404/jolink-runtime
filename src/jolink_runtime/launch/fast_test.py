@@ -300,6 +300,7 @@ class FastTestRunner:
         framework: str | None = None,
         environment: dict[str, str] | None = None,
         jvm_arguments: Sequence[str] = (),
+        run_order: str = "",
     ) -> FastTestResult:
         if not selectors or len(selectors) > 64:
             raise FastTestError(
@@ -448,6 +449,8 @@ class FastTestRunner:
             test_run_id,
             "--framework",
             framework,
+            "--run-order",
+            run_order,
             "--selectors-file",
             str(selectors_file),
             "--classpath-file",
