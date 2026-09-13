@@ -676,6 +676,7 @@ class JDWPClient:
         data: bytes = b"",
         *,
         outcome_unknown_operation: str | None = None,
+        reply_timeout: float | None = None,
     ) -> tuple[int, bytes]:
         """Send a command, optionally preserving an unknown mutation outcome.
 
@@ -715,8 +716,19 @@ class JDWPClient:
                     ) from exc
                 raise
             try:
+                deadline = (
+                    time.monotonic() + reply_timeout
+                    if reply_timeout is not None else None
+                )
                 while packet_id not in self._pending_replies:
-                    self._route_packet(self._read_packet())
+                    if deadline is None:
+                        packet = self._read_packet()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise socket.timeout("JDWP command reply timed out")
+                        packet = self._read_packet(timeout=remaining)
+                    self._route_packet(packet)
             except Exception as exc:
                 if outcome_unknown_operation is not None:
                     raise JDWPCommandOutcomeUnknown(
@@ -866,6 +878,8 @@ class JDWPClient:
         the VM rejected the batch.  A transport or packet-processing failure
         after transmission begins raises ``JDWPCommandOutcomeUnknown`` because
         the VM may already have applied the definitions.
+        Allow up to 30 seconds for confirmation: redefine may run Agent
+        transformers and JVM work unrelated to the number of edited lines.
         """
         if not definitions:
             raise ValueError("at least one class definition is required")
@@ -901,6 +915,7 @@ class JDWPClient:
             command,
             bytes(payload),
             outcome_unknown_operation=operation,
+            reply_timeout=30.0,
         )
         self._raise_rejected(
             error,

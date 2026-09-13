@@ -5,7 +5,7 @@
 源码生成改动已提交为 `24df38e`。以下将已解决的入口问题、当前确认的项目阻断、
 尚未覆盖的能力分开，不把同一问题重复记账，也不把越过入口当作项目全流程通过。
 
-2026-09-13后续：U1的私有源码包路径适配已实现（当前未提交）。Checkstyle原SHA
+2026-09-13后续：U1的私有源码包路径适配已提交为 `05ea849`。Checkstyle原SHA
 通过真实MCP完成4079份源码FULL，0 errors；6个相关测试类共132项通过。
 新MCP无变更重开不编译；临时修改一个原默认包样本后，实际INCREMENTAL只编译
 1个文件，相关15项测试通过，恢复后再次通过，原项目git状态干净。
@@ -19,6 +19,39 @@
 | U2 | Guava 的13项泛型错误 | 目录定位、排序已解决，仍有递归通配符/泛型转换错误；尚未区分编译输入差异与当前ECJ缺陷。与U1不是同一个根因，不能因U1是映射问题就认定Guava也一样 | 缩小具体失败表达式并对齐输入；不承诺升级必然解决 |
 | U3 | Java17 source/target | MyBatis的main/test配置已分开，正确读到test Java17；目前明确返回JDT_TARGET_PLATFORM_UNSUPPORTED。新版Petclinic也受此能力限制。不是Worker不能运行于JDK17 | 按用户决定暂停JDT升级；以后升级并回归系统库、APT与增量链路 |
 | U4 | Error Prone等javac专属检查 | TestNG/Mockito相关配置仍未转成“明确不执行检查但继续编译”的行为。Gradle构建逻辑、动态参数导出、main/test分离已解决，不能再用这些旧原因解释它们。TestNG框架本身已通过测试 | 当前只记录、不实现检查；放行项目并说明检查未执行的策略需另行接入、复跑项目 |
+
+### Reload待办：未加载类（2026-09-13，用户决定先记录、不修改）
+
+真实MCP测试中，`Foo.java`同时产生`Foo.class`和`Foo$Nested.class`。只修改外部类
+方法体时，JDT输出变更也包含内部类；若`Foo`已加载而`Foo$Nested`未加载，当前
+JdtReloadService在发送RedefineClasses**之前**返回
+`RELOAD_REQUIRES_RELAUNCH / CLASS_NOT_LOADED`，连外部类也不更新。
+测试让应用正常加载内部类后，再次reload可成功。
+
+这是joLink把所有变更class都要求为“唯一已加载定义”的策略，不是JVM规定未加载
+内部类必须重启。后续可讨论：对从当前JDT输出目录加载的应用，已加载类HotSwap，
+未加载类保留新磁盘产物待正常加载；规则应通用于所有类，不按内部类或仓库特判。
+本轮不放开这项判断，也不强制加载类。它与等待确认超时的HOT_SWAP_OUTCOME_UNKNOWN
+不同，后者命令已经开始发送，不能断言JVM未更新。
+
+### Reload确认等待：独立30秒（2026-09-13）
+
+本机真实MCP/JVM复现：只改一行return值，测试Agent在类重定义回调中延迟6秒；
+旧5秒socket读取超时返回HOT_SWAP_OUTCOME_UNKNOWN，之后HTTP却返回新值。
+这证明该等待策略可以造成同类现象，不等于已经证明公司当次也是超时。
+
+本轮仅给VirtualMachine/RedefineClasses设置30秒的回复等待，普通连接/命令仍沿用
+原超时。等待从命令发送完成后计算一个deadline，穿插事件/其他回复不重置预算，
+收到确认立即返回；不固定等待30秒，也不自动重发更新。每次读包沿用已有机制恢复
+socket超时，不让后续普通命令继承30秒。真正超时/失联仍保留unknown语义。
+没有修改未加载内部类策略、编译流程、Worker或增加环境变量。
+
+回归沉淀在tests/e2e/test_reload_reply_timeout.py：正常更新、测试Agent延迟6秒仍
+确认成功、延迟31秒仍报unknown且之后真实HTTP可能已更新。单元测试覆盖回复成功、
+明确拒绝、超时、断连之后原socket超时恢复，以及多包共享一次等待预算。
+本机验收：3项真实MCP超时回归通过；2项源码布局/启动/reload MCP回归通过，包含
+未加载内部类仍被原策略拒绝的断言。普通测试738 passed / 7 skipped，compileall、
+新测试lint和diff检查通过。
 
 ### 已知能力边界（不冒充本轮新发现的失败）
 

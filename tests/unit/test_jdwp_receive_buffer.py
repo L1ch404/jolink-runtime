@@ -11,6 +11,8 @@ import jolink_runtime.adapters.java.jdwp_client as jdwp_module
 from jolink_runtime.adapters.java.jdwp_client import (
     IDSizes,
     JDWPClient,
+    JDWPCommandOutcomeUnknown,
+    JDWPCommandRejected,
     JDWPError,
 )
 
@@ -54,6 +56,61 @@ class ScriptedSocket:
 
     def close(self) -> None:
         self.closed = True
+
+
+@pytest.mark.parametrize("outcome", [0, 60, socket.timeout("late"), OSError("lost")])
+def test_redefine_restores_regular_socket_timeout(monkeypatch, outcome):
+    packet = (
+        struct.pack(">IIBH", 11, 1, 0x80, outcome)
+        if isinstance(outcome, int) else outcome
+    )
+    sock = ScriptedSocket([packet, _reply_packet(2, b"version")])
+    sock.settimeout(5.0)
+    client = JDWPClient()
+    client._sock = sock
+    client.ids = IDSizes(8, 8, 8, 8, 8)
+    reads = []
+    recv = sock.recv
+
+    def observe(size):
+        reads.append(sock.gettimeout())
+        return recv(size)
+
+    monkeypatch.setattr(sock, "recv", observe)
+    if outcome == 0:
+        client.redefine_classes({41: b"class bytes"})
+    elif outcome == 60:
+        with pytest.raises(JDWPCommandRejected):
+            client.redefine_classes({41: b"class bytes"})
+    else:
+        with pytest.raises(JDWPCommandOutcomeUnknown):
+            client.redefine_classes({41: b"class bytes"})
+    assert 5 < reads[0] <= 30
+    assert sock.gettimeout() == 5.0
+    assert client.command(1, 1) == (0, b"version")
+    assert reads[-1] == 5.0
+    assert len(sock.sent) == 2  # one redefine, one Version; no automatic retry
+
+
+def test_redefine_reply_deadline_is_shared_across_packets(monkeypatch):
+    client = JDWPClient()
+    client._sock = ScriptedSocket([])
+    client.ids = IDSizes(8, 8, 8, 8, 8)
+    now = [100.0]
+    timeouts = []
+    monkeypatch.setattr(jdwp_module.time, "monotonic", lambda: now[0])
+
+    def read_packet(timeout=None):
+        timeouts.append(timeout)
+        now[0] += 16.0
+        return {"type": "reply", "id": 999, "error": 0, "data": b""}
+
+    monkeypatch.setattr(client, "_read_packet", read_packet)
+    with pytest.raises(JDWPCommandOutcomeUnknown) as unknown:
+        client.redefine_classes({41: b"class bytes"})
+    assert timeouts == [30.0, 14.0]
+    assert unknown.value.cause_type in {"TimeoutError", "timeout"}
+    assert len(client._sock.sent) == 1
 
 
 def test_header_fragment_survives_socket_timeout() -> None:

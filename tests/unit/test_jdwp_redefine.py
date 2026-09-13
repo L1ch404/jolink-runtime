@@ -108,12 +108,14 @@ def test_redefine_classes_sends_one_atomic_batch(monkeypatch) -> None:
         data: bytes = b"",
         *,
         outcome_unknown_operation: str | None = None,
+        reply_timeout: float | None = None,
     ):
         captured.update(
             command_set=command_set,
             command=command_id,
             data=data,
             outcome_unknown_operation=outcome_unknown_operation,
+            reply_timeout=reply_timeout,
         )
         return 0, b""
 
@@ -123,6 +125,7 @@ def test_redefine_classes_sends_one_atomic_batch(monkeypatch) -> None:
 
     assert captured["command_set"] == Cmd.VM
     assert captured["command"] == 18
+    assert captured["reply_timeout"] == 30.0
     assert captured["outcome_unknown_operation"] == (
         "VirtualMachine/RedefineClasses"
     )
