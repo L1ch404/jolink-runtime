@@ -13,7 +13,7 @@ from .jdt_workspace_store import JdtWorkspaceStore, jolink_cache_root
 from .test_build_world import JavaTestBuildWorld
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
-from .configuration_inputs import configuration_file_stamps
+from .configuration_inputs import configuration_file_stamps, preparation_stamps
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -78,6 +78,8 @@ class FastTestCache:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            if not self._preparation_current(raw):
+                return False
             if build_system == "gradle" and raw.get("environment_inputs") != _environment_inputs(raw.get("environment_inputs", ())):
                 return False
             return raw.get("inputs") == _inputs(project, build_system, raw.get("configuration_files", ()))
@@ -88,7 +90,7 @@ class FastTestCache:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if raw.get("schema") != "jolink.fast-test-world.v3":
+            if raw.get("schema") != "jolink.fast-test-world.v4" or not self._preparation_current(raw):
                 return None
             if build_system == "gradle" and raw.get("environment_inputs") != _environment_inputs(raw.get("environment_inputs", ())):
                 return None
@@ -151,7 +153,10 @@ class FastTestCache:
         configuration = world.configuration_inputs if world.build_system == "gradle" else tuple(
             dict.fromkeys((world.module_root / "pom.xml", *(Path(m["module_root"]) / "pom.xml" for m in world.modules))))
         payload = {
-            "schema": "jolink.fast-test-world.v3",
+            "schema": "jolink.fast-test-world.v4",
+            "preparation_stamps": preparation_stamps(
+                (p for m in world.modules for p in m.get("preparation_inputs", ())),
+                (p for m in world.modules for p in m.get("preparation_roots", ()))),
             "inputs": _inputs(world.project_root, world.build_system, configuration),
             "configuration_files": values(configuration),
             "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
@@ -201,6 +206,12 @@ class FastTestCache:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         temporary.replace(path)
+
+    @staticmethod
+    def _preparation_current(raw):
+        return raw.get("preparation_stamps", {}) == preparation_stamps(
+            (p for m in raw.get("world", {}).get("modules", ()) for p in m.get("preparation_inputs", ())),
+            (p for m in raw.get("world", {}).get("modules", ()) for p in m.get("preparation_roots", ())))
 
 
 __all__ = ["FastTestCache"]

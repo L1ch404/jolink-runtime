@@ -709,6 +709,8 @@ class JdtBuildWorldPlan:
     modules: tuple[dict[str, Any], ...] = ()
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = field(default_factory=dict)
+    preparation_inputs: tuple[Path, ...] = ()
+    preparation_roots: tuple[Path, ...] = ()
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(

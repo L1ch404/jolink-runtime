@@ -21,3 +21,18 @@ def configuration_file_stamps(paths):
         else "missing"
         for path in expand_configuration_inputs(paths)
     }
+
+
+def preparation_stamps(paths, roots=()):
+    """Generator-declared files/directories: stat only, no repeated content hashes."""
+    result = {}
+    for path in expand_configuration_inputs(dict.fromkeys(paths)):
+        try:
+            stat = path.stat()
+            result[str(path)] = (
+                [stat.st_mtime_ns, stat.st_size] if path.is_file() else "directory"
+            )
+        except FileNotFoundError:
+            result[str(path)] = "missing"
+    result.update({"root:" + str(path): Path(path).is_dir() for path in roots})
+    return result

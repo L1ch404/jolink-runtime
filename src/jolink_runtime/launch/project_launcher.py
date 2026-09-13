@@ -46,6 +46,7 @@ from .gradle_runtime_build_world import (
 )
 from .gradle_module_world import GradleModuleError
 from .jdt_compile_session import JdtBuildWorldPlan
+from .jdt_modules import compilation_modules
 from .maven_probe import ProductMavenProbe
 from .maven_module_world import load_module_worlds
 from .project_launch_cache import (
@@ -353,10 +354,12 @@ class ProjectLaunchPipeline:
             processor_entries=tuple(Path(p) for p in target["processor_entries"]),
             processor_names=tuple(target.get("processor_names", ())),
             processor_options=target.get("processor_options", {}),
+            preparation_inputs=tuple(Path(p) for m in modules for p in m.get("preparation_inputs", ())),
+            preparation_roots=tuple(Path(p) for m in modules for p in m.get("preparation_roots", ())),
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
             source_level=target["source_level"], target_level=target["source_level"],
-            fingerprint=hashlib.sha256(json.dumps(modules, sort_keys=True).encode()).hexdigest(),
+            fingerprint=hashlib.sha256(json.dumps(compilation_modules(modules), sort_keys=True).encode()).hexdigest(),
             configuration_inputs=tuple(dict.fromkeys((
                 *(m.pom_file for m in workspace.modules),
                 *((settings,) if settings is not None else ()),

@@ -28,6 +28,8 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
     @Component private ProjectDependenciesResolver resolver;
     @Component private RepositorySystem repositories;
     @Component private org.eclipse.aether.RepositorySystem artifactResolver;
+    @Component private org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator executionPlans;
+    @Component private org.apache.maven.plugin.BuildPluginManager pluginManager;
 
     public void execute() throws MojoExecutionException {
         try {
@@ -71,6 +73,7 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
             pending.add(selected);
             Set<String> visited = new HashSet<>();
             Set<String> testsRequired = new HashSet<>();
+            Set<MavenProject> required = new LinkedHashSet<>();
             if ("test".equals(scope)) testsRequired.add(selected.getId());
             while (!pending.isEmpty()) {
                 MavenProject p = pending.removeFirst();
@@ -95,6 +98,12 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
                 }
                 p.setArtifacts(artifacts);
                 p.getProperties().setProperty("jolink.probe.testSourcesRequired", Boolean.toString(tests));
+                required.add(p);
+            }
+            // Maven's reactor order prepares upstream modules before consumers.
+            for (MavenProject p : session.getProjects()) {
+                if (!required.contains(p)) continue;
+                new SourcePreparation(executionPlans, pluginManager, getLog()).execute(session, p, testsRequired.contains(p.getId()));
                 new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, output);
                 String key = Integer.toHexString(p.getBasedir().getCanonicalPath().hashCode());
                 try (java.io.Writer writer = java.nio.file.Files.newBufferedWriter(

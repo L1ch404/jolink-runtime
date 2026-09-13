@@ -35,6 +35,17 @@ JUnit 尚未执行，不能写成 MyBatis 已完整通过。
 
 ## 本轮处理
 
+### 2026-09-12：Maven 源码准备
+
+上一轮名称/参数改动已提交为 `53ba2f4`。本轮接入 Maven 声明在源码/资源准备阶段
+的执行项，沿用原插件和Maven执行顺序，不运行compile/test阶段。配置及准备输入
+未变化时复用；变化后生成结果交给已有JDT workspace增量编译。
+
+Checkstyle原SHA的ANTLR生成和main编译已通过，原Parser/Lexer缺失消失。新增实际
+阻断是6个无package声明、却位于深层目录的测试资源样本。未修改样本或屏蔽错误，
+Checkstyle整体测试仍未通过。该问题与源码目录/编译器环境映射有关，留待下一轮。
+实现范围、缓存规则与真实回归见[源码准备记录](maven-source-preparation.zh-CN.md)。
+
 ### 2026-09-12 后续：Processor 名称/参数与 Checkstyle 参数
 
 前一轮已提交为 `21c8fe7`；本轮按用户指定的两项继续，不接入外部生成任务、

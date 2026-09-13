@@ -22,6 +22,15 @@ def module_name(directory: str | Path) -> str:
     )
 
 
+def compilation_modules(modules):
+    """Preparation bookkeeping is not a change to JDT's compiler configuration."""
+    metadata = {"preparation_inputs", "preparation_roots", "preparation_executions"}
+    return tuple(
+        {key: value for key, value in module.items() if key not in metadata}
+        for module in modules
+    )
+
+
 class ModuleCompileSession(PersistentJdtCompileSession):
     def __init__(
         self,
@@ -185,8 +194,11 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                     + write_paths(".processors.txt", module["processor_entries"])
                 )
             if module.get("processor_names") or module.get("processor_options"):
-                settings = write_processor_settings(self.root / (name + ".apt.properties"),
-                    module.get("processor_names", ()), module.get("processor_options", {}))
+                settings = write_processor_settings(
+                    self.root / (name + ".apt.properties"),
+                    module.get("processor_names", ()),
+                    module.get("processor_options", {}),
+                )
                 properties.append(prefix + "apt_settings=" + settings.as_posix())
             if module.get("test_source_roots"):
                 test_entries = [

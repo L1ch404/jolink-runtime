@@ -21,7 +21,7 @@ from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import configuration_file_stamps as _configuration_stamps
 
 
-_SCHEMA = "jolink.project-launch-cache.v2"
+_SCHEMA = "jolink.project-launch-cache.v3"
 
 
 def _path(value: Any) -> Path:
@@ -153,6 +153,9 @@ class ProjectLaunchCache:
             ):
                 return None
             plan_raw = raw["jdt_plan"]
+            from .configuration_inputs import preparation_stamps
+            if raw.get("preparation_stamps", {}) != preparation_stamps(plan_raw.get("preparation_inputs", ()), plan_raw.get("preparation_roots", ())):
+                return None
             if build_system == "gradle" and plan_raw.get("modules"):
                 stamps = raw.get("gradle_configuration", {})
                 if not stamps or stamps != _configuration_stamps(stamps):
@@ -168,6 +171,8 @@ class ProjectLaunchCache:
                 processor_entries=_paths(plan_raw["processor_entries"]),
                 processor_names=tuple(plan_raw.get("processor_names", ())),
                 processor_options=dict(plan_raw.get("processor_options", {})),
+                preparation_inputs=_paths(plan_raw.get("preparation_inputs", ())),
+                preparation_roots=_paths(plan_raw.get("preparation_roots", ())),
                 lombok_entries=_paths(plan_raw["lombok_entries"]),
                 target_java_home=_path(plan_raw["target_java_home"]),
                 source_encoding=str(plan_raw["source_encoding"]),
@@ -248,8 +253,10 @@ class ProjectLaunchCache:
         build_preferences: Mapping[str, Any] | None = None,
     ) -> None:
         target = self._file(project_root, intent.launch_name)
+        from .configuration_inputs import preparation_stamps
         value = {
             "schema": _SCHEMA,
+            "preparation_stamps": preparation_stamps(jdt_plan.preparation_inputs, jdt_plan.preparation_roots),
             "gradle_configuration": _configuration_stamps(jdt_plan.configuration_inputs)
                 if build_system == "gradle" and jdt_plan.modules else {},
             "gradle_environment": _environment_inputs(jdt_plan.configuration_environment_names)
@@ -319,6 +326,8 @@ class ProjectLaunchCache:
                 "modules": jdt_plan.modules,
                 "processor_names": jdt_plan.processor_names,
                 "processor_options": jdt_plan.processor_options,
+                "preparation_inputs": [str(p) for p in jdt_plan.preparation_inputs],
+                "preparation_roots": [str(p) for p in jdt_plan.preparation_roots],
                 "resource_fingerprint": jdt_plan.resource_fingerprint,
             },
         }

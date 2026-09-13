@@ -8,7 +8,7 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 ```text
 读取本地Test Build World缓存
 ├─ POM/父POM链或Gradle构建文件未变化 → 直接使用
-└─ 没有缓存或配置变化 → 只运行Probe并保存结果
+└─ 没有缓存、配置或生成输入变化 → Probe执行已声明的源码准备步骤并保存结果
                 ↓
 打开持久Test JDT workspace
 ├─ 没有编译结果 → FULL编译main/test
@@ -25,6 +25,10 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 这条路径不执行Maven`test-compile`、Gradle`classes/testClasses`，不创建源码或
 resource快照，不比较Maven/JDT class输出，也不在测试前后全量哈希Build World。
 main/test resource源码目录直接加入Runner classpath。
+
+Maven 项目声明了源码/资源准备执行项时，Probe 使用 Maven 的实际执行计划运行
+这些 goal，再导出 source roots；不进入 compile/test 生命周期。语法/模板输入变化
+会更新生成结果，普通 Java 变更仍直接增量，见[源码准备实测](maven-source-preparation.zh-CN.md)。
 
 同一个 Worker 内，每个参与测试的模块分别使用 main / test 两个持久 JDT 工程。
 test 工程依赖 main；语言级别、编码、`-parameters` 和 Processor 路径各自配置，
@@ -126,7 +130,8 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
   也支持显式依赖上游test-jar的测试；完整流程见[多模块JDT](jdt-modules.zh-CN.md)；
 - Gradle多Project使用相同的JDT模块工程；读取解析后的api/implementation/runtimeOnly
   依赖，只构建所需模块。构建配置改变时重新Probe，普通源码修改只走增量；
-- protobuf/OpenAPI等必须先运行代码生成任务的项目尚未自动执行生成器；
+- 已接入 Maven 显式声明的源码准备阶段，验证了 ANTLR 与模板生成；protobuf/OpenAPI
+  等具体项目仍需实测，依赖额外生命周期或未导出输入的生成链没有因此宣称支持；
 - Runner JVM尚未保活，Spring测试的大部分后续耗时通常在Runner启动和框架初始化。
 
 本轮 main/test 工程布局与缓存模型发生变化：旧 Test Build World 会重新导出并建立
