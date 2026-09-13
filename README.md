@@ -88,7 +88,10 @@ java_application(action=test,
 
 `passed=false` means the selected tests executed and found a failure; it is not
 a Tool infrastructure error. Fast Test does not require or modify a running
-application. The first release supports Java 8 or 11 Maven jar projects, one
+application. The current JDT supports Java 8 through 26 source/target levels;
+product regression covers 8, 11, 17 and 21, including separate main/test levels.
+Target libraries and application/test JDKs still follow the project. Supported
+build layouts include Maven jar projects, one
 explicitly selected jar module in a standard Reactor, and Gradle Java builds
 including multi-Project dependencies (tested with 7.4.2, 8.10 and 8.14).
 Maven and Gradle multi-module launch and Fast Test resolve the selected
@@ -331,10 +334,23 @@ configuration ship inside the Python package. `restart` never accepts
 `project_path`; use `stop` followed by `launch` when source or resource changes
 must be incorporated into a newly started JVM.
 
-The same product Worker JAR targets Java 8 bytecode and runs on a 64-bit JDK 8
-or newer. joLink prefers the Maven Build JDK, preserving the Processor runtime
-used by the formal build, and does not require Java 8 projects to install a
-separate JDK 17.
+The product uses Eclipse 4.40 / JDT 3.46 with matching APT bundles. Its Worker
+targets Java 17 bytecode and defaults to a private, pinned Temurin 21 runtime,
+installed once in the user cache. Maven/Gradle and application/test JVMs keep
+their project JDKs. `JOLINK_WORKER_JAVA_HOME` can select a corporate-provided
+64-bit JDK 17+ instead. Old Lombok 1.18.20 compatibility issues remain recorded,
+not silently fixed by replacing project dependencies. See
+[JDT 3.46 and private Worker JDK](docs/jdt-346-upgrade.zh-CN.md) for offline setup
+and actual compatibility results.
+
+First-time JDK/Eclipse downloads use their pinned official URLs by default.
+Set `JOLINK_DOWNLOAD_MIRROR=cn` to try TUNA, then the joLink mirror at
+`https://7355608.net/jolink/assets`, then upstream on connection/transfer failure.
+A custom mirror base URL uses that mirror followed by upstream; `official`
+(or an empty value) uses upstream only. No IP/geolocation detection is performed.
+Existing SHA256 checks and installed caches are unaffected. TUNA access was
+blocked during local verification; selecting `cn` does not guarantee its availability.
+See [runtime mirror setup](docs/runtime-download-mirror.zh-CN.md).
 
 The imported IDEA Make/Build flag does not cause Maven or Gradle compilation.
 On the first launch, the Probe exports compiler/runtime facts and JDT performs

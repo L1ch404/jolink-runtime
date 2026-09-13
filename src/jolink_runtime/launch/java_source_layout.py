@@ -68,6 +68,6 @@ def source_relative_path(content: bytes, filename: str, encoding: str) -> Path |
                     return None
                 identifier = not identifier
             return None
-        elif depth == 0 and token in {"import", "class", "interface", "enum", "module"}:
+        elif depth == 0 and token in {"import", "class", "interface", "enum", "record", "module"}:
             return Path(filename)
     return Path(filename)

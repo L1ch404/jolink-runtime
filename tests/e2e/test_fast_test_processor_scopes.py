@@ -19,7 +19,7 @@ from test_fast_test_scopes import environment, run
 @pytest.mark.parametrize("main_processor", [False, True])
 @pytest.mark.parametrize("selection", ["service", "explicit"])
 def test_independent_processor_loading_and_generated_outputs(
-    tmp_path, build_system, main_processor, selection
+    tmp_path, build_system, main_processor, selection, *, main_uses_generated_output=True
 ):
     env = environment(tmp_path)
     home = Path(env["JAVA_HOME"])
@@ -133,7 +133,11 @@ public class Trap extends javax.annotation.processing.AbstractProcessor {
     test.parent.mkdir(parents=True)
     main.write_text(
         "package example; public class Main { public static final int VALUE=10; public static int get(){return "
-        + ("generated.MainValue.get()" if main_processor else "VALUE")
+        + (
+            "generated.MainValue.get()"
+            if main_processor and main_uses_generated_output
+            else "VALUE"
+        )
         + ";} }"
     )
     test.write_text("""package example; public class ScopeTest {
@@ -145,6 +149,17 @@ public class Trap extends javax.annotation.processing.AbstractProcessor {
   catch(ClassNotFoundException expected){}
  }
 }""")
+    if main_processor:
+        # APT must run even when main compilation has no reference to its output.
+        # Reflection also checks freshness after incremental edits and reopen.
+        test.write_text(
+            test.read_text().replace(
+                "org.junit.Assert.assertEquals(10, Main.get());",
+                """org.junit.Assert.assertEquals(Main.VALUE,
+   ((Number)Class.forName("generated.MainValue").getMethod("get").invoke(null)).intValue());
+  org.junit.Assert.assertEquals(10, Main.get());""",
+            )
+        )
     if build_system == "maven":
         executions = ""
         for scope in ("main", "test") if main_processor else ("test",):
@@ -287,3 +302,14 @@ def test_named_processor_without_service_uses_default_compile_classpath(tmp_path
     test_independent_processor_loading_and_generated_outputs(
         tmp_path, "maven", False, "classpath"
     )
+
+
+@pytest.mark.mcp_java_e2e
+@pytest.mark.parametrize("build_system", ["maven", "gradle"])
+def test_main_processor_runs_without_compile_time_reference(tmp_path, build_system):
+    for attempt in range(3):
+        cold = tmp_path / f"cold-{attempt}"
+        cold.mkdir()
+        test_independent_processor_loading_and_generated_outputs(
+            cold, build_system, True, "service", main_uses_generated_output=False
+        )

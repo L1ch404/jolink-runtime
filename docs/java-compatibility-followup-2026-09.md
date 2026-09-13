@@ -2,6 +2,18 @@
 
 ## 最新汇总（2026-09-13，优先于下方历史记录）
 
+### 当前工作区：JDT3.46＋私有Temurin21升级
+
+已实现，尚待用户review；本节优先于后面的旧引擎记录。Java17语言限制已在新引擎
+消除，main8/test17与main11/test21的Maven/Gradle真实回归通过；新版Petclinic的
+所选测试、启动和HTTP通过。MyBatis在测试副本关闭format/license profile后87项
+通过，原样准备阶段仍阻断。详见[升级实现、离线准备、性能与剩余问题](jdt-346-upgrade.zh-CN.md)。
+
+新实测也暴露了回归，未用忽略错误或修改业务源码掩盖：Checkstyle5条注解位置错误，
+Guava14条泛型错误。隐式APT遗漏已定位到JavaProject缓存的旧首选项节点仍关闭APT，
+当前工作区已改为初始化编译选项时直接写入最终开关；详见升级文档第5项。
+Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换依赖、不增加版本拦截。
+
 源码生成改动已提交为 `24df38e`。以下将已解决的入口问题、当前确认的项目阻断、
 尚未覆盖的能力分开，不把同一问题重复记账，也不把越过入口当作项目全流程通过。
 
@@ -16,9 +28,11 @@
 
 | 编号 | 当前问题 | 最新事实 / 与旧问题的关系 | 下一步 |
 |---|---|---|---|
-| U2 | Guava 的13项泛型错误 | 目录定位、排序已解决，仍有递归通配符/泛型转换错误；尚未区分编译输入差异与当前ECJ缺陷。与U1不是同一个根因，不能因U1是映射问题就认定Guava也一样 | 缩小具体失败表达式并对齐输入；不承诺升级必然解决 |
-| U3 | Java17 source/target | MyBatis的main/test配置已分开，正确读到test Java17；目前明确返回JDT_TARGET_PLATFORM_UNSUPPORTED。新版Petclinic也受此能力限制。不是Worker不能运行于JDK17 | 按用户决定暂停JDT升级；以后升级并回归系统库、APT与增量链路 |
+| U2 | Guava 泛型错误 | 新3.46原选择器FULL仍失败，14条诊断（旧版本13条），升级没有自动解决 | 缩小表达式并对齐输入，区分编译器差异 |
 | U4 | Error Prone等javac专属检查 | TestNG/Mockito相关配置仍未转成“明确不执行检查但继续编译”的行为。Gradle构建逻辑、动态参数导出、main/test分离已解决，不能再用这些旧原因解释它们。TestNG框架本身已通过测试 | 当前只记录、不实现检查；放行项目并说明检查未执行的策略需另行接入、复跑项目 |
+| U5 | Checkstyle新引擎注解位置错误 | 已定位为泛型方法类型参数后的声明/类型注解归属差异；独立ECJ及原生Eclipse Java Builder均复现，不是U1目录映射复发 | 2026-09-13用户决定只记录、暂不处理；保留原错误，不修改输入或屏蔽诊断，详见升级文档第2项 |
+| U6 | MyBatis准备阶段 | format profile中OpenRewrite fork被拒；关闭format后license处理等待。关闭两者后main8/test17编译和87项通过 | 后续讨论准备步骤；不把专项结果当成原样全通过 |
+| U7 | APT间歇性遗漏 | 真实MCP复现main编译器读取旧节点disabled，甚至可漏生成却测试通过；当前工作区已修复初始化开关 | 回归覆盖无编译期引用的生成物、main/test隔离、增量与重开，待review |
 
 ### Reload待办：未加载类（2026-09-13，用户决定先记录、不修改）
 
@@ -70,6 +84,7 @@ socket超时，不让后续普通命令继承30秒。真正超时/失联仍保�
 - Processor加载路径、显式名称、-A参数、Lombok/MapStruct初始化，以及无值flag适配。
 - Surefire字母排序、MyBatis的useIncrementalCompilation拦截、Checkstyle的-Xpkginfo:always。
 - Checkstyle所需ANTLR生成及Maven源码准备；U1包路径适配已实现，132项所选测试通过。
+- U3：新引擎已支持Java17编译；旧JDT3.25的限制留在下方历史记录。Java25/26等未实测组合不宣称已验证。
 
 已有项目通过证据包括旧Petclinic的22项、Commons Lang的12项所选测试、MapStruct
 示例的所选测试。它们不是每个项目全部测试套件的验收，也不是本次重新全量跑分。

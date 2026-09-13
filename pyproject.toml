@@ -38,6 +38,7 @@ jolink_runtime = [
   "launch/jdt-product-candidate.json",
   "launch/jdt-product-config.ini",
   "launch/jdt-product-worker.jar.b64",
+  "launch/worker-runtime.json",
   "launch/fast-test-assets.json",
   "launch/fast-test-runner.jar.b64",
   "launch/maven-build-world-probe.jar.b64",

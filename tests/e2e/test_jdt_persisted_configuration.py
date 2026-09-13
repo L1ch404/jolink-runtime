@@ -111,7 +111,7 @@ public class EvidenceProcessor extends AbstractProcessor {
     def compiler() -> PersistentJdtCompileSession:
         return PersistentJdtCompileSession(
             root=tmp_path / "worker", candidate=JdtCandidate.load_product(),
-            worker_java_home=jdk, source_roots=(sources,),
+            worker_java_home=JdtCandidate.load_product().select_worker_java().home, source_roots=(sources,),
             classpath_entries=discover_java8_system_entries(jdk),
             processor_entries=(processor,), source_encoding="UTF-8",
             preserve_root_on_close=True,

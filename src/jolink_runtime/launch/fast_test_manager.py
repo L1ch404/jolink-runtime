@@ -28,6 +28,7 @@ from .maven_compile_scope import compiler_scope, compiler_parameters
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
+    SUPPORTED_JAVA_LEVELS,
     JdtCandidate,
     JdtCompileError,
     PersistentJdtCompileSession,
@@ -1039,11 +1040,11 @@ class FastTestManager:
         if (
             compiler_model["source_level"]
             != compiler_model["target_level"]
-            or compiler_model["target_level"] not in {8, 11}
+            or compiler_model["target_level"] not in SUPPORTED_JAVA_LEVELS
         ):
             raise FastTestManagerError(
                 "FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
-                "Fast Test supports equal Java 8 or 11 source/target levels.",
+                "Fast Test supports equal Java 8 through 26 source/target levels.",
                 context={
                     "source_level": compiler_model["source_level"],
                     "target_level": compiler_model["target_level"],
@@ -1051,9 +1052,9 @@ class FastTestManager:
             )
         test_scope = compiler_scope(effective_project, test=True)
         test_model = self._maven._compiler_model(test_scope, build_jdk=build_jdk, runtime_jdk=build_jdk)
-        if test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in {8, 11}:
+        if test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in SUPPORTED_JAVA_LEVELS:
             raise FastTestManagerError("FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
-                "The bundled JDT supports Java 8/11 test compilation; Java 17 needs a compiler upgrade.",
+                "The bundled JDT supports equal Java 8 through 26 test source/target levels.",
                 context={"scope": "test", **test_model})
         for label, processing in (
             ("main", main_processing),

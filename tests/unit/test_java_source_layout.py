@@ -8,7 +8,8 @@ from jolink_runtime.launch.java_source_layout import source_relative_path
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("class Foo {}", "Foo.java"),
+    ("class Foo {}", "Foo.java"),
+    ("public record Foo(int value) {}", "Foo.java"),
         ("package a.b; class Foo {}", "a/b/Foo.java"),
         (
             "/* package fake; */ // class Fake {}\npackage a /* gap */ . b;",

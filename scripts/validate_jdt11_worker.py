@@ -40,7 +40,7 @@ def main() -> int:
         session = PersistentJdtCompileSession(
             root=root / "session",
             candidate=JdtCandidate.load_product(),
-            worker_java_home=java11,
+            worker_java_home=JdtCandidate.load_product().select_worker_java().home,
             source_roots=(source_root,),
             classpath_entries=(jrt,),
             source_encoding="UTF-8",

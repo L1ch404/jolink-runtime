@@ -3,6 +3,10 @@
 joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspace 直接复用，
 不再在每次启动或 reload 时重新审计源码、依赖和编译输出。
 
+当前Worker运行环境与项目JDK独立。首次使用安装固定版本Temurin21，后续直接复用；
+不改变项目Maven/Gradle或业务JVM的JDK。更换JDT引擎首次建立新workspace并FULL一次，
+旧版本的内部增量状态不迁移。离线准备和已知兼容问题见[升级记录](jdt-346-upgrade.zh-CN.md)。
+
 产品 direct-javac 后端、Plan 和 fallback 已移除。Maven 单模块与多模块都通过
 已有 Maven-native Probe 准备模型，JDT 不可用时不会改走旧编译器。
 删除范围与回归见 [direct-javac 移除记录](direct-javac-retirement.zh-CN.md)。
@@ -11,7 +15,7 @@ joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspa
 
 ```text
 读取已有 Build World JSON（没有才运行模型导出）
-→ 使用保存的 Worker/JDK/system libraries
+→ 使用固定JDT3.46与私有Temurin21 Worker，复用项目目标system libraries
 → 打开 JDT workspace，不执行 Equinox -clean
 → workspace_source_changes()
    ├─ 首次：JDT FULL

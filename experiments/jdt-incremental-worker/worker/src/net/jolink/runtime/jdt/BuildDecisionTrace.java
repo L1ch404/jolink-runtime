@@ -6,8 +6,13 @@ import java.io.UnsupportedEncodingException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Locale;
+import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.internal.core.builder.IncrementalImageBuilder;
 import org.eclipse.jdt.internal.core.builder.JavaBuilder;
+import org.eclipse.osgi.service.debug.DebugOptions;
+import org.osgi.framework.BundleContext;
+import org.osgi.framework.FrameworkUtil;
+import org.osgi.framework.ServiceReference;
 import static net.jolink.runtime.jdt.WorkerApplication.json;
 
 /** Capture the pinned JavaBuilder's actual decisions, not inferred fallbacks. */
@@ -40,6 +45,18 @@ final class BuildDecisionTrace {
                 if (verbose) super.println(line);
             }
         });
+        if (traceEnabled) {
+            // Modern JDT routes JavaBuilder messages through DebugTrace by
+            // default. Use Eclipse's supported stdout option so the existing
+            // capture receives both project names and build decisions.
+            BundleContext context = FrameworkUtil.getBundle(BuildDecisionTrace.class).getBundleContext();
+            ServiceReference<DebugOptions> reference = context.getServiceReference(DebugOptions.class);
+            DebugOptions options = context.getService(reference);
+            options.setDebugEnabled(true);
+            options.setOption(JavaCore.PLUGIN_ID + "/debug", "true");
+            options.setOption(JavaCore.PLUGIN_ID + "/debug/traceToStdOut", "true");
+            context.ungetService(reference);
+        }
     }
 
     static synchronized void begin() {

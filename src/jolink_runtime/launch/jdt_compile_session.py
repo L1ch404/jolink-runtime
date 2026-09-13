@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import threading
 import time
-import urllib.request
+import urllib.parse
 import uuid
 import zipfile
 from dataclasses import dataclass, field, replace
@@ -30,9 +30,11 @@ from .build_world_identity import build_world_fingerprint
 from .java_source_layout import source_relative_path
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .product_assets import canonical_lf_bytes
+from .runtime_download import download_file
 from .toolchain import JavaToolchainCandidate
 
 logger = logging.getLogger(__name__)
+SUPPORTED_JAVA_LEVELS = range(8, 27)
 
 
 class JdtCompileError(RuntimeError):
@@ -291,13 +293,14 @@ class JdtCandidate:
                 )
                 if source is not None:
                     shutil.copyfile(source, destination)
+                    actual_sha = _sha256_file(destination)
                 else:
-                    cls._download_product_artifact(
+                    actual_sha = cls._download_product_artifact(
                         f"{repository}/plugins/{artifact_name}",
                         destination,
                         artifact=artifact_name,
                     )
-                if _sha256_file(destination) != expected:
+                if actual_sha != expected:
                     raise JdtCompileError(
                         "JDT_CANDIDATE_INTEGRITY_MISMATCH",
                         f"Downloaded JDT artifact failed verification: {artifact_name}.",
@@ -373,26 +376,15 @@ class JdtCandidate:
         destination: Path,
         *,
         artifact: str,
-    ) -> None:
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "joLink-Runtime/0.1"},
-        )
+    ) -> str:
+        parsed = urllib.parse.urlsplit(url)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                with destination.open("wb") as stream:
-                    total = 0
-                    while chunk := response.read(1024 * 1024):
-                        total += len(chunk)
-                        if total > 64 * 1024 * 1024:
-                            raise JdtCompileError(
-                                "JDT_CANDIDATE_INSTALL_FAILED",
-                                "A JDT artifact exceeded the download limit.",
-                                context={"artifact": artifact},
-                            )
-                        stream.write(chunk)
-        except JdtCompileError:
-            raise
+            return download_file(
+                url, destination,
+                mirror_path=parsed.path.lstrip("/")
+                if parsed.hostname == "download.eclipse.org" else None,
+                max_bytes=64 * 1024 * 1024,
+            )
         except Exception as error:
             raise JdtCompileError(
                 "JDT_CANDIDATE_INSTALL_FAILED",
@@ -469,6 +461,20 @@ class JdtCandidate:
         self,
         preferred: Iterable[Path] = (),
     ) -> WorkerJavaRuntime:
+        if self.lock.get("worker_runtime") == "temurin-21":
+            from .worker_runtime import WorkerRuntimeError, managed_worker_java_home
+
+            try:
+                home = managed_worker_java_home()
+                if not os.environ.get("JOLINK_WORKER_JAVA_HOME"):
+                    # The pinned distribution was verified once at installation.
+                    # Do not start another JVM just to re-probe it on every launch.
+                    return WorkerJavaRuntime(
+                        home, home / "bin" / ("java.exe" if os.name == "nt" else "java"), 21, 64
+                    )
+                return self.verify_worker_java(home)
+            except WorkerRuntimeError as error:
+                raise JdtCompileError("JDT_WORKER_RUNTIME_UNAVAILABLE", str(error)) from error
         candidates: list[Path] = [
             path.expanduser().resolve(strict=False) for path in preferred
         ]
@@ -802,18 +808,18 @@ def discover_target_system_entries(
 ) -> tuple[Path, ...]:
     if int(target_level) == 8:
         return discover_java8_system_entries(java_home)
-    if int(target_level) == 11:
+    if 9 <= int(target_level) <= 26:
         home = java_home.expanduser().resolve(strict=True)
         jrt = home / "lib/jrt-fs.jar"
         if not jrt.is_file():
             raise JdtCompileError(
                 "JDT_TARGET_PLATFORM_UNAVAILABLE",
-                "The Java 11 target JDK has no jrt-fs.jar system image.",
+                "The target JDK has no jrt-fs.jar system image.",
             )
         return (jrt,)
     raise JdtCompileError(
         "JDT_TARGET_PLATFORM_UNSUPPORTED",
-        "The product JDT model supports Java target 8 or 11.",
+        "The product JDT model supports Java target 8 through 26.",
     )
 
 
@@ -822,10 +828,10 @@ def select_target_system_home(
 ) -> Path:
     """Find an installed JDK matching the bytecode target, not the Runtime JDK."""
 
-    if int(target_level) not in {8, 11}:
+    if int(target_level) not in SUPPORTED_JAVA_LEVELS:
         raise JdtCompileError(
             "JDT_TARGET_PLATFORM_UNSUPPORTED",
-            "The bundled JDT supports target 8 or 11; a newer target needs a JDT upgrade, not another JDK installation.",
+            "The bundled JDT supports target 8 through 26.",
         )
     candidates = [path.expanduser() for path in preferred]
     java_home = os.environ.get("JAVA_HOME")
@@ -839,6 +845,10 @@ def select_target_system_home(
         "*/Contents/Home"
     ))
     candidates.extend(Path("/usr/lib/jvm").glob("*"))
+    if int(target_level) == 21:
+        from .worker_runtime import managed_worker_java_home
+
+        candidates.append(managed_worker_java_home())
     for environment in ("ProgramFiles", "ProgramFiles(x86)"):
         base = os.environ.get(environment)
         if base:
@@ -864,8 +874,8 @@ def select_target_system_home(
                 ),
                 source="target_system_discovery",
             ).major_version
-            if int(target_level) == 11 and version == 11:
-                discover_target_system_entries(home, 11)
+            if version == int(target_level):
+                discover_target_system_entries(home, target_level)
                 return home
         except (OSError, JdtCompileError):
             continue
@@ -948,10 +958,10 @@ class PersistentJdtCompileSession:
             else None
         )
         self.source_encoding = source_encoding
-        if int(source_level) not in {8, 11}:
+        if int(source_level) not in SUPPORTED_JAVA_LEVELS:
             raise JdtCompileError(
                 "JDT_SOURCE_LEVEL_UNSUPPORTED",
-                "The product JDT Worker supports source level 8 or 11.",
+                "The product JDT Worker supports source level 8 through 26.",
             )
         self.source_level = int(source_level)
         self.method_parameters = bool(method_parameters)
@@ -1724,6 +1734,7 @@ class PersistentJdtCompileSession:
             json.loads(launch_file.read_text(encoding="utf-8"))
             if reused else self._prepare_worker_command()
         )
+        command[0] = str(self.worker_java_home / "bin" / ("java.exe" if os.name == "nt" else "java"))
         log_diagnostic(
             logger, logging.INFO,
             "jdt.worker.start workspace=%r reuse_requested=%s command_reused=%s "
@@ -1743,6 +1754,8 @@ class PersistentJdtCompileSession:
             process = subprocess.Popen(
                 command,
                 cwd=self.candidate.root,
+                env={**os.environ, "JAVA_HOME": str(self.worker_java_home),
+                     "PATH": str(self.worker_java_home / "bin") + os.pathsep + os.environ.get("PATH", "")},
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=stderr_stream,

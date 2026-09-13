@@ -122,8 +122,17 @@ def test_mcp_runs_classes_in_configured_order(tmp_path, framework, order):
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("build_system", ["maven", "gradle"])
-def test_main_test_compiler_scopes_incremental_and_reopen(tmp_path, build_system):
+@pytest.mark.parametrize(("main_level", "test_level"), [(8, 11), (8, 17), (11, 21)])
+def test_main_test_compiler_scopes_incremental_and_reopen(tmp_path, build_system, main_level, test_level):
     env = environment(tmp_path, java11=True)
+    if test_level == 21:
+        from jolink_runtime.launch.worker_runtime import managed_worker_java_home
+        home = str(managed_worker_java_home())
+    else:
+        home = os.environ.get(f"JOLINK_FAST_TEST_JAVA{test_level}_HOME")
+        if not home:
+            pytest.skip(f"set JOLINK_FAST_TEST_JAVA{test_level}_HOME")
+    env.update(JAVA_HOME=home, PATH=str(Path(home) / "bin") + os.pathsep + os.environ.get("PATH", ""))
     project = tmp_path / "scoped"
     main = project / "src/main/java/example/Main.java"
     test = project / "src/test/java/example/ScopeTest.java"
@@ -147,6 +156,15 @@ static int major(Class<?> type) throws Exception {
  }
 }
 }""")
+    content = test.read_text().replace("assertEquals(55,", f"assertEquals({44 + test_level},").replace("assertEquals(52,", f"assertEquals({44 + main_level},")
+    if test_level >= 17:
+        content = content.replace("public int echo", "record Entry(int value) {}\npublic int echo")
+        content = content.replace('org.junit.Assert.assertTrue(" ".isBlank());', 'org.junit.Assert.assertEquals(3, new Entry(3).value());')
+    if test_level >= 21:
+        content = content.replace("new Entry(3).value()", "java.util.List.of(3, 4).getFirst().intValue()")
+    content = content.replace("org.junit.Assert.assertEquals(1, Main.value(0));",
+        f'org.junit.Assert.assertEquals("{test_level}", System.getProperty("java.specification.version"));\n org.junit.Assert.assertEquals(1, Main.value(0));')
+    test.write_text(content)
     if build_system == "maven":
         (project / "pom.xml").write_text("""<project><modelVersion>4.0.0</modelVersion>
 <groupId>example</groupId><artifactId>scoped</artifactId><version>1</version>
@@ -156,6 +174,8 @@ static int major(Class<?> type) throws Exception {
 <configuration><parameters>false</parameters></configuration>
 <executions><execution><id>default-testCompile</id><goals><goal>testCompile</goal></goals><configuration><parameters>true</parameters></configuration></execution></executions>
 </plugin></plugins></build></project>""")
+        pom = project / "pom.xml"
+        pom.write_text(pom.read_text().replace("<maven.compiler.release>8", f"<maven.compiler.release>{main_level}").replace("<maven.compiler.testRelease>11", f"<maven.compiler.testRelease>{test_level}"))
     else:
         gradle = os.environ.get("JOLINK_FAST_TEST_GRADLE")
         if not gradle:
@@ -175,8 +195,8 @@ static int major(Class<?> type) throws Exception {
         )
         (project / "build.gradle").write_text(f"""plugins {{ id 'java' }}
 dependencies {{ testImplementation files('{junit.as_posix()}', '{hamcrest.as_posix()}') }}
-compileJava.options.release=8
-compileTestJava.options.release=11
+compileJava.options.release={main_level}
+compileTestJava.options.release={test_level}
 compileTestJava.options.compilerArgs.add('-parameters')
 tasks.withType(JavaCompile).configureEach {{ options.encoding='UTF-8'; doFirst {{ throw new GradleException('business compile must not run') }} }}
 test {{ doFirst {{ throw new GradleException('native test must not run') }} }}
@@ -202,7 +222,7 @@ test {{ doFirst {{ throw new GradleException('native test must not run') }} }}
                         and result["compiled_source_count"] >= 1
                     ), result
                     main.write_text(
-                        main_original.replace("return 1", 'return " ".isBlank()?1:0')
+                        main_original.replace("return 1", 'return " ".isBlank()?1:0' if main_level == 8 else 'return "x".stripIndent().length()')
                     )
                     result = await check()
                     assert (

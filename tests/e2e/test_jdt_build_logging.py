@@ -142,7 +142,10 @@ public class ChainTest {
                     )
                     assert "INCREMENTAL_LOOP_LIMIT_EXCEEDED" in text
                     assert '"incremental_loop_limit": 10' in text
-                    assert '"project": "plain-fixture"' in text
+                    properties = (worker_logs[0].parent / "modules.properties").read_text()
+                    main_project = next(line.split("=", 1)[1].split(",")[0]
+                        for line in properties.splitlines() if line.startswith("modules="))
+                    assert f'"project": "{main_project}"' in text
                     assert "jdt.workspace.saved" in text
                 elif level is None:
                     assert "full_fallback=True" in text

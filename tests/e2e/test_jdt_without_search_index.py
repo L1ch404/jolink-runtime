@@ -58,7 +58,7 @@ public class Use {
         return PersistentJdtCompileSession(
             root=tmp_path / name,
             candidate=candidate,
-            worker_java_home=jdk,
+            worker_java_home=candidate.select_worker_java().home,
             source_roots=(sources,),
             classpath_entries=discover_java8_system_entries(jdk),
             source_encoding="UTF-8",

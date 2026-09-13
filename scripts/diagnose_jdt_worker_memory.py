@@ -78,7 +78,7 @@ def measure(
     with tempfile.TemporaryDirectory(prefix="jolink-worker-memory-") as temp:
         compiler = MeasuredSession(
             **(
-                {"modules": world.modules, "target_module": world.module_root}
+                {"modules": world.modules, "target_module": world.module_root, "split_tests": True}
                 if world.modules
                 else {}
             ),

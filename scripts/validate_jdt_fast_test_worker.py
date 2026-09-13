@@ -61,7 +61,7 @@ def main() -> int:
         session = PersistentJdtCompileSession(
             root=root / "session",
             candidate=candidate,
-            worker_java_home=args.java_home,
+            worker_java_home=candidate.select_worker_java().home,
             source_roots=(main_root,),
             classpath_entries=discover_java8_system_entries(args.java_home),
             source_encoding="UTF-8",

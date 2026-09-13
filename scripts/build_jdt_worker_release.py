@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate the single Java 8 product JDT Worker release."""
+"""Build the modern product Worker; keep Probe/Runner artifacts on Java 8."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ def main() -> int:
     repository = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--java-home", type=Path, required=True)
+    parser.add_argument("--worker-java-home", type=Path)
     parser.add_argument("--maven", type=Path)
     parser.add_argument("--gradle", type=Path)
     parser.add_argument(
@@ -30,6 +31,9 @@ def main() -> int:
         default=Path.home() / ".cache/jolink-runtime/jdt-poc",
     )
     args = parser.parse_args()
+    from jolink_runtime.launch.worker_runtime import managed_worker_java_home
+
+    worker_java_home = args.worker_java_home or managed_worker_java_home()
     uv = shutil.which("uv")
     if uv is None:
         raise SystemExit("uv is required to build the product wheel")
@@ -51,7 +55,7 @@ def main() -> int:
     lock = (
         repository
         / "experiments/jdt-incremental-worker/locks/"
-        "eclipse-2021-03-apt-spike.json"
+        "eclipse-4.40-product.json"
     )
     product_lock = (
         repository / "src/jolink_runtime/launch/jdt-product-candidate.json"
@@ -68,7 +72,7 @@ def main() -> int:
             "--cache-root",
             str(args.cache_root),
             "--java-home",
-            str(args.java_home),
+            str(worker_java_home),
             "--product-lock",
             str(product_lock),
             "--product-worker-base64",
@@ -112,9 +116,9 @@ def main() -> int:
         "from jolink_runtime.launch.maven_probe import ProductMavenProbe; "
         "from jolink_runtime.launch.gradle_probe import ProductGradleProbe; "
         "c=JdtCandidate.load_product(); "
-        f"w=c.verify_worker_java(Path({str(args.java_home)!r})); "
-        "assert c.worker_class_major==52 and c.worker_java_minimum==8; "
-        "assert w.major==8 and w.data_model==64; "
+        "w=c.select_worker_java(); "
+        "assert c.worker_class_major==61 and c.worker_java_minimum==17; "
+        "assert w.major>=17 and w.data_model==64; "
         "assert FastTestAssets.load().java_minimum==8; "
         "assert ProductMavenProbe.load().schema.endswith('.v2'); "
         "assert ProductGradleProbe.load().supported_versions==('8.10','8.14')"

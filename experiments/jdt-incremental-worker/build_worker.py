@@ -8,7 +8,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -20,7 +19,7 @@ class WorkerBuildError(RuntimeError):
     pass
 
 
-_PRODUCT_WORKER_CLASS_MAJOR = 52
+_PRODUCT_WORKER_CLASS_MAJOR = 61
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -60,7 +59,7 @@ def _java_tool(java_home: Path, name: str) -> Path:
     return tool
 
 
-def _java8_identity(java: Path, javac: Path) -> dict[str, str]:
+def _java_identity(java: Path, javac: Path) -> dict[str, str]:
     completed = subprocess.run(
         [str(javac), "-version"],
         capture_output=True,
@@ -71,10 +70,8 @@ def _java8_identity(java: Path, javac: Path) -> dict[str, str]:
         check=False,
     )
     output = (completed.stdout + "\n" + completed.stderr).strip()
-    if completed.returncode != 0 or re.search(r"\b1\.8(?:\.|\s|$)", output) is None:
-        raise WorkerBuildError(
-            "The product Worker must be compiled by a real JDK 8 javac."
-        )
+    if completed.returncode != 0:
+        raise WorkerBuildError("Unable to run the Worker build javac.")
     runtime = subprocess.run(
         [str(java), "-version"],
         capture_output=True,
@@ -157,7 +154,7 @@ def _create_worker_jar(worker_root: Path, classes: Path, destination: Path) -> N
                 write_entry(path.relative_to(classes).as_posix(), path.read_bytes())
 
 
-def _verify_java8_classes(classes: Path) -> None:
+def _verify_worker_classes(classes: Path) -> None:
     class_files = sorted(classes.rglob("*.class"))
     if not class_files:
         raise WorkerBuildError("Worker compilation produced no class files.")
@@ -168,7 +165,7 @@ def _verify_java8_classes(classes: Path) -> None:
         major = int.from_bytes(raw[6:8], "big")
         if major != _PRODUCT_WORKER_CLASS_MAJOR:
             raise WorkerBuildError(
-                f"Worker class major must be 52, got {major}: {path.name}"
+                f"Worker class major must be {_PRODUCT_WORKER_CLASS_MAJOR}, got {major}: {path.name}"
             )
 
 
@@ -179,15 +176,28 @@ def _update_product_artifacts(
     worker_jar: Path,
     source_fingerprint: str,
     build_identity: dict[str, str],
+    candidate_lock: dict,
+    config_bytes: bytes,
 ) -> None:
-    try:
-        lock = json.loads(product_lock.read_text(encoding="utf-8"))
-        worker = lock["worker_artifact"]
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise WorkerBuildError("Unable to read the product Worker lock.") from exc
+    lock = {
+        "schema_version": 1,
+        "candidate_id": candidate_lock["candidate_id"],
+        "repository_url": candidate_lock["repository"]["url"],
+        "worker_runtime": "temurin-21",
+        "artifacts": [
+            {"filename": item["filename"], "sha256": item["sha256"]}
+            for item in candidate_lock["artifacts"]
+        ],
+        "worker_artifact": {"filename": worker_jar.name},
+        "equinox": {
+            "launcher_filename": candidate_lock["equinox"]["launcher_filename"],
+            "configuration_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        },
+    }
+    worker = lock["worker_artifact"]
     worker_sha = sha256_file(worker_jar)
     worker["sha256"] = worker_sha
-    lock["worker_java_minimum"] = 8
+    lock["worker_java_minimum"] = 17
     lock["worker_class_major"] = _PRODUCT_WORKER_CLASS_MAJOR
     lock["worker_build_provenance"] = {
         "source_fingerprint": source_fingerprint,
@@ -205,6 +215,7 @@ def _update_product_artifacts(
         ),
     )
     _atomic_write(product_base64, wrapped.encode("ascii"))
+    _atomic_write(product_lock.with_name("jdt-product-config.ini"), config_bytes)
 
 
 def _config_ini(
@@ -250,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
         default=(
             experiment_root
             / "locks"
-            / "eclipse-2021-03-apt-spike.json"
+            / "eclipse-4.40-product.json"
         ),
     )
     parser.add_argument("--product-lock", type=Path)
@@ -277,13 +288,13 @@ def main(argv: list[str] | None = None) -> int:
         jars, launcher = _verify_bundles(lock, plugins=plugins)
         javac = _java_tool(args.java_home, "javac")
         java = _java_tool(args.java_home, "java")
-        build_identity = _java8_identity(java, javac)
+        build_identity = _java_identity(java, javac)
         worker_root = experiment_root / "worker"
         manifest = (worker_root / "META-INF" / "MANIFEST.MF").read_text(
             encoding="utf-8"
         )
-        if "Bundle-RequiredExecutionEnvironment: JavaSE-1.8" not in manifest:
-            raise WorkerBuildError("Worker manifest must require JavaSE-1.8.")
+        if "Bundle-RequiredExecutionEnvironment: JavaSE-17" not in manifest:
+            raise WorkerBuildError("Worker manifest must require JavaSE-17.")
 
         with tempfile.TemporaryDirectory(prefix="jolink-jdt-worker-") as temporary:
             classes = Path(temporary) / "classes"
@@ -292,10 +303,9 @@ def main(argv: list[str] | None = None) -> int:
                 str(javac),
                 "-encoding",
                 "UTF-8",
-                "-source",
-                "8",
-                "-target",
-                "8",
+                "--release",
+                "17",
+                "-proc:none",
                 "-classpath",
                 os.pathsep.join(str(path) for path in jars),
                 "-d",
@@ -316,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
             if completed.returncode != 0:
                 sys.stderr.write(completed.stderr[-8000:])
                 raise WorkerBuildError("Worker javac failed.")
-            _verify_java8_classes(classes)
+            _verify_worker_classes(classes)
             worker_filename = "net.jolink.runtime.jdt.worker_0.1.0.jar"
             worker_jar = plugins / worker_filename
             _create_worker_jar(worker_root, classes, worker_jar)
@@ -340,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             "filename": worker_filename,
         }
         lock["worker_artifact"] = worker_artifact
-        lock["worker_java_minimum"] = 8
+        lock["worker_java_minimum"] = 17
         lock["worker_class_major"] = _PRODUCT_WORKER_CLASS_MAJOR
         lock["worker_build"] = {
             "source_fingerprint": _source_fingerprint(worker_root),
@@ -348,8 +358,8 @@ def main(argv: list[str] | None = None) -> int:
                 "java_binary_sha256": build_identity["java_binary_sha256"],
                 "javac_binary_sha256": build_identity["javac_binary_sha256"],
             },
-            "source_level": "8",
-            "target_level": "8",
+            "source_level": "17",
+            "target_level": "17",
             "instrumentation": {
                 "extension_id": "net.jolink.runtime.jdt.compilationObserver",
                 "modifies_environment": False,
@@ -371,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             "replace file:plugins/ with the verified candidate plugins file URI"
         )
         lock["evidence_status"] = (
-            "locked_phase_1a_candidate_pending_case_evidence"
+            "built_product_worker"
         )
         _atomic_write(
             args.lock,
@@ -390,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
                 worker_jar=worker_jar,
                 source_fingerprint=lock["worker_build"]["source_fingerprint"],
                 build_identity=build_identity,
+                candidate_lock=lock,
+                config_bytes=config_bytes,
             )
 
         print(

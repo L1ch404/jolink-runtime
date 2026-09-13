@@ -118,9 +118,10 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
   Processor 名称和 `-A` 参数均已接入。指定名称时只加载所选处理器，不要求服务声明；
   Maven 未指定 Processor 路径时使用其编译 classpath。普通 MapStruct、MapStruct＋Lombok binding
   样本均通过；Worker 先完成处理器初始化再按原顺序执行，见[路径接入与实测](maven-processor-path.zh-CN.md)。
-- source/target支持Java 8和11；
-- JDT 3.25 本体不支持 `--release 17`，在 JDK17 上运行该编译器也不能改变这一点。
-  Java17 后续需要升级 JDT 并验证，不只放开产品校验。main/test 分离本轮先验证8/11；
+- 当前产品已升级JDT3.46，支持Java8～26的source/target；已实测8/11/17/21，
+  包括main8/test17和main11/test21。目标系统库、Runner JDK仍按项目配置选择。
+  Worker默认使用joLink管理的Temurin21，旧Lombok1.18.20问题暂不处理。
+  详见[升级与实际结果](jdt-346-upgrade.zh-CN.md)，不将编译器支持范围等同于所有项目通过；
 - Error Prone 等 javac 专属插件不在本轮接入。后续方向是快速流程不执行这些质量
   检查、正式构建/CI保留；本轮只记录，尚未删除对应参数拒绝，也不静默忽略未知参数。
 - Runner支持显式Class或Class#method选择；

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .test_build_world import JavaTestBuildWorld
+from .jdt_compile_session import SUPPORTED_JAVA_LEVELS
 
 
 class GradleBuildWorldError(RuntimeError):
@@ -157,16 +158,16 @@ def create_gradle_test_build_world(
         "GRADLE_COMPILE_TOOLCHAIN_UNMODELED",
         "Main and test compilation use different Java toolchains.",
     )
+    level = int(str(main_compile["sourceCompatibility"]).removeprefix("1."))
     _require(
         main_compile["sourceCompatibility"]
         == test_compile["sourceCompatibility"]
         == main_compile["targetCompatibility"]
         == test_compile["targetCompatibility"]
-        and main_compile["sourceCompatibility"] in {"1.8", "8", "11"},
+        and level in SUPPORTED_JAVA_LEVELS,
         "GRADLE_COMPILE_LEVEL_UNMODELED",
         "Gradle main/test Java levels cannot share one JDT project.",
     )
-    level = 8 if main_compile["sourceCompatibility"] in {"1.8", "8"} else 11
     _require(
         bool(main_compile["encoding"])
         and main_compile["encoding"] == test_compile["encoding"],

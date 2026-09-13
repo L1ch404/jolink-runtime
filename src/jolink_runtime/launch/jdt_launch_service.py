@@ -41,10 +41,9 @@ class JdtLaunchService:
             context.check_cancelled()
             session.begin_jdt_bootstrap()
             candidate = JdtCandidate.load_product()
-            persist_model = not prepared.probe_cache_reused or plan.worker_java_home is None
+            selected = candidate.select_worker_java((prepared.build_jdk.home,))
+            persist_model = not prepared.probe_cache_reused or plan.worker_java_home != selected.home
             if plan.worker_java_home is None or not plan.system_entries:
-                selected = prepared.build_jdk
-                major = selected.major_version or prepared.runtime_jdk.major_version or 8
                 target_home = select_target_system_home(
                     (
                         plan.target_java_home,
@@ -56,13 +55,12 @@ class JdtLaunchService:
                 plan = replace(
                     plan,
                     target_java_home=target_home,
-                    worker_java_home=selected.home,
-                    worker_java_major=major,
                     system_entries=discover_target_system_entries(
                         target_home, plan.target_level
                     ),
                 )
-                prepared = replace(prepared, jdt_build_world_plan=plan)
+            plan = replace(plan, worker_java_home=selected.home, worker_java_major=selected.major)
+            prepared = replace(prepared, jdt_build_world_plan=plan)
             session.record_jdt_worker_runtime(
                 java_major=plan.worker_java_major, data_model=64
             )

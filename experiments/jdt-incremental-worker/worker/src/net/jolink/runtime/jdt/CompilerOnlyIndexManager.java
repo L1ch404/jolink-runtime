@@ -8,11 +8,6 @@ import org.eclipse.jdt.internal.core.search.processing.IJob;
 final class CompilerOnlyIndexManager extends IndexManager {
     private long discardedRequests;
 
-    private CompilerOnlyIndexManager() {
-        // JobManager otherwise reports one pending job until its thread starts.
-        this.activated = true;
-    }
-
     static void install() {
         JavaModelManager model = JavaModelManager.getJavaModelManager();
         if (model.indexManager instanceof CompilerOnlyIndexManager) return;
@@ -29,7 +24,12 @@ final class CompilerOnlyIndexManager extends IndexManager {
     @Override
     public void reset() {
         // Never start the Java indexing thread, including workspace reopen.
-        this.activated = true;
+    }
+
+    @Override
+    public synchronized int awaitingJobsCount() {
+        // No thread is activated and request() never queues work.
+        return 0;
     }
 
     static String metricsJson() {

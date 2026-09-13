@@ -1401,7 +1401,7 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
         "schema_version": 1,
         "candidate_id": "product-test",
         "worker_java_minimum": 17,
-        "worker_class_major": 52,
+        "worker_class_major": json.loads((module_root / "jdt-product-candidate.json").read_text())["worker_class_major"],
         "repository_url": "https://example.invalid/eclipse",
         "artifacts": [
             {
@@ -1420,10 +1420,11 @@ def test_product_candidate_installs_bundles_worker_and_config_atomically(
     }
     downloads: list[str] = []
 
-    def download(url: str, destination: Path, *, artifact: str) -> None:
+    def download(url: str, destination: Path, *, artifact: str) -> str:
         downloads.append(url)
         assert artifact == "launcher.jar"
         destination.write_bytes(bundle)
+        return hashlib.sha256(bundle).hexdigest()
 
     monkeypatch.setattr(
         JdtCandidate,

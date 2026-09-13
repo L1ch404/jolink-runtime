@@ -54,7 +54,7 @@ def test_test_release_configuration_precedes_property():
     )
 
 
-def test_java17_is_compiler_limit_not_missing_jdk(tmp_path):
+def test_java_level_beyond_compiler_range_is_not_a_missing_jdk(tmp_path):
     with pytest.raises(JdtCompileError) as error:
-        select_target_system_home((tmp_path,), 17)
+        select_target_system_home((tmp_path,), 27)
     assert error.value.error_code == "JDT_TARGET_PLATFORM_UNSUPPORTED"

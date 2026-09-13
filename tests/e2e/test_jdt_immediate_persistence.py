@@ -49,7 +49,7 @@ def test_completed_build_persists_before_worker_exit(tmp_path: Path, level: int)
         compiler = PersistentJdtCompileSession(
             root=lease.root,
             candidate=candidate,
-            worker_java_home=java,
+            worker_java_home=candidate.select_worker_java().home,
             source_roots=(sources,),
             classpath_entries=discover_target_system_entries(java, level),
             source_encoding="UTF-8",

@@ -48,6 +48,7 @@ import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
 import org.eclipse.jdt.internal.core.builder.IncrementalImageBuilder;
 
 /**
@@ -256,7 +257,8 @@ public final class WorkerApplication implements IApplication {
             return Integer.valueOf(2);
         }
         String sourceLevel = arguments.getOrDefault("source-level", "8");
-        if (!"8".equals(sourceLevel) && !"11".equals(sourceLevel)) {
+        if (!JavaCore.isJavaSourceVersionSupportedByCompiler(
+                "8".equals(sourceLevel) ? JavaCore.VERSION_1_8 : sourceLevel)) {
             emitError("INVALID_SOURCE_LEVEL", "Unsupported source level.");
             return Integer.valueOf(2);
         }
@@ -510,8 +512,7 @@ public final class WorkerApplication implements IApplication {
                 option.setValue(JavaCore.IGNORE);
             }
         }
-        String compliance = "11".equals(sourceLevel)
-                ? JavaCore.VERSION_11 : JavaCore.VERSION_1_8;
+        String compliance = "8".equals(sourceLevel) ? JavaCore.VERSION_1_8 : sourceLevel;
         JavaCore.setComplianceOptions(compliance, options);
         options.put(JavaCore.COMPILER_SOURCE, compliance);
         options.put(JavaCore.COMPILER_COMPLIANCE, compliance);
@@ -520,6 +521,10 @@ public final class WorkerApplication implements IApplication {
                 JavaCore.COMPILER_CODEGEN_METHOD_PARAMETERS_ATTR,
                 methodParameters ? JavaCore.GENERATE : JavaCore.DO_NOT_GENERATE);
         options.put(JavaCore.COMPILER_PB_ENABLE_PREVIEW_FEATURES, JavaCore.DISABLED);
+        // Set the compiler's APT switch with the rest of its options; enabling
+        // AptConfig later can leave JavaProject reading an older preference node.
+        options.put(CompilerOptions.OPTION_Process_Annotations,
+                aptProcessorsFile != null ? JavaCore.ENABLED : JavaCore.DISABLED);
         if (!javaProject.getOptions(false).equals(options)) {
             javaProject.setOptions(options);
         }

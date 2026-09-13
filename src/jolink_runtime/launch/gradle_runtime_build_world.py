@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .build_world_identity import build_world_fingerprint
-from .jdt_compile_session import JdtBuildWorldPlan, resource_tree_fingerprint
+from .jdt_compile_session import SUPPORTED_JAVA_LEVELS, JdtBuildWorldPlan, resource_tree_fingerprint
 
 
 _PROCESSOR_SERVICE = "META-INF/services/javax.annotation.processing.Processor"
@@ -238,12 +238,12 @@ def create_gradle_runtime_build_world(
     )
     source = str(compile_task["sourceCompatibility"])
     target = str(compile_task["targetCompatibility"])
+    source_level = int(source.removeprefix("1."))
     _require(
-        source == target and source in {"1.8", "8", "11"},
+        source == target and source_level in SUPPORTED_JAVA_LEVELS,
         "GRADLE_COMPILE_LEVEL_UNMODELED",
-        "Gradle Runtime reload requires equal Java 8 or 11 source/target.",
+        "Gradle Runtime reload requires equal Java 8 through 26 source/target.",
     )
-    source_level = 8 if source in {"1.8", "8"} else 11
     encoding = compile_task.get("encoding")
     _require(
         isinstance(encoding, str) and bool(encoding.strip()),

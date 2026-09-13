@@ -2909,7 +2909,7 @@ def test_worker_jar_is_reproducible(tmp_path: Path) -> None:
     assert worker_build.sha256_file(first) == worker_build.sha256_file(second)
 
 
-def test_product_worker_is_one_reproducible_java8_artifact() -> None:
+def test_product_worker_matches_its_declared_runtime() -> None:
     launch = REPO_ROOT / "src/jolink_runtime/launch"
     lock = json.loads(
         (launch / "jdt-product-candidate.json").read_text(encoding="utf-8")
@@ -2931,17 +2931,13 @@ def test_product_worker_is_one_reproducible_java8_artifact() -> None:
                 payload = archive.read(name)
                 majors.add(int.from_bytes(payload[6:8], "big"))
 
-    assert lock["worker_java_minimum"] == 8
-    assert lock["worker_class_major"] == 52
-    assert majors == {52}
-    assert "Bundle-RequiredExecutionEnvironment: JavaSE-1.8" in manifest
+    assert lock["worker_java_minimum"] == 17
+    assert lock["worker_class_major"] == 44 + lock["worker_java_minimum"]
+    assert majors == {lock["worker_class_major"]}
+    assert "Bundle-RequiredExecutionEnvironment: JavaSE-17" in manifest
     assert hashlib.sha256(raw).hexdigest() == lock["worker_artifact"]["sha256"]
 
-    source = (EXPERIMENT / "worker/src/net/jolink/runtime/jdt/WorkerApplication.java").read_text(
-        encoding="utf-8"
-    )
-    for forbidden in ("Path.of(", ".isBlank()", "HexFormat", "[]::new"):
-        assert forbidden not in source
+    assert lock["worker_runtime"] == "temurin-21"
 
 
 def test_diagnostic_identity_ignores_marker_enumeration_order() -> None:

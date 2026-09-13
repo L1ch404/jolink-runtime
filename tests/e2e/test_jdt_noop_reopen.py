@@ -71,7 +71,7 @@ def test_noop_reopen_preserves_incremental_tree(
         kwargs = dict(
             root=lease.root,
             candidate=candidate,
-            worker_java_home=java,
+            worker_java_home=candidate.select_worker_java().home,
             source_roots=(app / "src",),
             classpath_entries=libraries,
             source_encoding="UTF-8",
