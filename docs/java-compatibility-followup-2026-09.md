@@ -1,5 +1,80 @@
 # 第一批开源兼容性：小范围修复与待讨论项
 
+## 最新汇总（2026-09-13，优先于下方历史记录）
+
+源码生成改动已提交为 `24df38e`。以下将已解决的入口问题、当前确认的项目阻断、
+尚未覆盖的能力分开，不把同一问题重复记账，也不把越过入口当作项目全流程通过。
+
+2026-09-13后续：U1的私有源码包路径适配已实现（当前未提交）。Checkstyle原SHA
+通过真实MCP完成4079份源码FULL，0 errors；6个相关测试类共132项通过。
+新MCP无变更重开不编译；临时修改一个原默认包样本后，实际INCREMENTAL只编译
+1个文件，相关15项测试通过，恢复后再次通过，原项目git状态干净。
+这解决的是U1及所选测试，不代表Checkstyle全部测试套件已验收。
+映射持久化、性能和通用回归见[源码布局适配](jdt-source-layout.zh-CN.md)。
+
+### 当前项目阻断
+
+| 编号 | 当前问题 | 最新事实 / 与旧问题的关系 | 下一步 |
+|---|---|---|---|
+| U2 | Guava 的13项泛型错误 | 目录定位、排序已解决，仍有递归通配符/泛型转换错误；尚未区分编译输入差异与当前ECJ缺陷。与U1不是同一个根因，不能因U1是映射问题就认定Guava也一样 | 缩小具体失败表达式并对齐输入；不承诺升级必然解决 |
+| U3 | Java17 source/target | MyBatis的main/test配置已分开，正确读到test Java17；目前明确返回JDT_TARGET_PLATFORM_UNSUPPORTED。新版Petclinic也受此能力限制。不是Worker不能运行于JDK17 | 按用户决定暂停JDT升级；以后升级并回归系统库、APT与增量链路 |
+| U4 | Error Prone等javac专属检查 | TestNG/Mockito相关配置仍未转成“明确不执行检查但继续编译”的行为。Gradle构建逻辑、动态参数导出、main/test分离已解决，不能再用这些旧原因解释它们。TestNG框架本身已通过测试 | 当前只记录、不实现检查；放行项目并说明检查未执行的策略需另行接入、复跑项目 |
+
+### 已知能力边界（不冒充本轮新发现的失败）
+
+| 类别 | 仍未完成的部分 | 当前边界 |
+|---|---|---|
+| 生成任务 | Gradle生成任务、依赖其他生命周期/fork的Maven生成链、具体protobuf/OpenAPI项目验收 | Maven显式准备阶段及ANTLR/模板生成已支持，不应再统称“生成源码不支持”；APT生成也已经支持 |
+| 生成输入缓存 | 远端、插件隐含输入、仅以整个项目根寻找输入等情况 | 现有本地配置路径跟踪不能保证覆盖这些变化，存在缓存过时风险；需补输入表达，不能当作已完整支持 |
+| 测试运行配置 | 部分tags/engines/groups过滤、并行、重试、多fork及其他排序策略 | 字母正序/倒序、明确类/方法选择、已有运行参数已支持；剩余选项按实际项目补，不重造完整Surefire |
+| 其他编译/模块配置 | 未映射编译参数、processor-module-path等未覆盖组合 | 名称选择、-A参数和-Xpkginfo:always已解决，不再混在此项；其他组合需实际验证 |
+
+### 已解决，不再作为待办
+
+- 旧Petclinic启动中的direct-javac遗留路径；已有启动、HTTP、reload/restart和测试证据。
+- Maven真实源码根/模块定位、Gradle build-logic加载与ArgumentProvider求值。
+- main/test各自的语言级别、依赖、Processor与参数表达（不等于已支持Java17编译）。
+- Processor加载路径、显式名称、-A参数、Lombok/MapStruct初始化，以及无值flag适配。
+- Surefire字母排序、MyBatis的useIncrementalCompilation拦截、Checkstyle的-Xpkginfo:always。
+- Checkstyle所需ANTLR生成及Maven源码准备；U1包路径适配已实现，132项所选测试通过。
+
+已有项目通过证据包括旧Petclinic的22项、Commons Lang的12项所选测试、MapStruct
+示例的所选测试。它们不是每个项目全部测试套件的验收，也不是本次重新全量跑分。
+
+### U1 初步定位证据（修复前，保留原因链）
+
+Checkstyle通过build-helper把src/test/resources等目录加入test source roots，这是
+项目真实配置。相关样本和测试用例明确覆盖“没有package声明”的情况，不能给文件
+补package来让编译通过，否则改变了被测输入。
+
+本机对照使用原6个文件，并补入原项目的InputRedundantImportCheckClearState.java
+满足其中一个文件的通配符导入。没有补假类、没有修改这些源码：
+
+| 路径 | 结果 |
+|---|---|
+| javac11，显式文件输入，--release11 | 成功；6个顶层class均位于默认包 |
+| 产品中相同JDT3.25的ECJ batch，-11 | 成功；6个顶层class均位于默认包 |
+| 真实MCP：一个原样文件放在临时工程src/main/java/fixtures/deep下 | JDT_TEST_FULL_COMPILE_FAILED，声明包与fixtures.deep不符 |
+| 仅将临时文件移至src/main/java根，字节内容不变 | 1项反射加载测试通过，类名为原默认包类名 |
+| 移回深层目录 | 增量编译再次返回相同包名诊断（JDT_TEST_COMPILE_FAILED） |
+
+产品接线位置：jdt_modules.py的_materialize_sources和_private_path_for_workspace_source
+保留相对物理目录，Worker通过JavaCore.newSourceEntry建立JDT源目录。JDT的
+[SourceFile](https://github.com/eclipse-jdt/eclipse.jdt.core/blob/R4_19/org.eclipse.jdt.core/model/org/eclipse/jdt/internal/core/builder/SourceFile.java)
+据此推导expected package；
+[CompilationUnitScope](https://github.com/eclipse-jdt/eclipse.jdt.core/blob/R4_19/org.eclipse.jdt.core/compiler/org/eclipse/jdt/internal/compiler/lookup/CompilationUnitScope.java)
+发现不一致后报错，错误恢复还会采用expected package。因此不是把错误降级就能
+保证语义正确。
+
+当时的初步方向：保留用户文件/资源路径，在私有JDT视图中按实际声明包安排源码或调整
+source entries，复用现有source map。真正实施时需验证文件增删、package变更、
+同名映射冲突与重开恢复；当时尚未实施。后续实现及验收见本节顶部更新。
+
+原始诊断JSON和MCP调用记录只留在本机。此次javac仅作诊断对照，没有恢复产品
+direct-javac路线。
+
+---
+
 后续更新：用户已确认移除产品 direct-javac 路线。下面保留第一轮状态；旧 Petclinic
 启动阻断现已消除，真实 MCP 启动、HTTP、reload、restart 已通过，见
 [移除记录](direct-javac-retirement.zh-CN.md)。其他待讨论项不因此视为已解决。

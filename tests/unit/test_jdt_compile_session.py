@@ -4,8 +4,8 @@ import base64
 import hashlib
 import json
 import logging
-import subprocess
 import shutil
+import subprocess
 import threading
 import time
 import zipfile
@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jolink_runtime.launch import jdt_compile_session as session_module
 from jolink_runtime.launch.jdt_compile_session import (
     JdtCandidate,
     JdtCompileError,
@@ -504,6 +505,129 @@ def test_compile_ready_is_false_until_initial_full_build_completes(
     assert session.ready is False
     session.accept_baseline()
     assert session.ready is True
+
+
+def test_package_mapping_persistence_and_changed_files_only(tmp_path, monkeypatch):
+    session, _app, worker = _session(tmp_path, monkeypatch)
+    root = session.source_roots[0]
+    foo = root / "fixtures/deep/Foo.java"
+    foo.parent.mkdir(parents=True)
+    foo.write_text("class Foo {}")
+    assert session.start().compile_ok
+    session.accept_baseline()
+    private = session.private_source / "Foo.java"
+    assert session._source_map[foo] == private
+    assert not (session.private_source / "fixtures/deep/Foo.java").exists()
+    assert json.loads((session.root / "source-index.json").read_text())["sources"][str(foo)][0] == "src/Foo.java"
+
+    def no_parse(*args):
+        raise AssertionError("unchanged source was parsed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_module, "source_relative_path", no_parse)
+        session._restore_persisted_source_map()
+        assert session.workspace_source_changes() == ()
+        assert session.compile(()).compiled_source_count == 0
+        assert session.compile((foo,)).compiled_source_count == 0
+
+    parsed = []
+    original_parser = session_module.source_relative_path
+    def parse(content, name, encoding):
+        parsed.append(name)
+        return original_parser(content, name, encoding)
+    monkeypatch.setattr(session_module, "source_relative_path", parse)
+    foo.write_text("package moved; class Foo {}")
+    session.compile(session.workspace_source_changes())
+    assert parsed == ["Foo.java"]
+    assert not private.exists()
+    assert session._source_map[foo] == session.private_source / "moved/Foo.java"
+    assert session.workspace_source_changes() == ()
+    assert worker.commands.count("BUILD\tFULL") == 1
+    foo.unlink()
+    session.compile(session.workspace_source_changes())
+    assert foo not in session._source_map
+    assert not (session.private_source / "moved/Foo.java").exists()
+    assert parsed == ["Foo.java"]  # deletion uses saved path, no content read
+    session._restore_persisted_source_map()
+    assert session.workspace_source_changes() == ()
+
+
+def test_old_source_index_remaps_once_without_forcing_full(tmp_path, monkeypatch):
+    session, _app, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    foo = session.source_roots[0] / "deep/Foo.java"
+    foo.parent.mkdir(parents=True)
+    foo.write_text("class Foo {}")
+    old = session.private_source / "deep/Foo.java"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(foo.read_bytes())
+    session._remember_source(foo, old)
+    session.save_source_index()
+    index = session.root / "source-index.json"
+    value = json.loads(index.read_text())
+    value.pop("source_layout")
+    index.write_text(json.dumps(value))
+    session._restore_persisted_source_map()
+    session.compile(session.workspace_source_changes())
+    assert not old.exists()
+    assert session._source_map[foo] == session.private_source / "Foo.java"
+    assert worker.commands.count("BUILD\tFULL") == 1
+    session._restore_persisted_source_map()
+    assert session.workspace_source_changes() == ()
+
+
+def test_package_mapping_collision_and_batch_swap(tmp_path, monkeypatch):
+    session, _app, _worker = _session(tmp_path, monkeypatch)
+    root = session.source_roots[0]
+    one, two = root / "one/Foo.java", root / "two/Foo.java"
+    for path, package in ((one, "a"), (two, "b")):
+        path.parent.mkdir(parents=True)
+        path.write_text(f"package {package}; class Foo {{}}")
+    session.start()
+    session.accept_baseline()
+    one.write_text("package b; class Foo { int x; }")
+    with pytest.raises(JdtCompileError, match="compilation path"):
+        session.compile((one,))
+    assert (session.private_source / "a/Foo.java").exists()
+    assert (session.private_source / "b/Foo.java").read_text() == "package b; class Foo {}"
+    two.write_text("package a; class Foo { int y; }")
+    session.compile((one, two))
+    assert session._source_map[one] == session.private_source / "b/Foo.java"
+    assert session._source_map[two] == session.private_source / "a/Foo.java"
+
+
+def test_module_layout_uses_each_scope_encoding(tmp_path):
+    from jolink_runtime.launch.jdt_modules import ModuleCompileSession
+
+    module = tmp_path / "project"
+    main, test = module / "main", module / "tests"
+    main.mkdir(parents=True)
+    test.mkdir()
+    one, two = main / "One.java", test / "Two.java"
+    one.write_bytes("package 中文; class One {}".encode("gbk"))
+    two.write_bytes("package 中文; class Two {}".encode("utf-8"))
+    session = ModuleCompileSession(
+        root=tmp_path / "session", candidate=_candidate(tmp_path),
+        worker_java_home=tmp_path / "jdk", source_roots=(main,),
+        classpath_entries=(), source_encoding="UTF-8", target_module=module,
+        split_tests=True,
+        modules=({
+            "module_root": str(module), "source_roots": [str(main)],
+            "test_source_roots": [str(test)], "source_encoding": "GBK",
+            "output_directory": str(module / "target/classes"),
+            "test_output_directory": str(module / "target/test-classes"),
+            "classpath": [], "test_compiler": {"source_encoding": "UTF-8"},
+        },),
+    )
+    session._materialize_sources()
+    for source in (one, two):
+        mirrored = session._source_map[source]
+        assert mirrored.parts[-2:] == ("中文", source.name)
+        assert mirrored.read_bytes() == source.read_bytes()
+    session.save_source_index()
+    session._restore_persisted_source_map()
+    assert session.workspace_source_changes() == ()
 
 
 def test_initial_full_uses_frozen_launch_sources_then_incremental_reads_live_edit(

@@ -25,11 +25,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
+from ..core.diagnostic_logging import log_diagnostic
 from .build_world_identity import build_world_fingerprint
+from .java_source_layout import source_relative_path
+from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .product_assets import canonical_lf_bytes
 from .toolchain import JavaToolchainCandidate
-from ..core.diagnostic_logging import log_diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -1162,32 +1163,59 @@ class PersistentJdtCompileSession:
                     "JDT_SESSION_NOT_READY", "The JDT CompileSession is not active."
                 )
             touched: list[str] = []
-            selected = []
+            selected = {}
+            index_changed = False
             for raw in source_files:
                 source = raw.expanduser().resolve(strict=False)
-                private = self._source_map.get(source)
-                if private is None:
-                    private = self._private_path_for_workspace_source(source)
+                content = source.read_bytes() if source.is_file() else None
+                previous = self._source_map.get(source)
+                if (
+                    content is not None and previous is not None
+                    and source in self._source_stamps and previous.is_file()
+                    and content == previous.read_bytes()
+                ):
+                    # Explicit reload of unchanged bytes needs no header parse.
+                    # A legacy index has no stamps until its layout is migrated.
+                    index_changed |= self._source_stamp(source) != self._source_stamps[source]
+                    self._remember_source(source, previous)
+                    continue
+                private = (
+                    self._private_path_for_workspace_source(source, content)
+                    if content is not None else self._source_map.get(source)
+                )
                 if private is None:
                     raise JdtCompileError(
                         "SOURCE_OUTSIDE_BUILD_WORLD",
                         "A reload source is outside this CompileSession.",
                     )
-                selected.append((source, private))
-            for source, private in selected:
-                content = source.read_bytes() if source.is_file() else None
+                selected[source] = (private, content)
+            # Check destinations once before writes, including package swaps in
+            # one batch. Never silently overwrite another compilation unit.
+            owners = {p: s for s, p in self._source_map.items() if s not in selected}
+            planned = {}
+            for source, (private, content) in selected.items():
+                if content is None:
+                    continue
+                self._check_source_collision(private, content, owners)
+                if private in planned and planned[private] != content:
+                    self._source_collision()
+                planned[private] = content
+            retained = set(owners) | set(planned)
+            for source in selected:
+                old = self._source_map.pop(source, None)
+                self._source_stamps.pop(source, None)
+                if old is not None and old not in retained:
+                    old.unlink(missing_ok=True)
+                    touched.append(old.relative_to(self.private_project).as_posix())
+            for source, (private, content) in selected.items():
+                if content is None:
+                    continue
                 original = private.read_bytes() if private.is_file() else None
                 self._remember_source(source, private)
                 if content == original:
                     continue
                 private.parent.mkdir(parents=True, exist_ok=True)
-                if content is None:
-                    private.unlink(missing_ok=True)
-                    self._source_map.pop(source, None)
-                    self._source_stamps.pop(source, None)
-                else:
-                    private.write_bytes(content)
-                    self._source_map[source] = private
+                private.write_bytes(content)
                 touched.append(private.relative_to(self.private_project).as_posix())
             if touched:
                 result = self._build(
@@ -1200,6 +1228,8 @@ class PersistentJdtCompileSession:
                 if self.baseline_main_output is not None or self.baseline_test_output is not None:
                     self._restore_frozen_resources()
             else:
+                if selected or index_changed:
+                    self.save_source_index()
                 result = JdtCompileResult(
                     compile_ok=self._working_compile_state == "valid",
                     actual_build_kind=None,
@@ -1219,18 +1249,31 @@ class PersistentJdtCompileSession:
                 )
             return replace(result, **self._publication_delta())
 
-    def _private_path_for_workspace_source(self, source: Path) -> Path | None:
+    def _private_path_for_workspace_source(
+        self, source: Path, content: bytes | None = None,
+    ) -> Path | None:
         matches: list[Path] = []
-        for roots, destination in (
-            (self.source_roots, self.private_source),
-            (self.test_source_roots, self.private_test_source),
-        ):
-            for root in roots:
-                if source.is_relative_to(root):
-                    matches.append(destination / source.relative_to(root))
+        for root, _baseline, destination, encoding in self._source_locations():
+            if source.is_relative_to(root):
+                relative = (
+                    source_relative_path(content, source.name, encoding)
+                    if content is not None else None
+                )
+                matches.append(destination / (relative or source.relative_to(root)))
         if len(matches) != 1:
             return None
         return matches[0]
+
+    @staticmethod
+    def _source_collision() -> None:
+        raise JdtCompileError(
+            "SOURCE_ROOT_COLLISION",
+            "Two source roots map different Java files to one compilation path.",
+        )
+
+    def _check_source_collision(self, private, content, owners) -> None:
+        if private in owners and private.read_bytes() != content:
+            self._source_collision()
 
     def class_file(self, relative: str) -> tuple[str, Path]:
         return relative, self.output_directory / relative
@@ -1303,6 +1346,7 @@ class PersistentJdtCompileSession:
         path = self.root / "source-index.json"
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps({
+            "source_layout": "package-v1",
             "sources": value,
             "compile_state": self._working_compile_state,
             "error_count": self._last_compile_error_count,
@@ -1393,36 +1437,40 @@ class PersistentJdtCompileSession:
         self._poison(reason)
 
     def _materialize_sources(self) -> None:
-        self._materialize_source_group(
-            source_roots=self.source_roots,
-            baseline_roots=self.baseline_source_roots,
-            destination_root=self.private_source,
-        )
-        if self.test_source_roots:
+        for root, baseline, destination, encoding in self._source_locations():
             self._materialize_source_group(
-                source_roots=self.test_source_roots,
-                baseline_roots=self.baseline_test_source_roots,
-                destination_root=self.private_test_source,
+                source_roots=(root,), baseline_roots=(baseline,),
+                destination_root=destination, encoding=encoding,
             )
+        self.private_source.mkdir(parents=True, exist_ok=True)
+
+    def _source_locations(self):
+        for roots, baselines, destination in (
+            (self.source_roots, self.baseline_source_roots, self.private_source),
+            (self.test_source_roots, self.baseline_test_source_roots, self.private_test_source),
+        ):
+            for root, baseline in zip(roots, baselines):
+                yield root, baseline, destination, self.source_encoding
 
     def _synchronize_persisted_sources(self) -> None:
         self._source_map.clear()
-        self._synchronize_persisted_source_group(
-            source_roots=self.source_roots,
-            baseline_roots=self.baseline_source_roots,
-            destination_root=self.private_source,
-        )
-        if self.test_source_roots:
+        self._source_stamps.clear()
+        groups = {}
+        for root, baseline, destination, encoding in self._source_locations():
+            roots, baselines = groups.setdefault((destination, encoding), ([], []))
+            roots.append(root)
+            baselines.append(baseline)
+        for (destination, encoding), (roots, baselines) in groups.items():
             self._synchronize_persisted_source_group(
-                source_roots=self.test_source_roots,
-                baseline_roots=self.baseline_test_source_roots,
-                destination_root=self.private_test_source,
+                source_roots=roots, baseline_roots=baselines,
+                destination_root=destination, encoding=encoding,
             )
 
     def _restore_persisted_source_map(self) -> None:
         """Reconnect original source paths without changing the saved mirror."""
 
         self._source_map.clear()
+        self._source_stamps.clear()
         index = self.root / "source-index.json"
         if index.is_file():
             saved = json.loads(index.read_text(encoding="utf-8"))
@@ -1432,7 +1480,7 @@ class PersistentJdtCompileSession:
             for original, (relative, stamp) in saved.get("sources", saved).items():
                 source = Path(original)
                 self._source_map[source] = self.private_project / relative
-                if len(stamp) == 2:
+                if len(stamp) == 2 and saved.get("source_layout") == "package-v1":
                     self._source_stamps[source] = tuple(stamp)
             return
         for source_roots, destination_root in (
@@ -1468,6 +1516,7 @@ class PersistentJdtCompileSession:
         source_roots: Sequence[Path],
         baseline_roots: Sequence[Path],
         destination_root: Path,
+        encoding: str | None = None,
     ) -> None:
         if not destination_root.is_dir():
             raise JdtCompileError(
@@ -1483,10 +1532,14 @@ class PersistentJdtCompileSession:
                         "SOURCE_LINK_UNSUPPORTED",
                         "CompileSession source roots may not contain links.",
                     )
-                relative = baseline_source.relative_to(baseline_root)
+                relative = (
+                    source_relative_path(
+                        baseline_source.read_bytes(), baseline_source.name, encoding or self.source_encoding,
+                    ) or baseline_source.relative_to(baseline_root)
+                )
                 key = relative.as_posix()
                 digest = _sha256_file(baseline_source)
-                source = source_root / relative
+                source = source_root / baseline_source.relative_to(baseline_root)
                 existing = desired.get(key)
                 if existing is not None and existing[0] != digest:
                     raise JdtCompileError(
@@ -1528,7 +1581,7 @@ class PersistentJdtCompileSession:
                 )
                 os.utime(destination, ns=(forced_mtime, forced_mtime))
             for source in workspace_sources:
-                self._source_map[source.resolve(strict=False)] = destination
+                self._remember_source(source.resolve(strict=False), destination)
 
     def _materialize_source_group(
         self,
@@ -1536,9 +1589,10 @@ class PersistentJdtCompileSession:
         source_roots: Sequence[Path],
         baseline_roots: Sequence[Path],
         destination_root: Path,
+        encoding: str | None = None,
     ) -> None:
-        destination_root.mkdir(parents=True, exist_ok=False)
-        mapped: dict[str, str] = {}
+        destination_root.mkdir(parents=True, exist_ok=True)
+        owners = {private: source for source, private in self._source_map.items()}
         for source_root, baseline_root in zip(
             source_roots, baseline_roots
         ):
@@ -1548,20 +1602,18 @@ class PersistentJdtCompileSession:
                         "SOURCE_LINK_UNSUPPORTED",
                         "CompileSession source roots may not contain links.",
                     )
-                relative = baseline_source.relative_to(baseline_root)
-                source = source_root / relative
-                key = relative.as_posix()
-                digest = _sha256_file(baseline_source)
-                if key in mapped and mapped[key] != digest:
-                    raise JdtCompileError(
-                        "SOURCE_ROOT_COLLISION",
-                        "Two source roots map different Java files to one path.",
-                    )
-                mapped[key] = digest
+                content = baseline_source.read_bytes()
+                physical = baseline_source.relative_to(baseline_root)
+                relative = source_relative_path(
+                    content, baseline_source.name, encoding or self.source_encoding,
+                ) or physical
+                source = (source_root / physical).resolve(strict=False)
                 destination = destination_root / relative
+                self._check_source_collision(destination, content, owners)
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(baseline_source, destination)
-                self._remember_source(source.resolve(strict=False), destination)
+                destination.write_bytes(content)
+                self._remember_source(source, destination)
+                owners[destination] = source
 
     @staticmethod
     def _copy_frozen_resources(source_root: Path, output_root: Path) -> None:
@@ -1802,6 +1854,22 @@ class PersistentJdtCompileSession:
                 if key in {"resource", "module", "line", "severity_name", "message"}
             }
             for diagnostic in raw_diagnostics
+        )
+        originals = (
+            {private: str(source) for source, private in self._source_map.items()}
+            if diagnostics else {}
+        )
+        diagnostics = tuple(
+            {
+                **diagnostic,
+                "resource": originals.get(
+                    self.private_project / str(diagnostic.get("module", ""))
+                    / str(diagnostic.get("resource", "")),
+                    diagnostic.get("resource"),
+                ),
+            }
+            if "resource" in diagnostic else diagnostic
+            for diagnostic in diagnostics
         )
         compiled_source_units = tuple(
             sorted({str(value).replace("\\", "/") for value in compiled})

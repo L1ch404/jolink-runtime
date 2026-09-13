@@ -52,6 +52,7 @@ class ModuleCompileSession(PersistentJdtCompileSession):
             else self.private_project / self.target_name / "test-bin"
         )
         self._module_destinations = {}
+        self._module_encodings = {}
         self._outputs = {}
         self.projects = []
         for module in self.modules:
@@ -91,6 +92,7 @@ class ModuleCompileSession(PersistentJdtCompileSession):
             ):
                 for source in module.get(field, ()):
                     self._module_destinations[Path(source)] = destination / leaf
+                    self._module_encodings[Path(source)] = module["source_encoding"]
             self._outputs[str(Path(module["output_directory"]))] = destination / "bin"
             if not split_tests:
                 self._outputs[str(Path(module["test_output_directory"]))] = (
@@ -98,34 +100,19 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                 )
 
     def _materialize_sources(self):
-        for source, destination in self._module_destinations.items():
-            if not source.is_dir():
-                continue
-            # _materialize_source_group also records the original -> mirror index.
-            if destination.exists():
-                import shutil
-
-                for item in source.rglob("*.java"):
-                    copied = destination / item.relative_to(source)
-                    copied.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(item, copied)
-                    self._remember_source(item.resolve(), copied)
-            else:
-                self._materialize_source_group(
-                    source_roots=(source,),
-                    baseline_roots=(source,),
-                    destination_root=destination,
-                )
+        for source, baseline, destination, encoding in self._source_locations():
+            self._materialize_source_group(
+                source_roots=(source,), baseline_roots=(baseline,),
+                destination_root=destination, encoding=encoding,
+            )
         for module in self.projects:
             (self.private_project / module["name"] / "src").mkdir(
                 parents=True, exist_ok=True
             )
 
-    def _private_path_for_workspace_source(self, source):
+    def _source_locations(self):
         for root, destination in self._module_destinations.items():
-            if source.is_relative_to(root):
-                return destination / source.relative_to(root)
-        return None
+            yield root, root, destination, self._module_encodings[root]
 
     def workspace_source_roots(self):
         return tuple(self._module_destinations)
