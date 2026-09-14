@@ -10,12 +10,13 @@ from pathlib import Path
 
 from .controller import LaunchCancelled, LaunchPipelineFailure
 from .jdt_compile_session import (
-    JdtCandidate, JdtCompileError, PersistentJdtCompileSession,
+    JdtCompileError, PersistentJdtCompileSession,
     discover_target_system_entries, lombok_worker_jvm_arguments,
     select_target_system_home,
 )
 from .project_session import JavaProjectSession
 from .jdt_modules import ModuleCompileSession
+from .runtime_preparation import prepared_runtime
 
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,9 @@ class JdtLaunchService:
         try:
             context.check_cancelled()
             session.begin_jdt_bootstrap()
-            candidate = JdtCandidate.load_product()
-            selected = candidate.select_worker_java((prepared.build_jdk.home,))
+            candidate, selected = prepared_runtime(
+                (prepared.build_jdk.home,), check_request=context.check_cancelled
+            )
             persist_model = not prepared.probe_cache_reused or plan.worker_java_home != selected.home
             if plan.worker_java_home is None or not plan.system_entries:
                 target_home = select_target_system_home(

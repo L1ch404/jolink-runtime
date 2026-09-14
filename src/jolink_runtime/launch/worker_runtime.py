@@ -8,12 +8,18 @@ import os
 import platform
 import shutil
 import tarfile
-import tempfile
 import threading
+import uuid
 import zipfile
 from pathlib import Path
 
 from .runtime_download import download_file
+from .runtime_install import (
+    check_cancelled,
+    create_directory,
+    error_details,
+    report_progress,
+)
 
 logger = logging.getLogger(__name__)
 _install_lock = threading.Lock()
@@ -54,10 +60,20 @@ def managed_worker_java_home() -> Path:
     with _install_lock:
         if (home / executable).is_file():
             return home
-        root.parent.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=".install-", dir=root.parent))
+        create_directory(root.parent, parents=True, exist_ok=True)
+        staging = root.parent / (".install-" + uuid.uuid4().hex)
+        create_directory(staging)
         try:
+            check_cancelled()
             archive = staging / distribution["filename"]
+            report_progress(
+                phase="download_jdk",
+                completed_files=0,
+                total_files=1,
+                current_artifact=archive.name,
+                downloaded_bytes=0,
+                total_bytes=None,
+            )
             logger.info(
                 "jdt.worker.runtime.install version=%s platform=%s",
                 lock["version"],
@@ -70,8 +86,10 @@ def managed_worker_java_home() -> Path:
             )
             if actual_sha != distribution["sha256"]:
                 raise WorkerRuntimeError("Worker JDK archive checksum mismatch.")
+            check_cancelled()
+            report_progress(phase="install_jdk", completed_files=1)
             unpacked = staging / "runtime"
-            unpacked.mkdir()
+            create_directory(unpacked)
             if archive.suffix == ".zip":
                 with zipfile.ZipFile(archive) as bundle:
                     bundle.extractall(unpacked)
@@ -82,6 +100,7 @@ def managed_worker_java_home() -> Path:
                 raise WorkerRuntimeError(
                     "Worker JDK archive contains no Java executable."
                 )
+            check_cancelled()
             try:
                 unpacked.rename(root)
             except OSError:
@@ -89,6 +108,8 @@ def managed_worker_java_home() -> Path:
                     raise
             return home
         except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as error:
+            details = error_details(error)
+            logger.exception("jdt.worker.runtime.install_failed details=%s", details)
             raise WorkerRuntimeError(
                 "Unable to install the private Worker JDK. Prepare the Worker offline bundle "
                 "or set JOLINK_WORKER_JAVA_HOME to an installed JDK."

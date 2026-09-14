@@ -31,6 +31,7 @@ from .java_source_layout import source_relative_path
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .product_assets import canonical_lf_bytes
 from .runtime_download import download_file
+from .runtime_install import PreparationCancelled, check_cancelled, create_directory, error_details, report_progress
 from .toolchain import JavaToolchainCandidate
 
 logger = logging.getLogger(__name__)
@@ -266,25 +267,31 @@ class JdtCandidate:
         product_root: Path,
         legacy_roots: Sequence[Path],
     ) -> None:
-        product_root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        create_directory(product_root.parent, parents=True, exist_ok=True)
         temporary = product_root.parent / (
             f".{product_root.name}.{uuid.uuid4().hex}.tmp"
         )
         plugins = temporary / "plugins"
         configuration = temporary / "configuration"
-        plugins.mkdir(parents=True, mode=0o700)
-        configuration.mkdir(mode=0o700)
+        create_directory(plugins, parents=True)
+        create_directory(configuration)
+        jar_cache = product_root.parent / "plugins"
         artifact_name = "candidate"
         try:
+            create_directory(jar_cache, exist_ok=True)
             repository = str(lock["repository_url"]).rstrip("/")
-            for artifact in lock["artifacts"]:
+            for index, artifact in enumerate(lock["artifacts"]):
+                check_cancelled()
                 artifact_name = str(artifact["filename"])
+                report_progress(phase="download_jdt", current_artifact=artifact_name,
+                                completed_files=index, total_files=len(lock["artifacts"]),
+                                downloaded_bytes=None, total_bytes=None, source=None, attempt=None)
                 expected = str(artifact["sha256"])
                 destination = plugins / artifact_name
                 source = next(
                     (
                         root / "plugins" / artifact_name
-                        for root in legacy_roots
+                        for root in (jar_cache.parent, *legacy_roots)
                         if (root / "plugins" / artifact_name).is_file()
                         and _sha256_file(root / "plugins" / artifact_name)
                         == expected
@@ -307,6 +314,19 @@ class JdtCandidate:
                         context={"artifact": artifact_name},
                     )
 
+                cached = jar_cache / artifact_name
+                if source != cached:
+                    partial = jar_cache / f".{uuid.uuid4().hex}.{artifact_name}.part"
+                    try:
+                        shutil.copyfile(destination, partial)
+                        partial.replace(cached)
+                    finally:
+                        partial.unlink(missing_ok=True)
+                report_progress(completed_files=index + 1)
+
+            check_cancelled()
+            report_progress(phase="install_jdt", current_artifact=None,
+                            downloaded_bytes=None, total_bytes=None, source=None, attempt=None)
             worker = lock["worker_artifact"]
             artifact_name = str(worker["filename"])
             worker_bytes = base64.b64decode(
@@ -356,9 +376,11 @@ class JdtCandidate:
                     cls._load_root(lock, product_root)
                 except JdtCompileError:
                     raise error
-        except JdtCompileError:
+        except (JdtCompileError, PreparationCancelled):
             raise
         except Exception as error:
+            details = error_details(error)
+            logger.exception("jdt.install.failed artifact=%s details=%s", artifact_name, details)
             raise JdtCompileError(
                 "JDT_CANDIDATE_INSTALL_FAILED",
                 "The locked JDT Candidate could not be installed.",
@@ -385,6 +407,8 @@ class JdtCandidate:
                 if parsed.hostname == "download.eclipse.org" else None,
                 max_bytes=64 * 1024 * 1024,
             )
+        except PreparationCancelled:
+            raise
         except Exception as error:
             raise JdtCompileError(
                 "JDT_CANDIDATE_INSTALL_FAILED",

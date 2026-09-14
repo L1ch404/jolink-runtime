@@ -65,6 +65,8 @@ def test_real_http_mirror_then_official(tmp_path, monkeypatch, mirror_status):
         assert path.read_bytes() == b"pinned official bytes"
         assert sha == hashlib.sha256(path.read_bytes()).hexdigest()
         expected = ["/mirror/jdk/21/jdk.zip"]
+        if mirror_status == 503:
+            expected.append("/mirror/jdk/21/jdk.zip")
         if mirror_status != 200:
             expected.append("/official/jdk.zip")
         assert requests == expected
@@ -175,6 +177,8 @@ def test_real_http_cn_source_order(
             expected.append("/jolink/" + relative)
             assert "source=tuna" in caplog.text and "next=jolink" in caplog.text
             if jolink_status != 200:
+                if jolink_status == 503:
+                    expected.append("/jolink/" + relative)
                 expected.append("/official")
                 assert "source=jolink" in caplog.text and "next=official" in caplog.text
         assert requests == expected

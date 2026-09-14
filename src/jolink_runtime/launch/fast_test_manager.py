@@ -29,7 +29,6 @@ from .processor_path import processor_path, jdt_processor_paths, processor_setti
 from .idea_environment import IdeaEnvironmentImporter
 from .jdt_compile_session import (
     SUPPORTED_JAVA_LEVELS,
-    JdtCandidate,
     JdtCompileError,
     PersistentJdtCompileSession,
     discover_target_system_entries,
@@ -1271,9 +1270,11 @@ class FastTestManager:
         build_jdk: JavaToolchainCandidate,
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
-        candidate = JdtCandidate.load_product()
-        worker_java = candidate.select_worker_java(
-            (build_jdk.home, world.target_java_home)
+        from .runtime_preparation import prepared_runtime
+
+        candidate, worker_java = prepared_runtime(
+            (build_jdk.home, world.target_java_home),
+            check_request=attempt.require_not_cancelled,
         )
         target_home = select_target_system_home(
             (world.target_java_home, build_jdk.home), world.source_level

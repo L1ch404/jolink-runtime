@@ -13,6 +13,7 @@ from ..core.diagnostic_logging import (
     configure_private_diagnostic_logging,
     diagnostic_log_level,
 )
+from ..launch.runtime_preparation import RuntimePreparation
 from ..server.mcp_server import create_mcp_server
 
 
@@ -39,7 +40,7 @@ def _configure_stderr_logging() -> None:
 
 
 async def run_stdio() -> None:
-    server = create_mcp_server()
+    server = create_mcp_server(preparation=RuntimePreparation())
     async with mcp.server.stdio.stdio_server() as (
         read_stream,
         write_stream,

@@ -470,6 +470,7 @@ class RuntimeMCPBoundary:
         cancellation_grace_seconds: float = 3.0,
         unclaimed_suspension_grace_seconds: float = 45.0,
         completed_wait_limit: int = 32,
+        preparation=None,
     ) -> None:
         self.dispatcher = dispatcher if dispatcher is not None else Dispatcher()
         self.session_key = session_key
@@ -489,6 +490,7 @@ class RuntimeMCPBoundary:
             unclaimed_suspension_grace_seconds
         )
         self._completed_wait_limit = max(completed_wait_limit, 1)
+        self._runtime_preparation = preparation
 
     def _register_http_trigger(
         self,
@@ -651,6 +653,27 @@ class RuntimeMCPBoundary:
             payload = _execution_error_payload(error)
 
         payload = _normalize_mcp_payload(name, args, payload)
+        request_needs_runtime = (
+            name == "java_application" and args.get("action") in {"launch", "test"}
+            and bool(args.get("project_path"))
+        )
+        if self._runtime_preparation is not None and (
+            request_needs_runtime or (name == "java_status" and args.get("action") == "status")
+        ):
+            accepted_request = request_needs_runtime and payload.get("ok") is not False
+            progress = self._runtime_preparation.snapshot(requested=accepted_request)
+            if request_needs_runtime and payload.get("ok") is False and progress and progress["state"] == "preparing":
+                progress = None
+            if progress is not None:
+                payload = dict(payload)
+                payload["runtime_preparation"] = progress
+                if progress["state"] == "preparing":
+                    payload["suggested_next_step"] = (
+                        "Runtime dependencies are being prepared in the background. "
+                        "Use java_status(action='status') to observe progress."
+                    )
+                    if accepted_request:
+                        payload["suggested_next_step"] += " This request will continue automatically; do not submit it again."
         return _call_tool_result(payload)
 
     def _start_waiter(
@@ -1729,15 +1752,21 @@ class RuntimeMCPBoundary:
 
 def create_mcp_server(
     dispatcher: DispatchesRuntimeTools | None = None,
+    *,
+    preparation=None,
 ) -> Server:
     """Create the official low-level MCP Server with Runtime handlers."""
-    boundary = RuntimeMCPBoundary(dispatcher)
+    boundary = RuntimeMCPBoundary(dispatcher, preparation=preparation)
 
     @asynccontextmanager
     async def lifespan(_server: Server):
+        if preparation is not None:
+            preparation.start()
         try:
             yield boundary
         finally:
+            if preparation is not None:
+                preparation.close()
             with anyio.CancelScope(shield=True):
                 await boundary.shutdown()
 
