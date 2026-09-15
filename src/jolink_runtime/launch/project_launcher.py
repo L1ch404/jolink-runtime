@@ -319,8 +319,9 @@ class ProjectLaunchPipeline:
         probe = ProductMavenProbe.load()
         local_repository = preferences.local_repository or Path.home() / ".m2/repository"
         settings = preferences.user_settings_file
-        if settings is None and (Path.home() / ".m2/settings.xml").is_file():
-            settings = Path.home() / ".m2/settings.xml"
+        settings_input = settings if settings is not None else Path.home() / ".m2/settings.xml"
+        if settings is None and settings_input.is_file():
+            settings = settings_input
         offline = "-o" in shlex.split(os.environ.get("MAVEN_ARGS", "")) or "--offline" in shlex.split(os.environ.get("MAVEN_ARGS", ""))
         prepared = probe.prepare(attempt_directory=directory / "probe",
             source_settings=settings, local_repository=local_repository, offline=offline)
@@ -362,7 +363,7 @@ class ProjectLaunchPipeline:
             fingerprint=hashlib.sha256(json.dumps(compilation_modules(modules), sort_keys=True).encode()).hexdigest(),
             configuration_inputs=tuple(dict.fromkeys((
                 *(m.pom_file for m in workspace.modules),
-                *((settings,) if settings is not None else ()),
+                settings_input,
                 *(workspace.build_root / ".mvn" / name for name in
                   ("maven.config", "jvm.config", "extensions.xml")),
             ))),
@@ -387,21 +388,25 @@ class ProjectLaunchPipeline:
 
     @staticmethod
     def _stabilize(prepared: PreparedProjectLaunch) -> PreparedProjectLaunch:
+        from .configuration_inputs import maven_configuration_files, build_configuration_stamps
+
         plan = prepared.jdt_build_world_plan
         if plan is None:
             return prepared
         if prepared.build_system == "maven":
             plan = replace(
                 plan,
-                configuration_inputs=tuple(dict.fromkeys((
-                    *plan.configuration_inputs,
-                    Path.home() / ".m2/settings.xml",
-                ))),
+                configuration_inputs=maven_configuration_files(
+                    plan.project_root, plan.configuration_inputs
+                ),
             )
         stable = stabilize_jdt_plan(
             plan,
             attempt_directory=prepared.attempt_directory,
         )
+        stable = replace(stable, configuration_stamps=build_configuration_stamps(
+            stable.project_root, prepared.build_system, stable.configuration_inputs
+        ))
         return replace(
             prepared,
             jdt_build_world_plan=stable,

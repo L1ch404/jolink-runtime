@@ -18,7 +18,7 @@ from .jdt_compile_session import (
 from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
-from .configuration_inputs import configuration_file_stamps as _configuration_stamps
+from .configuration_inputs import build_configuration_stamps
 
 
 _SCHEMA = "jolink.project-launch-cache.v3"
@@ -153,17 +153,20 @@ class ProjectLaunchCache:
             ):
                 return None
             plan_raw = raw["jdt_plan"]
+            configuration = raw.get("configuration_stamps")
+            if configuration is None or configuration != build_configuration_stamps(
+                project_root, build_system, plan_raw["configuration_inputs"]
+            ):
+                return None
             from .configuration_inputs import preparation_stamps
             if raw.get("preparation_stamps", {}) != preparation_stamps(plan_raw.get("preparation_inputs", ()), plan_raw.get("preparation_roots", ())):
                 return None
             if build_system == "gradle" and plan_raw.get("modules"):
-                stamps = raw.get("gradle_configuration", {})
-                if not stamps or stamps != _configuration_stamps(stamps):
-                    return None
                 if raw.get("gradle_environment") != _environment_inputs(raw.get("gradle_environment", ())):
                     return None
             resource_roots = _paths(plan_raw.get("resource_roots"))
             jdt_plan = JdtBuildWorldPlan(
+                configuration_stamps=dict(configuration),
                 project_root=_path(plan_raw["project_root"]).resolve(strict=False),
                 module_root=_path(plan_raw["module_root"]).resolve(strict=False),
                 source_roots=_paths(plan_raw["source_roots"]),
@@ -257,8 +260,8 @@ class ProjectLaunchCache:
         value = {
             "schema": _SCHEMA,
             "preparation_stamps": preparation_stamps(jdt_plan.preparation_inputs, jdt_plan.preparation_roots),
-            "gradle_configuration": _configuration_stamps(jdt_plan.configuration_inputs)
-                if build_system == "gradle" and jdt_plan.modules else {},
+            "configuration_stamps": jdt_plan.configuration_stamps if jdt_plan.configuration_stamps is not None
+                else build_configuration_stamps(project_root, build_system, jdt_plan.configuration_inputs),
             "gradle_environment": _environment_inputs(jdt_plan.configuration_environment_names)
                 if build_system == "gradle" and jdt_plan.modules else {},
             "intent": _intent_payload(intent),

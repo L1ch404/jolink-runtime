@@ -7,13 +7,16 @@ import json
 import os
 from pathlib import Path
 import uuid
-import xml.etree.ElementTree as ET
 
 from .jdt_workspace_store import JdtWorkspaceStore, jolink_cache_root
 from .test_build_world import JavaTestBuildWorld
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
-from .configuration_inputs import configuration_file_stamps, preparation_stamps
+from .configuration_inputs import (
+    configuration_file_stamps,
+    maven_configuration_files,
+    preparation_stamps,
+)
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -28,36 +31,23 @@ def _input_files(project: Path, build_system: str) -> tuple[Path, ...]:
             "gradle/wrapper/gradle-wrapper.properties",
         )
         return tuple(project / name for name in names if (project / name).is_file())
-    result: list[Path] = []
-    pending = [project / "pom.xml"]
-    seen: set[Path] = set()
-    while pending:
-        pom = pending.pop().resolve(strict=False)
-        if not pom.is_file() or pom in seen:
-            continue
-        seen.add(pom)
-        result.append(pom)
-        try:
-            root = ET.parse(pom).getroot()
-            pending.extend(pom.parent / str(item.text).strip() / "pom.xml"
-                for item in root.findall("./{*}modules/{*}module") if item.text)
-            parent = root.find("{*}parent")
-            if parent is not None:
-                relative = parent.find("{*}relativePath")
-                if relative is None or (relative.text or "").strip():
-                    pending.append(pom.parent / ((relative.text or "").strip() if relative is not None else "../pom.xml"))
-        except (ET.ParseError, OSError):
-            continue
-    for name in (".mvn/maven.config", ".mvn/jvm.config"):
-        path = project / name
-        if path.is_file():
-            result.append(path)
-    return tuple(result)
+    return maven_configuration_files(project)
 
 
 def _inputs(project: Path, build_system: str, additional=()) -> dict[str, str]:
+    if build_system == "maven":
+        return configuration_file_stamps(maven_configuration_files(project, additional))
     return configuration_file_stamps(dict.fromkeys(
         (*_input_files(project, build_system), *(Path(p) for p in additional))))
+
+
+def _world_configuration_files(world):
+    if world.build_system == "gradle":
+        return world.configuration_inputs
+    return tuple(dict.fromkeys((
+        world.module_root / "pom.xml",
+        *(Path(module["module_root"]) / "pom.xml" for module in world.modules),
+    )))
 
 
 class FastTestCache:
@@ -100,6 +90,7 @@ class FastTestCache:
             toolchain = raw["build_jdk"]
             return (
                 JavaTestBuildWorld(
+                    configuration_stamps=dict(raw["inputs"]),
                     test_run_order=world.get("test_run_order", ""),
                     processor_names=tuple(world.get("processor_names", ())),
                     processor_options=dict(world.get("processor_options", {})),
@@ -150,14 +141,13 @@ class FastTestCache:
 
     def save(self, world: JavaTestBuildWorld, build_jdk: JavaToolchainCandidate) -> None:
         def values(paths): return [str(path) for path in paths]
-        configuration = world.configuration_inputs if world.build_system == "gradle" else tuple(
-            dict.fromkeys((world.module_root / "pom.xml", *(Path(m["module_root"]) / "pom.xml" for m in world.modules))))
+        configuration = _world_configuration_files(world)
         payload = {
             "schema": "jolink.fast-test-world.v4",
             "preparation_stamps": preparation_stamps(
                 (p for m in world.modules for p in m.get("preparation_inputs", ())),
                 (p for m in world.modules for p in m.get("preparation_roots", ()))),
-            "inputs": _inputs(world.project_root, world.build_system, configuration),
+            "inputs": world.configuration_stamps if world.configuration_stamps is not None else self.input_snapshot(world),
             "configuration_files": values(configuration),
             "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
             "build_jdk": {
@@ -206,6 +196,10 @@ class FastTestCache:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         temporary.replace(path)
+
+    @staticmethod
+    def input_snapshot(world):
+        return _inputs(world.project_root, world.build_system, _world_configuration_files(world))
 
     @staticmethod
     def _preparation_current(raw):

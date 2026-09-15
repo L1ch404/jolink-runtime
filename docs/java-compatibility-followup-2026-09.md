@@ -1,17 +1,20 @@
 # 第一批开源兼容性：小范围修复与待讨论项
 
-## 最新汇总（2026-09-13，优先于下方历史记录）
+## 最新汇总（2026-09-15，优先于下方历史记录）
 
-### 当前工作区：JDT3.46＋私有Temurin21升级
+### 已提交基线与本轮范围
 
-已实现，尚待用户review；本节优先于后面的旧引擎记录。Java17语言限制已在新引擎
+JDT3.46＋私有Temurin21升级与APT修复已提交为`a168058`，不再是待review工作区。
+运行时后台下载准备已提交为`bb5ae70`；launch/test同步等待及统一timeout已提交为
+`3b2e2bd`。本轮仅修构建配置缓存感知、reload/restart反馈及其回归；下面明确暂缓的
+项目不借此扩范围。Java17语言限制已在新引擎
 消除，main8/test17与main11/test21的Maven/Gradle真实回归通过；新版Petclinic的
 所选测试、启动和HTTP通过。MyBatis在测试副本关闭format/license profile后87项
 通过，原样准备阶段仍阻断。详见[升级实现、离线准备、性能与剩余问题](jdt-346-upgrade.zh-CN.md)。
 
 新实测也暴露了回归，未用忽略错误或修改业务源码掩盖：Checkstyle5条注解位置错误，
 Guava14条泛型错误。隐式APT遗漏已定位到JavaProject缓存的旧首选项节点仍关闭APT，
-当前工作区已改为初始化编译选项时直接写入最终开关；详见升级文档第5项。
+`a168058`已改为初始化编译选项时直接写入最终开关，U7已关闭；详见升级文档第5项。
 Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换依赖、不增加版本拦截。
 
 源码生成改动已提交为 `24df38e`。以下将已解决的入口问题、当前确认的项目阻断、
@@ -24,7 +27,7 @@ Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换�
 这解决的是U1及所选测试，不代表Checkstyle全部测试套件已验收。
 映射持久化、性能和通用回归见[源码布局适配](jdt-source-layout.zh-CN.md)。
 
-### 当前项目阻断
+### 尚未解决的功能兼容项
 
 | 编号 | 当前问题 | 最新事实 / 与旧问题的关系 | 下一步 |
 |---|---|---|---|
@@ -32,7 +35,79 @@ Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换�
 | U4 | Error Prone等javac专属检查 | TestNG/Mockito相关配置仍未转成“明确不执行检查但继续编译”的行为。Gradle构建逻辑、动态参数导出、main/test分离已解决，不能再用这些旧原因解释它们。TestNG框架本身已通过测试 | 当前只记录、不实现检查；放行项目并说明检查未执行的策略需另行接入、复跑项目 |
 | U5 | Checkstyle新引擎注解位置错误 | 已定位为泛型方法类型参数后的声明/类型注解归属差异；独立ECJ及原生Eclipse Java Builder均复现，不是U1目录映射复发 | 2026-09-13用户决定只记录、暂不处理；保留原错误，不修改输入或屏蔽诊断，详见升级文档第2项 |
 | U6 | MyBatis准备阶段 | format profile中OpenRewrite fork被拒；关闭format后license处理等待。关闭两者后main8/test17编译和87项通过 | 后续讨论准备步骤；不把专项结果当成原样全通过 |
-| U7 | APT间歇性遗漏 | 真实MCP复现main编译器读取旧节点disabled，甚至可漏生成却测试通过；当前工作区已修复初始化开关 | 回归覆盖无编译期引用的生成物、main/test隔离、增量与重开，待review |
+| U8 | 旧Lombok1.18.20兼容 | 部分用法依赖旧ECJ内部接口，`@Builder(toBuilder=true)`等有已知失败；不是所有注解都不能使用 | 用户决定暂缓，不自动换项目依赖、不增加版本拦截 |
+| U9 | Reload遇到未加载类 | 同一源码的变更class中有未加载类时，整轮要求重新launch，连已加载外部类也不更新 | 用户决定暂缓，详细证据见下文 |
+| U10 | Gradle引用脚本漏入配置清单 | 真实MCP：`apply from: 'config/resources.gradle'`不在已记录输入内；只改脚本后，launch和Test仍复用旧模型 | 2026-09-15用户决定先记录，不实现脚本收集；不能用正则支持一个写法就宣称完整支持动态脚本 |
+
+U4与U6可合并讨论快速流程中构建步骤的边界：必要源码生成（如ANTLR）继续执行；
+格式化、license检查及javac专属质量检查是否留给正式构建，需要明确接线和说明。
+不能一概执行，也不能把所有准备步骤一起跳过。Guava的14条诊断不是14个独立根因。
+
+### 本轮：构建配置缓存感知（2026-09-15，工作区修复，待review）
+
+修复前的真实MCP对照只改资源目录配置，Java源码保持不变：
+
+| 修改位置 | stop后launch | Fast Test | 原因 |
+|---|---|---|---|
+| Maven pom.xml：resourcesA→resourcesB | 仍命中Probe缓存，HTTP返回A | 新资源B与新的测试参数生效，测试通过 | Maven启动缓存没有比较POM配置 |
+| Gradle build.gradle：同样修改 | 重新Probe，HTTP返回B | 新配置生效，测试通过 | 当前Probe记录的常规构建文件有比较 |
+| Gradle config/resources.gradle（apply from引用） | 仍命中缓存，HTTP返回A | 缓存仍是resourcesA及-Dexpected=A，按旧配置通过 | 引用脚本未进入配置输入清单，U10继续保留 |
+
+两种构建系统在配置修改后，对未改Java执行reload都曾返回`no_changes/applied=true`；
+restart也继续返回旧内容A。restart复用现有编译产物是既有语义，缺的是配置过期提示。
+另有缓存级复现：Profile导出的额外模块只记录了自身POM，未继续追踪其独立本地父POM。
+
+历史原因已追到`91ab10e`：移除重扫描时把整个旧is_fresh调用移除了，轻量POM检查
+也一起丢失；旧单测甚至要求“改了POM仍命中”。这不是JDT3.46或同步等待造成的。
+测试必须约束用户需要的行为，不能只固定当前实现的返回值。
+
+本轮改动范围：
+
+- 启动与Fast Test共用小范围Maven配置输入收集；入口/Probe模块/本地父链都参与，
+  包含Profile额外模块的父链；不扫描业务源码、class和依赖JAR。
+- 启动的settings输入按实际选择登记：显式自定义文件不再额外跟踪未使用的
+  `~/.m2/settings.xml`；使用默认路径时，即使文件不存在也记录，之后新增能触发重新Probe。
+- 配置快照随构建模型保存；启动时配置变化重新Probe。旧启动缓存没有快照时只重取
+  模型，不删整个.cache，也不重新下载Worker/JDK。
+- reload/restart按当前运行模型的快照检查，变化时返回`BUILD_CONFIGURATION_CHANGED`，
+  提示显式stop后launch；不停止当前JVM，不悄悄重编整个项目，不假报no_changes。
+- 快照在JDT编译前固定，不能在漫长FULL之后把中途改过的POM记成旧模型的新基线。
+- U10不在本轮实现范围；生成器隐藏/远端输入、未导出的仓库父POM等仍不能据此宣称
+  全部覆盖。只按配置文件内容比较，包括注释变化；不新增POM语义差异引擎。
+
+测试已覆盖：配置不变复用、只改源码/产物不重新Probe、POM增删改/无效XML、
+同mtime/size不同内容、父链/子模块/Profile模块、缺失文件随后出现、旧缓存、
+编译前快照及运行模型与后来磁盘缓存隔离。真实MCP验证新配置实际生效，而不只检查
+命令行或缓存标志。
+
+本轮macOS验收（工作区未提交，供review）：
+
+- 新增49项配置边界单测；与原有缓存测试合计58项通过。后续又补4项settings选择回归，
+  覆盖显式/默认及默认文件存在/不存在，并经过Probe参数生成、模型整理及缓存读取。
+  测试直接经过cache.save/load，
+  不只断言输入函数；明确禁止扫描/读取业务源码、class及依赖JAR来判断POM新旧。
+- settings调整后普通回归849 passed / 13 skipped；跳过项为未启用的其他E2E及平台条件，不是代码失败。
+- 新增3组真实MCP：Maven单模块、Maven父/子模块、Gradle常规配置。改配置后Test读到新值；
+  旧Runtime的reload/restart被明确提示且PID/HTTP旧行为保留；stop后launch实际读到新值。
+  配置不变跨MCP重开仍复用Probe，随后只改Java也复用Probe并实际运行新代码。
+  后续真实MCP还验证了IDEA指定自定义settings：缓存重开正常，单独修改该文件后重新Probe，
+  应用仍正确启动并返回预期HTTP内容。
+- 已有4组MCP回归通过：JDT持久化/reload、Maven三模块（标准/自定义测试根）、Gradle
+  Kotlin DSL多模块（包括增量、测试、取消、重开与Runtime-only依赖隔离）。
+- compileall、定向lint、git diff --check及离线wheel/sdist构建通过。
+
+新版旧缓存首次可能需要重新Probe；JDT是否重新FULL仍由模型身份和现有复用流程决定。
+没有为了通过测试手工删除用户缓存。本轮真实运行不等同于Windows公司项目已验收。
+
+### 下载体验与平台验证
+
+固定资产、国内镜像选择与现有Worker JDK覆盖均已实现。`bb5ae70`进一步修复了
+JAR逐文件留存、有限网络重试、底层错误日志、Windows新目录权限，并加入MCP启动后的
+后台准备与临时进度。不能再把这些当作尚未实现；详见[下载与镜像](runtime-download-mirror.zh-CN.md)。
+
+仍需区分网络条件与产品故障：清华部分环境异常请求/403、自建源公网带宽较低，
+不能保证所有国内网络都快。公司Windows曾在重置目录后恢复，但不等于新版所有
+Windows/Linux组合已验收；历史异常ACL不会由新建目录修复逻辑自动递归重置。
 
 ### Reload待办：未加载类（2026-09-13，用户决定先记录、不修改）
 
@@ -75,16 +150,20 @@ socket超时，不让后续普通命令继承30秒。真正超时/失联仍保�
 | 生成输入缓存 | 远端、插件隐含输入、仅以整个项目根寻找输入等情况 | 现有本地配置路径跟踪不能保证覆盖这些变化，存在缓存过时风险；需补输入表达，不能当作已完整支持 |
 | 测试运行配置 | 部分tags/engines/groups过滤、并行、重试、多fork及其他排序策略 | 字母正序/倒序、明确类/方法选择、已有运行参数已支持；剩余选项按实际项目补，不重造完整Surefire |
 | 其他编译/模块配置 | 未映射编译参数、processor-module-path等未覆盖组合 | 名称选择、-A参数和-Xpkginfo:always已解决，不再混在此项；其他组合需实际验证 |
+| 平台与JDK矩阵 | 新版Windows/Linux、更多JDK/Processor组合、完整JPMS | 已实测Java8/11/17/21；不能把Worker运行于21等同于所有目标版本已测，macOS证据不替代其他平台 |
+| 进程保活 | Worker跨MCP常驻、Test Runner保活 | 尚未实现，属于后续能力；已有磁盘缓存和Worker重开恢复不是跨MCP常驻 |
 
 ### 已解决，不再作为待办
 
 - 旧Petclinic启动中的direct-javac遗留路径；已有启动、HTTP、reload/restart和测试证据。
 - Maven真实源码根/模块定位、Gradle build-logic加载与ArgumentProvider求值。
-- main/test各自的语言级别、依赖、Processor与参数表达（不等于已支持Java17编译）。
+- main/test各自的语言级别、依赖、Processor与参数表达；Java17语言能力也已在新引擎实测。
 - Processor加载路径、显式名称、-A参数、Lombok/MapStruct初始化，以及无值flag适配。
 - Surefire字母排序、MyBatis的useIncrementalCompilation拦截、Checkstyle的-Xpkginfo:always。
 - Checkstyle所需ANTLR生成及Maven源码准备；U1包路径适配已实现，132项所选测试通过。
 - U3：新引擎已支持Java17编译；旧JDT3.25的限制留在下方历史记录。Java25/26等未实测组合不宣称已验证。
+- U7：APT旧首选项节点导致偶发漏跑/假成功，已随`a168058`修复并回归，不再列为未解决。
+- 已复现的HotSwap确认5秒超时已由`45beb4f`改为独立30秒等待；真正失联或超过30秒仍可unknown，不能混为同一个已修问题。
 
 已有项目通过证据包括旧Petclinic的22项、Commons Lang的12项所选测试、MapStruct
 示例的所选测试。它们不是每个项目全部测试套件的验收，也不是本次重新全量跑分。
@@ -122,6 +201,8 @@ source entries，复用现有source map。真正实施时需验证文件增删�
 direct-javac路线。
 
 ---
+
+## 历史记录（以下保留当时状态，不作为当前待办清单）
 
 后续更新：用户已确认移除产品 direct-javac 路线。下面保留第一轮状态；旧 Petclinic
 启动阻断现已消除，真实 MCP 启动、HTTP、reload、restart 已通过，见

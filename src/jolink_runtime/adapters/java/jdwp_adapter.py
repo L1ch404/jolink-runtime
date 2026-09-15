@@ -913,6 +913,9 @@ class JavaRuntime(Runtime):
                     ),
                 },
             )
+        configuration_error = JdtLaunchService.configuration_rejection(prepared)
+        if configuration_error is not None:
+            return configuration_error
         request = prepared.request
         if action.ready_port > 0:
             request = replace(

@@ -11,6 +11,7 @@ from ..adapters.java.jdwp_client import JDWPCommandOutcomeUnknown, JDWPCommandRe
 from .jdt_compile_session import JdtCompileError, PersistentJdtCompileSession
 from .project_session import JavaProjectSession, ProjectSessionError, ReloadStage
 from .reload_coordinator import BackgroundReloadCoordinator
+from .jdt_launch_service import JdtLaunchService
 
 
 class JdtReloadService:
@@ -21,6 +22,9 @@ class JdtReloadService:
         self, runtime: Any, action: RuntimeAction, *, attempt_id: str,
         generation: int, prepared: Any, project_session: JavaProjectSession,
     ) -> RuntimeResult:
+        configuration_error = JdtLaunchService.configuration_rejection(prepared)
+        if configuration_error is not None:
+            return configuration_error
         compiler = project_session.compile_session
         if not isinstance(compiler, PersistentJdtCompileSession) or not compiler.ready:
             return RuntimeResult(ok=False, error="JDT is not running.",

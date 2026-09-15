@@ -1270,6 +1270,8 @@ class FastTestManager:
         build_jdk: JavaToolchainCandidate,
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
+        if world.configuration_stamps is None:
+            world = replace(world, configuration_stamps=self._cache.input_snapshot(world))
         from .runtime_preparation import prepared_runtime
 
         candidate, worker_java = prepared_runtime(

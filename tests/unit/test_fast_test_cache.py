@@ -105,7 +105,7 @@ def test_reactor_cache_detects_upstream_pom_edit_without_reading_sources(tmp_pat
 
 
 def test_gradle_cache_uses_exported_subproject_build_files(tmp_path):
-    from jolink_runtime.launch.project_launch_cache import _configuration_stamps
+    from jolink_runtime.launch.configuration_inputs import configuration_file_stamps as _configuration_stamps
 
     (tmp_path / "settings.gradle").write_text("include 'lib', 'app'")
     script = tmp_path / "custom-module/location/build.gradle.kts"
@@ -127,7 +127,7 @@ def test_gradle_cache_uses_exported_subproject_build_files(tmp_path):
 
 
 def test_gradle_build_logic_inputs_detect_add_edit_remove_not_business_source(tmp_path):
-    from jolink_runtime.launch.project_launch_cache import _configuration_stamps
+    from jolink_runtime.launch.configuration_inputs import configuration_file_stamps as _configuration_stamps
 
     logic = tmp_path / "conventions/custom-source"
     logic.mkdir(parents=True)

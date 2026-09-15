@@ -12,7 +12,7 @@ from jolink_runtime.launch.project_launch_cache import ProjectLaunchCache
 from jolink_runtime.launch.toolchain import JavaToolchainCandidate
 
 
-def test_cache_reuses_persisted_model_without_revalidating_project_files(
+def test_cache_reuses_outputs_but_invalidates_changed_pom(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -135,4 +135,4 @@ def test_cache_reuses_persisted_model_without_revalidating_project_files(
         build_system="maven",
         ready_port=8080,
         startup_wait_timeout_seconds=12,
-    ) is not None
+    ) is None

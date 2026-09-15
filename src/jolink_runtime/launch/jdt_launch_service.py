@@ -1,4 +1,4 @@
-"""JDT-first startup using persisted inputs without repeating validation."""
+"""JDT-first startup with persisted inputs and small build-configuration snapshots."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from ..core.models import RuntimeResult
+from .configuration_inputs import build_configuration_stamps
 from .controller import LaunchCancelled, LaunchPipelineFailure
 from .jdt_compile_session import (
     JdtCompileError, PersistentJdtCompileSession,
@@ -23,6 +25,33 @@ logger = logging.getLogger(__name__)
 
 
 class JdtLaunchService:
+    @staticmethod
+    def configuration_rejection(prepared):
+        plan = prepared.jdt_build_world_plan
+        if plan is None:
+            return None  # Direct/non-JDT runtimes do not own a Probe model.
+        try:
+            current = build_configuration_stamps(
+                plan.project_root, prepared.build_system, plan.configuration_inputs
+            )
+            if plan.configuration_stamps is not None and current == plan.configuration_stamps:
+                return None
+        except OSError:
+            pass
+        return RuntimeResult(
+            ok=False,
+            error="Build configuration changed or its saved baseline is unavailable.",
+            data={
+                "error_code": "BUILD_CONFIGURATION_CHANGED",
+                "build_world_changes_pending": True,
+                "applied": False,
+                "suggested_next_step": (
+                    "Use stop then launch to refresh the build configuration. "
+                    "The current JVM has not been stopped; reload/restart cannot apply this change."
+                ),
+            },
+        )
+
     def prepare(self, runtime, context, request, prepared):
         plan = prepared.jdt_build_world_plan
         if plan is None:

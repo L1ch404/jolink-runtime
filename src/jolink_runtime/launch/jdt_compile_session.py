@@ -742,6 +742,7 @@ class JdtBuildWorldPlan:
     processor_options: dict[str, str | None] = field(default_factory=dict)
     preparation_inputs: tuple[Path, ...] = ()
     preparation_roots: tuple[Path, ...] = ()
+    configuration_stamps: dict[str, str] | None = None
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(

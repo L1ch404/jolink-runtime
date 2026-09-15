@@ -15,12 +15,21 @@ from jolink_runtime.adapters.java.jdwp_adapter import (
 )
 from jolink_runtime.adapters.java.jdwp_client import EventKind
 from jolink_runtime.core.models import RuntimeAction
+from jolink_runtime.launch.configuration_inputs import build_configuration_stamps
 from jolink_runtime.launch.project_session import JavaProjectSession
 from jolink_runtime.launch.jdt_compile_session import (
     JdtCompileError,
     JdtCompileResult,
     PersistentJdtCompileSession,
 )
+
+
+def _configuration_plan(project, **fields):
+    return SimpleNamespace(
+        project_root=project, configuration_inputs=(),
+        configuration_stamps=build_configuration_stamps(project, "maven", ()),
+        **fields,
+    )
 
 
 def _compile_class(tmp_path: Path, variant: str, source: str) -> bytes:
@@ -149,8 +158,8 @@ def test_jdt_reload_hotswap_uses_persistent_workspace_output(
             alias.symlink_to(project, target_is_directory=True)
         except OSError:
             pytest.skip("Creating directory symlinks is unavailable")
-    plan = SimpleNamespace(
-        project_root=alias if use_alias else project,
+    plan = _configuration_plan(
+        alias if use_alias else project,
         source_roots=(project / "src/main/java",),
     )
     prepared = ProjectUpdatePlan(
@@ -323,8 +332,8 @@ def test_jdt_reload_returns_attempt_before_background_compile_finishes(
 
     compiler = object.__new__(BlockingJdt)
     session.attach_compile_session(compiler)
-    plan = SimpleNamespace(
-        project_root=project,
+    plan = _configuration_plan(
+        project,
         source_roots=(project / "src/main/java",),
         is_fresh=lambda: True,
     )
@@ -371,7 +380,7 @@ def test_terminal_jdt_start_failure_is_not_reported_as_initializing(
     prepared = ProjectUpdatePlan(
         attempt_directory=tmp_path,
         project_session=session,
-        jdt_build_world_plan=SimpleNamespace(),
+        jdt_build_world_plan=_configuration_plan(tmp_path),
         jdt_unavailable_reason="JDT_CANDIDATE_INTEGRITY_MISMATCH",
         jdt_unavailable_details={
             "artifact": "worker.jar",
@@ -418,7 +427,7 @@ def test_jdt_reload_rejects_live_debug_observation_before_build(
     prepared = ProjectUpdatePlan(
         attempt_directory=tmp_path,
         project_session=session,
-        jdt_build_world_plan=SimpleNamespace(),
+        jdt_build_world_plan=_configuration_plan(tmp_path),
     )
     runtime = JavaRuntime()
     monkeypatch.setattr(
@@ -478,8 +487,8 @@ def test_poisoned_jdt_reload_clears_ready_product_state(
     compiler = object.__new__(PoisonedJdt)
     session.attach_compile_session(compiler)
     session.complete_jdt_bootstrap(10.0)
-    plan = SimpleNamespace(
-        project_root=project,
+    plan = _configuration_plan(
+        project,
         source_roots=(project / "src/main/java",),
         is_fresh=lambda: True,
     )
