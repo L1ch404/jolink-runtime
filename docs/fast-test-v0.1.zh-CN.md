@@ -89,9 +89,18 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 `source_files`可以省略。joLink会用持久源码mtime/size索引自动发现main/test变化，
 调用方显式提供的文件与实际变化文件合并后一次增量编译。
 
-短测试直接返回结果；慢测试返回`running + test_run_id`，使用`java_status`观察，
+`timeout`现在与启动统一表示本次工具调用的同步等待时间，默认30秒；大于30按30秒等，
+不报错；0表示提交后立即返回。该时间包含下载、准备和编译，不是每阶段各等一次。
+旧的启动等待参数已删除，不再兼容接收。
+
+短测试直接返回结果；仍未完成的测试返回当前状态和原`test_run_id`，使用`java_status`观察，
 或用`cancel_test`取消。断言失败仍是`ok=true, passed=false`；编译、Runner基础设施、
 超时等失败返回`ok=false`。
+
+同步等待到期不停止测试，Runner使用独立的内部300秒执行上限（Bootstrap上限不变）。
+下一步建议提示LLM自行评估等待间隔，可用sleep或PowerShell的Start-Sleep等待后查询，
+不固定建议秒数，也不生成终端命令。取消MCP等待本身不取消后台任务；要取消任务仍使用
+`cancel_test`。MCP退出依然通过原有生命周期清理任务。
 
 每次测试仍启动独立Runner JVM，避免测试之间共享静态状态。当前时间字段：
 

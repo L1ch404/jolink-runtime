@@ -217,7 +217,7 @@ def test_run_timeout_returns_starting_and_directs_status(
         "action": "run",
         "main_class": "Example",
         "ready_port": 8080,
-        "startup_wait_timeout_seconds": 0,
+        "timeout": 0,
     })
 
     result = runtime.run(action)
@@ -337,7 +337,7 @@ def test_restart_explicit_readiness_overrides_previous_configuration(
         "action": "restart",
         "main_class": "Example",
         "ready_port": 9090,
-        "startup_wait_timeout_seconds": 12,
+        "timeout": 12,
     })
 
     result = runtime.restart(action)

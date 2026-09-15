@@ -90,12 +90,10 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action._product_status = True
     action.configure_startup_readiness(
         ready_port=int(arguments.get("ready_port", 0)),
-        wait_timeout_seconds=float(
-            arguments.get("startup_wait_timeout_seconds", 30)
+        wait_timeout_seconds=(
+            0 if arguments.get("_mcp_background_launch") else min(action.timeout, 30)
         ),
-        wait_timeout_provided=(
-            "startup_wait_timeout_seconds" in arguments
-        ),
+        wait_timeout_provided="timeout" in arguments,
     )
     return action
 
@@ -216,9 +214,7 @@ def parse_project_launch_request(
         ),
         jdwp_port=int(arguments.get("jdwp_port", 5005)),
         ready_port=int(arguments.get("ready_port", 0)),
-        startup_wait_timeout_seconds=float(
-            arguments.get("startup_wait_timeout_seconds", 30)
-        ),
+        startup_wait_timeout_seconds=min(float(arguments.get("timeout", 30)), 30),
         build_system=build_system,
     )
 
@@ -253,6 +249,13 @@ class Dispatcher:
 
     def __init__(self, sessions: SessionManager | None = None) -> None:
         self.sessions = sessions if sessions is not None else SessionManager(JavaRuntime)
+
+    def application_waiter(self, action, payload, *, session_key="default"):
+        from ..launch.application_wait import application_waiter
+
+        return application_waiter(
+            self.sessions.get_runtime(session_key), action, payload
+        )
 
     def dispatch(
         self,

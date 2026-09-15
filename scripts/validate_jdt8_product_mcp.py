@@ -179,7 +179,7 @@ async def _run(
                         "launch_name": "HotReloadApp",
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 10,
+                        "timeout": 10,
                     },
                 )
                 if launch.get("ok") is not True:

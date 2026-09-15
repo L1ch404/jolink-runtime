@@ -54,7 +54,7 @@ Use `jar_path` instead of overloading `classpath` or inventing a main class:
   "app_args": ["--spring.profiles.active=local"],
   "jdwp_port": 5005,
   "ready_port": 8080,
-  "startup_wait_timeout_seconds": 30
+  "timeout": 30
 }
 ```
 
@@ -72,7 +72,7 @@ Use a local Java service that opens its application port at least three
 seconds after JDWP becomes reachable.
 
 1. Launch it with a free `jdwp_port`, its application `ready_port`, and
-   `startup_wait_timeout_seconds=0.1`.
+   `timeout=0.1`.
 2. Confirm `run` returns `ok=true`, `status=process_started`,
    `startup_state=starting`, `startup_wait_timed_out=true`, and
    `next_action=status`. The PID must remain alive.

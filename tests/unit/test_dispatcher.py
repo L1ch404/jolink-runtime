@@ -235,7 +235,7 @@ def test_runtime_action_defaults_and_boolean_coercions_are_preserved() -> None:
             "include_this": "y",
             "semantic_collections": "0",
             "ready_port": 8080,
-            "startup_wait_timeout_seconds": 12,
+            "timeout": 12,
         }
     )
     assert coerced.include_proxy is True
@@ -338,7 +338,7 @@ def test_project_launch_routes_without_changing_runtime_action(
             "build_system": "gradle",
             "jdwp_port": 6006,
             "ready_port": 8080,
-            "startup_wait_timeout_seconds": 12,
+            "timeout": 12,
         },
     )
 

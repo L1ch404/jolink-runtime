@@ -1,0 +1,156 @@
+import threading
+from types import SimpleNamespace
+
+import anyio
+import pytest
+
+from jolink_runtime.launch.application_wait import ApplicationWait, application_waiter
+from jolink_runtime.launch.contracts import LaunchAttempt, LaunchPhase
+from jolink_runtime.server import mcp_server
+from jolink_runtime.server.mcp_server import RuntimeMCPBoundary
+
+
+class Dispatcher:
+    def __init__(self, action):
+        self.action = action
+        self.started = threading.Event()
+        self.done = threading.Event()
+        self.calls = []
+        self.initial = {
+            "ok": True,
+            "status": "starting",
+            "attempt_id" if action == "launch" else "test_run_id": "original",
+        }
+        self.final = {**self.initial, "status": "completed"}
+
+    def dispatch(self, tool, args, **kwargs):
+        self.calls.append((tool, args))
+        if tool == "java_application" and args["action"] == self.action:
+            self.started.set()
+            return dict(self.initial)
+        if args["action"] in {"stop", "cancel_test"}:
+            self.final.update(ok=False, status="cancelled", error="cancelled")
+            self.done.set()
+        return {"ok": True}
+
+    def application_waiter(self, *args, **kwargs):
+        return ApplicationWait(
+            lambda: not self.done.is_set(),
+            lambda: dict(self.final if self.done.is_set() else self.initial),
+        )
+
+
+@pytest.mark.parametrize("action", ["launch", "test"])
+def test_wait_returns_completed_result_without_status_polling(action):
+    dispatcher = Dispatcher(action)
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario():
+        async def finish():
+            await anyio.to_thread.run_sync(dispatcher.started.wait)
+            dispatcher.done.set()
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(finish)
+            result = await boundary.call_tool("java_application", {"action": action})
+        assert result.structuredContent == dispatcher.final
+        assert len(dispatcher.calls) == 1
+
+    anyio.run(scenario)
+
+
+def test_launch_observer_keeps_original_attempt_after_replacement():
+    original = SimpleNamespace(
+        attempt=LaunchAttempt("old", 1, phase=LaunchPhase.COMPILING)
+    )
+    controller = SimpleNamespace(_lock=threading.Lock(), _current=original)
+    runtime = SimpleNamespace(_launch_controller=controller)
+    wait = application_waiter(runtime, "launch", {"ok": True, "attempt_id": "old"})
+    assert wait.pending()
+    original.attempt.phase = LaunchPhase.CANCELLED
+    controller._current = SimpleNamespace(
+        attempt=LaunchAttempt("new", 2, phase=LaunchPhase.RUNTIME_ACTIVE)
+    )
+    assert not wait.pending()
+    # No Runtime status method: querying the replacement here would fail.
+    result = wait.result()
+    assert result["attempt_id"] == "old"
+    assert result["ok"] is False and result["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("timeout", [0, 0.02])
+@pytest.mark.parametrize("action", ["launch", "test"])
+def test_timeout_returns_original_background_task(action, timeout):
+    dispatcher = Dispatcher(action)
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario():
+        result = await boundary.call_tool(
+            "java_application", {"action": action, "timeout": timeout}
+        )
+        payload = result.structuredContent
+        assert payload["status"] == "starting"
+        assert payload.get("test_run_id", payload.get("attempt_id")) == "original"
+        assert not dispatcher.done.is_set()
+        assert "sleep" in payload["suggested_next_step"]
+        assert "Start-Sleep" in payload["suggested_next_step"]
+        assert "10" not in payload["suggested_next_step"]
+        assert len(dispatcher.calls) == 1
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize("timeout", [30, 60, 10000])
+def test_large_timeout_waits_only_thirty_without_rejection(monkeypatch, timeout):
+    dispatcher = Dispatcher("test")
+    boundary = RuntimeMCPBoundary(dispatcher)
+    clock = [0.0]
+    monkeypatch.setattr(mcp_server, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(mcp_server.anyio, "sleep", sleep)
+
+    async def scenario():
+        result = await boundary.call_tool(
+            "java_application", {"action": "test", "timeout": timeout}
+        )
+        assert result.isError is False
+        assert clock[0] == pytest.approx(30)
+        assert not dispatcher.done.is_set()
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize("action,cancel", [("launch", "stop"), ("test", "cancel_test")])
+def test_wait_does_not_block_status_or_cancellation(action, cancel):
+    dispatcher = Dispatcher(action)
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario():
+        async def control():
+            await anyio.to_thread.run_sync(dispatcher.started.wait)
+            with anyio.fail_after(1):
+                await boundary.call_tool("java_status", {"action": "status"})
+                await boundary.call_tool("java_application", {"action": cancel})
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(control)
+            result = await boundary.call_tool("java_application", {"action": action})
+        assert result.structuredContent["status"] == "cancelled"
+        assert result.isError is True
+
+    anyio.run(scenario)
+
+
+def test_removed_startup_parameter_is_not_accepted():
+    boundary = RuntimeMCPBoundary(Dispatcher("launch"))
+
+    async def scenario():
+        result = await boundary.call_tool(
+            "java_application", {"action": "launch", "startup_wait_timeout_seconds": 1}
+        )
+        assert result.isError is True
+
+    anyio.run(scenario)

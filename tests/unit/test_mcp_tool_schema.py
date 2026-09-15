@@ -40,18 +40,10 @@ def test_focused_schemas_expose_only_their_public_actions() -> None:
     assert wait_mode["default"] == "blocking"
     assert "wait_handle" in debugger.inputSchema["properties"]
     assert application.inputSchema["properties"]["ready_port"]["maximum"] == 65535
-    assert (
-        application.inputSchema["properties"][
-            "startup_wait_timeout_seconds"
-        ]["default"]
-        == 30
-    )
-    assert (
-        application.inputSchema["properties"][
-            "startup_wait_timeout_seconds"
-        ]["maximum"]
-        == 60
-    )
+    assert application.inputSchema["properties"]["timeout"]["default"] == 30
+    assert application.inputSchema["properties"]["timeout"]["minimum"] == 0
+    assert "maximum" not in application.inputSchema["properties"]["timeout"]
+    assert "startup_wait_timeout_seconds" not in application.inputSchema["properties"]
     assert http_trigger["additionalProperties"] is False
     assert http_trigger["required"] == ["method", "url"]
     assert http_trigger["properties"]["method"]["enum"] == [

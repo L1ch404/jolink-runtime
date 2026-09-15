@@ -310,7 +310,7 @@ trace 定位，不改算法、不增加 SAVE、不预先调用内部初始化。
   "launch_name": "CompatPetclinic",
   "jdwp_port": 15005,
   "ready_port": 18080,
-  "startup_wait_timeout_seconds": 30
+  "timeout": 30
 }
 ```
 

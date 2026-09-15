@@ -321,7 +321,7 @@ public class Generator extends AbstractProcessor {
                                 "launch_name": "App",
                                 "jdwp_port": debug,
                                 "ready_port": port,
-                                "startup_wait_timeout_seconds": 10,
+                                "timeout": 10,
                             },
                         )
                     ).structuredContent

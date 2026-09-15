@@ -230,7 +230,7 @@ class FastTestManager:
         project_path: Path,
         source_files: Sequence[str],
         tests: Sequence[str],
-        timeout_seconds: float,
+        timeout_seconds: float = 300.0,
         build_system: str = "",
         bootstrap_timeout_seconds: float = (
             _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS

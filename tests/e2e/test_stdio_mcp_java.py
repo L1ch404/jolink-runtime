@@ -879,7 +879,7 @@ def test_run_status_tracks_delayed_tcp_readiness(tmp_path: Path) -> None:
                         "app_args": [str(ready_port), str(stop)],
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 0.1,
+                        "timeout": 0.1,
                     }))
                     assert started["status"] == "process_started"
                     assert started["process_state"] == "running"
@@ -1014,7 +1014,7 @@ public class ProjectMcpFixture {
                         "launch_name": "ProjectMcpFixture",
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 10,
+                        "timeout": 0,
                     }))
                     assert started["status"] == "project_launch_started"
                     assert started["process_state"] == "absent"
@@ -1147,7 +1147,7 @@ public class PersistentFixture {{
             "launch_name": "PersistentFixture",
             "jdwp_port": jdwp_port,
             "ready_port": ready_port,
-            "startup_wait_timeout_seconds": 5,
+            "timeout": 5,
         }))
         with anyio.fail_after(90):
             while True:
@@ -1313,14 +1313,15 @@ public class PersistentFixture {{
             async with open_mcp_session(
                 stderr, environment=environment
             ) as failed_session:
-                assert_ok(await call_payload(failed_session, {
+                submitted = await call_payload(failed_session, {
                     "action": "run",
                     "project_path": str(project),
                     "launch_name": "PersistentFixture",
                     "jdwp_port": jdwp_port,
                     "ready_port": ready_port,
-                    "startup_wait_timeout_seconds": 5,
-                }))
+                    "timeout": 5,
+                })
+                assert submitted["ok"] or submitted.get("launch_phase") == "failed", submitted
                 with anyio.fail_after(30):
                     while True:
                         failed = assert_ok(await call_payload(
@@ -1515,7 +1516,7 @@ public class LazyValue {
                         "launch_name": "UpdateMcpFixture",
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 10,
+                        "timeout": 10,
                     }))
 
                     active: dict[str, Any] | None = None
@@ -1960,7 +1961,7 @@ public final class SharedMessage {
                         "launch_name": "ReactorMcpFixture",
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 10,
+                        "timeout": 0,
                     }))
                     assert started["status"] == "project_launch_started"
 

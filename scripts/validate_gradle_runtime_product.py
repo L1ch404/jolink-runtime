@@ -220,7 +220,7 @@ async def _run(
                         "launch_name": "GradleRuntimeApp",
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 20,
+                        "timeout": 20,
                     },
                 )
                 if launched.get("ok") is not True:
@@ -271,7 +271,7 @@ async def _run(
                             "launch_name": "GradleRuntimeApp",
                             "jdwp_port": jdwp_port,
                             "ready_port": ready_port,
-                            "startup_wait_timeout_seconds": 20,
+                            "timeout": 20,
                         },
                     )
                     if launched.get("ok") is not True:
@@ -398,7 +398,7 @@ compileJava.doLast {
                         "launch_name": "GradleRuntimeApp",
                         "jdwp_port": jdwp_port,
                         "ready_port": ready_port,
-                        "startup_wait_timeout_seconds": 20,
+                        "timeout": 20,
                     },
                 )
                 if rejected.get("ok") is not True:

@@ -148,17 +148,6 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "must differ from jdwp_port."
             ),
         },
-        "startup_wait_timeout_seconds": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 60,
-            "default": 30,
-            "description": (
-                "Direct launch readiness wait, or the first project-launch "
-                "readiness observation window. Timeout leaves the project JVM "
-                "running in waiting_readiness until later status observes ready."
-            ),
-        },
         "tail": {
             "type": "integer",
             "minimum": 1,
@@ -484,7 +473,6 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "pid",
         "host",
         "ready_port",
-        "startup_wait_timeout_seconds",
         "source_files",
         "hotswap",
         "tests",
@@ -493,6 +481,17 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "timeout",
     ),
 )
+JAVA_APPLICATION_INPUT_SCHEMA["properties"]["timeout"] = {
+    "type": "number",
+    "minimum": 0,
+    "default": 30,
+    "description": (
+        "For launch/test, seconds to wait for the result in this call. "
+        "Defaults to 30; values above 30 wait only 30 seconds without error. "
+        "Zero returns immediately after submission. On expiry the same task "
+        "continues in the background; this is not a test execution time limit."
+    ),
+}
 JAVA_STATUS_INPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -525,7 +524,6 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
             "vm_args",
             "pid",
             "ready_port",
-            "startup_wait_timeout_seconds",
             "tail",
             "source_files",
             "hotswap",
@@ -536,6 +534,8 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
 
 JAVA_APPLICATION_DESCRIPTION = (
     "Launch, attach, fast-test, reload, restart, stop, or detach Java code. "
+    "Launch and test wait up to timeout (at most 30 seconds), returning the "
+    "result if finished or the original background task if still running. "
     "Fast Test uses one Maven or Gradle authority Bootstrap, persistent JDT "
     "main/test incremental compilation, and an isolated test Runner without "
     "changing a Runtime. For supported Maven or Gradle project launches, "

@@ -21,6 +21,7 @@ from mcp.server.lowlevel import Server
 from .. import __version__
 from ..core.dispatcher import Dispatcher
 from ..core.wait_state import WaitControl
+from ..launch.application_wait import WAIT_NEXT_STEP
 from .http_trigger import (
     HTTPTriggerControl,
     HTTPTriggerValidationError,
@@ -537,6 +538,8 @@ class RuntimeMCPBoundary:
         *,
         request_id: str | None = None,
     ) -> types.CallToolResult:
+        call_started = time.monotonic()
+        application_wait = None
         with self._state_lock:
             if self._closing:
                 return _call_tool_result(_closing_payload())
@@ -545,7 +548,10 @@ class RuntimeMCPBoundary:
         if validator is None:
             raise ValueError(f"Unknown tool: {name}")
 
-        args = arguments or {}
+        args = dict(arguments or {})
+        wait_for_application = (
+            name == "java_application" and args.get("action") in {"launch", "test"}
+        )
         validation_errors = sorted(
             validator.iter_errors(args),
             key=lambda item: tuple(str(part) for part in item.absolute_path),
@@ -623,14 +629,24 @@ class RuntimeMCPBoundary:
                         self._cancel_all_http_triggers(
                             reason=f"superseded_by_{action}",
                         )
+                dispatch_args = dict(args)
+                if wait_for_application and args["action"] == "launch":
+                    # Readiness is observed outside the control lock below.
+                    dispatch_args["_mcp_background_launch"] = True
                 payload = await anyio.to_thread.run_sync(
                     lambda: self.dispatcher.dispatch(
                         name,
-                        args,
+                        dispatch_args,
                         session_key=self.session_key,
                     ),
                     abandon_on_cancel=False,
                 )
+                if wait_for_application and payload.get("ok") is not False:
+                    make_waiter = getattr(self.dispatcher, "application_waiter", None)
+                    if make_waiter is not None:
+                        application_wait = make_waiter(
+                            args["action"], payload, session_key=self.session_key
+                        )
                 if (
                     _is_runtime_tool(name)
                     and action in {
@@ -646,6 +662,18 @@ class RuntimeMCPBoundary:
                     )
                     if action == "cleanup_debug_state":
                         payload = self._augment_cleanup_verification(payload)
+            if application_wait is not None:
+                deadline = call_started + min(float(args.get("timeout", 30)), 30.0)
+                pending = await anyio.to_thread.run_sync(application_wait.pending)
+                while pending and not self._closing and time.monotonic() < deadline:
+                    await anyio.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                    pending = await anyio.to_thread.run_sync(application_wait.pending)
+                # Serialize the single final observation with stop/restart, not
+                # the wait itself. Keep the originally captured attempt.
+                async with self._call_lock:
+                    payload = await anyio.to_thread.run_sync(application_wait.result)
+                if pending and payload.get("ok") is not False:
+                    payload["suggested_next_step"] = WAIT_NEXT_STEP
         except (TypeError, ValueError) as error:
             payload = _argument_parsing_error_payload(error)
         except Exception as error:
@@ -670,10 +698,8 @@ class RuntimeMCPBoundary:
                 if progress["state"] == "preparing":
                     payload["suggested_next_step"] = (
                         "Runtime dependencies are being prepared in the background. "
-                        "Use java_status(action='status') to observe progress."
+                        + WAIT_NEXT_STEP
                     )
-                    if accepted_request:
-                        payload["suggested_next_step"] += " This request will continue automatically; do not submit it again."
         return _call_tool_result(payload)
 
     def _start_waiter(

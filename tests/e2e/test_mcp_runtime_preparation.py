@@ -206,7 +206,7 @@ def test_mcp_prepares_before_request_and_continues_test(tmp_path, action, privat
         archive = Path(supplied)
     port = reserve_local_port() if action == "launch" else None
     project = make_test_project(tmp_path, port)
-    arguments = {"action": action, "project_path": str(project)}
+    arguments = {"action": action, "project_path": str(project), "timeout": 0}
     if action == "test":
         arguments["tests"] = ["example.ReadyTest"]
     else:
@@ -214,7 +214,6 @@ def test_mcp_prepares_before_request_and_continues_test(tmp_path, action, privat
             launch_name="Preparation",
             jdwp_port=reserve_local_port(),
             ready_port=port,
-            startup_wait_timeout_seconds=5,
         )
 
     blocked_index = len(candidate.lock["artifacts"]) if private_jdk else 0
@@ -316,6 +315,7 @@ def test_mcp_close_during_download_preserves_completed_jars(tmp_path, with_reque
                                     "action": "test",
                                     "project_path": str(project),
                                     "tests": ["example.ReadyTest"],
+                                    "timeout": 0,
                                 },
                             )
                         ).structuredContent

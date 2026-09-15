@@ -2863,7 +2863,7 @@ class JavaRuntime(Runtime):
                 build_system=str(
                     getattr(action, "build_system", "") or ""
                 ),
-                timeout_seconds=action.timeout,
+                short_wait_seconds=0,
             )
             return RuntimeResult(
                 ok=bool(payload.get("ok", True)),

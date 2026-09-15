@@ -149,10 +149,21 @@ definition blocks breakpoint arming; the error returns all
 
 - `ready_port` is an optional loopback application port. It must differ from
   `jdwp_port`.
-- `startup_wait_timeout_seconds` limits the direct-launch readiness wait or
-  the first project-launch readiness observation window, defaults to 30
-  seconds, and is capped at 60 seconds. A wait timeout never terminates a live
-  process; a project worker continues observing readiness in the background.
+- For `java_application` launch/test, `timeout` bounds the whole synchronous
+  result wait (default 30, zero for immediate submission). Values above 30
+  are accepted and wait only 30 seconds. Expiry returns the original task ID
+  and current state, never cancels or resubmits the operation. Tests keep an
+  independent internal Runner execution limit of 300 seconds. The old
+  readiness-wait argument is removed. Debugger event timeout semantics are
+  unchanged.
+- Direct JAR/classpath submission still performs the existing process/JDWP
+  initialization synchronously. The reply-wait deadline does not interrupt
+  that initialization; zero skips the subsequent readiness wait. Project
+  launches and Test attempts already submit through background workers.
+- Waiting happens outside the MCP control lock. Explicit stop/cancel_test and
+  status remain available. Cancelling only the MCP reply wait leaves the
+  background operation available to status/stop/cancel_test; server shutdown
+  still closes owned work through the existing lifecycle.
 - Readiness configuration is stored with the launched process. `status`
   rechecks the same port without reading or interpreting application logs.
 - `restart` reuses the prior launched process's readiness configuration when

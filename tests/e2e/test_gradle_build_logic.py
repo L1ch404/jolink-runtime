@@ -212,7 +212,7 @@ tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Grad
                             "launch_name": "App",
                             "ready_port": port,
                             "jdwp_port": debug,
-                            "startup_wait_timeout_seconds": 10,
+                            "timeout": 10,
                         },
                     )
                     try:

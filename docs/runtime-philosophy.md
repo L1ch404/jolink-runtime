@@ -19,7 +19,7 @@ Dogfood 证明，仅返回 Process/JDWP Ready 会让 Agent 在大型应用仍处
 
 ```text
 ready_port
-startup_wait_timeout_seconds
+timeout
 ```
 
 当调用方明确提供 `ready_port` 时：

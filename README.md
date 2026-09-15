@@ -422,13 +422,22 @@ startup from application TCP readiness:
   "jar_path": "target/app.jar",
   "jdwp_port": 5005,
   "ready_port": 8080,
-  "startup_wait_timeout_seconds": 30
+  "timeout": 30
 }
 ```
 
-`startup_wait_timeout_seconds` limits only how long that `launch` call waits.
-It defaults to 30 seconds and is capped at 60 seconds so the MCP call remains
-bounded.
+For `launch` and `test`, `timeout` limits the synchronous result wait, including
+runtime preparation and compilation. It defaults to 30 seconds; larger values
+are accepted but wait only 30 seconds. Zero returns after task submission.
+The original task continues after this reply deadline. Test Runner execution
+has a separate internal 300-second limit; `timeout` no longer configures it.
+If still running, choose a waiting interval appropriate to the stage (for
+example using sleep or PowerShell Start-Sleep), then query `java_status`.
+Do not rapidly poll or resubmit the task. The old readiness-wait argument has
+been removed, not retained as an alias.
+Direct JAR/classpath launches still perform their existing process creation
+and JDWP handshake before returning a task observation. `timeout=0` skips the
+additional readiness wait; it does not make that initial handshake asynchronous.
 If the process is alive but the application port is not accepting connections,
 the result remains successful with `startup_state=starting`; the process is
 kept alive and `next_action=status`. Each later `status` call probes the stored

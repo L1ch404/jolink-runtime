@@ -146,7 +146,9 @@ requires them.
 - `startup_state=ready` proves only that the explicitly configured loopback TCP
   port accepted a connection. It does not prove that every dependency or
   business function is healthy.
-- `startup_wait_timeout_seconds` bounds one `run`/`restart` wait. If it expires
+- For `java_application(action='launch')`, `timeout` bounds the result wait
+  (default and maximum effective wait 30 seconds; zero submits immediately).
+  If it expires
   while the process is alive, the process remains managed and `status` becomes
   the structured readiness check; do not infer failure from that timeout.
 - `logs` contains only stdout and stderr captured from an application launched

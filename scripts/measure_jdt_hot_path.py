@@ -91,7 +91,7 @@ public class App {
                         await call("java_application", {
                             "action": "launch", "project_path": str(project),
                             "launch_name": "App", "jdwp_port": debug_port,
-                            "ready_port": app_port, "startup_wait_timeout_seconds": 10,
+                            "ready_port": app_port, "timeout": 10,
                         })
                         with anyio.fail_after(240):
                             while True:

@@ -155,7 +155,7 @@ def test_antlr_preparation_and_cache_through_mcp(tmp_path, reactor):
                                     "launch_name": "App",
                                     "jdwp_port": debug,
                                     "ready_port": port,
-                                    "startup_wait_timeout_seconds": 10,
+                                    "timeout": 10,
                                 },
                             )
                         ).structuredContent
