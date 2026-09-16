@@ -153,9 +153,15 @@ class ProjectLaunchCache:
             ):
                 return None
             plan_raw = raw["jdt_plan"]
+            inputs = _paths(plan_raw["configuration_inputs"])
+            if build_system == "maven":
+                inputs = tuple(dict.fromkeys((
+                    *inputs,
+                    *(Path(m["module_root"]) / "pom.xml" for m in plan_raw.get("modules", ())),
+                )))
             configuration = raw.get("configuration_stamps")
             if configuration is None or configuration != build_configuration_stamps(
-                project_root, build_system, plan_raw["configuration_inputs"]
+                project_root, build_system, inputs
             ):
                 return None
             from .configuration_inputs import preparation_stamps
@@ -182,9 +188,7 @@ class ProjectLaunchCache:
                 source_level=int(plan_raw["source_level"]),
                 target_level=int(plan_raw["target_level"]),
                 fingerprint=str(plan_raw["fingerprint"]),
-                configuration_inputs=_paths(
-                    plan_raw["configuration_inputs"]
-                ),
+                configuration_inputs=inputs,
                 configuration_environment_names=tuple(
                     str(value)
                     for value in plan_raw[

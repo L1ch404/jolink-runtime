@@ -363,6 +363,7 @@ class ProjectLaunchPipeline:
             fingerprint=hashlib.sha256(json.dumps(compilation_modules(modules), sort_keys=True).encode()).hexdigest(),
             configuration_inputs=tuple(dict.fromkeys((
                 *(m.pom_file for m in workspace.modules),
+                *(Path(m["module_root"]) / "pom.xml" for m in modules),
                 settings_input,
                 *(workspace.build_root / ".mvn" / name for name in
                   ("maven.config", "jvm.config", "extensions.xml")),

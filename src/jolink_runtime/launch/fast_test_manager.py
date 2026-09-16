@@ -120,6 +120,7 @@ class _FastTestProject:
     runner_support_provenance: dict[str, Any]
     session_root: Path
     workspace_lease: Any
+    configuration_snapshot: dict[str, Any] = field(default_factory=dict)
     test_run_order: str = ""
     test_attempts: list[tuple[Path, bool]] = field(default_factory=list)
 
@@ -560,7 +561,9 @@ class FastTestManager:
             and project.build_system == provider.kind
             and project.compiler.ready
             and self._test_selection_in_module(project.compiler.test_source_roots, attempt.tests)
-            and self._cache.is_current(attempt.project_path, provider.kind)
+            and self._cache.snapshot_is_current(
+                attempt.project_path, provider.kind, project.configuration_snapshot
+            )
         ):
             return project
         self._drop_project()
@@ -1192,21 +1195,15 @@ class FastTestManager:
             )
             if root.is_dir()
         )
-        configuration_inputs = tuple(
-            [item.pom_file for item in workspace.modules]
-            + [effective_pom]
-            + ([source_settings] if source_settings is not None else [])
-            + list(self._resource_inputs(resource_roots))
-            + [
-                path
-                for path in (
-                    workspace.build_root / ".mvn/maven.config",
-                    workspace.build_root / ".mvn/jvm.config",
-                    workspace.build_root / ".mvn/extensions.xml",
-                )
-                if path.is_file()
-            ]
-        )
+        # Only original persistent configuration, not the temporary effective
+        # POM or resource files used to construct the model.
+        configuration_inputs = tuple(dict.fromkeys((
+            workspace.root_pom, module.pom_file,
+            *(item.pom_file for item in workspace.modules),
+            *(Path(m["module_root"]) / "pom.xml" for m in snapshot.get("moduleWorlds", ())),
+            source_settings if source_settings is not None else Path.home() / ".m2/settings.xml",
+            *(workspace.build_root / ".mvn" / name for name in ("maven.config", "jvm.config", "extensions.xml")),
+        )))
         world = JavaTestBuildWorld(
             build_system="maven",
             project_root=workspace.project_root,
@@ -1272,6 +1269,7 @@ class FastTestManager:
         attempt.require_not_cancelled()
         if world.configuration_stamps is None:
             world = replace(world, configuration_stamps=self._cache.input_snapshot(world))
+        configuration_snapshot = self._cache.model_snapshot(world)
         from .runtime_preparation import prepared_runtime
 
         candidate, worker_java = prepared_runtime(
@@ -1344,6 +1342,7 @@ class FastTestManager:
                 world=world,
                 build_jdk=build_jdk,
                 workspace=workspace,
+                configuration_snapshot=configuration_snapshot,
             ),
             reuse_workspace=workspace.reusable,
         )
@@ -1396,6 +1395,7 @@ class FastTestManager:
         world: JavaTestBuildWorld,
         build_jdk: JavaToolchainCandidate,
         workspace: Any,
+        configuration_snapshot: dict[str, Any],
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
         if not full.compile_ok:
@@ -1407,7 +1407,7 @@ class FastTestManager:
         compiler.accept_baseline()
         compiler.save_source_index()
         workspace.mark_initialized()
-        self._cache.save(world, build_jdk)
+        self._cache.save(world, build_jdk, configuration_snapshot=configuration_snapshot)
         attempt.require_not_cancelled()
         return _FastTestProject(
             build_system=world.build_system,
@@ -1431,6 +1431,7 @@ class FastTestManager:
             ),
             session_root=workspace.root,
             workspace_lease=workspace,
+            configuration_snapshot=configuration_snapshot,
         )
 
     @staticmethod
@@ -1968,27 +1969,6 @@ class FastTestManager:
                     shutil.copyfile(source, output)
             frozen.append(target)
         return tuple(frozen)
-
-    @staticmethod
-    def _resource_inputs(roots: Sequence[Path]) -> tuple[Path, ...]:
-        inputs: list[Path] = []
-        for root in roots:
-            if not root.is_dir():
-                continue
-            for source in sorted(root.rglob("*")):
-                if source.is_symlink():
-                    raise FastTestManagerError(
-                        "FAST_TEST_RESOURCE_LINK_UNSUPPORTED",
-                        "Fast Test resource roots may not contain links.",
-                    )
-                if source.is_file():
-                    inputs.append(source)
-                    if len(inputs) > 20_000:
-                        raise FastTestManagerError(
-                            "FAST_TEST_RESOURCE_LIMIT_EXCEEDED",
-                            "Fast Test resource inputs exceed the v1 limit.",
-                        )
-        return tuple(inputs)
 
     @staticmethod
     def _resolve_sources(

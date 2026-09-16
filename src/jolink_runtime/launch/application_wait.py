@@ -96,11 +96,17 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
     def result():
         observation = runtime._proc.observe_readiness(process)
         payload = {**initial, **observation}
-        if not process.is_alive():
+        failed = observation.get("startup_state") == "failed" or not process.is_alive()
+        if failed or observation.get("startup_state") in {"ready", "unverified"}:
+            for name in ("next_action", "suggested_next_step", "startup_wait_timed_out"):
+                payload.pop(name, None)
+        if failed:
             payload.update(
                 ok=False,
                 error="Application exited during startup.",
                 error_code="JVM_START_FAILED",
+                next_action="logs",
+                suggested_next_step="Inspect application logs before launching again.",
             )
         return payload
 

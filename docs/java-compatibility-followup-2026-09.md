@@ -1,13 +1,14 @@
 # 第一批开源兼容性：小范围修复与待讨论项
 
-## 最新汇总（2026-09-15，优先于下方历史记录）
+## 最新汇总（2026-09-16，优先于下方历史记录）
 
 ### 已提交基线与本轮范围
 
 JDT3.46＋私有Temurin21升级与APT修复已提交为`a168058`，不再是待review工作区。
 运行时后台下载准备已提交为`bb5ae70`；launch/test同步等待及统一timeout已提交为
-`3b2e2bd`。本轮仅修构建配置缓存感知、reload/restart反馈及其回归；下面明确暂缓的
-项目不借此扩范围。Java17语言限制已在新引擎
+`3b2e2bd`。上一轮配置缓存修复已提交为`eea26fe`，但Review确认其生产接线仍有遗漏。
+本轮只修Review第1/2/3/6项；第4/5项按用户决定只记录，Gradle引用脚本也继续暂缓。
+不将这些剩余问题写成已解决。Java17语言限制已在新引擎
 消除，main8/test17与main11/test21的Maven/Gradle真实回归通过；新版Petclinic的
 所选测试、启动和HTTP通过。MyBatis在测试副本关闭format/license profile后87项
 通过，原样准备阶段仍阻断。详见[升级实现、离线准备、性能与剩余问题](jdt-346-upgrade.zh-CN.md)。
@@ -38,12 +39,62 @@ Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换�
 | U8 | 旧Lombok1.18.20兼容 | 部分用法依赖旧ECJ内部接口，`@Builder(toBuilder=true)`等有已知失败；不是所有注解都不能使用 | 用户决定暂缓，不自动换项目依赖、不增加版本拦截 |
 | U9 | Reload遇到未加载类 | 同一源码的变更class中有未加载类时，整轮要求重新launch，连已加载外部类也不更新 | 用户决定暂缓，详细证据见下文 |
 | U10 | Gradle引用脚本漏入配置清单 | 真实MCP：`apply from: 'config/resources.gradle'`不在已记录输入内；只改脚本后，launch和Test仍复用旧模型 | 2026-09-15用户决定先记录，不实现脚本收集；不能用正则支持一个写法就宣称完整支持动态脚本 |
+| U11 | IDEA切换构建选择/启动意图仍复用旧计划（Review第4项） | 真实MCP：只把选中的settings从A切到B，两文件内容不变，仍返回旧HTTP内容；生产load也忽略新的主类/参数/构建偏好。读取新BuildPreferences发生在缓存命中之后 | 2026-09-16用户决定先记录。不把“同一settings文件内容变化可感知”当成“切换settings/Profile也已支持”；后续区分构建选择与纯启动参数 |
+| U12 | Probe执行期间改配置的基线窗口（Review第5项） | 生产方法受控复现：Probe返回旧UTF-8模型，但返回前POM已改US-ASCII；之后_stabilize拍到新文件，误认为旧模型仍有效。尚未跑真实Maven并发编辑窗口 | 2026-09-16用户决定先记录。本轮仍在Probe结束、JDT开始前取快照；不增加Probe重试/事务或业务源码快照。临时避免在Probe运行时编辑构建配置 |
 
 U4与U6可合并讨论快速流程中构建步骤的边界：必要源码生成（如ANTLR）继续执行；
 格式化、license检查及javac专属质量检查是否留给正式构建，需要明确接线和说明。
 不能一概执行，也不能把所有准备步骤一起跳过。Guava的14条诊断不是14个独立根因。
 
-### 本轮：构建配置缓存感知（2026-09-15，工作区修复，待review）
+### 2026-09-16：Review第1/2/3/6项收口（工作区，待review）
+
+本地已核对Review包的两份完整源码哈希及9个方法AST。6项问题均复现，其中1/2/4/6
+补了真实MCP验证；3/5当时为完整生产Python方法的受控验证，不混称完整JVM验收。
+
+本轮实现：
+
+1. 启动配置输入合并`load_module_worlds()`实际导出的模块POM，再交给现有父链收集。
+   旧启动缓存若已有这些模块却漏了其输入，会未命中一次；普通完整缓存不因此全部失效。
+2. Maven Fast Test在Probe→World转换处只登记持久原始配置，包括实际settings/default候选路径、
+   入口及导出模块POM、.mvn配置；不将临时effective POM或资源内容放入配置快照。
+   Fast Test磁盘格式升至v5，缺失settings来源的旧缓存重新Probe；不清空JDK/JDT资产。
+3. 活跃`_FastTestProject`持有自己的配置快照，复用它时不读取磁盘模型为它背书。
+   文件、环境及生成输入均按该对象的基线比较；过期后才尝试磁盘恢复或Probe。
+   磁盘与活跃模型共用比较函数，不添加跨窗口调度或新锁机制。
+4. direct JAR/classpath同步等待结束后，ready/unverified清除旧status/starting提示和等待超时标记；
+   失败给出logs建议，真正仍starting时保留等待提示。不改原有初始JDWP握手例外。
+
+纠正上一轮验收表述：Profile单测曾手工给plan补上模块POM，只证明收集函数能追父链，
+没有证明生产入口会提供路径。旧direct测试也只看ready，未检查残留提示。本轮测试通过
+实际_prepare_maven_probe与_finish_build_world接线，并检查最终返回状态与指导一致。
+不以测试数量代替未覆盖场景的证据。
+
+新增真实MCP已验证：
+
+- Profile才激活的lib具有独立本地父POM，改父POM的参数名生成开关后，重新launch的HTTP
+  反射结果由false变true；不能再继续用旧编译配置。
+- 同一MCP中只改settings，Test实际读到新系统属性和资源；不变时及重开后继续复用。
+- 两个实际MCP先后测试不同模块，共享根项目磁盘模型，但各自保留Worker：B更新配置后，
+  A会刷新自己的旧模型；A替换磁盘模型后，仍有效的B无需重新建模。测试没有并发执行用例。
+  此证据不等于所有同目录多Worker并发场景都已验收。
+- 延迟开放端口的直接启动最终ready后，不再残留要求继续查status的提示。
+
+本轮验收（macOS，未提交）：
+
+- 新增18项单元用例/参数组合，重点经过实际生产转换和发布方法，而非由测试提前补齐输入。
+  普通回归867 passed / 13 skipped，另外89项需显式开启的MCP/JVM测试未混入普通结果。
+- 4组定向MCP通过：Profile父POM、settings刷新与重开、两个活跃MCP的模型隔离、直接启动最终提示。
+  双MCP测试额外断言同一磁盘文件先被B、再被A覆盖，A旧Worker在比较前仍ready，避免场景未成立也绿。
+- 7组已有MCP回归通过：Maven单/多模块和Gradle配置缓存、Gradle Kotlin多模块、模板生成、
+  ANTLR单模块/Reactor。ANTLR初次因缺少JDK11测试变量跳过，补齐本机JDK11后两项实际通过。
+- 定向lint、compileall、git diff --check、离线wheel/sdist构建通过。
+
+U11/U12只记录，未改代码；U10亦未处理。没有修改jdwp_adapter、Worker/JDK交付或增加新工具。
+旧Fast Test v4缓存首次会重新Probe以补齐配置来源，编译状态是否复用仍走原有规则；不清空
+JDK/JDT下载缓存。本轮不宣称完整Windows验证，也不将同一Eclipse workspace的任意并发使用
+算作已覆盖。
+
+### 上一轮：构建配置缓存感知（2026-09-15，已提交eea26fe）
 
 修复前的真实MCP对照只改资源目录配置，Java源码保持不变：
 
@@ -80,7 +131,7 @@ restart也继续返回旧内容A。restart复用现有编译产物是既有语�
 编译前快照及运行模型与后来磁盘缓存隔离。真实MCP验证新配置实际生效，而不只检查
 命令行或缓存标志。
 
-本轮macOS验收（工作区未提交，供review）：
+当轮macOS验收（只代表当时已覆盖用例，不替代上面的Review结论）：
 
 - 新增49项配置边界单测；与原有缓存测试合计58项通过。后续又补4项settings选择回归，
   覆盖显式/默认及默认文件存在/不存在，并经过Probe参数生成、模型整理及缓存读取。

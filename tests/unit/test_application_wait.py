@@ -154,3 +154,36 @@ def test_removed_startup_parameter_is_not_accepted():
         assert result.isError is True
 
     anyio.run(scenario)
+
+
+@pytest.mark.parametrize("state", ["ready", "unverified", "failed", "starting"])
+def test_direct_launch_guidance_matches_final_state(state):
+    process = SimpleNamespace(pid=42, is_alive=lambda: state != "failed")
+    runtime = SimpleNamespace(
+        _proc=SimpleNamespace(
+            current=process,
+            observe_readiness=lambda _: {"startup_state": state},
+        )
+    )
+    initial = {
+        "ok": True,
+        "pid": 42,
+        "startup_state": "starting",
+        "next_action": "status",
+        "suggested_next_step": "still starting",
+        "startup_wait_timed_out": True,
+    }
+    waiter = application_waiter(runtime, "launch", initial)
+    result = waiter.result()
+    assert waiter.pending() is (state == "starting")
+    if state == "starting":
+        assert result == initial
+    else:
+        assert "startup_wait_timed_out" not in result
+        if state == "failed":
+            assert result["ok"] is False and result["next_action"] == "logs"
+            assert "starting" not in result["suggested_next_step"]
+        else:
+            assert result["ok"] is True
+            assert "next_action" not in result and "suggested_next_step" not in result
+    assert initial["next_action"] == "status"  # Do not mutate the submitted snapshot.

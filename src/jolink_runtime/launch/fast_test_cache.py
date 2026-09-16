@@ -18,6 +18,8 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
+_SCHEMA = "jolink.fast-test-world.v5"
+
 
 def _paths(values) -> tuple[Path, ...]:
     return tuple(Path(value) for value in values)
@@ -45,6 +47,7 @@ def _world_configuration_files(world):
     if world.build_system == "gradle":
         return world.configuration_inputs
     return tuple(dict.fromkeys((
+        *world.configuration_inputs,
         world.module_root / "pom.xml",
         *(Path(module["module_root"]) / "pom.xml" for module in world.modules),
     )))
@@ -68,11 +71,7 @@ class FastTestCache:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if not self._preparation_current(raw):
-                return False
-            if build_system == "gradle" and raw.get("environment_inputs") != _environment_inputs(raw.get("environment_inputs", ())):
-                return False
-            return raw.get("inputs") == _inputs(project, build_system, raw.get("configuration_files", ()))
+            return raw.get("schema") == _SCHEMA and self.snapshot_is_current(project, build_system, raw)
         except (OSError, json.JSONDecodeError):
             return False
 
@@ -80,11 +79,7 @@ class FastTestCache:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if raw.get("schema") != "jolink.fast-test-world.v4" or not self._preparation_current(raw):
-                return None
-            if build_system == "gradle" and raw.get("environment_inputs") != _environment_inputs(raw.get("environment_inputs", ())):
-                return None
-            if raw.get("inputs") != _inputs(project, build_system, raw.get("configuration_files", ())):
+            if raw.get("schema") != _SCHEMA or not self.snapshot_is_current(project, build_system, raw):
                 return None
             world = raw["world"]
             toolchain = raw["build_jdk"]
@@ -139,17 +134,11 @@ class FastTestCache:
         except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
             return None
 
-    def save(self, world: JavaTestBuildWorld, build_jdk: JavaToolchainCandidate) -> None:
+    def save(self, world: JavaTestBuildWorld, build_jdk: JavaToolchainCandidate, *, configuration_snapshot=None) -> None:
         def values(paths): return [str(path) for path in paths]
-        configuration = _world_configuration_files(world)
         payload = {
-            "schema": "jolink.fast-test-world.v4",
-            "preparation_stamps": preparation_stamps(
-                (p for m in world.modules for p in m.get("preparation_inputs", ())),
-                (p for m in world.modules for p in m.get("preparation_roots", ()))),
-            "inputs": world.configuration_stamps if world.configuration_stamps is not None else self.input_snapshot(world),
-            "configuration_files": values(configuration),
-            "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
+            "schema": _SCHEMA,
+            **(configuration_snapshot if configuration_snapshot is not None else self.model_snapshot(world)),
             "build_jdk": {
                 "home": str(build_jdk.home), "java_executable": str(build_jdk.java_executable),
                 "javac_executable": str(build_jdk.javac_executable), "source": build_jdk.source,
@@ -202,10 +191,38 @@ class FastTestCache:
         return _inputs(world.project_root, world.build_system, _world_configuration_files(world))
 
     @staticmethod
-    def _preparation_current(raw):
-        return raw.get("preparation_stamps", {}) == preparation_stamps(
-            (p for m in raw.get("world", {}).get("modules", ()) for p in m.get("preparation_inputs", ())),
-            (p for m in raw.get("world", {}).get("modules", ()) for p in m.get("preparation_roots", ())))
+    def model_snapshot(world):
+        """The same captured inputs accompany both the live model and its disk copy."""
+        inputs = [str(p) for m in world.modules for p in m.get("preparation_inputs", ())]
+        roots = [str(p) for m in world.modules for p in m.get("preparation_roots", ())]
+        return {
+            "configuration_files": [str(p) for p in _world_configuration_files(world)],
+            "inputs": dict(world.configuration_stamps) if world.configuration_stamps is not None else FastTestCache.input_snapshot(world),
+            "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
+            "preparation_inputs": inputs,
+            "preparation_roots": roots,
+            "preparation_stamps": preparation_stamps(inputs, roots),
+        }
+
+    @staticmethod
+    def snapshot_is_current(project, build_system, snapshot):
+        """Compare the supplied model's baseline, never substitute a disk model."""
+        try:
+            prepared = preparation_stamps(
+                snapshot.get("preparation_inputs", ()),
+                snapshot.get("preparation_roots", ()),
+            )
+            if snapshot.get("preparation_stamps") != prepared:
+                return False
+            if build_system == "gradle" and snapshot.get("environment_inputs") != _environment_inputs(
+                snapshot.get("environment_inputs", ())
+            ):
+                return False
+            return snapshot.get("inputs") == _inputs(
+                project, build_system, snapshot.get("configuration_files", ())
+            )
+        except OSError:
+            return False
 
 
 __all__ = ["FastTestCache"]

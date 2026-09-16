@@ -230,8 +230,10 @@ def test_direct_launch_readiness_and_stop_while_waiting(tmp_path):
                         **({"ready_port": port} if verified else {}),
                     }
 
-                ready = await call(launch(1200, 1000))
+                ready = await call(launch(4500, 1000))
                 assert ready["ok"] and ready["startup_state"] == "ready", ready
+                assert "next_action" not in ready and "suggested_next_step" not in ready, ready
+                assert "startup_wait_timed_out" not in ready, ready
                 await call({"action": "stop"})
                 pending = await call(launch(5000, 0.1))
                 assert (

@@ -34,7 +34,7 @@ class JavaTestBuildWorld:
     test_classes_directories: tuple[Path, ...]
     runner_environment: dict[str, str]
     javac_executable: Path
-    configuration_inputs: tuple[Path, ...]
+    configuration_inputs: tuple[Path, ...]  # Persistent originals, not effective POMs or resources.
     configuration_environment_names: tuple[str, ...]
     upstream_source_roots: tuple[Path, ...] = ()
     worker_min_heap_mb: int = 64

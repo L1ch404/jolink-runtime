@@ -376,8 +376,9 @@ def test_reload_restart_check_uses_running_model_not_new_cache(model, build_syst
 
 @pytest.mark.parametrize("explicit", [False, True])
 @pytest.mark.parametrize("default_exists", [False, True])
+@pytest.mark.parametrize("profile_extra", [False, True])
 def test_launch_tracks_only_selected_settings_through_probe_and_cache(
-    model, tmp_path, monkeypatch, explicit, default_exists
+    model, tmp_path, monkeypatch, explicit, default_exists, profile_extra
 ):
     from jolink_runtime.launch import project_launcher as module
 
@@ -425,7 +426,23 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         "worker_min_heap_mb": 64,
         "worker_max_heap_mb": 2048,
     }
-    monkeypatch.setattr(module, "load_module_worlds", lambda *args, **kwargs: [facts])
+    probe_modules = [facts]
+    if profile_extra:
+        optional = model.root / "optional/pom.xml"
+        parent = model.root / "optional-parent/pom.xml"
+        optional.parent.mkdir()
+        parent.parent.mkdir()
+        model.pom.write_text(
+            "<project><profiles><profile><id>extra</id><modules><module>optional</module></modules></profile></profiles></project>"
+        )
+        optional.write_text(
+            "<project><parent><relativePath>../optional-parent/pom.xml</relativePath></parent></project>"
+        )
+        parent.write_text("<project/>")
+        probe_modules.append({**facts, "module_root": str(optional.parent)})
+    monkeypatch.setattr(
+        module, "load_module_worlds", lambda *args, **kwargs: probe_modules
+    )
     pipeline = ProjectLaunchPipeline()
     monkeypatch.setattr(
         pipeline, "materialize_command", lambda plan, **kwargs: (plan, None)
@@ -469,6 +486,28 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         assert model.plan.configuration_stamps[str(default)] == "missing"
     model.save("launch")
     assert model.load("launch") is not None
+    if profile_extra:
+        # No paths injected into plan.configuration_inputs by this test.
+        assert optional in model.plan.configuration_inputs
+        assert parent in model.plan.configuration_inputs
+        parent.write_text(
+            "<project><!-- modified inherited configuration --></project>"
+        )
+        assert model.load("launch") is None
+        parent.write_text("<project/>")
+        # Old eea26fe snapshots contain these modules but omit their inputs.
+        file = model.launch._file(model.root, model.intent.launch_name)
+        raw = json.loads(file.read_text())
+        omitted = {str(optional), str(parent)}
+        raw["jdt_plan"]["configuration_inputs"] = [
+            p for p in raw["jdt_plan"]["configuration_inputs"] if p not in omitted
+        ]
+        raw["configuration_stamps"] = {
+            p: v for p, v in raw["configuration_stamps"].items() if p not in omitted
+        }
+        file.write_text(json.dumps(raw))
+        assert model.load("launch") is None
+        model.save("launch")
     if explicit:
         default.write_text(
             "<settings><!-- unused default changed or created --></settings>"
