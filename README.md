@@ -65,10 +65,11 @@ Debug deeper only when necessary.
 
 ## What it can do
 
-joLink exposes three focused MCP tools:
+joLink exposes four focused MCP tools:
 
-- `java_application` — lifecycle, headless Fast Test, project launch, reload,
+- `java_application` — lifecycle, project launch, reload,
   restart, and attach;
+- `java_fast_test` — selected Java tests and cancellation, without an application launch;
 - `java_status` — Java process discovery, application/build status, and logs;
 - `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
 
@@ -78,12 +79,12 @@ across MCP processes. JDT keeps main and test classes current and runs
 explicit JUnit 4/5 or TestNG tests in an isolated JVM:
 
 ```text
-java_application(action=test,
+java_fast_test(action=run,
   project_path=/path/to/project,
   source_files=[src/main/java/example/Service.java],
   tests=[example.ServiceTest#works], timeout=60)
--> if status=running, poll java_status(action=status)
--> cancel with java_application(action=cancel_test, test_run_id=...)
+-> if unfinished, choose a suitable waiting interval, then call java_status(action=status)
+-> cancel with java_fast_test(action=cancel, test_run_id=...)
 ```
 
 `passed=false` means the selected tests executed and found a failure; it is not
@@ -264,6 +265,7 @@ After the MCP server is connected, confirm that these tools are available:
 
 ```text
 java_application
+java_fast_test
 java_status
 java_debugger
 ```
@@ -426,7 +428,7 @@ startup from application TCP readiness:
 }
 ```
 
-For `launch` and `test`, `timeout` limits the synchronous result wait, including
+For `java_application(launch)` and `java_fast_test`, `timeout` limits the synchronous result wait, including
 runtime preparation and compilation. It defaults to 30 seconds; larger values
 are accepted but wait only 30 seconds. Zero returns after task submission.
 The original task continues after this reply deadline. Test Runner execution

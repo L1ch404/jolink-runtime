@@ -71,9 +71,9 @@ def test_real_mcp_gc_after_build(tmp_path: Path, enabled: bool):
 
     async def run_test(session):
         result = await session.call_tool(
-            "java_application",
+            "java_fast_test",
             {
-                "action": "test",
+                "action": "run",
                 "project_path": str(project),
                 "build_system": "maven",
                 "tests": ["example.ValueTest#value"],

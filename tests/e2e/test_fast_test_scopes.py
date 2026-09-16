@@ -28,9 +28,9 @@ async def run(session, project, tests):
     result = dict(
         (
             await session.call_tool(
-                "java_application",
+                "java_fast_test",
                 {
-                    "action": "test",
+                    "action": "run",
                     "project_path": str(project),
                     "tests": tests,
                     "timeout": 30,

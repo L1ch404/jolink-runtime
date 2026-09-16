@@ -85,7 +85,7 @@ public static void main(String[] args) throws Exception {
                                 if predicate(state): return state
                                 await anyio.sleep(.03)
                     async def run_test():
-                        value = await call("java_application", {"action":"test","project_path":str(project),"tests":["example.AppTest#value"],"timeout":20})
+                        value = await call("java_fast_test", {"action":"run","project_path":str(project),"tests":["example.AppTest#value"],"timeout":20})
                         if value.get("status") in {"starting","bootstrapping","compiling","running"}:
                             state = await poll(lambda s:s.get("fast_test",{}).get("status") not in {"starting","bootstrapping","compiling","running"})
                             value = state["fast_test"]
@@ -147,8 +147,8 @@ public static void main(String[] args) throws Exception {
         if os.name == "nt": ambiguous_env["LOCALAPPDATA"] = str(tmp_path / "ambiguous-cache")
         with temporary_stderr() as stderr:
             async with open_mcp_session(stderr, environment=ambiguous_env) as session:
-                ambiguous = dict((await session.call_tool("java_application", {
-                    "action":"test", "project_path":str(project), "tests":["example.AppTest"], "timeout":20,
+                ambiguous = dict((await session.call_tool("java_fast_test", {
+                    "action":"run", "project_path":str(project), "tests":["example.AppTest"], "timeout":20,
                 })).structuredContent or {})
                 with anyio.fail_after(60):
                     while ambiguous.get("status") in {"starting", "bootstrapping", "compiling", "running"}:

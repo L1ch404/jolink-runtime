@@ -19,7 +19,7 @@ from jsonschema.exceptions import ValidationError
 from mcp.server.lowlevel import Server
 
 from .. import __version__
-from ..core.dispatcher import Dispatcher
+from ..core.dispatcher import Dispatcher, runtime_operation
 from ..core.wait_state import WaitControl
 from ..launch.application_wait import WAIT_NEXT_STEP
 from .http_trigger import (
@@ -30,6 +30,7 @@ from .http_trigger import (
 from .tool_schema import (
     JAVA_APPLICATION_INPUT_SCHEMA,
     JAVA_DEBUGGER_INPUT_SCHEMA,
+    JAVA_FAST_TEST_INPUT_SCHEMA,
     JAVA_PROCESSES_INPUT_SCHEMA,
     JAVA_RUNTIME_INPUT_SCHEMA,
     JAVA_STATUS_INPUT_SCHEMA,
@@ -49,11 +50,12 @@ _NO_ACTIVE_SUSPENSION_NEXT_STEP = (
     "returned wait_handle."
 )
 SERVER_INSTRUCTIONS = (
-    "Use java_application for lifecycle, Fast Test, and reload; use "
+    "Use java_fast_test for selected Java tests without an application launch; "
+    "use java_application for application lifecycle and reload, and "
     "java_status for process, test, "
     "state, and log observations, and java_debugger for JDWP evidence. "
     "Before applying edited code to a running application, prefer an explicit "
-    "Fast Test when the project is within its supported Maven/JUnit boundary. "
+    "Fast Test for supported Maven/Gradle projects and JUnit/TestNG tests. "
     "Treat runtime outputs as bounded observations, not as self-explanatory "
     "causal conclusions. "
     "Clearly separate directly observed facts, inferences, and what remains "
@@ -67,6 +69,7 @@ SERVER_INSTRUCTIONS = (
 
 _TOOL_INPUT_SCHEMAS = {
     "java_application": JAVA_APPLICATION_INPUT_SCHEMA,
+    "java_fast_test": JAVA_FAST_TEST_INPUT_SCHEMA,
     "java_status": JAVA_STATUS_INPUT_SCHEMA,
     "java_debugger": JAVA_DEBUGGER_INPUT_SCHEMA,
     # Hidden lineage aliases remain accepted by the Python boundary and
@@ -83,6 +86,7 @@ _TOOL_VALIDATORS = {
 def _is_runtime_tool(name: str) -> bool:
     return name in {
         "java_application",
+        "java_fast_test",
         "java_status",
         "java_debugger",
         "java_runtime",
@@ -549,9 +553,6 @@ class RuntimeMCPBoundary:
             raise ValueError(f"Unknown tool: {name}")
 
         args = dict(arguments or {})
-        wait_for_application = (
-            name == "java_application" and args.get("action") in {"launch", "test"}
-        )
         validation_errors = sorted(
             validator.iter_errors(args),
             key=lambda item: tuple(str(part) for part in item.absolute_path),
@@ -560,6 +561,11 @@ class RuntimeMCPBoundary:
             return _call_tool_result(
                 _invalid_argument_payload(validation_errors[0], args)
             )
+
+        operation = runtime_operation(name, args)
+        wait_for_application = (
+            name in {"java_application", "java_fast_test"} and operation in {"run", "test"}
+        )
 
         if (
             _is_debugger_tool(name)
@@ -589,7 +595,7 @@ class RuntimeMCPBoundary:
 
                 if _is_runtime_tool(name):
                     active = self._active_background_waiter()
-                    action = str(args.get("action", ""))
+                    action = operation
                     if active is not None:
                         if action in {
                             "cleanup_debug_state",
@@ -630,7 +636,7 @@ class RuntimeMCPBoundary:
                             reason=f"superseded_by_{action}",
                         )
                 dispatch_args = dict(args)
-                if wait_for_application and args["action"] == "launch":
+                if wait_for_application and operation == "run":
                     # Readiness is observed outside the control lock below.
                     dispatch_args["_mcp_background_launch"] = True
                 payload = await anyio.to_thread.run_sync(
@@ -645,7 +651,7 @@ class RuntimeMCPBoundary:
                     make_waiter = getattr(self.dispatcher, "application_waiter", None)
                     if make_waiter is not None:
                         application_wait = make_waiter(
-                            args["action"], payload, session_key=self.session_key
+                            operation, payload, session_key=self.session_key
                         )
                 if (
                     _is_runtime_tool(name)
@@ -682,8 +688,7 @@ class RuntimeMCPBoundary:
 
         payload = _normalize_mcp_payload(name, args, payload)
         request_needs_runtime = (
-            name == "java_application" and args.get("action") in {"launch", "test"}
-            and bool(args.get("project_path"))
+            wait_for_application and bool(args.get("project_path"))
         )
         if self._runtime_preparation is not None and (
             request_needs_runtime or (name == "java_status" and args.get("action") == "status")

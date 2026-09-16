@@ -241,7 +241,7 @@ def test_progress_does_not_replace_project_error_or_ready_reply(tmp_path):
 
     async def scenario():
         failed = await boundary.call_tool(
-            "java_application", {"action": "test", "project_path": str(tmp_path)}
+            "java_fast_test", {"project_path": str(tmp_path), "tests": ["example.Test"]}
         )
         assert "runtime_preparation" not in failed.structuredContent
         assert (
@@ -250,7 +250,7 @@ def test_progress_does_not_replace_project_error_or_ready_reply(tmp_path):
         )
         dispatcher.payload = {"ok": True, "status": "bootstrapping"}
         pending = await boundary.call_tool(
-            "java_application", {"action": "test", "project_path": str(tmp_path)}
+            "java_fast_test", {"project_path": str(tmp_path), "tests": ["example.Test"]}
         )
         assert pending.structuredContent["runtime_preparation"]["state"] == "preparing"
         preparation.update(state="ready")

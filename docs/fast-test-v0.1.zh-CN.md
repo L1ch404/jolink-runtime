@@ -73,9 +73,13 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 
 ## 调用
 
+调用独立工具`java_fast_test`，不需要先启动业务应用或配置IDEA启动项。
+省略`action`默认执行`run`；显式写`"action":"run"`也可以。旧的
+`java_application(action="test"/"cancel_test")`公开入口已移除，不保留双入口。
+
 ```json
 {
-  "action": "test",
+  "action": "run",
   "project_path": "/workspace/project",
   "source_files": [
     "src/main/java/example/Service.java",
@@ -94,13 +98,35 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 旧的启动等待参数已删除，不再兼容接收。
 
 短测试直接返回结果；仍未完成的测试返回当前状态和原`test_run_id`，使用`java_status`观察，
-或用`cancel_test`取消。断言失败仍是`ok=true, passed=false`；编译、Runner基础设施、
+或用`java_fast_test(action="cancel", test_run_id="...")`取消。断言失败仍是`ok=true, passed=false`；编译、Runner基础设施、
 超时等失败返回`ok=false`。
 
 同步等待到期不停止测试，Runner使用独立的内部300秒执行上限（Bootstrap上限不变）。
 下一步建议提示LLM自行评估等待间隔，可用sleep或PowerShell的Start-Sleep等待后查询，
 不固定建议秒数，也不生成终端命令。取消MCP等待本身不取消后台任务；要取消任务仍使用
-`cancel_test`。MCP退出依然通过原有生命周期清理任务。
+`java_fast_test(action="cancel")`并传入原test_run_id。MCP退出依然通过原有生命周期清理任务。
+
+状态继续由`java_status(action="status")`返回，不新增测试状态系统。新入口复用原Manager、
+JDT Worker、Probe模型及编译缓存；工具改名不改变缓存身份。重连MCP才能获取更新后的工具列表。
+首次准备可能需要数分钟，Fast指重复开发验证时的增量复用，不承诺完整替代原生构建生命周期。
+
+### 2026-09-16 独立工具入口验收（工作区，待review）
+
+- 产品代码只改工具Schema、分发和MCP接线；沿用原FastTestManager、Worker、缓存、Runner和结果结构。
+  `java_application`、`java_debugger`不再暴露测试参数，公开测试入口只有`java_fast_test`。
+- 普通回归879 passed / 13 skipped；另行开启原有Fast Test产品回归6组全部通过，包含
+  JUnit4/5、Lombok、Reactor、TestNG、Gradle以及增量/失败恢复等路径。
+- 27组真实stdio MCP用例通过，覆盖无IDEA/无业务应用的JUnit4与TestNG、编译错误、断言失败、
+  缓存重开、32秒测试超过30秒回复预算后继续完成、等待期间取消、下载进度和后台恢复、
+  Profile/settings/双MCP模型回归、Gradle Groovy/Kotlin多模块、排序和main/test跨JDK编译级别。
+  测试已经改为调用新工具，不依赖旧公开入口的兼容转发。
+- 实际开源项目通过新入口复测：MapStruct＋Lombok所选1项、现代Petclinic所选3项均通过；
+  两者重复运行编译数量均为0。未修改这些项目源码。双构建配置的项目显式选择Maven。
+- 初次Gradle产品脚本缺JUnit依赖变量，补变量时曾误配JUnit4；改为该样本实际要求的
+  JUnit5.11.4/Platform1.11.4后通过。Java17矩阵的缺失环境变量也已补齐重跑，不把跳过当通过。
+
+本轮验证工具可发现、可调用及原有行为保持，不等于已量化GLM/CodeBuddy的自主选择率。
+后续应重连MCP确认新工具列表，再用不提示joLink的新会话观察模型是否主动获取说明和调用。
 
 每次测试仍启动独立Runner JVM，避免测试之间共享静态状态。当前时间字段：
 

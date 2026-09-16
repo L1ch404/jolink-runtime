@@ -51,9 +51,9 @@ def _run_test(
 ) -> dict[str, Any]:
     started = _call(
         dispatcher,
-        "java_application",
+        "java_fast_test",
         {
-            "action": "test",
+            "action": "run",
             "project_path": str(project),
             "source_files": list(source_files),
             "tests": [selector],

@@ -162,9 +162,9 @@ tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Grad
 
                     async def run_test():
                         state = await call(
-                            "java_application",
+                            "java_fast_test",
                             {
-                                "action": "test",
+                                "action": "run",
                                 "build_system": "gradle",
                                 "project_path": str(project),
                                 "tests": ["example.AppTest"],

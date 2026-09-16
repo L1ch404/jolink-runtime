@@ -41,9 +41,9 @@ async def run(args):
             await session.initialize()
             for _ in range(args.repeats):
                 response = await session.call_tool(
-                    "java_application",
+                    "java_fast_test",
                     {
-                        "action": "test",
+                        "action": "run",
                         "build_system": "gradle",
                         "project_path": str(args.project.resolve()),
                         "tests": args.tests,

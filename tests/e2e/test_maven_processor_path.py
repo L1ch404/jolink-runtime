@@ -260,9 +260,9 @@ public class Generator extends AbstractProcessor {
             result = dict(
                 (
                     await session.call_tool(
-                        "java_application",
+                        "java_fast_test",
                         {
-                            "action": "test",
+                            "action": "run",
                             "project_path": str(project),
                             "tests": ["example.GeneratedTest"],
                             "timeout": 20,

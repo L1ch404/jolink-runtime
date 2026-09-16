@@ -244,6 +244,23 @@ def _product_application_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_APPLICATION_OPERATIONS = {
+    "java_application": {
+        "launch": "run", "attach": "attach", "reload": "update",
+        "restart": "restart", "stop": "stop", "detach": "detach",
+    },
+    "java_fast_test": {"run": "test", "cancel": "cancel_test"},
+}
+
+
+def runtime_operation(tool_name: str, arguments: dict[str, Any]) -> str:
+    """One public-action mapping for dispatch, waiting and preparation progress."""
+    action = str(arguments.get("action", "run" if tool_name == "java_fast_test" else ""))
+    if tool_name in _APPLICATION_OPERATIONS:
+        return _APPLICATION_OPERATIONS[tool_name].get(action, "")
+    return action
+
+
 class Dispatcher:
     """Route standalone tool calls without depending on MCP or Hermes."""
 
@@ -254,7 +271,7 @@ class Dispatcher:
         from ..launch.application_wait import application_waiter
 
         return application_waiter(
-            self.sessions.get_runtime(session_key), action, payload
+            self.sessions.get_runtime(session_key), "launch" if action == "run" else action, payload
         )
 
     def dispatch(
@@ -267,12 +284,10 @@ class Dispatcher:
     ) -> dict[str, Any]:
         """Dispatch a migrated tool call and return its parsed JSON object."""
         args = dict(arguments or {})
-        if tool_name == "java_application":
-            action = str(args.get("action", ""))
-            args["action"] = {
-                "launch": "run",
-                "reload": "update",
-            }.get(action, action)
+        if tool_name in _APPLICATION_OPERATIONS:
+            args["action"] = runtime_operation(tool_name, args)
+            if not args["action"]:
+                return {"ok": False, "error_code": "INVALID_ARGUMENT", "error": f"Unknown action for {tool_name}."}
             return _product_application_payload(
                 self.dispatch_java_runtime(
                     args,

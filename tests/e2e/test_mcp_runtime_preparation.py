@@ -208,6 +208,7 @@ def test_mcp_prepares_before_request_and_continues_test(tmp_path, action, privat
     project = make_test_project(tmp_path, port)
     arguments = {"action": action, "project_path": str(project), "timeout": 0}
     if action == "test":
+        arguments.pop("action")
         arguments["tests"] = ["example.ReadyTest"]
     else:
         arguments.update(
@@ -241,7 +242,7 @@ def test_mcp_prepares_before_request_and_continues_test(tmp_path, action, privat
                     started = dict(
                         (
                             await session.call_tool(
-                                "java_application",
+                                "java_fast_test" if action == "test" else "java_application",
                                 arguments,
                             )
                         ).structuredContent
@@ -310,9 +311,9 @@ def test_mcp_close_during_download_preserves_completed_jars(tmp_path, with_reque
                     started = dict(
                         (
                             await session.call_tool(
-                                "java_application",
+                                "java_fast_test",
                                 {
-                                    "action": "test",
+                                    "action": "run",
                                     "project_path": str(project),
                                     "tests": ["example.ReadyTest"],
                                     "timeout": 0,

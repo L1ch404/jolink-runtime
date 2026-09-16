@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from jolink_runtime.core.dispatcher import runtime_operation
 from jolink_runtime.launch.application_wait import ApplicationWait, application_waiter
 from jolink_runtime.launch.contracts import LaunchAttempt, LaunchPhase
 from jolink_runtime.server import mcp_server
@@ -25,10 +26,11 @@ class Dispatcher:
 
     def dispatch(self, tool, args, **kwargs):
         self.calls.append((tool, args))
-        if tool == "java_application" and args["action"] == self.action:
+        operation = runtime_operation(tool, args)
+        if operation == ("run" if self.action == "launch" else "test"):
             self.started.set()
             return dict(self.initial)
-        if args["action"] in {"stop", "cancel_test"}:
+        if operation in {"stop", "cancel_test"}:
             self.final.update(ok=False, status="cancelled", error="cancelled")
             self.done.set()
         return {"ok": True}
@@ -40,6 +42,14 @@ class Dispatcher:
         )
 
 
+def request(action, **args):
+    if action == "test":
+        return "java_fast_test", {"project_path": "/fixture", "tests": ["example.Test"], **args}
+    if action == "cancel_test":
+        return "java_fast_test", {"action": "cancel", "test_run_id": "original", **args}
+    return "java_application", {"action": action, **args}
+
+
 @pytest.mark.parametrize("action", ["launch", "test"])
 def test_wait_returns_completed_result_without_status_polling(action):
     dispatcher = Dispatcher(action)
@@ -47,12 +57,12 @@ def test_wait_returns_completed_result_without_status_polling(action):
 
     async def scenario():
         async def finish():
-            await anyio.to_thread.run_sync(dispatcher.started.wait)
+            assert await anyio.to_thread.run_sync(lambda: dispatcher.started.wait(2))
             dispatcher.done.set()
 
         async with anyio.create_task_group() as group:
             group.start_soon(finish)
-            result = await boundary.call_tool("java_application", {"action": action})
+            result = await boundary.call_tool(*request(action))
         assert result.structuredContent == dispatcher.final
         assert len(dispatcher.calls) == 1
 
@@ -85,9 +95,7 @@ def test_timeout_returns_original_background_task(action, timeout):
     boundary = RuntimeMCPBoundary(dispatcher)
 
     async def scenario():
-        result = await boundary.call_tool(
-            "java_application", {"action": action, "timeout": timeout}
-        )
+        result = await boundary.call_tool(*request(action, timeout=timeout))
         payload = result.structuredContent
         assert payload["status"] == "starting"
         assert payload.get("test_run_id", payload.get("attempt_id")) == "original"
@@ -113,9 +121,7 @@ def test_large_timeout_waits_only_thirty_without_rejection(monkeypatch, timeout)
     monkeypatch.setattr(mcp_server.anyio, "sleep", sleep)
 
     async def scenario():
-        result = await boundary.call_tool(
-            "java_application", {"action": "test", "timeout": timeout}
-        )
+        result = await boundary.call_tool(*request("test", timeout=timeout))
         assert result.isError is False
         assert clock[0] == pytest.approx(30)
         assert not dispatcher.done.is_set()
@@ -130,14 +136,14 @@ def test_wait_does_not_block_status_or_cancellation(action, cancel):
 
     async def scenario():
         async def control():
-            await anyio.to_thread.run_sync(dispatcher.started.wait)
+            assert await anyio.to_thread.run_sync(lambda: dispatcher.started.wait(2))
             with anyio.fail_after(1):
                 await boundary.call_tool("java_status", {"action": "status"})
-                await boundary.call_tool("java_application", {"action": cancel})
+                await boundary.call_tool(*request(cancel))
 
         async with anyio.create_task_group() as group:
             group.start_soon(control)
-            result = await boundary.call_tool("java_application", {"action": action})
+            result = await boundary.call_tool(*request(action))
         assert result.structuredContent["status"] == "cancelled"
         assert result.isError is True
 

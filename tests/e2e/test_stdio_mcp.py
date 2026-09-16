@@ -43,6 +43,7 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown(
                     listed = await session.list_tools()
                     assert [tool.name for tool in listed.tools] == [
                         "java_application",
+                        "java_fast_test",
                         "java_status",
                         "java_debugger",
                     ]

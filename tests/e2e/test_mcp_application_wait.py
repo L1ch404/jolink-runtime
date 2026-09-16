@@ -55,7 +55,9 @@ public class ReadyTest {
                     with anyio.fail_after(40):
                         return dict(
                             (
-                                await session.call_tool("java_application", args)
+                                await session.call_tool(
+                                    "java_fast_test" if "tests" in args or args.get("action") == "cancel" else "java_application", args
+                                )
                             ).structuredContent
                         )
 
@@ -86,7 +88,6 @@ public class ReadyTest {
                 assert "still running" not in ready.get("suggested_next_step", "")
 
                 test = {
-                    "action": "test",
                     "project_path": str(project),
                     "tests": ["example.ReadyTest#ready"],
                 }
@@ -140,7 +141,7 @@ public class ReadyTest {
                             await anyio.sleep(0.1)
                         await call(
                             {
-                                "action": "cancel_test",
+                                "action": "cancel",
                                 "test_run_id": observed["test_run_id"],
                             }
                         )

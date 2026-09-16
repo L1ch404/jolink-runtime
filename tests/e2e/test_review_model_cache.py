@@ -46,8 +46,8 @@ async def client(tmp_path, label, cache):
 
 async def run_test(call, root, selector):
     result = await call(
-        "java_application",
-        {"action": "test", "project_path": str(root), "tests": [selector]},
+        "java_fast_test",
+        {"action": "run", "project_path": str(root), "tests": [selector]},
     )
     with anyio.fail_after(120):
         while result.get("status") in {

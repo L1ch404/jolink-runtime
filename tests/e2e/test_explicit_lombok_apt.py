@@ -81,9 +81,9 @@ def test_lombok_agent_and_explicit_apt_entry_work_together(
             result = dict(
                 (
                     await session.call_tool(
-                        "java_application",
+                        "java_fast_test",
                         {
-                            "action": "test",
+                            "action": "run",
                             "project_path": str(project),
                             "tests": ["example.MappingTest"],
                             "timeout": 20,

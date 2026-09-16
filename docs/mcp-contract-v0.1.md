@@ -17,17 +17,20 @@ is frozen separately in
 
 ## Exposed tools
 
-- `java_application`: `launch`, `attach`, `test`, `cancel_test`, `reload`,
+- `java_application`: `launch`, `attach`, `reload`,
   `restart`, `stop`, `detach`
+- `java_fast_test`: optional `action=run` (default), or `action=cancel`
 - `java_status`: `processes`, `status`, `logs`
 - `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
   `stack`, `variables`, `resume`, `cleanup_debug_state`
 
-`test` is independent of an application JVM. For the first call it runs one
-supervised Maven `test-compile` or Gradle `classes/testClasses` Bootstrap with a
-bundled content-checked Probe, then initializes one private persistent JDT project
-with test source/dependency attributes and separate main/test outputs. Later
-calls synchronize only explicit `source_files`, use JDT incremental compilation,
+`java_fast_test` is independent of an application JVM. It requires `project_path`
+and explicit `tests` for run, or `test_run_id` for cancel. Omitted action is
+defaulted by dispatch, not just by a Schema annotation. The old application
+test/cancel_test actions are not public aliases. First use obtains the Maven or
+Gradle model through the existing Probe and source preparation, then initializes
+persistent JDT main/test projects. Later calls detect changed sources (optionally
+supplemented by explicit `source_files`), use JDT incremental compilation,
 and launch an isolated Java 8 bytecode Test Runner for explicit JUnit 4/5 or TestNG
 `Class` or `Class#method` selectors. Test assertion failures are successful Tool
 execution (`ok=true`, `passed=false`); compiler, protocol, timeout, and process
@@ -38,17 +41,17 @@ or deletions. For deletion, the Worker must return the exact private
 appears to disappear. Runtime `reload` keeps its stricter, separate lifecycle
 gate.
 
-The initial Fast Test contract is deliberately bounded to equal Java 8 or 11
-source/target levels, one Maven jar module or one selector-identified jar module
-inside a standard static Reactor, identical main/test Processor paths,
-explicit selectors, and project-provided JUnit engines. When Surefire normally
+Current Fast Test uses independent main/test compiler settings and supports
+Maven/Gradle module dependencies; current validation includes Java 8/11/17/21.
+See `fast-test-v0.1.zh-CN.md` and the compatibility follow-up for current boundaries.
+When Surefire normally
 supplies a missing JUnit Platform Launcher, selection is deterministic: a
 project-declared launcher, a local exact engine version, or a Maven-resolved
 exact engine version wins in that order. Only when the exact version is
 unavailable may an already resolved same-major launcher no older than the engine
 be used. Version, source, and fallback reason are reported without local paths;
 cross-major guessing is forbidden. Unsupported Surefire VM/system
-property configuration fails closed. `cancel_test` addresses one active
+property configuration fails closed. `java_fast_test(action='cancel')` addresses one active
 `test_run_id`; `java_status(status)` exposes the current or last TestAttempt.
 After any compile failure the private working compile state remains `failed`;
 no Test Runner may start until a later explicit-source compile succeeds. Runner
@@ -149,7 +152,7 @@ definition blocks breakpoint arming; the error returns all
 
 - `ready_port` is an optional loopback application port. It must differ from
   `jdwp_port`.
-- For `java_application` launch/test, `timeout` bounds the whole synchronous
+- For `java_application(launch)` / `java_fast_test(run)`, `timeout` bounds the whole synchronous
   result wait (default 30, zero for immediate submission). Values above 30
   are accepted and wait only 30 seconds. Expiry returns the original task ID
   and current state, never cancels or resubmits the operation. Tests keep an
@@ -160,9 +163,9 @@ definition blocks breakpoint arming; the error returns all
   initialization synchronously. The reply-wait deadline does not interrupt
   that initialization; zero skips the subsequent readiness wait. Project
   launches and Test attempts already submit through background workers.
-- Waiting happens outside the MCP control lock. Explicit stop/cancel_test and
+- Waiting happens outside the MCP control lock. Explicit stop / Fast Test cancel and
   status remain available. Cancelling only the MCP reply wait leaves the
-  background operation available to status/stop/cancel_test; server shutdown
+  background operation available to status/stop/Fast Test cancel; server shutdown
   still closes owned work through the existing lifecycle.
 - Readiness configuration is stored with the launched process. `status`
   rechecks the same port without reading or interpreting application logs.

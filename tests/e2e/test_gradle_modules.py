@@ -171,9 +171,9 @@ public static void main(String[] args) throws Exception {
 
                     async def run_test():
                         value = await call(
-                            "java_application",
+                            "java_fast_test",
                             {
-                                "action": "test",
+                                "action": "run",
                                 "project_path": str(project),
                                 "tests": ["example.AppTest#value"],
                                 "timeout": 20,
@@ -237,9 +237,9 @@ public static void main(String[] args) throws Exception {
                             "package example; public class CancelProbeTest { @org.junit.Test public void waitForCancel() throws Exception { Thread.sleep(30000); } }"
                         )
                         active_test = await call(
-                            "java_application",
+                            "java_fast_test",
                             {
-                                "action": "test",
+                                "action": "run",
                                 "project_path": str(project),
                                 "tests": ["example.CancelProbeTest"],
                                 "timeout": 60,
@@ -247,9 +247,9 @@ public static void main(String[] args) throws Exception {
                         )
                         assert active_test["status"] == "running", active_test
                         await call(
-                            "java_application",
+                            "java_fast_test",
                             {
-                                "action": "cancel_test",
+                                "action": "cancel",
                                 "test_run_id": active_test["test_run_id"],
                             },
                         )

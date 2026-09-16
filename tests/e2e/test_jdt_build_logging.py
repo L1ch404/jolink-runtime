@@ -73,9 +73,9 @@ public class ChainTest {
 
                 async def run_test():
                     result = await session.call_tool(
-                        "java_application",
+                        "java_fast_test",
                         {
-                            "action": "test",
+                            "action": "run",
                             "project_path": str(project),
                             "build_system": "maven",
                             "tests": ["example.ChainTest#value"],

@@ -10,11 +10,12 @@ from jolink_runtime.server.tool_schema import (
 )
 
 
-def test_mcp_product_surface_exposes_three_focused_tools() -> None:
+def test_mcp_product_surface_exposes_focused_tools() -> None:
     tools = get_mcp_tools()
 
     assert [tool.name for tool in tools] == [
         "java_application",
+        "java_fast_test",
         "java_status",
         "java_debugger",
     ]
@@ -22,7 +23,7 @@ def test_mcp_product_surface_exposes_three_focused_tools() -> None:
 
 
 def test_focused_schemas_expose_only_their_public_actions() -> None:
-    application, status, debugger = get_mcp_tools()
+    application, fast_test, status, debugger = get_mcp_tools()
     actions = application.inputSchema["properties"]["action"]["enum"]
     wait_mode = debugger.inputSchema["properties"]["wait_mode"]
     http_trigger = debugger.inputSchema["properties"]["http_trigger"]
@@ -61,12 +62,12 @@ def test_focused_schemas_expose_only_their_public_actions() -> None:
 
 
 def test_product_schemas_reject_unknown_fields_and_remote_hosts() -> None:
-    application, status, debugger = get_mcp_tools()
+    application, fast_test, status, debugger = get_mcp_tools()
     host = application.inputSchema["properties"]["host"]
 
     assert all(
         tool.inputSchema["additionalProperties"] is False
-        for tool in (application, status, debugger)
+        for tool in (application, fast_test, status, debugger)
     )
     assert host["enum"] == ["127.0.0.1", "localhost"]
 
@@ -88,7 +89,7 @@ def test_java_application_description_contains_lifecycle_and_reload_signals() ->
 
 
 def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
-    runtime = get_mcp_tools()[2]
+    runtime = next(tool for tool in get_mcp_tools() if tool.name == "java_debugger")
     wait_description = (
         runtime.inputSchema["properties"]["wait_mode"]["description"].lower()
     )
@@ -119,7 +120,7 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
 
 
 def test_suspension_selectors_prefer_the_event_thread_without_rediscovery() -> None:
-    properties = get_mcp_tools()[2].inputSchema["properties"]
+    properties = next(tool for tool in get_mcp_tools() if tool.name == "java_debugger").inputSchema["properties"]
     thread_description = properties["thread_name"]["description"].lower()
     suspension_description = properties["suspension_id"]["description"].lower()
 
@@ -150,7 +151,7 @@ def test_legacy_lineage_schema_remains_separate_and_unchanged_in_shape() -> None
         JAVA_RUNTIME_SCHEMA["parameters"]["properties"]["action"]["enum"]
     )
     mcp_actions = (
-        get_mcp_tools()[2].inputSchema["properties"]["action"]["enum"]
+        next(tool for tool in get_mcp_tools() if tool.name == "java_debugger").inputSchema["properties"]["action"]["enum"]
     )
 
     assert "wait_breakpoint" in legacy_actions

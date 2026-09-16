@@ -43,6 +43,7 @@ from jolink_runtime.launch.gradle_probe import (
 from jolink_runtime.server.tool_schema import (
     JAVA_APPLICATION_INPUT_SCHEMA,
     JAVA_DEBUGGER_INPUT_SCHEMA,
+    JAVA_FAST_TEST_INPUT_SCHEMA,
 )
 
 
@@ -424,17 +425,19 @@ def test_fast_test_accepts_shared_test_compile_source_target_encoding() -> None:
 
 
 
-def test_java_application_schema_exposes_fast_test_without_new_tool() -> None:
-    actions = JAVA_APPLICATION_INPUT_SCHEMA["properties"]["action"]["enum"]
-    assert "test" in actions
-    assert "cancel_test" in actions
-    assert "tests" in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
-    assert JAVA_APPLICATION_INPUT_SCHEMA["properties"]["build_system"][
+def test_fast_test_schema_exposes_independent_test_intent() -> None:
+    actions = JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["enum"]
+    assert actions == ["run", "cancel"]
+    assert "test" not in JAVA_APPLICATION_INPUT_SCHEMA["properties"]["action"]["enum"]
+    assert "tests" not in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
+    assert "tests" in JAVA_FAST_TEST_INPUT_SCHEMA["properties"]
+    assert JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["build_system"][
         "enum"
     ] == ["maven", "gradle"]
     assert "build_system" not in JAVA_DEBUGGER_INPUT_SCHEMA["properties"]
-    assert "test_run_id" in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
-    description = JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"][
+    assert "test_run_id" in JAVA_FAST_TEST_INPUT_SCHEMA["properties"]
+    assert "test_run_id" not in JAVA_DEBUGGER_INPUT_SCHEMA["properties"]
+    description = JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["project_path"][
         "description"
     ]
     assert "Gradle Wrapper" in description

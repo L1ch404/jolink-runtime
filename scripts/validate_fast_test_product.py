@@ -35,12 +35,12 @@ async def validate_mcp(project: Path) -> dict:
     boundary = RuntimeMCPBoundary()
     try:
         listed = await boundary.list_tools()
-        application = next(tool for tool in listed if tool.name == "java_application")
-        assert "test" in application.inputSchema["properties"]["action"]["enum"]
+        testing = next(tool for tool in listed if tool.name == "java_fast_test")
+        assert "run" in testing.inputSchema["properties"]["action"]["enum"]
         started = await boundary.call_tool(
-            "java_application",
+            "java_fast_test",
             {
-                "action": "test",
+                "action": "run",
                 "project_path": str(project),
                 "tests": ["example.CalculatorTest#adds"],
                 "timeout": 120,
@@ -78,9 +78,9 @@ async def validate_mcp(project: Path) -> dict:
             encoding="utf-8",
         )
         failed_call = await boundary.call_tool(
-            "java_application",
+            "java_fast_test",
             {
-                "action": "test",
+                "action": "run",
                 "project_path": str(project),
                 "source_files": ["src/main/java/example/Calculator.java"],
                 "tests": ["example.CalculatorTest#adds"],
@@ -111,9 +111,9 @@ async def validate_mcp(project: Path) -> dict:
             encoding="utf-8",
         )
         recovered_call = await boundary.call_tool(
-            "java_application",
+            "java_fast_test",
             {
-                "action": "test",
+                "action": "run",
                 "project_path": str(project),
                 "source_files": ["src/main/java/example/Calculator.java"],
                 "tests": ["example.CalculatorTest#adds"],
@@ -137,9 +137,9 @@ async def validate_mcp(project: Path) -> dict:
         if not recovered_payload.get("passed"):
             raise AssertionError(recovered_payload)
         hanging = await boundary.call_tool(
-            "java_application",
+            "java_fast_test",
             {
-                "action": "test",
+                "action": "run",
                 "project_path": str(project),
                 "tests": ["example.CalculatorTest#hangs"],
                 "timeout": 60,
@@ -149,9 +149,9 @@ async def validate_mcp(project: Path) -> dict:
         if hanging_payload.get("status") != "running":
             raise AssertionError(hanging_payload)
         cancelled = await boundary.call_tool(
-            "java_application",
+            "java_fast_test",
             {
-                "action": "cancel_test",
+                "action": "cancel",
                 "test_run_id": hanging_payload["test_run_id"],
             },
         )

@@ -190,7 +190,8 @@ def test_configuration_changes_refresh_models_without_mutating_running_jvm(
                         return dict(
                             (
                                 await session.call_tool(
-                                    "java_application", {"action": action, **args}
+                                    "java_fast_test" if action == "test" else "java_application",
+                                    args if action == "test" else {"action": action, **args},
                                 )
                             ).structuredContent
                         )

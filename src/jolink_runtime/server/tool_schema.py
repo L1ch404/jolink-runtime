@@ -426,9 +426,8 @@ PUBLIC_APPLICATION_ACTIONS = (
     "restart",
     "stop",
     "detach",
-    "test",
-    "cancel_test",
 )
+PUBLIC_FAST_TEST_ACTIONS = ("run", "cancel")
 PUBLIC_STATUS_ACTIONS = ("processes", "status", "logs")
 PUBLIC_DEBUGGER_ACTIONS = (
     "breakpoint",
@@ -475,23 +474,67 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "ready_port",
         "source_files",
         "hotswap",
-        "tests",
         "build_system",
-        "test_run_id",
         "timeout",
     ),
+)
+JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
+    "Maven or Gradle project directory for an IDEA-derived application launch. "
+    "Use instead of direct jar_path, classpath or main_class launch arguments."
+)
+JAVA_APPLICATION_INPUT_SCHEMA["properties"]["source_files"]["description"] = (
+    "Explicit changed Java source paths for reload, relative to the active project or absolute."
+)
+JAVA_APPLICATION_INPUT_SCHEMA["properties"]["build_system"]["description"] = (
+    "Optional authoritative build system for project launch; specify maven or gradle when both exist."
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["timeout"] = {
     "type": "number",
     "minimum": 0,
     "default": 30,
     "description": (
-        "For launch/test, seconds to wait for the result in this call. "
+        "Seconds to wait for the launch result in this call. "
         "Defaults to 30; values above 30 wait only 30 seconds without error. "
         "Zero returns immediately after submission. On expiry the same task "
-        "continues in the background; this is not a test execution time limit."
+        "continues in the background."
     ),
 }
+JAVA_FAST_TEST_INPUT_SCHEMA = _schema_for_actions(
+    PUBLIC_FAST_TEST_ACTIONS,
+    ("project_path", "tests", "source_files", "build_system", "timeout", "test_run_id"),
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["required"] = []
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["default"] = "run"
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["description"] = (
+    "Omit or use run to execute tests; use cancel with a returned test_run_id to stop that test run."
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
+    "Maven project or Gradle Wrapper project directory containing the selected tests. "
+    "No IDEA launch configuration or running application is required."
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["source_files"]["description"] = (
+    "Optional edited source paths. Normally omit: the persistent workspace "
+    "automatically detects changed Java sources."
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["build_system"]["description"] = (
+    "Optional authoritative build system for tests; specify maven or gradle when both exist."
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["timeout"] = deepcopy(
+    JAVA_APPLICATION_INPUT_SCHEMA["properties"]["timeout"]
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["timeout"]["description"] = (
+    "Seconds to wait for this test result: default 30, values above 30 wait only 30, "
+    "zero submits immediately. Expiry leaves the same task running. "
+    "This does not change the test Runner's separate execution time limit."
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["test_run_id"]["description"] = (
+    "Test run ID returned by java_fast_test; required for action='cancel'."
+)
+JAVA_FAST_TEST_INPUT_SCHEMA["allOf"] = [{
+    "if": {"properties": {"action": {"const": "cancel"}}, "required": ["action"]},
+    "then": {"required": ["test_run_id"]},
+    "else": {"required": ["project_path", "tests"]},
+}]
 JAVA_STATUS_INPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -528,22 +571,35 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
             "source_files",
             "hotswap",
             "build_system",
+            "tests",
+            "test_run_id",
         }
     ),
 )
 
 JAVA_APPLICATION_DESCRIPTION = (
-    "Launch, attach, fast-test, reload, restart, stop, or detach Java code. "
-    "Launch and test wait up to timeout (at most 30 seconds), returning the "
+    "Launch, attach, reload, restart, stop, or detach Java applications. "
+    "Use java_fast_test to run tests without launching an application. "
+    "Launch waits up to timeout (at most 30 seconds), returning the "
     "result if finished or the original background task if still running. "
-    "Fast Test uses one Maven or Gradle authority Bootstrap, persistent JDT "
-    "main/test incremental compilation, and an isolated test Runner without "
-    "changing a Runtime. For supported Maven or Gradle project launches, "
+    "For supported Maven or Gradle project launches, "
     "reload accepts explicit source_files and immediately returns a background "
     "reload_id. Call status to observe "
     "active_operation and last_reload. The Attempt applies only compatible "
     "loaded classes with HotSwap; other changes report that a fresh project "
     "launch is required."
+)
+JAVA_FAST_TEST_DESCRIPTION = (
+    "Run selected Java tests in Maven or Gradle projects using persistent "
+    "incremental compilation. Supports JUnit 4/5 and TestNG. No application "
+    "launch is required, and an existing application is left running. "
+    "Provide project_path and tests (Class or Class#method); action defaults to run. "
+    "The first build-model preparation and JDT compilation can take minutes; "
+    "subsequent calls reuse them and compile changed sources. "
+    "Waits up to timeout (maximum 30 seconds); unfinished work returns its "
+    "test_run_id and continues in the background. Observe it with java_status "
+    "or cancel it here using action='cancel' and the same test_run_id. "
+    "This is not the complete Maven/Gradle verification or packaging lifecycle."
 )
 JAVA_STATUS_DESCRIPTION = (
     "Discover local Java processes, inspect joLink application/build state, or "
@@ -564,6 +620,11 @@ def get_mcp_tools() -> list[types.Tool]:
             inputSchema=deepcopy(JAVA_APPLICATION_INPUT_SCHEMA),
         ),
         types.Tool(
+            name="java_fast_test",
+            description=JAVA_FAST_TEST_DESCRIPTION,
+            inputSchema=deepcopy(JAVA_FAST_TEST_INPUT_SCHEMA),
+        ),
+        types.Tool(
             name="java_status",
             description=JAVA_STATUS_DESCRIPTION,
             inputSchema=deepcopy(JAVA_STATUS_INPUT_SCHEMA),
@@ -581,6 +642,8 @@ __all__ = [
     "JAVA_APPLICATION_INPUT_SCHEMA",
     "JAVA_DEBUGGER_DESCRIPTION",
     "JAVA_DEBUGGER_INPUT_SCHEMA",
+    "JAVA_FAST_TEST_DESCRIPTION",
+    "JAVA_FAST_TEST_INPUT_SCHEMA",
     "JAVA_PROCESSES_DESCRIPTION",
     "JAVA_PROCESSES_INPUT_SCHEMA",
     "JAVA_RUNTIME_DESCRIPTION",
@@ -588,6 +651,7 @@ __all__ = [
     "JAVA_STATUS_DESCRIPTION",
     "JAVA_STATUS_INPUT_SCHEMA",
     "PUBLIC_APPLICATION_ACTIONS",
+    "PUBLIC_FAST_TEST_ACTIONS",
     "PUBLIC_DEBUGGER_ACTIONS",
     "PUBLIC_RUNTIME_ACTIONS",
     "PUBLIC_STATUS_ACTIONS",

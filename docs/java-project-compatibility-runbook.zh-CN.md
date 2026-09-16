@@ -16,7 +16,8 @@ Demo 或某个公司项目；常见项目被拒绝同样是产品缺口，不能
 
 只使用以下产品入口作为主验收链路：
 
-- `java_application`：`launch`、`reload`、`restart`、`stop`、`test`、`cancel_test`。
+- `java_application`：`launch`、`reload`、`restart`、`stop`。
+- `java_fast_test`：默认`run`，取消用`cancel`。
 - `java_status`：`status`、`logs`、`processes`。
 
 暂不专项测试 `java_debugger`、断点、wait_event、变量、异常监听。reload 涉及的代码
@@ -191,20 +192,21 @@ Windows 使用实际 Windows 路径和分号 PATH；缓存隔离设该 MCP 进�
 在外层 shell 设置 JAVA_HOME/XDG_CACHE_HOME，就假定它完成了 JDK/缓存隔离。
 可参考该脚本的真实 stdio 会话写法，在 RUN_ROOT 写驱动，不修改 joLink 脚本。
 
-初始化后检查 tools/list，确认有 `java_application`、`java_status`。记录 joLink
+初始化后检查 tools/list，确认有 `java_application`、`java_fast_test`、`java_status`。记录 joLink
 commit、dirty 状态、Python 路径、启动命令、stderr 路径；检查 `java_status(status)`
 里的 `server_diagnostics.log_file` 是否位于预期缓存。若服务旧/路径错误，先修正连接，
 不得把内存里旧版本的结果归给当前提交。
 
 以下 JSON 都是工具的 arguments；使用宿主 UI 调工具，或 SDK 的
-`session.call_tool("java_application", arguments)`。通过直接实例化 Python Manager
+`session.call_tool("java_fast_test", arguments)`执行测试，启动等操作用`java_application`。
+通过直接实例化 Python Manager
 绕过 MCP 的结果只能作辅助定位，不能替代产品流程验收。
 
 ### Fast Test 调用与轮询
 
 ```json
 {
-  "action": "test",
+  "action": "run",
   "project_path": "/absolute/RUN_ROOT/P01/jdk8/product",
   "build_system": "maven",
   "tests": ["org.apache.commons.lang3.StringUtilsTest"],
@@ -222,8 +224,9 @@ tests/failed_count/skipped_count。`ok=true, passed=false` 是断言失败，不
 首次 baseline 省略 `source_files`；修改时至少一次也省略它，验证自动发现改动。
 另一次显式提供，路径相对 project_path，包含模块前缀，单次最多 16 个文件。
 
-不要把字段 `timeout` 写成 `timeout_seconds`。它控制测试运行，不是完整 Bootstrap
-期限；状态里单独记录的 bootstrap 超时也要保留。工具短暂返回、HTTP 尚未 ready 或
+不要把字段 `timeout` 写成 `timeout_seconds`。它控制本次同步等待，默认30秒、超过30按30等待，
+不是Runner执行或完整Bootstrap期限；两者仍有独立上限。状态里单独记录的bootstrap超时也要保留。
+工具短暂返回、HTTP 尚未 ready 或
 等待超时，不等于服务/编译失败；观察实际终态。长构建有进展就继续等待，不因慢而停止。
 
 ## 6. 通用测试清单
@@ -373,7 +376,7 @@ launch_error；TCP ready 后再用普通 HTTP 客户端访问 `/`、`/owners/fin
 启动/测试，或会“看似成功但执行旧代码”的问题；按实测影响排序，不按错误文案是否
 显得安全来排序。不凭一次异常推断发生频率，也不把现有文档的支持边界当作免责理由。
 
-T10 取消使用 `java_application` 的 `{"action":"cancel_test","test_run_id":"实际ID"}`。
+T10 取消使用 `java_fast_test` 的 `{"action":"cancel","test_run_id":"实际ID"}`。
 只取消本轮测试、停止本轮受管应用。结束 MCP 后检查本轮 Worker/Runner 是否退出；
 MCP 尚开着时 Worker 保活是正常现象。不要结束机器上所有 java/Gradle/IDE 进程。
 
