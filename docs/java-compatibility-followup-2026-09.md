@@ -37,7 +37,8 @@ Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换�
 | U5 | Checkstyle新引擎注解位置错误 | 已定位为泛型方法类型参数后的声明/类型注解归属差异；独立ECJ及原生Eclipse Java Builder均复现，不是U1目录映射复发 | 2026-09-13用户决定只记录、暂不处理；保留原错误，不修改输入或屏蔽诊断，详见升级文档第2项 |
 | U6 | MyBatis准备阶段 | format profile中OpenRewrite fork被拒；关闭format后license处理等待。关闭两者后main8/test17编译和87项通过 | 后续讨论准备步骤；不把专项结果当成原样全通过 |
 | U8 | 旧Lombok1.18.20兼容 | 部分用法依赖旧ECJ内部接口，`@Builder(toBuilder=true)`等有已知失败；不是所有注解都不能使用 | 用户决定暂缓，不自动换项目依赖、不增加版本拦截 |
-| U9 | Reload遇到未加载类 | 同一源码的变更class中有未加载类时，整轮要求重新launch，连已加载外部类也不更新 | 用户决定暂缓，详细证据见下文 |
+| U9 | Reload遇到未加载类 | 新的restart统一入口会用已编好的产物自动重启；仍不做“部分class热更、未加载class延迟加载”的优化 | 自动重启路径本轮已实现，部分HotSwap优化仍暂缓；见project-restart.zh-CN.md |
+| U13 | Gradle compileJava.doLast 建模/验收差异 | 旧Runtime验证脚本期望修改class的doLast触发未建模错误，实际Probe/JDT启动成功；还不能认为这类变换语义被执行或支持 | 当前工作区及干净e5bad1d均经真实MCP复现，非本轮restart引入；先记录，不新增拦截，详见下文 |
 | U10 | Gradle引用脚本漏入配置清单 | 真实MCP：`apply from: 'config/resources.gradle'`不在已记录输入内；只改脚本后，launch和Test仍复用旧模型 | 2026-09-15用户决定先记录，不实现脚本收集；不能用正则支持一个写法就宣称完整支持动态脚本 |
 | U11 | IDEA切换构建选择/启动意图仍复用旧计划（Review第4项） | 真实MCP：只把选中的settings从A切到B，两文件内容不变，仍返回旧HTTP内容；生产load也忽略新的主类/参数/构建偏好。读取新BuildPreferences发生在缓存命中之后 | 2026-09-16用户决定先记录。不把“同一settings文件内容变化可感知”当成“切换settings/Profile也已支持”；后续区分构建选择与纯启动参数 |
 | U12 | Probe执行期间改配置的基线窗口（Review第5项） | 生产方法受控复现：Probe返回旧UTF-8模型，但返回前POM已改US-ASCII；之后_stabilize拍到新文件，误认为旧模型仍有效。尚未跑真实Maven并发编辑窗口 | 2026-09-16用户决定先记录。本轮仍在Probe结束、JDT开始前取快照；不增加Probe重试/事务或业务源码快照。临时避免在Probe运行时编辑构建配置 |
@@ -160,7 +161,25 @@ JAR逐文件留存、有限网络重试、底层错误日志、Windows新目录�
 不能保证所有国内网络都快。公司Windows曾在重置目录后恢复，但不等于新版所有
 Windows/Linux组合已验收；历史异常ACL不会由新建目录修复逻辑自动递归重置。
 
+### Gradle compileJava.doLast：额外回归发现（2026-09-17）
+
+`tests/e2e/test_gradle_runtime_product.py` 的 Gradle 8.14 / Java11 路径已通过
+启动、缓存重开、增量、HotSwap、结构变化自动重启、资源读取；末尾附加用例
+给 `compileJava` 增加 `doLast`，预期 `GRADLE_BYTECODE_TRANSFORM_UNMODELED`，
+实际却到达 `runtime_active/ready`，旧脚本因此等待失败状态超时。
+
+另外提取未修改的 `e5bad1d` 源码，以独立真实MCP和Gradle 8.14重新执行同类
+`compileJava.doLast { target << (byte)0 }` 项目，仍为 `runtime_active/ready`。
+因此不是本轮restart造成的回归。本轮没有改Gradle Probe及模型转换，也没有为了
+消除失败而删除该断言或新增白名单。仍需定位原生Probe实际导出的任务action信息，
+并区分“快速路径不执行正式编译任务”与“项目依赖的字节码变换已经被忠实执行”。
+它与U4的构建步骤取舍相关，不能把这轮启动成功写成任意doLast语义受支持。
+
 ### Reload待办：未加载类（2026-09-13，用户决定先记录、不修改）
+
+2026-09-17 更新：公开reload已合入restart，默认先增量编译并尝试HotSwap；
+遇到未加载类会直接用本轮产物重启，不再要求LLM另发stop/launch。以下是原问题
+及仍暂缓的“部分HotSwap”优化背景，不代表新入口还会停在相同拒绝上。
 
 真实MCP测试中，`Foo.java`同时产生`Foo.class`和`Foo$Nested.class`。只修改外部类
 方法体时，JDT输出变更也包含内部类；若`Foo`已加载而`Foo$Nested`未加载，当前

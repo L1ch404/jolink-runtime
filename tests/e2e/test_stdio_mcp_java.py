@@ -64,7 +64,7 @@ async def _await_reload(
     *,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    assert started["status"] == "reload_started"
+    assert started["status"] == "restart_started"
     reload_id = started["reload_id"]
     with anyio.fail_after(timeout):
         while True:
@@ -1245,7 +1245,7 @@ public class PersistentFixture {{
                             "src/main/java/example/PersistentFixture.java"
                         ],
                     }))
-                assert started["status"] == "reload_started"
+                assert started["status"] == "restart_started"
                 terminal = await _await_reload(
                     second_session, started, timeout=30
                 )
@@ -1258,7 +1258,7 @@ public class PersistentFixture {{
                 restarting = assert_ok(await call_payload(second_session, {
                     "action": "restart",
                 }))
-                assert restarting["status"] == "restarting"
+                assert restarting["status"] == "restarted"
                 with anyio.fail_after(30):
                     while True:
                         restarted = assert_ok(await call_payload(
@@ -1285,7 +1285,8 @@ public class PersistentFixture {{
                 reapply_terminal = await _await_reload(
                     second_session, reapplied, timeout=30
                 )
-                assert reapply_terminal["status"] == "no_changes"
+                assert reapply_terminal["status"] == "restarted"
+                assert reapply_terminal["compiled_source_count"] == 0
                 assert reapply_terminal["applied"] is True
                 assert await anyio.to_thread.run_sync(request_value) == "after"
                 assert_ok(await call_payload(second_session, {"action": "stop"}))
@@ -1505,7 +1506,7 @@ public class LazyValue {
                                 "src/main/java/example/UpdateMcpFixture.java",
                             ],
                         }))
-                        assert started["status"] == "reload_started"
+                        assert started["status"] == "restart_started"
                         return await _await_reload(
                             session, started, timeout=30
                         )
@@ -1577,9 +1578,6 @@ public class LazyValue {
                         original_breakpoint_id
                     ]
                     assert updated["breakpoint_refresh_state"] == "partial"
-                    unchanged = await reload_source()
-                    assert unchanged["status"] == "no_changes"
-
                     listed = assert_ok(await call_payload(session, {
                         "action": "breakpoint",
                         "bp_action": "list",
@@ -1661,20 +1659,18 @@ public class LazyValue {
                         ),
                         encoding="utf-8",
                     )
-                    rejected = await reload_source()
-                    assert rejected["ok"] is False
-                    assert rejected["error_code"] == "RELOAD_REQUIRES_RELAUNCH"
-                    assert rejected["reason_code"] == "HOT_SWAP_REJECTED"
-                    assert rejected["runtime_code_state"] == "unchanged"
-                    assert rejected["runtime_overlay_active"] is True
-                    assert rejected["code_revision"] == 2
+                    structural_source = source.read_text(encoding="utf-8")
+                    replaced = await reload_source()
+                    assert replaced["ok"] is True and replaced["applied"] is True
+                    assert replaced["apply_method"] == "restart"
+                    assert replaced["restart_reason"] == "HOT_SWAP_REJECTED"
                     assert not formal_class.exists()
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "second-update"
                     )
 
                     source.write_text(
-                        second_updated_source.replace(
+                        structural_source.replace(
                             'STATIC_VALUE = "stable"',
                             'STATIC_VALUE = "changed"',
                         ),
@@ -1683,7 +1679,7 @@ public class LazyValue {
                     static_applied = await reload_source()
                     assert static_applied["ok"] is True
                     assert static_applied["framework_state_refreshed"] is False
-                    assert static_applied["code_revision"] == 3
+                    assert static_applied["apply_method"] == "hotswap"
                     assert await anyio.to_thread.run_sync(request_value, b"S") == "stable"
                     assert not formal_class.exists()
                     assert await anyio.to_thread.run_sync(request_value) == (
@@ -1693,8 +1689,8 @@ public class LazyValue {
                     restarting = assert_ok(await call_payload(session, {
                         "action": "restart",
                     }))
-                    assert restarting["status"] == "restarting"
-                    assert restarting["applied"] is None
+                    assert restarting["status"] == "restarted"
+                    assert restarting["applied"] is True
                     while True:
                         restarted_status = assert_ok(
                             await call_payload(session, {"action": "status"})

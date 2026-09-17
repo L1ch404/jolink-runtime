@@ -73,7 +73,7 @@ def test_real_gradle_runtime_launch_hotswap_and_relaunch_boundary(
         "warm_incremental_startup": True,
         "unchanged_startup_no_compile": True,
         "hotswap_passed": True,
-        "structural_relaunch_required": True,
+        "structural_restart_applied": True,
         "source_resources_read_directly": True,
         "runtime_probe_ignored_test_world": True,
         "private_model_deleted": True,

@@ -141,7 +141,7 @@ test {{ systemProperty 'expected','A' }}
 @pytest.mark.parametrize(
     "system,multi", [("maven", False), ("maven", True), ("gradle", False)]
 )
-def test_configuration_changes_refresh_models_without_mutating_running_jvm(
+def test_configuration_changes_refresh_test_and_restart_models(
     tmp_path, system, multi
 ):
     require_real_mcp_java_e2e()
@@ -282,36 +282,26 @@ def test_configuration_changes_refresh_models_without_mutating_running_jvm(
                         .replace("'expected','A'", "'expected','B'")
                     )
                     await test()  # New Test model must not bless the old Runtime.
-                    for action in ("reload", "restart"):
-                        result = await call(
-                            action,
-                            **(
-                                {"source_files": [str(source)]}
-                                if action == "reload"
-                                else {}
-                            ),
-                        )
-                        assert result["error_code"] == "BUILD_CONFIGURATION_CHANGED", (
-                            result
-                        )
-                        assert result["applied"] is False
-                        assert (await status())["pid"] == active[
-                            "pid"
-                        ] and response() == "A"
-                    await call("stop")
-                    updated = await launch()
+                    updated = await call("restart")
+                    with anyio.fail_after(120):
+                        while updated.get("launch_phase") not in {"runtime_active", "failed"}:
+                            await anyio.sleep(.05)
+                            updated = await status()
+                    assert updated["launch_phase"] == "runtime_active", updated
+                    assert updated["pid"] != active["pid"], updated
                     assert (
                         updated["probe_cache_reused"] is False and response() == "B"
                     ), updated
-                    started = await call("reload", source_files=[str(source)])
-                    assert started["status"] == "reload_started", started
+                    started = await call("restart", timeout=0)
+                    assert started["status"] == "restart_started", started
                     with anyio.fail_after(10):
                         while True:
-                            result = (await status()).get("last_reload", {})
+                            result = (await status()).get("last_reload") or {}
                             if result.get("reload_id") == started["reload_id"]:
                                 break
                             await anyio.sleep(0.1)
-                    assert result["status"] == "no_changes", result
+                    assert result["status"] == "restarted", result
+                    assert result["compiled_source_count"] == 0, result
                     restarted = await call("restart")
                     assert restarted["ok"], restarted
                     with anyio.fail_after(15):

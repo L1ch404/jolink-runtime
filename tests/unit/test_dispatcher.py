@@ -78,6 +78,7 @@ def test_product_tool_names_map_to_existing_runtime_actions(monkeypatch) -> None
 
     monkeypatch.setattr(runtime, "run", record)
     monkeypatch.setattr(runtime, "update", record)
+    monkeypatch.setattr(runtime, "restart", record)
     monkeypatch.setattr(runtime, "status", record)
     monkeypatch.setattr(runtime, "threads", record)
 
@@ -88,9 +89,9 @@ def test_product_tool_names_map_to_existing_runtime_actions(monkeypatch) -> None
     )["status"] == "run"
     assert dispatcher.dispatch(
         "java_application",
-        {"action": "reload", "source_files": ["App.java"]},
+        {"action": "restart"},
         session_key="product-tools",
-    )["status"] == "update"
+    )["status"] == "restart"
     status = dispatcher.dispatch(
         "java_status",
         {"action": "status"},
@@ -106,7 +107,8 @@ def test_product_tool_names_map_to_existing_runtime_actions(monkeypatch) -> None
         {"action": "threads"},
         session_key="product-tools",
     )["status"] == "threads"
-    assert observed == ["run", "update", "status", "threads"]
+    assert observed == ["run", "restart", "status", "threads"]
+    assert dispatcher.dispatch("java_application", {"action": "reload"})["ok"] is False
 
 
 def test_dispatcher_logs_lifecycle_without_argument_values(caplog) -> None:

@@ -309,13 +309,13 @@ public static void main(String[] args) throws Exception {
                         reload = await call(
                             "java_application",
                             {
-                                "action": "reload",
+                                "action": "restart", "timeout": 0,
                                 "source_files": [
                                     "base/src/main/java/example/Base.java"
                                 ],
                             },
                         )
-                        assert reload["status"] == "reload_started", reload
+                        assert reload["status"] == "restart_started", reload
                         complete = await poll(
                             lambda s: (
                                 s.get("last_reload", {}).get("reload_id")

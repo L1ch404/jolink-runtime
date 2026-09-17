@@ -583,7 +583,7 @@ def test_project_jvm_start_failure_is_retryable_and_clears_publication(
     assert runtime._proc.current is None
 
 
-def test_project_restart_uses_current_generation_without_recompiling(
+def test_project_restart_without_live_compiler_reuses_launch_pipeline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -640,14 +640,14 @@ def test_project_restart_uses_current_generation_without_recompiling(
 
     restarted = runtime.restart(RuntimeAction(action="restart"))
     assert restarted.ok is True
-    assert restarted.data["status"] == "restarting"
-    assert restarted.data["applied"] is None
+    assert restarted.data["status"] == "project_launch_restarted"
+    assert restarted.data["apply_method"] == "restart"
     _wait_until(
         lambda: runtime._launch_controller.snapshot()["launch_phase"]
         == "runtime_active"
     )
 
-    assert pipeline.prepare_count == 1
+    assert pipeline.prepare_count == 2
     assert len(commands) == 2
     assert str(tmp_path / "target/classes") in " ".join(commands[0])
     assert "generation-store" not in " ".join(commands[0])

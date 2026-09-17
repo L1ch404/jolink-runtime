@@ -78,6 +78,10 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action.source_files = arguments.get("source_files")
     if "hotswap" in arguments:
         action.hotswap = _bool_arg(arguments, "hotswap", True)
+    if action.action == "restart":
+        action._launch_overrides = tuple(
+            name for name in ("app_args", "vm_args", "jdwp_port", "ready_port") if name in arguments
+        )
     if action.action == "test" and "project_path" in arguments:
         action.project_path = arguments.get("project_path")
     if "tests" in arguments:
@@ -246,7 +250,7 @@ def _product_application_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 _APPLICATION_OPERATIONS = {
     "java_application": {
-        "launch": "run", "attach": "attach", "reload": "update",
+        "launch": "run", "attach": "attach",
         "restart": "restart", "stop": "stop", "detach": "detach",
     },
     "java_fast_test": {"run": "test", "cancel": "cancel_test"},

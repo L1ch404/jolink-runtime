@@ -107,10 +107,12 @@ async def call_payload(
     action = str(external.get("action", ""))
     if action in {"run", "stop", "restart", "attach", "detach", "update"}:
         tool_name = "java_application"
-        external["action"] = {"run": "launch", "update": "reload"}.get(
+        external["action"] = {"run": "launch", "update": "restart"}.get(
             action,
             action,
         )
+        if action == "update":
+            external.setdefault("timeout", 0)
     elif action in {"status", "logs"}:
         tool_name = "java_status"
     else:

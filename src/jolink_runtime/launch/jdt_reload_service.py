@@ -17,31 +17,64 @@ from .jdt_launch_service import JdtLaunchService
 class JdtReloadService:
     def __init__(self, logger: logging.Logger) -> None:
         self._coordinator = BackgroundReloadCoordinator(logger)
+        self._restart_attempt = None
+
+    def restart_waiter(self, initial):
+        from .application_wait import ApplicationWait
+
+        if self._restart_attempt is None:
+            return None
+        session, attempt = self._restart_attempt
+        if attempt.attempt_id != initial.get("reload_id"):
+            return None
+
+        def pending():
+            with session._lock:
+                return attempt.finished_at is None or not attempt.result_recorded
+
+        def result():
+            with session._lock:
+                payload = {
+                    **initial, **attempt.result_data,
+                    "applied": attempt.applied, "apply_method": attempt.apply_method,
+                    "stage": attempt.stage.value,
+                }
+                if attempt.finished_at is not None:
+                    payload.pop("suggested_next_step", None)
+                    if "suggested_next_step" in attempt.result_data:
+                        payload["suggested_next_step"] = attempt.result_data["suggested_next_step"]
+                return payload
+
+        return ApplicationWait(pending=pending, result=result)
 
     def start(
         self, runtime: Any, action: RuntimeAction, *, attempt_id: str,
         generation: int, prepared: Any, project_session: JavaProjectSession,
+        restart: bool = False,
     ) -> RuntimeResult:
-        configuration_error = JdtLaunchService.configuration_rejection(prepared)
+        configuration_error = None if restart else JdtLaunchService.configuration_rejection(prepared)
         if configuration_error is not None:
             return configuration_error
         compiler = project_session.compile_session
         if not isinstance(compiler, PersistentJdtCompileSession) or not compiler.ready:
             return RuntimeResult(ok=False, error="JDT is not running.",
                 data={"error_code": "JDT_SESSION_NOT_READY", "applied": False})
-        if runtime._active_suspension is not None:
+        if not restart and runtime._active_suspension is not None:
             return RuntimeResult(ok=False, error="Resume before reload.",
                 data={"error_code": "ACTIVE_SUSPENSION_EXISTS", "applied": False})
-        if runtime._armed_breakpoint_requests or runtime._armed_exception_requests:
+        if not restart and (runtime._armed_breakpoint_requests or runtime._armed_exception_requests):
             return RuntimeResult(ok=False, error="Finish the active debug wait before reload.",
                 data={"error_code": "ACTIVE_DEBUG_REQUESTS_REMAIN", "applied": False})
         try:
-            sources = runtime._resolve_jdt_reload_sources(
+            sources = () if restart else runtime._resolve_jdt_reload_sources(
                 prepared.jdt_build_world_plan, getattr(action, "source_files", None)
             )
             attempt = project_session.begin_reload(
                 "", source_files=sources, background=True
             )
+            attempt.operation = "restart" if restart else "reload"
+            if restart:
+                self._restart_attempt = (project_session, attempt)
         except (JdtCompileError, OSError, ProjectSessionError) as error:
             return RuntimeResult(ok=False, error=str(error), data={
                 "error_code": getattr(error, "error_code", "JDT_RELOAD_FAILED"),
@@ -53,19 +86,26 @@ class JdtReloadService:
             source_fingerprint="",
             update_lock=runtime._update_lock,
             operation=lambda: self.apply(runtime, compiler, prepared,
-                                         project_session, attempt, sources),
+                                         project_session, attempt, sources,
+                                         restart=restart, action=action, attempt_id=attempt_id),
         )
         return RuntimeResult(ok=True, data={
-            "status": "reload_started", "reload_id": attempt.attempt_id,
+            "status": "restart_started" if restart else "reload_started", "reload_id": attempt.attempt_id,
             "applied": None,
             "suggested_next_step": "Call status to observe active_operation and last_reload.",
         })
 
-    def apply(self, runtime, compiler, prepared, session, attempt, sources):
+    def apply(self, runtime, compiler, prepared, session, attempt, sources,
+              *, restart=False, action=None, attempt_id=None):
+        if restart:
+            sources = compiler.workspace_source_changes()
+            attempt.source_files = sources
         root = prepared.jdt_build_world_plan.project_root.resolve(strict=False)
         # Prepare display/recording paths before changing a running JVM.
-        source_names = tuple(source.resolve(strict=False).relative_to(root).as_posix()
-                             for source in sources)
+        source_names = tuple(
+            source.relative_to(root).as_posix() if source.is_relative_to(root) else str(source)
+            for source in sources
+        )
         session.transition_reload(ReloadStage.COMPILING)
         started = time.monotonic()
         try:
@@ -85,6 +125,7 @@ class JdtReloadService:
             "jdt_build_ms": result.jdt_build_ms,
             "diagnostics_ms": result.diagnostics_ms,
             "compiled_source_count": result.compiled_source_count,
+            "build_kind": result.actual_build_kind,
         }
         if not result.compile_ok:
             return RuntimeResult(ok=False, error="JDT incremental compilation failed.", data={
@@ -95,16 +136,60 @@ class JdtReloadService:
         if session.reload_cancel_requested(attempt):
             return RuntimeResult(ok=False, error="Reload cancelled.", data={
                 **timing, "error_code": "RELOAD_CANCELLED", "applied": False})
+        def replace_process(reason):
+            if not restart:
+                return runtime._reload_requires_relaunch_result(
+                    reason_code=reason, message="Restart the application to apply this change.",
+                    details=timing,
+                )
+            from .application_wait import application_waiter
+            from .project_restart import restart_compiled
+
+            session.transition_reload(ReloadStage.RESTARTING)
+            attempt.apply_method = "restart"
+            started = time.monotonic()
+            initial = restart_compiled(
+                runtime, action, attempt_id=attempt_id, prepared=prepared, session=session)
+            payload = {"ok": initial.ok, **initial.data}
+            if initial.error:
+                payload["error"] = initial.error
+            waiter = application_waiter(runtime, "launch", payload)
+            if waiter is not None:
+                while waiter.pending():
+                    time.sleep(0.05)
+                payload = waiter.result()
+            applied = bool(payload.get("ok") and payload.get("launch_phase") == "runtime_active")
+            attempt.applied = applied
+            attempt.startup_ms = round((time.monotonic() - started) * 1000, 1)
+            # The launch observation precedes completion of this same operation.
+            # Do not return its still-pending nested snapshot as the final result.
+            payload.pop("active_operation", None)
+            payload.pop("last_reload", None)
+            error = str(payload.pop("error", ""))
+            ok = bool(payload.pop("ok", False))
+            return RuntimeResult(ok=ok, error=error, data={
+                **payload, **timing, "status": "restarted" if applied else payload.get("status", "failed"),
+                "applied": applied, "apply_method": "restart", "restart_reason": reason,
+                "persistence": "jdt_workspace", "restart_loses_update": False,
+            })
+
+        if restart and (
+            not getattr(action, "hotswap", True)
+            or getattr(action, "_launch_overrides", ())
+            or runtime._active_suspension is not None
+            or runtime._armed_breakpoint_requests or runtime._armed_exception_requests
+        ):
+            return replace_process("EXPLICIT_PROCESS_RESTART")
+        process = runtime._proc.current
+        if restart and (process is None or not process.is_alive()):
+            return replace_process("PROCESS_NOT_RUNNING")
         if (result.runtime_deleted_classes or result.runtime_changed_resources
                 or result.runtime_deleted_resources):
-            value = runtime._reload_requires_relaunch_result(
-                reason_code="NON_HOTSWAPPABLE_OUTPUT_DELTA",
-                message="The build changed resources or deleted classes. Launch again to apply them.",
-                details=timing,
-            )
-            return value
+            return replace_process("NON_HOTSWAPPABLE_OUTPUT_DELTA")
         paths = result.runtime_changed_classes
         if not paths:
+            if restart:
+                return replace_process("NO_CODE_CHANGES")
             attempt.apply_method = "none"
             return RuntimeResult(ok=True, data={
                 **timing, "status": "no_changes", "applied": True, "apply_method": "none",
@@ -121,11 +206,7 @@ class JdtReloadService:
             signature = "L" + name.replace(".", "/") + ";"
             loaded = jdwp.classes_by_signature(signature)
             if len(loaded) != 1:
-                return runtime._reload_requires_relaunch_result(
-                    reason_code="CLASS_NOT_LOADED" if not loaded else "AMBIGUOUS_CLASS_LOADER",
-                    message="The JVM has no unique loaded definition for " + name,
-                    details=timing,
-                )
+                return replace_process("CLASS_NOT_LOADED" if not loaded else "AMBIGUOUS_CLASS_LOADER")
             definitions[loaded[0].reference_type_id] = file.read_bytes()
             names.add(name)
             signatures.add(signature)
@@ -134,15 +215,13 @@ class JdtReloadService:
         try:
             jdwp.redefine_classes(definitions)
         except JDWPCommandRejected as error:
-            return runtime._reload_requires_relaunch_result(
-                reason_code="HOT_SWAP_REJECTED", message=str(error),
-                details={**timing, "jdwp_error_code": error.code},
-            )
+            timing["jdwp_error_code"] = error.code
+            return replace_process("HOT_SWAP_REJECTED")
         except JDWPCommandOutcomeUnknown:
             runtime._runtime_overlay_state = "unknown"
             return RuntimeResult(ok=False, error="The JVM did not confirm HotSwap.", data={
                 **timing, "error_code": "HOT_SWAP_OUTCOME_UNKNOWN", "applied": None,
-                "suggested_next_step": "Restart the application to establish its code state.",
+                "suggested_next_step": "Call restart with hotswap=false to establish the application's code state.",
             })
         apply_ms = round((time.monotonic() - started) * 1000, 1)
         # RedefineClasses has acknowledged the change. Keep that fact even if

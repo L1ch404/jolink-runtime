@@ -192,10 +192,9 @@ async def _run(
                         and value.get("startup_state") == "ready"
                     ),
                 )
-                if status.get("jdt_worker") != {
-                    "java_major": 8,
-                    "data_model": 64,
-                }:
+                worker = status.get("jdt_worker", {})
+                if (worker.get("java_major", 0) < 17 or worker.get("data_model") != 64
+                        or status.get("fast_update", {}).get("target_level") != 8):
                     raise RuntimeError(status)
                 if _message(ready_port) != "before":
                     raise RuntimeError("initial behavior mismatch")
@@ -210,14 +209,14 @@ async def _run(
                     session,
                     "java_application",
                     {
-                        "action": "reload",
+                        "action": "restart", "timeout": 0,
                         "source_files": [
                             "src/main/java/example/HotReloadApp.java"
                         ],
                     },
                 )
                 hot_id = hot.get("reload_id")
-                if hot.get("status") != "reload_started" or not hot_id:
+                if hot.get("status") != "restart_started" or not hot_id:
                     raise RuntimeError(hot)
                 hot_status = await _wait_status(
                     session,
@@ -263,14 +262,14 @@ async def _run(
                     session,
                     "java_application",
                     {
-                        "action": "reload",
+                        "action": "restart", "timeout": 0,
                         "source_files": [
                             "src/main/java/example/HotReloadApp.java"
                         ],
                     },
                 )
                 structural_id = structural.get("reload_id")
-                if structural.get("status") != "reload_started" or not structural_id:
+                if structural.get("status") != "restart_started" or not structural_id:
                     raise RuntimeError(structural)
                 status = await _wait_status(
                     session,
@@ -280,19 +279,19 @@ async def _run(
                 )
                 last = status.get("last_reload", {})
                 if (
-                    last.get("error_code") != "RELOAD_REQUIRES_RELAUNCH"
-                    or last.get("applied") is not False
-                    or status.get("pid") != old_pid
+                    last.get("apply_method") != "restart"
+                    or last.get("applied") is not True
+                    or status.get("pid") == old_pid
                 ):
                     raise RuntimeError(status)
-                if _message(ready_port) != "after":
-                    raise RuntimeError("relaunch-required reload changed the JVM")
+                if _message(ready_port) != "structural":
+                    raise RuntimeError("restart did not apply structural output")
                 await _payload(session, "java_application", {"action": "stop"})
                 return {
                     "worker": status["jdt_worker"],
                     "hot_reload_ms": hot.get("compile_ms"),
                     "restart_uses_current_jdt_output": True,
-                    "structural_relaunch_required": True,
+                    "structural_restart_applied": True,
                 }
 
 

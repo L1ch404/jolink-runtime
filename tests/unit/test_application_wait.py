@@ -20,14 +20,14 @@ class Dispatcher:
         self.initial = {
             "ok": True,
             "status": "starting",
-            "attempt_id" if action == "launch" else "test_run_id": "original",
+            "attempt_id" if action in {"launch", "restart"} else "test_run_id": "original",
         }
         self.final = {**self.initial, "status": "completed"}
 
     def dispatch(self, tool, args, **kwargs):
         self.calls.append((tool, args))
         operation = runtime_operation(tool, args)
-        if operation == ("run" if self.action == "launch" else "test"):
+        if operation == {"launch": "run", "restart": "restart", "test": "test"}[self.action]:
             self.started.set()
             return dict(self.initial)
         if operation in {"stop", "cancel_test"}:
@@ -50,7 +50,7 @@ def request(action, **args):
     return "java_application", {"action": action, **args}
 
 
-@pytest.mark.parametrize("action", ["launch", "test"])
+@pytest.mark.parametrize("action", ["launch", "restart", "test"])
 def test_wait_returns_completed_result_without_status_polling(action):
     dispatcher = Dispatcher(action)
     boundary = RuntimeMCPBoundary(dispatcher)
@@ -89,7 +89,7 @@ def test_launch_observer_keeps_original_attempt_after_replacement():
 
 
 @pytest.mark.parametrize("timeout", [0, 0.02])
-@pytest.mark.parametrize("action", ["launch", "test"])
+@pytest.mark.parametrize("action", ["launch", "restart", "test"])
 def test_timeout_returns_original_background_task(action, timeout):
     dispatcher = Dispatcher(action)
     boundary = RuntimeMCPBoundary(dispatcher)
@@ -129,7 +129,7 @@ def test_large_timeout_waits_only_thirty_without_rejection(monkeypatch, timeout)
     anyio.run(scenario)
 
 
-@pytest.mark.parametrize("action,cancel", [("launch", "stop"), ("test", "cancel_test")])
+@pytest.mark.parametrize("action,cancel", [("launch", "stop"), ("restart", "stop"), ("test", "cancel_test")])
 def test_wait_does_not_block_status_or_cancellation(action, cancel):
     dispatcher = Dispatcher(action)
     boundary = RuntimeMCPBoundary(dispatcher)

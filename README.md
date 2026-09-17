@@ -67,11 +67,18 @@ Debug deeper only when necessary.
 
 joLink exposes four focused MCP tools:
 
-- `java_application` — lifecycle, project launch, reload,
-  restart, and attach;
+- `java_application` — project launch, compile-aware restart (HotSwap by default),
+  stop, and attach;
 - `java_fast_test` — selected Java tests and cancellation, without an application launch;
 - `java_status` — Java process discovery, application/build status, and logs;
 - `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
+
+After editing a managed project, call `java_application(action=restart)`.
+It incrementally compiles changes in the existing JDT workspace and prefers
+HotSwap; incompatible changes restart the JVM using those same compiled outputs.
+Set `hotswap=false` to force process/application reinitialization. The result's
+`apply_method` distinguishes HotSwap from a real restart. See
+[restart workflow](docs/project-restart.zh-CN.md).
 
 Fast Test uses a Maven or Gradle Probe only when its small configuration cache
 is absent or changed. The exported test Build World and JDT workspace persist
@@ -134,7 +141,6 @@ stop
 restart
 attach
 detach
-reload
 breakpoint
 exception
 wait_event
@@ -305,36 +311,32 @@ agent can avoid a full Maven rebuild/restart:
 
 ```text
 java_status(action=status; confirm runtime_active and compile_ready=true)
--> java_application(action=reload, source_files=[the explicit edited Java files])
--> java_status(action=status; wait for last_reload to become terminal)
+-> java_application(action=restart)
+-> if still running, java_status(action=status; observe last_reload)
 -> trigger a fresh request
 -> verify the new runtime behavior
 ```
 
-`reload` immediately returns `reload_started` plus a `reload_id`; compilation
-and application happen in the background and remain observable through
-`active_operation` and `last_reload`. The JDT workspace is saved under the
-local joLink cache on stop and reopened directly. Runtime launch/reload no
-longer rehash dependencies, audit the whole output tree, or SAVE after each edit.
-
-The reload Attempt updates a private persistent JDT Build World and applies
-compatible loaded method-body changes with HotSwap. It never restarts the JVM.
-The actual JVM accepts or rejects the changed definitions; joLink does not
-preflight schemas or metadata. Deleted/unloaded classes, generated resource
-changes, JVM rejection, or `hotswap=false` require a relaunch. HotSwap does not
-rerun static initialization or refresh Spring metadata. The JVM uses JDT's
-current output directory directly, without a startup class copy. `restart`
-therefore loads the current JDT output; an uncompiled source edit is
-not applied. HotSwap acceptance is still not proof of business correctness, so a
-fresh verification request is required. Breakpoints in redefined classes
-become stale and must be set again against current source.
+`restart` automatically detects and incrementally compiles source changes, then
+uses HotSwap by default. Deleted/unloaded classes, generated resource changes or
+explicit JVM rejection select a real restart using those already compiled outputs.
+`hotswap=false` forces process reinitialization. No pending code changes restart
+without compiling. Compilation errors leave the old process running. Lost
+HotSwap replies remain unknown rather than being mistaken for explicit rejection.
+The call waits up to `timeout` (maximum 30 seconds); if unfinished, it returns
+`restart_started` plus the existing `reload_id`, observable through
+`active_operation` and `last_reload`. `apply_method` distinguishes HotSwap from
+process restart. Completed builds immediately save JDT state and source indexes
+in the local persistent workspace. There are no extra class-output copies.
+HotSwap does not rerun initialization or refresh Spring metadata; verify with a
+fresh request. Breakpoints in redefined classes become stale and must be reset.
 
 The locked JDT Worker is installed into a content-addressed user cache on
 first use. Valid Eclipse bundles are reused from older joLink caches; missing
 bundles are downloaded and verified, while the product Worker and Equinox
-configuration ship inside the Python package. `restart` never accepts
-`project_path`; use `stop` followed by `launch` when source or resource changes
-must be incorporated into a newly started JVM.
+configuration ship inside the Python package. A changed build configuration or
+unavailable session refreshes via the existing project launch path. Use
+`restart(hotswap=false)` when startup/framework state must be recreated.
 
 The product uses Eclipse 4.40 / JDT 3.46 with matching APT bundles. Its Worker
 targets Java 17 bytecode and defaults to a private, pinned Temurin 21 runtime,

@@ -26,6 +26,8 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
     """Capture the original attempt so another request cannot replace its result."""
     if initial.get("ok") is False:
         return None
+    if action == "restart" and initial.get("reload_id"):
+        return runtime._jdt_reload_service.restart_waiter(initial)
     if action == "test":
         manager = runtime._fast_tests
         with manager._lock:
@@ -36,8 +38,10 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
             pending=lambda: not attempt.done.is_set(),
             result=attempt.snapshot,
         )
-    if action != "launch":
+    if action not in {"launch", "restart"}:
         return None
+    if action == "restart":
+        initial = {**initial, "apply_method": "restart", "applied": None}
     if initial.get("attempt_id"):
         controller = runtime._launch_controller
         with controller._lock:
@@ -65,7 +69,7 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
             }
             payload.pop("suggested_next_step", None)
             if phase == "runtime_active":
-                payload["status"] = "process_started"
+                payload["status"] = "restarted" if action == "restart" else "process_started"
             elif phase == "failed":
                 failure = snapshot.get("launch_error", {})
                 payload.update(
@@ -82,6 +86,8 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
                     error="Application launch was stopped.",
                     error_code="LAUNCH_CANCELLED",
                 )
+            if action == "restart" and phase in _LAUNCH_FINISHED:
+                payload["applied"] = phase == "runtime_active"
             return payload
 
         return ApplicationWait(pending=pending, result=result)
@@ -108,6 +114,11 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
                 next_action="logs",
                 suggested_next_step="Inspect application logs before launching again.",
             )
+        if action == "restart":
+            finished = failed or observation.get("startup_state") in {"ready", "unverified"}
+            payload["applied"] = not failed if finished else None
+            if finished and not failed:
+                payload["status"] = "restarted"
         return payload
 
     return ApplicationWait(pending=pending, result=result)

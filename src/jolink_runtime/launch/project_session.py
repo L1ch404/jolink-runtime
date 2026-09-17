@@ -32,6 +32,7 @@ class ReloadStage(StrEnum):
     PREPARING = "preparing"
     COMPILING = "compiling"
     APPLYING_HOTSWAP = "applying_hotswap"
+    RESTARTING = "restarting"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -138,6 +139,7 @@ class ReloadAttempt:
     result_data: dict[str, Any] = field(default_factory=dict)
     background: bool = False
     result_recorded: bool = False
+    operation: str = "reload"
 
     @property
     def source_changes_pending(self) -> bool:
@@ -935,7 +937,7 @@ class JavaProjectSession:
                 ),
                 "active_operation": (
                     {
-                        "operation": "reload",
+                        "operation": active.operation,
                         "reload_id": active.attempt_id,
                         "stage": active.stage.value,
                         "elapsed_ms": round(

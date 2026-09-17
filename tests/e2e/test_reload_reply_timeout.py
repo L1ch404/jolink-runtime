@@ -120,9 +120,9 @@ public class SlowAgent {
                     source.write_text(original.replace("return 1", "return 2"))
                     accepted = await call(
                         "java_application",
-                        {"action": "reload", "source_files": [str(source)]},
+                        {"action": "restart", "timeout": 0, "source_files": [str(source)]},
                     )
-                    assert accepted["status"] == "reload_started", accepted
+                    assert accepted["status"] == "restart_started", accepted
                     state = await poll(
                         lambda state: (
                             (state.get("last_reload") or {}).get("reload_id")

@@ -350,14 +350,21 @@ def test_reload_restart_check_uses_running_model_not_new_cache(model, build_syst
     rejected = JdtLaunchService.configuration_rejection(prepared)
     assert rejected.data["error_code"] == "BUILD_CONFIGURATION_CHANGED"
     assert rejected.data["applied"] is False
-    session = SimpleNamespace(generations=SimpleNamespace(current=object()))
+    session = SimpleNamespace(generations=SimpleNamespace(current=object()), refresh_compile_ready=lambda: True)
     runtime = JavaRuntime()
     runtime._project_update_plans["active"] = prepared
     runtime._project_sessions["active"] = session
     runtime._launch_controller = SimpleNamespace(
         snapshot=lambda: {"attempt_id": "active"}
     )
-    # No restart method / compiler: entering either execution path would fail.
+    refreshed = []
+    runtime._last_project_request = object()
+    def refresh(action, request):
+        from jolink_runtime.core.models import RuntimeResult
+        refreshed.append(request)
+        return RuntimeResult(ok=True, data={"status": "project_launch_restarted"})
+    runtime.restart_project = refresh
+    # Restart refreshes the model; the old HotSwap-only path cannot bless it.
     restarted = runtime.restart_current_project(RuntimeAction(action="restart"))
     reloaded = JdtReloadService(None).start(
         runtime,
@@ -367,11 +374,9 @@ def test_reload_restart_check_uses_running_model_not_new_cache(model, build_syst
         prepared=prepared,
         project_session=session,
     )
-    assert (
-        restarted.data["error_code"]
-        == reloaded.data["error_code"]
-        == "BUILD_CONFIGURATION_CHANGED"
-    )
+    assert refreshed == [runtime._last_project_request]
+    assert restarted.ok and restarted.data["apply_method"] == "restart"
+    assert reloaded.data["error_code"] == "BUILD_CONFIGURATION_CHANGED"
 
 
 @pytest.mark.parametrize("explicit", [False, True])

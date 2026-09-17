@@ -16,7 +16,7 @@ Demo 或某个公司项目；常见项目被拒绝同样是产品缺口，不能
 
 只使用以下产品入口作为主验收链路：
 
-- `java_application`：`launch`、`reload`、`restart`、`stop`。
+- `java_application`：`launch`、`restart`、`stop`（restart 默认优先 HotSwap）。
 - `java_fast_test`：默认`run`，取消用`cancel`。
 - `java_status`：`status`、`logs`、`processes`。
 
@@ -326,25 +326,23 @@ launch_error；TCP ready 后再用普通 HTTP 客户端访问 `/`、`/owners/fin
 
 1. 冷 launch：product 未预先 Maven 编译；ready 后 HTTP 有效，日志可读。
 2. 无改动 stop→launch：复用缓存；再测一次新 MCP 的正常关闭后 launch。
-3. 同一会话 `restart`：新应用 PID，HTTP 行为不变。当前 restart 复用已编译输出，
-   不要指望它读取尚未编译的源码。
+3. 同一会话无改动 `restart`：新应用 PID，HTTP 行为不变，不重新编译。
 4. 选择一个已被请求执行的 Controller/Service 普通方法，只改方法体，使 HTTP 输出
-   有可预测差异。调用 `reload`，source_files 使用实际路径；返回 reload_started 后，
-   按 reload_id 轮询 status.last_reload 直到终态，再发送新请求验证。
-5. 恢复源码，再 reload 和 HTTP 验证；重启后行为应仍与当前编译结果一致。
+   有可预测差异。调用 `restart` 自动增量编译；如果仍在后台，按 reload_id 观察
+   status.last_reload 到终态。核对 apply_method、PID，再发送新请求验证。
+5. 恢复源码，再 restart 和 HTTP 验证；用 hotswap=false 强制重启验证产物不丢失。
 6. 在应用运行期间执行已有 Spring/普通 Fast Test，确认测试结果和应用仍可访问。
 7. 最终 stop，确认受管应用退出、业务端口释放。
 
 ```json
 {
-  "action": "reload",
-  "source_files": ["src/main/java/实际包名/实际类名.java"]
+  "action": "restart"
 }
 ```
 
-该占位路径执行前必须替换；reload 不传 project_path，不使用 debugger 的 http_trigger。
-如果结构变化返回需要 relaunch，记录该能力边界，可明确执行 stop→launch 继续验证，
-但不能把它记成 reload 成功。主用例只改普通方法体，避免一开始混入结构变更。
+不必传 source_files/project_path，不使用 debugger 的 http_trigger。方法体修改优先
+HotSwap；结构变化会自动用已编好的产物重启，必须按实际 apply_method 记录。需要
+重建容器、重新读启动配置时使用 hotswap=false。流程见 project-restart.zh-CN.md。
 
 启动和 Fast Test 使用不同 JDT workspace；测试更新了 test workspace 不能证明
 运行中的应用已更新，反过来也一样。两边各自用实际输出验证。

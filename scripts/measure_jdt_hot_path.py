@@ -116,7 +116,7 @@ public class App {
                                 edit(value)
                                 started = time.monotonic()
                                 accepted = await call("java_application", {
-                                    "action": "reload", "source_files": ["src/main/java/example/Helper.java"],
+                                    "action": "restart", "timeout": 0, "source_files": ["src/main/java/example/Helper.java"],
                                 })
                                 with anyio.fail_after(120):
                                     while True:

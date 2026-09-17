@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Gradle Runtime launch, HotSwap, and relaunch-required changes."""
+"""Validate Gradle Runtime launch, HotSwap, and automatic structural restart."""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ async def _status(
     while time.monotonic() < deadline:
         status = await _payload(session, "java_status", {"action": "status"})
         active = status.get("active_operation")
-        reload_active = isinstance(active, dict) and active.get("operation") == "reload"
+        reload_active = isinstance(active, dict) and active.get("operation") in {"reload", "restart"}
         if status.get("launch_phase") == "failed" and not reload_active:
             raise RuntimeError(status)
         if status.get("jdt_bootstrap_state") == "unavailable":
@@ -305,12 +305,12 @@ async def _run(
                     session,
                     "java_application",
                     {
-                        "action": "reload",
+                        "action": "restart", "timeout": 0,
                         "source_files": ["src/main/java/example/GradleRuntimeApp.java"],
                     },
                 )
                 hot_id = hot.get("reload_id")
-                if hot.get("status") != "reload_started" or not hot_id:
+                if hot.get("status") != "restart_started" or not hot_id:
                     raise RuntimeError(hot)
                 hot_status = await _status(
                     session,
@@ -338,12 +338,12 @@ async def _run(
                     session,
                     "java_application",
                     {
-                        "action": "reload",
+                        "action": "restart", "timeout": 0,
                         "source_files": ["src/main/java/example/GradleRuntimeApp.java"],
                     },
                 )
                 structural_id = structural.get("reload_id")
-                if structural.get("status") != "reload_started" or not structural_id:
+                if structural.get("status") != "restart_started" or not structural_id:
                     raise RuntimeError(structural)
                 status = await _status(
                     session,
@@ -354,19 +354,19 @@ async def _run(
                     ),
                 )
                 if (
-                    status.get("last_reload", {}).get("error_code")
-                    != "RELOAD_REQUIRES_RELAUNCH"
-                    or status.get("pid") != old_pid
+                    status.get("last_reload", {}).get("apply_method") != "restart"
+                    or status.get("last_reload", {}).get("applied") is not True
+                    or status.get("pid") == old_pid
                 ):
                     raise RuntimeError(status)
-                if _message(ready_port) != "after:resource-v1":
-                    raise RuntimeError("relaunch-required reload changed the JVM")
+                if _message(ready_port) != "structural:resource-v1":
+                    raise RuntimeError("restart did not apply structural output")
 
                 resource_source = project / "src/main/resources/message.txt"
                 resource_source.write_text("resource-v2\n", encoding="utf-8")
                 # Source resources are now direct Runtime classpath entries.
                 # Reading this file afresh observes the edit without a Java build.
-                if _message(ready_port) != "after:resource-v2":
+                if _message(ready_port) != "structural:resource-v2":
                     raise RuntimeError("Runtime did not read the source resource")
 
                 stopped = await _payload(
@@ -418,7 +418,7 @@ compileJava.doLast {
                     "warm_incremental_startup": True,
                     "unchanged_startup_no_compile": True,
                     "hotswap_passed": True,
-                    "structural_relaunch_required": True,
+                    "structural_restart_applied": True,
                     "source_resources_read_directly": True,
                     "runtime_probe_ignored_test_world": True,
                     "private_model_deleted": True,

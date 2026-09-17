@@ -17,8 +17,7 @@ is frozen separately in
 
 ## Exposed tools
 
-- `java_application`: `launch`, `attach`, `reload`,
-  `restart`, `stop`, `detach`
+- `java_application`: `launch`, `attach`, `restart`, `stop`, `detach`
 - `java_fast_test`: optional `action=run` (default), or `action=cancel`
 - `java_status`: `processes`, `status`, `logs`
 - `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
@@ -110,32 +109,32 @@ persistent JDT class output; resource roots remain direct classpath entries.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
 
-`reload(source_files)` is available only for the active JVM produced by a
-supported `project_path` launch. It compiles explicit Java sources in a
-persistent private JDT Build World and applies compatible loaded method-body
-changes with one JDWP `RedefineClasses` operation. Reload never restarts the
-JVM and never mutates formal output. Structural/JDT-generated-resource/add/delete
-changes, HotSwap rejection, an unsupported JVM, or `hotswap=false` return
-`RELOAD_REQUIRES_RELAUNCH` and leave the known current Runtime unchanged. The
-caller must use `stop` followed by `launch` to apply these changes before JVM
-startup.
-Successful HotSwap updates the persistent JDT output and the live JVM.
-`restart` loads that current JDT output. Success remains runtime evidence, not
-business-correctness proof; a fresh request is still required.
+`restart` replaces the public `reload` action. For a live project JDT session,
+it discovers changed sources (including upstream modules), incrementally compiles
+once, and prefers HotSwap by default. `hotswap=false`, no pending class changes,
+deleted/unloaded/ambiguous classes, generated resource changes, or explicit JVM
+redefinition rejection use the resulting workspace output to restart the JVM.
+Compilation errors do not stop the existing JVM. A lost HotSwap reply remains
+`HOT_SWAP_OUTCOME_UNKNOWN`, not a reason to assume rejection. Force a real restart
+with `hotswap=false` when application initialization must run again.
+`apply_method=hotswap/restart` states the actual mechanism. Pending requests retain
+the existing `reload_id` and are visible under `active_operation` / `last_reload`.
+Successful compilation persists before application; HotSwap rejection does not
+cause a second compilation. See `project-restart.zh-CN.md` for the complete flow.
 
 The CompileSession freezes Probe-derived Java/resource roots, compile
 dependencies, target platform, source encoding, Lombok/JSR-269 processor
 inputs, and the configuration fingerprint. Probe facts are persisted locally;
-later launches reuse these facts directly without freshness audits. To change
-build configuration/dependencies, clear the project's cached model/workspace.
-Reload synchronizes explicit source files and consumes Eclipse's resource
-delta without full output hashes or repeated source/configuration checks.
+later launches reuse these facts while the tracked build configuration is unchanged.
+Changed configuration refreshes through the existing project launch flow (which
+stops the old JVM first); there is no Candidate/rollback transaction. Source-only
+restart reuses the current compiler and Eclipse's output delta without full output hashes.
 
 The IDEA Make/Build flag is imported as intent metadata but does not run the
 build-system compiler. JDT bootstrap completes before JVM startup.
 
 Changed class bytes are sent to JDWP without schema/metadata preflight. JVM
-rejection and deleted/unloaded classes require a relaunch. Accepted HotSwap
+rejection and deleted/unloaded classes select an actual restart. Accepted HotSwap
 does not rerun static initialization or imply refreshed framework state.
 
 Startup does not copy class output. The JVM reads the current persistent JDT
@@ -152,7 +151,7 @@ definition blocks breakpoint arming; the error returns all
 
 - `ready_port` is an optional loopback application port. It must differ from
   `jdwp_port`.
-- For `java_application(launch)` / `java_fast_test(run)`, `timeout` bounds the whole synchronous
+- For `java_application(launch/restart)` / `java_fast_test(run)`, `timeout` bounds the whole synchronous
   result wait (default 30, zero for immediate submission). Values above 30
   are accepted and wait only 30 seconds. Expiry returns the original task ID
   and current state, never cancels or resubmits the operation. Tests keep an
@@ -169,10 +168,9 @@ definition blocks breakpoint arming; the error returns all
   still closes owned work through the existing lifecycle.
 - Readiness configuration is stored with the launched process. `status`
   rechecks the same port without reading or interpreting application logs.
-- `restart` reuses the prior launched process's readiness configuration when
-  the caller does not provide a replacement. It rejects `project_path` and
-  starts the current output in the persistent JDT workspace without
-  invoking Maven or Gradle.
+- `restart` inherits prior readiness unless replaced. Direct JAR/classpath
+  restarts reuse their artifacts; project restarts first incorporate source edits
+  through JDT. An explicit project selection uses the project launch path.
 
 ## JDT Candidate distribution
 

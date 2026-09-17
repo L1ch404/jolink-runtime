@@ -191,35 +191,25 @@ public static void main(String[] args) throws Exception {
                             )
                             reload = await call(
                                 "java_application",
-                                {"action": "reload", "source_files": [str(foo)]},
+                                {"action": "restart", "timeout": 0, "source_files": [str(foo)]},
                             )
-                            assert reload["status"] == "reload_started", reload
+                            assert reload["status"] == "restart_started", reload
                             state = await poll(
                                 lambda s, rid=reload["reload_id"]: (
                                     (s.get("last_reload") or {}).get("reload_id") == rid
                                 )
                             )
                             if value == 2:
-                                # Existing reload policy also requires same-source
-                                # nested classes to be loaded. Keep this boundary
-                                # observable; mapping does not change the policy.
+                                # A same-source nested class has not been loaded;
+                                # restart applies the already compiled output.
                                 assert (
-                                    state["last_reload"]["reason_code"]
+                                    state["last_reload"]["restart_reason"]
                                     == "CLASS_NOT_LOADED"
                                 ), state
+                                assert state["last_reload"]["apply_method"] == "restart"
                                 assert (
                                     await anyio.to_thread.run_sync(response, True)
-                                    == b"1"
-                                )
-                                retry = await call(
-                                    "java_application",
-                                    {"action": "reload", "source_files": [str(foo)]},
-                                )
-                                state = await poll(
-                                    lambda s, rid=retry["reload_id"]: (
-                                        (s.get("last_reload") or {}).get("reload_id")
-                                        == rid
-                                    )
+                                    == b"2"
                                 )
                             assert state["last_reload"]["applied"], json.dumps(
                                 state["last_reload"]

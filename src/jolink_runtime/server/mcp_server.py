@@ -51,7 +51,7 @@ _NO_ACTIVE_SUSPENSION_NEXT_STEP = (
 )
 SERVER_INSTRUCTIONS = (
     "Use java_fast_test for selected Java tests without an application launch; "
-    "use java_application for application lifecycle and reload, and "
+    "use java_application for application lifecycle and compile-aware restart, and "
     "java_status for process, test, "
     "state, and log observations, and java_debugger for JDWP evidence. "
     "Before applying edited code to a running application, prefer an explicit "
@@ -564,7 +564,7 @@ class RuntimeMCPBoundary:
 
         operation = runtime_operation(name, args)
         wait_for_application = (
-            name in {"java_application", "java_fast_test"} and operation in {"run", "test"}
+            name in {"java_application", "java_fast_test"} and operation in {"run", "restart", "test"}
         )
 
         if (
@@ -636,7 +636,7 @@ class RuntimeMCPBoundary:
                             reason=f"superseded_by_{action}",
                         )
                 dispatch_args = dict(args)
-                if wait_for_application and operation == "run":
+                if wait_for_application and operation in {"run", "restart"}:
                     # Readiness is observed outside the control lock below.
                     dispatch_args["_mcp_background_launch"] = True
                 payload = await anyio.to_thread.run_sync(

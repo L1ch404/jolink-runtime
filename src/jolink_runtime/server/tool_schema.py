@@ -422,7 +422,6 @@ JAVA_PROCESSES_INPUT_SCHEMA = {
 PUBLIC_APPLICATION_ACTIONS = (
     "launch",
     "attach",
-    "reload",
     "restart",
     "stop",
     "detach",
@@ -483,7 +482,15 @@ JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
     "Use instead of direct jar_path, classpath or main_class launch arguments."
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["source_files"]["description"] = (
-    "Explicit changed Java source paths for reload, relative to the active project or absolute."
+    "Optional edited-source hints for restart. Normally omit: restart detects all changed "
+    "Java sources in the project and required upstream modules automatically."
+)
+JAVA_APPLICATION_INPUT_SCHEMA["properties"]["hotswap"]["description"] = (
+    "For restart, default true: incrementally compile edits and prefer HotSwap; "
+    "if changes cannot be hot-swapped, restart the JVM with those compiled outputs. "
+    "False forces a JVM restart after compilation. Use false to reinitialize application "
+    "state or reload framework/startup configuration. No pending code changes also "
+    "restart the JVM without recompiling."
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["build_system"]["description"] = (
     "Optional authoritative build system for project launch; specify maven or gradle when both exist."
@@ -493,7 +500,7 @@ JAVA_APPLICATION_INPUT_SCHEMA["properties"]["timeout"] = {
     "minimum": 0,
     "default": 30,
     "description": (
-        "Seconds to wait for the launch result in this call. "
+        "Seconds to wait for the launch/restart result in this call. "
         "Defaults to 30; values above 30 wait only 30 seconds without error. "
         "Zero returns immediately after submission. On expiry the same task "
         "continues in the background."
@@ -578,16 +585,18 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
 )
 
 JAVA_APPLICATION_DESCRIPTION = (
-    "Launch, attach, reload, restart, stop, or detach Java applications. "
+    "Launch, attach, restart, stop, or detach Java applications. "
     "Use java_fast_test to run tests without launching an application. "
-    "Launch waits up to timeout (at most 30 seconds), returning the "
+    "Launch and restart wait up to timeout (at most 30 seconds), returning the "
     "result if finished or the original background task if still running. "
-    "For supported Maven or Gradle project launches, "
-    "reload accepts explicit source_files and immediately returns a background "
-    "reload_id. Call status to observe "
-    "active_operation and last_reload. The Attempt applies only compatible "
-    "loaded classes with HotSwap; other changes report that a fresh project "
-    "launch is required."
+    "After editing a managed Maven/Gradle project, use restart: it detects changed "
+    "sources, incrementally compiles in the persistent JDT workspace, and prefers "
+    "HotSwap (hotswap=true by default). Incompatible changes use the same compiled "
+    "outputs to restart the JVM. Set hotswap=false for a real process restart and "
+    "application reinitialization. apply_method reports hotswap or restart; HotSwap "
+    "does not refresh framework state. A pending restart returns reload_id; observe "
+    "active_operation and last_reload using java_status. Direct JAR/classpath "
+    "launches restart their existing artifact without source compilation."
 )
 JAVA_FAST_TEST_DESCRIPTION = (
     "Run selected Java tests in Maven or Gradle projects using persistent "

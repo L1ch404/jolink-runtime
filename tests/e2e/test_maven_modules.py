@@ -134,8 +134,8 @@ public static void main(String[] args) throws Exception {
                     assert await anyio.to_thread.run_sync(value) == "42"
                     for replacement, expected in ((original.replace('NUMBER=40','NUMBER=39'),"40"),(original,"42")):
                         base.write_text(replacement)
-                        reload = await call("java_application", {"action":"reload","source_files":["base/src/main/java/example/Base.java"]})
-                        assert reload["status"]=="reload_started", reload
+                        reload = await call("java_application", {"action":"restart", "timeout": 0,"source_files":["base/src/main/java/example/Base.java"]})
+                        assert reload["status"]=="restart_started", reload
                         completed = await poll(lambda s:s.get("last_reload",{}).get("reload_id")==reload["reload_id"] if s.get("last_reload") else False)
                         assert completed["last_reload"]["applied"] is True, completed
                         assert await anyio.to_thread.run_sync(value) == expected

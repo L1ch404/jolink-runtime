@@ -79,11 +79,11 @@ def test_java_application_description_contains_lifecycle_and_reload_signals() ->
     for signal in (
         "launch",
         "attach",
-        "reload",
         "restart",
-        "source_files",
+        "incrementally compiles",
         "hotswap",
-        "fresh project launch",
+        "hotswap=false",
+        "apply_method",
     ):
         assert signal in normalized
 
