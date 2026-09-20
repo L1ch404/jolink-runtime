@@ -2,7 +2,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Fast Java development feedback for coding agents: compile, test, run, observe, and debug.
+**Closing the loop for autonomous Java development.**
+
+Give coding agents the runtime feedback to test, debug, and verify their own changes.
 
 > **Design principle:** Everything exists to reduce uncertainty for the LLM.
 
@@ -207,7 +209,7 @@ The current two-phase implementation is intended for controlled dogfood.
 Known cancellation, cleanup-preemption, handle-publication, and response
 delivery limitations are tracked in:
 
-[`docs/stage-2.1.2-lifecycle-backlog.md`](docs/stage-2.1.2-lifecycle-backlog.md)
+[`docs/stage-2.1.2-lifecycle-backlog.md`](docs/archive/stage-2.1.2-lifecycle-backlog.md)
 
 Do not use this alpha release for unattended production JVM debugging.
 
@@ -228,13 +230,7 @@ uv --version
 
 ## Install
 
-Give your coding agent the URL of [the English installation guide](INSTALL.md):
-
-> Follow this guide to install joLink MCP and its English Skill for my current
-> agent, at user scope. Preserve existing configuration and verify the connection.
-
-The default-branch link is
-[INSTALL.md on GitHub](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md).
+> Follow this guide [https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md) to install joLink MCP and its English Skill for my current agent. Use user-level installation by default, preserve existing configuration, and verify the connection.
 
 The guide provides official client-specific locations and examples for Codex,
 Claude Code, Cursor, VS Code/Copilot, CodeBuddy, Gemini CLI, OpenCode, Cline,
@@ -243,7 +239,7 @@ Roo Code and Windsurf. All start MCP with `uvx jolink-runtime@latest` and use th
 is required. MCP performs the work; the Skill helps the agent discover and use it.
 The guide also covers uv setup, preserving configuration, reconnection and verification.
 
-For Chinese instructions, use [the Chinese installation guide](INSTALL.zh-CN.md).
+For Chinese instructions, use [the Chinese installation guide](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md).
 
 ## Quick start
 
@@ -486,7 +482,7 @@ Use the host's tool-definition loading/search facility to obtain the actual sche
 Do not infer arguments from a tool name alone. The independently installed
 `jolink-java` Skill provides a discovery and workflow entry point; it does not
 replace the MCP connection or guarantee tool selection. Follow the
-[installation guide](INSTALL.md) for the specific CodeBuddy surface (CLI, IDE or
+[installation guide](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md) for the specific CodeBuddy surface (CLI, IDE or
 editor plugin), rather than assuming their configuration files are interchangeable.
 
 ## Development
@@ -573,14 +569,13 @@ JOLINK_RUN_MCP_JAVA_E2E=1 \
   uv run pytest -q -m mcp_java_e2e tests/e2e/test_stdio_mcp_java.py
 ```
 
-The product Worker and Java 8 lifecycle have standalone deep validators:
+The managed Temurin 21 Worker and Java 8 application lifecycle have standalone
+deep validators (Worker JDK and application/target JDK are different roles):
 
 ```bash
 uv run python scripts/validate_jdt_worker_matrix.py \
   --target-java-home <jdk8> \
-  --worker-java-home <jdk8> \
-  --worker-java-home <jdk11> \
-  --worker-java-home <jdk17>
+  --worker-java-home <jdk21>
 
 uv run python scripts/validate_jdt8_product_mcp.py \
   --jdk8-home <jdk8> \
@@ -599,7 +594,8 @@ uv run python scripts/validate_fast_test_build_jdk_matrix.py \
 
 uv run python scripts/build_jdt_worker_release.py \
   --java-home <jdk8> \
-  --maven <maven-executable>
+  --maven <maven-executable> \
+  --gradle <gradle-executable>
 ```
 
 The canonical CI environment for the heavier suite is:
@@ -607,10 +603,14 @@ The canonical CI environment for the heavier suite is:
 ```text
 Linux
 Python 3.11
-JDK 17
+Application/target JDK 8/11/17/21; managed Worker JDK 21
 ```
 
 ## Contracts
+
+See [current documentation](docs/README.md), [product Java sources and builds](java/README.md),
+and [historical research records](docs/archive/README.md). Archived experiment
+commands and limits are not the current product interface.
 
 - MCP v0.1:
   [`docs/mcp-contract-v0.1.md`](docs/mcp-contract-v0.1.md)

@@ -1,7 +1,8 @@
 # joLink Runtime MCP Contract v0.1
 
-Status: implemented stdio boundary with Stage 2.1 lifecycle hardening and
-deterministic two-phase event waiting.
+Status: current stdio product interface, persistent JDT compilation and
+deterministic two-phase event waiting. Historical experiments are indexed
+separately in [the archive](archive/README.md).
 
 This is the client-facing MCP contract. The migrated implementation it wraps
 is frozen separately in
@@ -37,8 +38,8 @@ failures use `ok=false`. A test never promotes or mutates a Runtime Generation.
 Explicit Fast Test `source_files` may describe ordinary Java source additions
 or deletions. For deletion, the Worker must return the exact private
 `deleted_source_units`; omission poisons the CompileSession even if a class
-appears to disappear. Runtime `reload` keeps its stricter, separate lifecycle
-gate.
+appears to disappear. Application updates use `java_application(action='restart')`;
+Fast Test does not modify the application JVM.
 
 Current Fast Test uses independent main/test compiler settings and supports
 Maven/Gradle module dependencies; current validation includes Java 8/11/17/21.
@@ -53,7 +54,7 @@ cross-major guessing is forbidden. Unsupported Surefire VM/system
 property configuration fails closed. `java_fast_test(action='cancel')` addresses one active
 `test_run_id`; `java_status(status)` exposes the current or last TestAttempt.
 After any compile failure the private working compile state remains `failed`;
-no Test Runner may start until a later explicit-source compile succeeds. Runner
+no Test Runner may start until a later compile succeeds. Runner
 classpath is passed through a Java 8 pathing JAR Manifest, so dependency count
 does not expand the operating-system command line while project classes remain
 visible to the normal Application/System ClassLoader. Cancellation is settled
@@ -62,26 +63,26 @@ merely after its currently supervised subprocesses stop. Temporary Maven
 settings are deleted immediately after the Probe snapshot is read. The bundled
 content-checked Probe coordinate is always seeded into the selected local Maven
 repository so implicit offline policy is safe. A source/resource/POM/settings
-change observed after Runner completion is reported as pending evidence and
-forces a fresh Bootstrap before the next test.
+change is handled by the existing model cache and workspace change detection:
+build configuration changes refresh the model; source edits compile incrementally;
+runtime resource directories are used directly.
 
-For a Reactor, Maven runs `-pl <selected-module> -am`; upstream module outputs
-remain Maven-owned classpath inputs. Only the selected module is held in the
-persistent JDT main/test model. Test selectors determine the target module;
-target-owned `source_files` enter JDT, while changed source files belonging to
-an actual upstream classpath module force a new Maven Bootstrap. Unrelated or
-downstream module sources fail closed.
+For Maven reactors and Gradle multi-project builds, Probe exports the selected
+module and needed upstream modules. Each needed module has persistent JDT
+main/test projects in the same Worker workspace. Dependencies determine build
+order and incremental propagation. Main/test source levels, encoding and
+Processor configuration are independent. Source-only upstream changes do not
+force a new Maven/Gradle application compile.
 
 The first release exposes Java only. Future languages receive their own tools
 and adapters instead of adding a `language` union to these Java tools.
 
-Gradle Fast Test v0.1 is limited to Wrapper versions 8.10/8.14, one Java
-Project, standard main/test source roots, Java 8/11, one ordered main/test
-classpath model, identical Processor paths, empty resource roots, and default
-JUnit Platform runtime configuration. Custom SourceSets/Test tasks,
-Lombok, source-generating Processors, resource overlays, Test JVM properties,
-filters/tags/engines, custom fork/heap/JVM args, multi-Project and composite
-builds fail closed. Target system libraries and the Test executable come from
+Gradle coverage includes Wrapper 7.4.2/8.10/8.14, multi-project dependencies,
+resolved source roots, build logic, resources and supported APT configurations.
+It is not a promise to execute every custom Test task, SourceSet or javac-only
+compiler extension. Current unresolved cases and advanced test configuration
+boundaries are tracked in [the compatibility follow-up](java-compatibility-followup-2026-09.md).
+Target system libraries and the Test executable come from
 Gradle's resolved Compiler Toolchain and Test JavaLauncher rather than the
 Gradle Daemon JDK.
 
@@ -172,7 +173,7 @@ definition blocks breakpoint arming; the error returns all
   restarts reuse their artifacts; project restarts first incorporate source edits
   through JDT. An explicit project selection uses the project launch path.
 
-## JDT Candidate distribution
+## JDT Worker distribution
 
 The product lock identity is part of the cache path. joLink atomically installs
 the exact locked Candidate under the user cache, reuses matching Eclipse
@@ -184,13 +185,13 @@ Concurrent MCP server installers revalidate an already-published winner after
 an atomic-rename race. Worker `Xms`/`Xmx` are either mapped from safe Maven
 compiler process-memory arguments or use bounded product defaults.
 
-The product ships one Java 8 bytecode Worker JAR (`class major 52`) that runs
-on 64-bit JDK 8 or newer. Worker selection prefers the Maven Build JDK so
-annotation processors execute in the same Java runtime generation as the
-formal Maven compile; it then falls back to the application/target JDK and
-other local JDKs. Lombok module `--add-opens` is supplied only when the selected
-Worker JDK is Java 9 or newer. Build-JDK binary identity is release provenance,
-not a user runtime constraint.
+The product uses Eclipse 4.40 / JDT 3.46 and a managed Temurin 21 Worker JDK,
+independent of the project's build, target and application JDK. An explicit
+`JOLINK_WORKER_JAVA_HOME` selects an existing compatible Worker JDK instead of
+downloading the managed one. The joLink Worker bundle itself has Java 17 bytecode;
+this does not imply that the complete Eclipse dependency closure supports every
+Java 17 installation. Maven/Gradle Probe and Test Runner artifacts retain Java 8
+bytecode. See [JDT and JDK distribution](jdt-346-upgrade.zh-CN.md).
 
 The public startup states are:
 
@@ -446,7 +447,7 @@ internal waiter id, or generation.
 The lifecycle statements above are the target v0.1 contract. The current
 dogfood implementation still has confirmed concurrency defects, recorded with
 reproductions in
-[`stage-2.1.2-lifecycle-backlog.md`](stage-2.1.2-lifecycle-backlog.md):
+[`stage-2.1.2-lifecycle-backlog.md`](archive/stage-2.1.2-lifecycle-backlog.md):
 
 - cancellation of `arm` can still be deferred until its local setup wait
   deadline; passive `await` now uses short local polling and no longer holds
@@ -541,11 +542,10 @@ artifacts; they are never advertised by the MCP server.
 
 ## v0.1 exclusions
 
-- No new Runtime actions
 - No additional language adapters
 - No HTTP MCP transport (the managed loopback request is a scenario trigger,
   not a server transport)
 - No setup installer
 - No remote JDWP attach
-- No public internal waiter/generation/cancellation fields in the Tool Schema;
-  only the opaque two-phase `wait_handle` is public
+- No caller-managed compiler generations; background result handles such as
+  `test_run_id`, `reload_id`, and debug `wait_handle` are returned by joLink

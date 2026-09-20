@@ -89,18 +89,18 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "description": (
                 "Local Maven or supported Gradle Wrapper project root for "
                 "launch or Fast Test. Maven launch imports an IntelliJ IDEA "
-                "Application or Spring Boot configuration; Gradle G4 currently "
-                "accepts the verified built-in Java/Application plugin world. "
+                "Application or Spring Boot configuration; Gradle launch uses "
+                "the resolved Java/Application plugin model. "
                 "Maven/Gradle only export the Build World; JDT compiles before "
                 "the JVM starts. A matching persisted Build World skips the "
                 "build tool and uses workspace_source_changes for incremental "
                 "startup. Do not combine with "
                 "classpath, main_class, jar_path, app_args, or vm_args. "
-                "Fast Test can use a supported single-Project Gradle Java build, "
+                "Fast Test can use a supported Gradle Java module, "
                 "a headless Maven jar project, or one "
                 "selector-identified jar module in a standard Reactor and "
                 "does not require a running application. Restart never accepts "
-                "project_path; it reuses the current sealed Generation."
+                "project_path; it compiles changes in the current project session."
             ),
         },
         "launch_name": {

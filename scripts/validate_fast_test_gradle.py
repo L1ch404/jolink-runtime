@@ -15,11 +15,11 @@ from jolink_runtime.launch.fast_test_manager import FastTestManager
 
 
 ROOT = Path(__file__).resolve().parents[1]
-G1 = ROOT / "experiments/gradle-build-world-probe/run_gradle_probe_spike.py"
+FIXTURES = ROOT / "scripts/gradle_test_support.py"
 
 
-def load_g1():
-    spec = importlib.util.spec_from_file_location("jolink_gradle_fixture", G1)
+def load_fixtures():
+    spec = importlib.util.spec_from_file_location("jolink_gradle_fixture", FIXTURES)
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load Gradle fixture helpers")
     module = importlib.util.module_from_spec(spec)
@@ -66,7 +66,7 @@ def main() -> int:
     parser.add_argument("--java17-home", type=Path, required=True)
     parser.add_argument("--junit-jar", type=Path, action="append", required=True)
     args = parser.parse_args()
-    g1 = load_g1()
+    g1 = load_fixtures()
     gradle = args.gradle.expanduser().resolve(strict=True)
     java8 = args.java8_home.expanduser().resolve(strict=True)
     java11 = args.java11_home.expanduser().resolve(strict=True)

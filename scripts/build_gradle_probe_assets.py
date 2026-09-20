@@ -14,8 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPERIMENT = ROOT / "experiments/gradle-build-world-probe"
-PROJECT = EXPERIMENT / "probe"
+PROJECT = ROOT / "java/gradle-probe"
 PRODUCT = ROOT / "src/jolink_runtime/launch"
 
 
@@ -80,7 +79,7 @@ def main() -> int:
         encoding="utf-8",
     )
     (PRODUCT / "gradle-init.gradle").write_bytes(
-        (EXPERIMENT / "init.gradle.template").read_bytes()
+        (PROJECT / "init.gradle.template").read_bytes()
     )
     print(json.dumps({"ok": True, **lock}, separators=(",", ":")))
     return 0

@@ -26,6 +26,7 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
             scripts/verify_distribution.py
+            pyproject.toml
 
   verify-windows:
     name: Clean Windows MCP/JVM release E2E
@@ -49,6 +50,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $releaseRoot = (Resolve-Path "release").Path
+          $version = python -c "import tomllib; print(tomllib.load(open('release/pyproject.toml','rb'))['project']['version'])"
           $wheel = (Get-ChildItem "release/dist/*.whl").FullName
           $sdist = (Get-ChildItem "release/dist/*.tar.gz").FullName
           foreach ($artifact in @($wheel, $sdist)) {
@@ -58,14 +60,16 @@ jobs:
             $python = Join-Path $environment "Scripts/python.exe"
             $server = Join-Path $environment "Scripts/jolink-runtime.exe"
             uv pip install --python $python $artifact
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $python "release/scripts/verify_distribution.py" `
               --server $server `
               --expected-source-root $releaseRoot `
-              --expected-version "0.1.0a3"
+              --expected-version $version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
   publish:
-    name: Publish 0.1.0a3 to PyPI
+    name: Publish verified distributions to PyPI
     needs: verify-windows
     runs-on: ubuntu-latest
     environment: pypi

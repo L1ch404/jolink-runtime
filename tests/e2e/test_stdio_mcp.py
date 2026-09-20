@@ -11,6 +11,7 @@ import anyio
 import mcp.types as types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from jolink_runtime import __version__
 
 
 def test_real_stdio_subprocess_initialize_list_status_and_shutdown(
@@ -38,7 +39,7 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown(
                 async with ClientSession(read_stream, write_stream) as session:
                     initialized = await session.initialize()
                     assert initialized.serverInfo.name == "jolink-runtime"
-                    assert initialized.serverInfo.version == "0.1.0a3"
+                    assert initialized.serverInfo.version == __version__
 
                     listed = await session.list_tools()
                     assert [tool.name for tool in listed.tools] == [

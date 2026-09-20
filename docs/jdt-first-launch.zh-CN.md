@@ -1,7 +1,9 @@
-# JDT-first 启动与快速 reload
+# JDT-first 启动与编译感知 restart
 
 joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspace 直接复用，
-不再在每次启动或 reload 时重新审计源码、依赖和编译输出。
+不再在每次启动或更新时重新审计源码、依赖和编译输出。
+公开入口是 `java_application(action="restart")`，旧 `reload` 已合入该入口；
+内部后台任务仍使用 `reload_id` 和 `last_reload` 字段。
 
 当前Worker运行环境与项目JDK独立。首次使用安装固定版本Temurin21，后续直接复用；
 不改变项目Maven/Gradle或业务JVM的JDK。更换JDT引擎首次建立新workspace并FULL一次，
@@ -14,7 +16,7 @@ joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspa
 ## 启动
 
 ```text
-读取已有 Build World JSON（没有才运行模型导出）
+读取已有 Build World JSON（没有或已跟踪构建配置变化时才重新导出）
 → 使用固定JDT3.46与私有Temurin21 Worker，复用项目目标system libraries
 → 打开 JDT workspace，不执行 Equinox -clean
 → workspace_source_changes()
@@ -27,24 +29,28 @@ joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspa
 
 源码镜像和原文件的大小/mtime索引持久化到workspace。启动时仍需枚举源码文件的元数据
 以发现离线修改，但不再逐个读取新旧源码内容。若外部工具刻意保持mtime和大小不变，
-启动扫描可能看不到该编辑；显式 `reload(source_files)` 会直接读取指定文件。
+启动扫描可能看不到该编辑；显式 `restart(source_files)` 会直接读取指定文件。
 
 resources 作为运行classpath中的源码资源目录直接读取，不再每次reload复制整棵资源树。
 上次编译成功或失败的结果随源码索引一起保存；重开workspace时直接读取，
 不会把上次的编译失败包装成“没有变化，启动成功”。
 
-## reload
+## restart
 
 ```text
-接受 source_files，返回 reload_started + reload_id
-→ 只读取并同步指定的源码
+扫描变化文件，可附带 source_files 提示
+→ 读取并同步变化的源码；无变化时复用
 → 通知 Eclipse 对应文件已更改
 → JavaBuilder INCREMENTAL
 → 实际编译后保存 workspace/源码索引，按开关请求一次 GC
 → 直接取得 Eclipse output resource delta
-→ 将变化class发给JDWP
-→ 发布last_reload
+→ 默认尝试 HotSwap；hotswap=false 或无法热替换时使用当前输出重启 JVM
+→ 返回实际 apply_method；后台任务完成时发布 last_reload
 ```
+
+调用按 `timeout` 最多等待30秒；尚未结束时返回 `reload_started + reload_id`，
+再通过 `java_status` 观察。同一轮产物直接保存在 JDT workspace 中，
+不是恢复进程后会丢失的临时 overlay。
 
 已删除：
 
@@ -72,8 +78,9 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 
 ## 缓存与生命周期
 
-- Maven及Gradle单Project构建配置/依赖变更不再自动做完整freshness审计。需要重新Probe时，手动清理对应
-  `project-launch` 和 `jdt-workspaces` 缓存后launch。
+- Maven POM/父POM链、实际 settings、`.mvn`，以及Gradle已导出的构建配置、
+  Wrapper和构建逻辑变化会使模型缓存失效并重新Probe；不扫描整份依赖和输出。
+  尚未跟踪的隐藏输入、远端依赖变化等边界见[兼容性跟进](java-compatibility-followup-2026-09.md)。
 - 已安装的Worker按分发目录复用；新的Worker版本使用新的缓存目录。
 - 正常stop/shutdown保存workspace和源码索引。
 - JVM直接读取当前JDT bin；restart使用当前编译输出，不回退到首次启动副本。

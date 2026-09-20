@@ -73,6 +73,10 @@ async def launch(call, root, port):
             "jdwp_port": reserve_local_port(),
         },
     )
+    return await wait_ready(call, result)
+
+
+async def wait_ready(call, result):
     with anyio.fail_after(120):
         while result.get("launch_phase") not in {"runtime_active", "failed"}:
             await anyio.sleep(0.1)
@@ -184,7 +188,7 @@ def test_profile_module_parent_change_updates_runtime_metadata(tmp_path):
 
     async def scenario():
         async with client(tmp_path, "profile", tmp_path / "cache") as call:
-            await launch(call, root, port)
+            original = await launch(call, root, port)
             assert response(port) == "false"
             parent.write_text(
                 parent.read_text().replace(
@@ -192,10 +196,10 @@ def test_profile_module_parent_change_updates_runtime_metadata(tmp_path):
                     "<maven.compiler.parameters>true",
                 )
             )
-            rejected = await call("java_application", {"action": "restart"})
-            assert rejected["error_code"] == "BUILD_CONFIGURATION_CHANGED", rejected
-            await call("java_application", {"action": "stop"})
-            updated = await launch(call, root, port)
+            restarted = await call("java_application", {"action": "restart"})
+            assert restarted["ok"] and restarted["apply_method"] == "restart", restarted
+            updated = await wait_ready(call, restarted)
+            assert updated["pid"] != original["pid"], updated
             assert (
                 updated["probe_cache_reused"] is False and response(port) == "true"
             ), updated

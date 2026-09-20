@@ -245,8 +245,8 @@ build_system=maven | gradle
 本机原始证据保存在：
 
 ```text
-/Users/lich/.cache/jolink-runtime/benchmarks/rc5/results/full-1a73395
-/Users/lich/.cache/jolink-runtime/benchmarks/rc5/results/pilot-apollo4568
+~/.cache/jolink-runtime/benchmarks/rc5/results/full-1a73395
+~/.cache/jolink-runtime/benchmarks/rc5/results/pilot-apollo4568
 ```
 
 原始 `result.json` 不做覆盖。后续所有重分类和题目筛选都应作为派生报告保存，以保留审计链。

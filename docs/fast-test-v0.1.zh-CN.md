@@ -58,7 +58,8 @@ Maven 的 `useIncrementalCompilation` 只控制 Maven Compiler Plugin 的源码�
 和实际源码变化进行复用/增量编译，不因该参数拒绝项目。
 
 Test Build World和JDT workspace都保存在joLink本地缓存。MCP关闭后，下一个MCP
-进程可以直接打开；不会重新Probe或FULL。构建配置缓存只检查小型配置文件：Maven
+进程可以直接打开；配置未变且状态可复用时不需要重新Probe或主动FULL。
+JDT自身仍可能要求FULL，实际build kind和原因以日志为准。构建配置缓存只检查小型配置文件：Maven
 的当前POM、本地父POM链和`.mvn`配置，或Gradle的build/settings/properties和Wrapper
 配置。依赖目录和源码树不做内容哈希。
 
@@ -110,7 +111,7 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 JDT Worker、Probe模型及编译缓存；工具改名不改变缓存身份。重连MCP才能获取更新后的工具列表。
 首次准备可能需要数分钟，Fast指重复开发验证时的增量复用，不承诺完整替代原生构建生命周期。
 
-### 2026-09-16 独立工具入口验收（工作区，待review）
+### 2026-09-16 独立工具入口验收
 
 - 产品代码只改工具Schema、分发和MCP接线；沿用原FastTestManager、Worker、缓存、Runner和结果结构。
   `java_application`、`java_debugger`不再暴露测试参数，公开测试入口只有`java_fast_test`。

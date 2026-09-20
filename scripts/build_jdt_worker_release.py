@@ -50,11 +50,11 @@ def main() -> int:
     if gradle is None:
         raise SystemExit("Gradle is required to build the Gradle Fast Test Probe")
     build_script = (
-        repository / "experiments/jdt-incremental-worker/build_worker.py"
+        repository / "scripts/build_jdt_worker.py"
     )
     lock = (
         repository
-        / "experiments/jdt-incremental-worker/locks/"
+        / "java/jdt-worker/locks/"
         "eclipse-4.40-product.json"
     )
     product_lock = (
@@ -121,7 +121,7 @@ def main() -> int:
         "assert w.major>=17 and w.data_model==64; "
         "assert FastTestAssets.load().java_minimum==8; "
         "assert ProductMavenProbe.load().schema.endswith('.v2'); "
-        "assert ProductGradleProbe.load().supported_versions==('8.10','8.14')"
+        "assert ProductGradleProbe.load().supported_versions"
     )
     _run(
         [

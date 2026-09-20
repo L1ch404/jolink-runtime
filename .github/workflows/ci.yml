@@ -54,31 +54,26 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11' && matrix.java == '17'
         run: uv run pytest -q tests/contract/test_runtime_lineage_golden.py
       - name: Run portable test suite
-        run: uv run pytest -m "not mcp_java_e2e"
-      - name: Run real Lombok compiler-model experiment
-        if: >-
-          matrix.python == '3.11' &&
-          (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') &&
-          (matrix.java == '8' || matrix.java == '17')
-        env:
-          JOLINK_RUN_LOMBOK_COMPILE_E2E: "1"
-          JOLINK_LOMBOK_TEST_JAVA_HOME: ${{ env.JAVA_HOME }}
-        run: >-
-          uv run pytest -m lombok_compile_e2e
-          tests/e2e/test_lombok_compile_experiment.py
+        run: uv run pytest -m "not mcp_java_e2e and not fast_test_e2e and not gradle_runtime_e2e"
       - name: Run real MCP/JVM safety E2E
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11' && matrix.java == '17'
         env:
           JOLINK_RUN_MCP_JAVA_E2E: "1"
         run: uv run pytest -m mcp_java_e2e tests/e2e/test_stdio_mcp_java.py
 
-  distribution-windows:
-    name: Windows clean wheel/sdist MCP E2E / JDK ${{ matrix.java }}
-    runs-on: windows-latest
+  distribution:
+    name: ${{ matrix.os }} installed product MCP E2E / target JDK ${{ matrix.java }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        java: ["8", "17"]
+        include:
+          - os: ubuntu-latest
+            java: "17"
+          - os: windows-latest
+            java: "8"
+          - os: windows-latest
+            java: "17"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -97,17 +92,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $version = uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
           $wheel = (Get-ChildItem "dist/*.whl").FullName
           $sdist = (Get-ChildItem "dist/*.tar.gz").FullName
           foreach ($artifact in @($wheel, $sdist)) {
             $kind = if ($artifact.EndsWith(".whl")) { "wheel" } else { "sdist" }
             $environment = Join-Path $env:RUNNER_TEMP "jolink-$kind"
             uv venv $environment --python 3.11
-            $python = Join-Path $environment "Scripts/python.exe"
-            $server = Join-Path $environment "Scripts/jolink-runtime.exe"
+            $python = Join-Path $environment $(if ($IsWindows) { "Scripts/python.exe" } else { "bin/python" })
+            $server = Join-Path $environment $(if ($IsWindows) { "Scripts/jolink-runtime.exe" } else { "bin/jolink-runtime" })
             uv pip install --python $python $artifact
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $python "scripts/verify_distribution.py" `
               --server $server `
               --expected-source-root $env:GITHUB_WORKSPACE `
-              --expected-version "0.1.0a3"
+              --expected-version $version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

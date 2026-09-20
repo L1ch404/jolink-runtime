@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one product Worker JAR across JDK8+ FULL/Incremental/recovery."""
+"""Validate the product Worker on supported host JDKs against a Java 8 target."""
 
 from __future__ import annotations
 

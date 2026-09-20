@@ -10,3 +10,4 @@ target/
 *.egg-info/
 .DS_Store
 .idea/
+.gradle/

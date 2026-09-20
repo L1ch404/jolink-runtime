@@ -136,8 +136,14 @@ def test_distribution_relative_links_resolve(path):
 def test_language_entrypoints_link_to_matching_installation_guide():
     for suffix in ("", ".zh-CN"):
         readme = (ROOT / f"README{suffix}.md").read_text(encoding="utf-8")
-        assert f"](INSTALL{suffix}.md)" in readme
-        assert f"/blob/main/INSTALL{suffix}.md)" in readme
+        url = f"https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL{suffix}.md"
+        # The copied instruction must contain the URL itself, not just refer to
+        # a guide linked elsewhere on the page.
+        assert any(
+            f"[{url}]({url})" in line
+            for line in readme.splitlines() if line.startswith("> ")
+        )
+        assert not re.search(r"\]\(INSTALL(?:\.zh-CN)?\.md\)", readme)
     # Both installation guides point to the same deployable English Skill.
     for path in INSTALL:
         assert "](skills/jolink-java/SKILL.md)" in path.read_text(encoding="utf-8")

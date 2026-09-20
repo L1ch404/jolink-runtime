@@ -10,6 +10,8 @@ sdist has been installed, and point ``--server`` at that environment's
 from __future__ import annotations
 
 import argparse
+import http.client
+import importlib.metadata
 import json
 import os
 import shutil
@@ -17,6 +19,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
@@ -75,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Fail if the imported package comes from this source checkout.",
     )
-    parser.add_argument("--expected-version", default="0.1.0a3")
+    parser.add_argument("--expected-version", default=jolink_runtime.__version__)
     return parser.parse_args()
 
 
@@ -188,8 +191,18 @@ def launch_external_java(
 async def call_payload(
     session: ClientSession,
     arguments: dict[str, Any],
+    *,
+    tool: str | None = None,
 ) -> dict[str, Any]:
-    result = await session.call_tool("java_runtime", arguments)
+    if tool is None:
+        action = arguments["action"]
+        if action in {"launch", "attach", "restart", "stop", "detach"}:
+            tool = "java_application"
+        elif action in {"status", "logs", "processes"}:
+            tool = "java_status"
+        else:
+            tool = "java_debugger"
+    result = await session.call_tool(tool, arguments)
     assert result.structuredContent is not None, result
     assert len(result.content) == 1, result
     assert isinstance(result.content[0], types.TextContent), result
@@ -261,7 +274,7 @@ async def verify_owned_flow(
     jdwp_port = reserve_local_port()
 
     started = assert_ok(await call_payload(session, {
-        "action": "run",
+        "action": "launch",
         "classpath": str(directory),
         "main_class": "DistributionFixture",
         "app_args": [str(trigger), str(marker), str(stop)],
@@ -361,7 +374,124 @@ def clean_server_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment["PYTHONNOUSERSITE"] = "1"
+    environment["JOLINK_LOG_LEVEL"] = "INFO"
     return environment
+
+
+def project_fixture(directory: Path, port: int) -> tuple[Path, Path]:
+    """A real Maven project; no checkout imports or precompiled classes."""
+    project = directory / "maven-project"
+    source = project / "src/main/java/example/Reply.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'package example; public class Reply { public static String value() { return "before"; } }',
+        encoding="utf-8",
+    )
+    source.with_name("App.java").write_text(
+        'package example; public class App { public static void main(String[] args) throws Exception {'
+        ' com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create('
+        f'new java.net.InetSocketAddress("127.0.0.1", {port}), 0);'
+        ' server.createContext("/", e -> { byte[] data = Reply.value().getBytes("UTF-8");'
+        ' e.sendResponseHeaders(200, data.length); e.getResponseBody().write(data); e.close(); });'
+        ' server.start(); }}',
+        encoding="utf-8",
+    )
+    test = project / "src/test/java/example/ReplyTest.java"
+    test.parent.mkdir(parents=True)
+    test.write_text(
+        'package example; public class ReplyTest { @org.junit.Test public void value() {'
+        ' org.junit.Assert.assertEquals("before", Reply.value()); }}',
+        encoding="utf-8",
+    )
+    (project / "pom.xml").write_text(
+        '<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId>'
+        '<artifactId>distribution-smoke</artifactId><version>1</version><properties>'
+        '<maven.compiler.source>8</maven.compiler.source><maven.compiler.target>8</maven.compiler.target>'
+        '<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>'
+        '<dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId>'
+        '<version>4.13.2</version><scope>test</scope></dependency></dependencies>'
+        '<build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>'
+        '</plugin></plugins></build></project>',
+        encoding="utf-8",
+    )
+    launch = ET.Element("component", name="ProjectRunConfigurationManager")
+    configuration = ET.SubElement(launch, "configuration", name="Distribution", type="Application")
+    ET.SubElement(configuration, "option", name="MAIN_CLASS_NAME", value="example.App")
+    path = project / ".run/Distribution.run.xml"
+    path.parent.mkdir()
+    path.write_text(ET.tostring(launch, encoding="unicode"), encoding="utf-8")
+    return project, source
+
+
+def http_value(port: int) -> str:
+    client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        client.request("GET", "/")
+        response = client.getresponse()
+        assert response.status == 200
+        return response.read().decode("utf-8")
+    finally:
+        client.close()
+
+
+async def verify_project_flow(session: ClientSession, directory: Path) -> None:
+    port = reserve_local_port()
+    project, source = project_fixture(directory, port)
+
+    async def status():
+        return assert_ok(await call_payload(session, {"action": "status"}))
+
+    async def test():
+        result = assert_ok(await call_payload(session, {
+            "action": "run", "project_path": str(project), "tests": ["example.ReplyTest"],
+        }, tool="java_fast_test"))
+        with anyio.fail_after(300):
+            while result.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
+                await anyio.sleep(0.2)
+                result = (await status())["fast_test"]
+        assert result.get("ok") and result.get("passed") and result["tests"] == 1, result
+
+    async def restart(**arguments):
+        result = assert_ok(await call_payload(session, {"action": "restart", **arguments}))
+        with anyio.fail_after(180):
+            while result.get("applied") is None:
+                state = await status()
+                finished = state.get("last_reload") or {}
+                if finished.get("reload_id") == result.get("reload_id"):
+                    result = finished
+                    break
+                await anyio.sleep(0.2)
+        assert result.get("ok") and result.get("applied"), result
+        assert await anyio.to_thread.run_sync(http_value, port) == "after"
+        return result
+
+    try:
+        assert_ok(await call_payload(session, {
+            "action": "launch", "project_path": str(project), "launch_name": "Distribution",
+            "ready_port": port, "jdwp_port": reserve_local_port(),
+        }))
+        with anyio.fail_after(300):
+            while True:
+                state = await status()
+                assert state.get("launch_phase") != "failed", state
+                if state.get("startup_state") == "ready":
+                    break
+                await anyio.sleep(0.2)
+        pid = state["pid"]
+        assert await anyio.to_thread.run_sync(http_value, port) == "before"
+        await test()
+        source.write_text(source.read_text(encoding="utf-8").replace('"before"', '"after"'), encoding="utf-8")
+        applied = await restart()
+        assert applied["apply_method"] == "hotswap", applied
+        assert (await status())["pid"] == pid
+        applied = await restart(hotswap=False)
+        assert applied["apply_method"] == "restart", applied
+        assert (await status())["pid"] != pid
+        test_source = project / "src/test/java/example/ReplyTest.java"
+        test_source.write_text(test_source.read_text(encoding="utf-8").replace('"before"', '"after"'), encoding="utf-8")
+        await test()
+    finally:
+        assert_ok(await call_payload(session, {"action": "stop"}))
 
 
 async def verify_mcp(
@@ -379,7 +509,7 @@ async def verify_mcp(
     breakpoint_line = source_line("System.out.println(observed)")
     attached_process: subprocess.Popen[bytes] | None = None
     try:
-        with anyio.fail_after(120):
+        with anyio.fail_after(900):
             async with stdio_client(parameters, errlog=stderr) as (
                 read_stream,
                 write_stream,
@@ -390,12 +520,12 @@ async def verify_mcp(
                     assert initialized.serverInfo.version == expected_version
 
                     listed = await session.list_tools()
-                    assert [tool.name for tool in listed.tools] == [
-                        "java_runtime",
-                        "java_processes",
-                    ]
+                    assert {tool.name for tool in listed.tools} == {
+                        "java_application", "java_fast_test", "java_status", "java_debugger",
+                    }
 
                     await verify_owned_flow(session, directory, breakpoint_line)
+                    await verify_project_flow(session, directory)
                     attached_process = await verify_attached_flow(
                         session,
                         directory,
@@ -425,9 +555,11 @@ def main() -> None:
     assert server.is_absolute()
     assert server.is_file(), f"installed server executable not found: {server}"
     assert jolink_runtime.__version__ == args.expected_version
+    assert importlib.metadata.version("jolink-runtime") == args.expected_version
     package_file = validate_install_location(args.expected_source_root)
     for command in ("java", "javac"):
         assert shutil.which(command), f"required JDK command not found: {command}"
+    assert shutil.which("mvn") or shutil.which("mvn.cmd"), "Maven is required for project/Fast Test verification"
 
     attached_process: subprocess.Popen[bytes] | None = None
     with tempfile.TemporaryDirectory(prefix="jolink-dist-") as temporary:
@@ -467,7 +599,11 @@ def main() -> None:
         "verified": [
             "initialize",
             "tools/list",
-            "run",
+            "launch",
+            "project_jdt_launch",
+            "project_hotswap_http",
+            "project_restart_http",
+            "java_fast_test_before_and_after_edit",
             "status",
             "wait",
             "resume",

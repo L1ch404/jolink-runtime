@@ -20,7 +20,7 @@ from mcp.client.stdio import stdio_client
 
 
 ROOT = Path(__file__).resolve().parents[1]
-G1 = ROOT / "experiments/gradle-build-world-probe/run_gradle_probe_spike.py"
+FIXTURES = ROOT / "scripts/gradle_test_support.py"
 
 APP = """\
 package example;
@@ -62,7 +62,7 @@ public final class GradleRuntimeApp {
 
 
 def _load_g1():
-    spec = importlib.util.spec_from_file_location("jolink_gradle_fixture", G1)
+    spec = importlib.util.spec_from_file_location("jolink_gradle_fixture", FIXTURES)
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load Gradle fixture helpers")
     module = importlib.util.module_from_spec(spec)

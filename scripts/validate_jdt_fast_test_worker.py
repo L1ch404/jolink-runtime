@@ -23,10 +23,7 @@ def main() -> int:
     parser.add_argument(
         "--candidate-lock",
         type=Path,
-        default=Path(
-            "experiments/jdt-incremental-worker/locks/"
-            "eclipse-2021-03-apt-spike.json"
-        ),
+        help="Optional development lock; defaults to the shipped product Worker.",
     )
     parser.add_argument(
         "--candidate-cache",
@@ -37,7 +34,10 @@ def main() -> int:
     parser.add_argument("--hamcrest-jar", type=Path, required=True)
     args = parser.parse_args()
 
-    candidate = JdtCandidate.load(args.candidate_lock, args.candidate_cache)
+    candidate = (
+        JdtCandidate.load(args.candidate_lock, args.candidate_cache)
+        if args.candidate_lock else JdtCandidate.load_product()
+    )
     with tempfile.TemporaryDirectory(prefix="jolink-fast-test-worker-") as raw:
         root = Path(raw)
         main_root = root / "project/src/main/java"

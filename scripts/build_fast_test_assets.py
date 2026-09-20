@@ -19,7 +19,7 @@ RUNNER_SOURCE = (
     ROOT
     / "java/test-runner/src/net/jolink/runtime/test/TestRunner.java"
 )
-PROBE_ROOT = ROOT / "experiments/jdt-incremental-worker/maven-probe"
+PROBE_ROOT = ROOT / "java/maven-probe"
 PRODUCT_ROOT = ROOT / "src/jolink_runtime/launch"
 FIXED_TIME = (2026, 8, 29, 0, 0, 0)
 

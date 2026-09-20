@@ -2,7 +2,9 @@
 
 [English](README.md) | 简体中文
 
-让 AI 编程助手快速编译、测试、启动和调试本地 Java 项目。
+**为自主 Java 开发补齐运行验证闭环。**
+
+为编程 Agent 提供运行时反馈，让它能够测试、调试并验证自己的代码修改。
 
 > 第一原则：通过真实运行减少不确定性。
 
@@ -15,12 +17,7 @@ joLink 为 Coding Agent 提供持续的 Java 开发反馈：修改源码后使�
 
 ## 安装
 
-把[中文安装文档](INSTALL.zh-CN.md)的地址发给 Agent，并告诉它：
-
-> 按照这份文档，为我当前使用的 Agent 安装 joLink MCP 和英文 Skill。
-> 默认用户级安装，保留现有配置，并验证连接。
-
-使用[这个 GitHub 安装文档地址](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md)。
+> 按照这份文档 [https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md)，为我当前使用的 Agent 安装 joLink MCP 和英文 Skill。默认用户级安装，保留现有配置，并验证连接。
 
 安装文档覆盖 Codex、Claude Code、Cursor、VS Code/Copilot、CodeBuddy、Gemini CLI、
 OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP 和 Skill 分开安装，
@@ -200,7 +197,7 @@ JOLINK_RUN_MCP_JAVA_E2E=1 uv run pytest -q -m mcp_java_e2e tests/e2e/test_stdio_
 
 ## 更多文档
 
-- [中文安装说明](INSTALL.zh-CN.md)
+- [中文安装说明](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md)
 - [英文 Skill](skills/jolink-java/SKILL.md)
 - [MCP 接口](docs/mcp-contract-v0.1.md)
 - [Fast Test](docs/fast-test-v0.1.zh-CN.md)

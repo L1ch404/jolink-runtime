@@ -40,11 +40,10 @@ def test_product_does_not_import_retired_backend_or_experiment_policy():
 
     root = Path(jolink_runtime.__file__).parent
     assert not (root / "launch/fast_compile.py").exists()
+    assert not any((root / "experiments").glob("*.py"))
     import ast
 
     for file in root.rglob("*.py"):
-        if "experiments" in file.relative_to(root).parts:
-            continue
         for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ImportFrom):
                 assert "fast_compile" not in (node.module or ""), file

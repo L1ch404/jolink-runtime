@@ -3,6 +3,12 @@
 2026-09-10。用户业务源码的产品编译后端只保留 JDT，不能在 JDT 不可用时再回落到
 direct-javac。本次是移除已放弃路线，不增加新的运行限制或拒绝条件。
 
+2026-09-21 整理更新：下文记录的是当时的移除过程。后来保留在 `experiments/`
+中的冻结研究实现及专属测试也已移出产品主线，历史可在清理前提交 `88fe07d`
+查阅。当前更新入口为 `java_application(action="restart")`，编译、HotSwap与
+普通重启沿用已实现的产品路径；[兼容性跟进](java-compatibility-followup-2026-09.md)
+列出最新状态，不以本文的旧待办判断当前支持范围。
+
 ## 删除与保留
 
 - 删除 `launch/fast_compile.py` 中的编译器、Plan、私有 staging 执行和专属错误类型。

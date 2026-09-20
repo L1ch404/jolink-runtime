@@ -28,7 +28,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-exclude = ["jolink_runtime.experiments*"]
 
 [tool.setuptools]
 include-package-data = false
@@ -53,7 +52,6 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
   "mcp_java_e2e: real stdio MCP and JVM safety tests (canonical CI environment only)",
-  "lombok_compile_e2e: real Maven and javac Lombok fidelity experiment",
   "fast_test_e2e: real Maven/JDT/JUnit Fast Test product loop",
-  "gradle_runtime_e2e: real Gradle Runtime launch/reload/rollback product loop",
+  "gradle_runtime_e2e: real Gradle Runtime launch/HotSwap/restart product loop",
 ]
