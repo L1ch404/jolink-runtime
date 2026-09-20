@@ -19,6 +19,19 @@ events, stack frames, and variables.
 Free and local. It does not require a joLink account, model API key, inference
 provider, or separate agent application.
 
+## Install
+
+> Follow this guide [https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md) to install joLink MCP and its English Skill for my current agent. Use user-level installation by default, preserve existing configuration, and verify the connection.
+
+The guide provides official client-specific locations and examples for Codex,
+Claude Code, Cursor, VS Code/Copilot, CodeBuddy, Gemini CLI, OpenCode, Cline,
+Roo Code and Windsurf. All start MCP with `uvx jolink-runtime@latest` and use the same
+[English Skill](skills/jolink-java/SKILL.md); no plugin bundle or universal installer
+is required. MCP performs the work; the Skill helps the agent discover and use it.
+The guide also covers uv setup, preserving configuration, reconnection and verification.
+
+For Chinese instructions, use [the Chinese installation guide](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md).
+
 ## Why joLink
 
 Coding agents are good at reading and changing code, but they can become stuck
@@ -227,19 +240,6 @@ Confirm the requirements with:
 java -version
 uv --version
 ```
-
-## Install
-
-> Follow this guide [https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md) to install joLink MCP and its English Skill for my current agent. Use user-level installation by default, preserve existing configuration, and verify the connection.
-
-The guide provides official client-specific locations and examples for Codex,
-Claude Code, Cursor, VS Code/Copilot, CodeBuddy, Gemini CLI, OpenCode, Cline,
-Roo Code and Windsurf. All start MCP with `uvx jolink-runtime@latest` and use the same
-[English Skill](skills/jolink-java/SKILL.md); no plugin bundle or universal installer
-is required. MCP performs the work; the Skill helps the agent discover and use it.
-The guide also covers uv setup, preserving configuration, reconnection and verification.
-
-For Chinese instructions, use [the Chinese installation guide](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md).
 
 ## Quick start
 
