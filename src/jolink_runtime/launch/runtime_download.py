@@ -34,7 +34,9 @@ def _download_sources(
     path = mirror_path.lstrip("/")
     if mirror.lower() == "cn":
         sources = []
-        if path.startswith("jdk/temurin-"):
+        # The source kit has no architecture/OS directory on the JDK mirror.
+        # It is requested only by the offline packaging command.
+        if path.startswith("jdk/temurin-") and "-sources_" not in path:
             _, version, filename = path.split("/", 2)
             major = version.removeprefix("temurin-").split(".", 1)[0]
             arch, system = filename.split("_")[1:3]

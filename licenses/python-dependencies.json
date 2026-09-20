@@ -1,0 +1,288 @@
+{
+  "reviewed_at": "2026-09-21",
+  "scope": "Reference installation plus Windows-specific wheels; not a lock for future uvx resolution.",
+  "packages": [
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/annotated-types/annotated_types-0.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "anyio",
+      "version": "4.14.2",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/anyio/anyio-4.14.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/attrs/attrs-26.1.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "license": "MPL-2.0",
+      "notices": [
+        "licenses/python/certifi/certifi-2026.7.22.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "license": "MIT-0",
+      "notices": [
+        "licenses/python/cffi/cffi-2.1.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/click/click-8.5.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "cryptography",
+      "version": "50.0.1",
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "notices": [
+        "licenses/python/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE",
+        "licenses/python/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE.APACHE",
+        "licenses/python/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE.BSD"
+      ]
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/h11/h11-0.16.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/httpcore/httpcore-1.0.9.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/httpx/httpx-0.28.1.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "httpx-sse",
+      "version": "0.4.3",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/httpx-sse/httpx_sse-0.4.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/idna/idna-3.20.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/jsonschema/jsonschema-4.26.0.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/jsonschema-specifications/jsonschema_specifications-2025.9.1.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "mcp",
+      "version": "1.28.1",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/mcp/mcp-1.28.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "psutil",
+      "version": "7.2.2",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/psutil/psutil-7.2.2.dist-info/LICENSE"
+      ]
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/pycparser/pycparser-3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.5",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/pydantic/pydantic-2.13.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic-settings",
+      "version": "2.15.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/pydantic-settings/pydantic_settings-2.15.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.46.5",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/pydantic_core/pydantic_core-2.46.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "PyJWT",
+      "version": "2.14.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/PyJWT/pyjwt-2.14.0.dist-info/licenses/AUTHORS.rst",
+        "licenses/python/PyJWT/pyjwt-2.14.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "python-dotenv",
+      "version": "1.2.3",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/python-dotenv/python_dotenv-1.2.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "python-multipart",
+      "version": "0.0.32",
+      "license": "Apache-2.0",
+      "notices": [
+        "licenses/python/python-multipart/python_multipart-0.0.32.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/referencing/referencing-0.37.0.dist-info/licenses/COPYING"
+      ]
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.6.3",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/rpds-py/rpds_py-2026.6.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "sse-starlette",
+      "version": "3.4.11",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/sse-starlette/sse_starlette-3.4.11.dist-info/licenses/AUTHORS",
+        "licenses/python/sse-starlette/sse_starlette-3.4.11.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "starlette",
+      "version": "1.6.0",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/starlette/starlette-1.6.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "license": "MIT",
+      "notices": [
+        "licenses/python/typing-inspection/typing_inspection-0.4.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "license": "PSF-2.0",
+      "notices": [
+        "licenses/python/typing_extensions/typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "uvicorn",
+      "version": "0.53.0",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/uvicorn/uvicorn-0.53.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "name": "pywin32",
+      "version": "312",
+      "platform": "Windows",
+      "url": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl",
+      "sha256": "d11417d84412f859b722fad0841b3614459ed0047f7542d8362e77884f6b6e8a",
+      "license": "Multiple; see original notices",
+      "notices": [
+        "licenses/python/pywin32/adodbapi/license.txt",
+        "licenses/python/pywin32/pythonwin/License.txt",
+        "licenses/python/pywin32/pythonwin/Scintilla-License.txt",
+        "licenses/python/pywin32/pythonwin/pywin/idle/LICENSE.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/adodbapi/license.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/com/License.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/isapi/README.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/pythonwin/License.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/pythonwin/Scintilla/License.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/pythonwin/pywin/idle/LICENSE.txt",
+        "licenses/python/pywin32/pywin32-312.dist-info/licenses/win32/License.txt",
+        "licenses/python/pywin32/win32/License.txt",
+        "licenses/python/pywin32/win32com/License.txt",
+        "licenses/python/pywin32/win32comext/License.txt",
+        "licenses/python/pywin32/win32comext/mapi/MAPIStubLibrary-License.txt",
+        "licenses/python/pywin32/win32comext/mapi/NOTICE.md"
+      ]
+    },
+    {
+      "name": "colorama",
+      "version": "0.4.6",
+      "platform": "Windows",
+      "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+      "license": "BSD-3-Clause",
+      "notices": [
+        "licenses/python/colorama/colorama-0.4.6.dist-info/licenses/LICENSE.txt"
+      ]
+    }
+  ]
+}

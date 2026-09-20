@@ -122,7 +122,8 @@ def test_translated_readme_examples_validate_against_current_mcp_schemas():
         Draft202012Validator(schemas[tool]).validate(arguments)
 
 
-@pytest.mark.parametrize("path", [ROOT / "README.md", ROOT / "README.zh-CN.md", *INSTALL, SKILL],
+@pytest.mark.parametrize("path", [ROOT / "README.md", ROOT / "README.zh-CN.md", *INSTALL, SKILL,
+                                  ROOT / "THIRD_PARTY_NOTICES.md", ROOT / "licenses/README.md"],
                          ids=lambda p: p.name)
 def test_distribution_relative_links_resolve(path):
     for destination in re.findall(r"\]\(([^)\s]+)\)", path.read_text(encoding="utf-8")):

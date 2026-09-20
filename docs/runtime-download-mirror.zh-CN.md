@@ -69,12 +69,20 @@ assets/
 ├── README.txt
 ├── manifest.json
 ├── SHA256SUMS
+├── LICENSE
+├── THIRD_PARTY_NOTICES.md
+├── licenses/
+│   └── runtime-sources.json 与原始许可/声明
 ├── jdk/temurin-21.0.12.1+1/
 │   ├── 各平台官方JDK原始ZIP或tar.gz
 │   └── 官方JDK源码归档
 └── eclipse/updates/4.40/R-4.40-202606010713/plugins/
-    └── 产品清单所需的原始Eclipse bundles
+    └── 产品清单所需的原始Eclipse bundles及对应source bundles
 ```
+
+`licenses/runtime-sources.json`记录精确版本源码、校验值和上游提交。
+源码包只用于获取源码和离线交付，不在普通launch/test/restart时下载。
+该目录结构是发布布局，是否已上线以镜像manifest及HTTPS回读为准。
 
 JDK预期SHA仍来自wheel内的`worker-runtime.json`；Eclipse bundle预期SHA仍来自
 `jdt-product-candidate.json`。运行时不从镜像下载新的锁文件来替换可信预期值。
@@ -90,6 +98,10 @@ JDK预期SHA仍来自wheel内的`worker-runtime.json`；Eclipse bundle预期SHA�
 3. 上传到固定版本目录；不要替换已有版本为不同内容，不删除旧版本。
 4. 在服务器再次校验，随后从HTTPS入口回读文件验证。
 5. 镜像文件准备完成后再发布引用该版本的joLink。
+
+许可更新只增加源码归档及静态说明，保留已有manifest条目，不覆盖版本化二进制。
+公开离线资源包时，同时提供`prepare_jdt_worker.py`生成的匹配源码包。
+包内保留原JDK legal和JAR notice，并额外包含joLink MIT及集中第三方说明。
 
 现有安装脚本下载区`/jolink/`与依赖区`/jolink/assets/`分开；后者不随前者的
 `current`版本链接切换。运维SSH连接信息不放进此文档或Python包。

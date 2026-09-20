@@ -9,6 +9,7 @@ description = "Local runtime evidence and debugging for coding agents"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/**/*"]
 authors = [{ name = "joLink contributors" }]
 dependencies = [
   "anyio==4.14.2",

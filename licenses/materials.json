@@ -1,0 +1,500 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "path": "licenses/common/EPL-2.0.txt",
+      "sha256": "0becf16567beb77fa252b7664631dd177c8f9a1889e48995b45379c7130e5303",
+      "origin": "https://www.eclipse.org/org/documents/epl-2.0/EPL-2.0.txt"
+    },
+    {
+      "path": "licenses/common/Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+    },
+    {
+      "path": "licenses/common/MPL-2.0.txt",
+      "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+      "origin": "https://www.mozilla.org/media/MPL/2.0/index.815ca599c9df.txt"
+    },
+    {
+      "path": "licenses/jna/LICENSE",
+      "sha256": "07c938b23950ab7d47a24ef35f9f5da3a05ae164278dc959ad6994135ed59ff1",
+      "origin": "https://raw.githubusercontent.com/java-native-access/jna/5.18.1/LICENSE"
+    },
+    {
+      "path": "licenses/jna/libffi-LICENSE",
+      "sha256": "2c9c2acb9743e6b007b91350475308aee44691d96aa20eacef8e199988c8c388",
+      "origin": "https://raw.githubusercontent.com/java-native-access/jna/5.18.1/native/libffi/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/com.sun.jna/META-INF/LICENSE",
+      "sha256": "07c938b23950ab7d47a24ef35f9f5da3a05ae164278dc959ad6994135ed59ff1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna_5.18.1.v20251001-0800.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/com.sun.jna.platform/META-INF/LICENSE",
+      "sha256": "07c938b23950ab7d47a24ef35f9f5da3a05ae164278dc959ad6994135ed59ff1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.platform_5.18.1.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.apache.felix.scr/META-INF/LICENSE",
+      "sha256": "2fdb00edf33aba8dd91e7343bfa92a0efa43f330d14ff7227befb0896b462705",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr_2.2.18.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.apache.felix.scr/META-INF/NOTICE",
+      "sha256": "4ad1e1321d7e94f80f5f2b5fec44059c319cff180c673841581cc5d16dd60c79",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr_2.2.18.jar!/META-INF/NOTICE"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.commands/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.commands_3.12.500.v20251103-0733.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.contenttype/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.contenttype_3.9.800.v20251105-1620.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.expressions/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.expressions_3.9.600.v20260514-2026.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.filesystem/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.filesystem_1.11.400.v20251107-0507.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.jobs/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.jobs_3.15.800.v20260325-1353.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.resources/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.resources_3.24.0.v20260518-1150.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.core.runtime/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.runtime_3.34.200.v20251220-0953.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.app/about_files/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app_1.7.600.v20251211-1038.jar!/about_files/LICENSE-2.0.txt"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.app/about.html",
+      "sha256": "e3ea1a55cf11f38ceeb8146b077af2d3c3b4c330d7d676e8e1e0957d8243445b",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app_1.7.600.v20251211-1038.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.common/about.html",
+      "sha256": "8789732570d4dc6c1c9275f5aea90eee2453615a446343468b62213dfa1bcfd1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.common_3.20.400.v20260512-1534.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.launcher/about.html",
+      "sha256": "8789732570d4dc6c1c9275f5aea90eee2453615a446343468b62213dfa1bcfd1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.preferences/about_files/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar!/about_files/LICENSE-2.0.txt"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.preferences/about.html",
+      "sha256": "d7a0b2a6120b4f6583f3e2b3918e146a51c85d1541dcdfb0f3ed706acbd321aa",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.registry/about_files/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar!/about_files/LICENSE-2.0.txt"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.registry/about_files/NOTICE.txt",
+      "sha256": "c53634c960163f00ba0b0147cc3dee5caf0e6a47bc9909a2fe94b7adcf5d983e",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar!/about_files/NOTICE.txt"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.equinox.registry/about.html",
+      "sha256": "2a401d5324d536eeb5c0c323af7c3190bbfd9ede7e62db3c935b67e047300ce7",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.jdt.core/about.html",
+      "sha256": "4667ca2c904a7a03f72ed4cbbb777106d88a35e0deaac3d589ed2a89095fd09f",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core_3.46.0.v20260520-1003.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.jdt.core.compiler.batch/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.compiler.batch_3.46.0.v20260528-0407.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.osgi/about_files/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi_3.24.200.v20260515-1403.jar!/about_files/LICENSE-2.0.txt"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.osgi/about.html",
+      "sha256": "b982d0ebf003695c2327f28a75234b49e9bf3be776b96b2350ac7a768acc163e",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi_3.24.200.v20260515-1403.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.text/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.text_3.14.700.v20260326-1107.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.service.component/META-INF/LICENSE",
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component_1.5.1.202212101352.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.service.component/META-INF/NOTICE",
+      "sha256": "9095ce4629906ff31d2dc63d0b91194302463da2c3be0f8f714fdab77cd6b9ee",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component_1.5.1.202212101352.jar!/META-INF/NOTICE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.service.prefs/META-INF/LICENSE",
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs_1.1.2.202109301733.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.service.prefs/META-INF/NOTICE",
+      "sha256": "9095ce4629906ff31d2dc63d0b91194302463da2c3be0f8f714fdab77cd6b9ee",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs_1.1.2.202109301733.jar!/META-INF/NOTICE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.util.function/META-INF/LICENSE",
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function_1.2.0.202109301733.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.util.function/META-INF/NOTICE",
+      "sha256": "9095ce4629906ff31d2dc63d0b91194302463da2c3be0f8f714fdab77cd6b9ee",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function_1.2.0.202109301733.jar!/META-INF/NOTICE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.util.promise/META-INF/LICENSE",
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise_1.3.0.202212101352.jar!/META-INF/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.osgi.util.promise/META-INF/NOTICE",
+      "sha256": "9095ce4629906ff31d2dc63d0b91194302463da2c3be0f8f714fdab77cd6b9ee",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise_1.3.0.202212101352.jar!/META-INF/NOTICE"
+    },
+    {
+      "path": "licenses/eclipse/org.apache.ant/LICENSE",
+      "sha256": "6d62d1dd52f932865d6f1e28920d53d0a6f9730ef6b8e02c48d99f470e160a0d",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.ant_1.10.17.v20260410-1000.jar!/LICENSE"
+    },
+    {
+      "path": "licenses/eclipse/org.apache.ant/NOTICE",
+      "sha256": "fc3fad39345282a2188acc3fca950fbd003a372c734da40586ec942c134c5b2b",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.ant_1.10.17.v20260410-1000.jar!/NOTICE"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.jdt.apt.core/about.html",
+      "sha256": "125bc253d52c9a91c4d0df6cc51c7a375a9bc2313110352d8060448b66e9560a",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.core_3.8.700.v20260309-1433.jar!/about.html"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.jdt.apt.core/mirror-api-license.txt",
+      "sha256": "f757b6136dfc4d70c2ca3dace6ea85d2cfe4684469e53667caee25433389823a",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.core_3.8.700.v20260309-1433.jar!/mirror-api-license.txt"
+    },
+    {
+      "path": "licenses/eclipse/org.eclipse.jdt.apt.pluggable.core/about.html",
+      "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+      "origin": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.pluggable.core_1.4.700.v20251202-0459.jar!/about.html"
+    },
+    {
+      "path": "licenses/openjdk/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "origin": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz!/jdk-21.0.12.1+1-src/LICENSE"
+    },
+    {
+      "path": "licenses/openjdk/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "origin": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz!/jdk-21.0.12.1+1-src/ADDITIONAL_LICENSE_INFO"
+    },
+    {
+      "path": "licenses/openjdk/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "origin": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz!/jdk-21.0.12.1+1-src/ASSEMBLY_EXCEPTION"
+    },
+    {
+      "path": "licenses/temurin-build/LICENSE",
+      "sha256": "6b9522191b8cb7126b2d214edd7f782d2ccd83c467e9c03b8af9e0bf903b49b4",
+      "origin": "https://codeload.github.com/adoptium/temurin-build/tar.gz/e6ba7dec3d07654074559310376a3ae89da5f4ac!/LICENSE"
+    },
+    {
+      "path": "licenses/python/annotated-types/annotated_types-0.8.0.dist-info/licenses/LICENSE",
+      "sha256": "fe1049884b1a0d9342901e88e07f32925d24b3121d9972b6a6805fb9824b095d",
+      "origin": "PyPI annotated-types==0.8.0:annotated_types-0.8.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/anyio/anyio-4.14.2.dist-info/licenses/LICENSE",
+      "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+      "origin": "PyPI anyio==4.14.2:anyio-4.14.2.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/attrs/attrs-26.1.0.dist-info/licenses/LICENSE",
+      "sha256": "882115c95dfc2af1eeb6714f8ec6d5cbcabf667caff8729f42420da63f714e9f",
+      "origin": "PyPI attrs==26.1.0:attrs-26.1.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/certifi/certifi-2026.7.22.dist-info/licenses/LICENSE",
+      "sha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7",
+      "origin": "PyPI certifi==2026.7.22:certifi-2026.7.22.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/cffi/cffi-2.1.1.dist-info/licenses/LICENSE",
+      "sha256": "5ba24ddc57067f9249add644c3afc41a5d6dc37e23433ef759d95df370b0af63",
+      "origin": "PyPI cffi==2.1.1:cffi-2.1.1.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/click/click-8.5.0.dist-info/licenses/LICENSE.txt",
+      "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d",
+      "origin": "PyPI click==8.5.0:click-8.5.0.dist-info/licenses/LICENSE.txt"
+    },
+    {
+      "path": "licenses/python/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE",
+      "sha256": "3e0c7c091a948b82533ba98fd7cbb40432d6f1a9acbf85f5922d2f99a93ae6bb",
+      "origin": "PyPI cryptography==50.0.1:cryptography-50.0.1.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE.APACHE",
+      "sha256": "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe",
+      "origin": "PyPI cryptography==50.0.1:cryptography-50.0.1.dist-info/licenses/LICENSE.APACHE"
+    },
+    {
+      "path": "licenses/python/cryptography/cryptography-50.0.1.dist-info/licenses/LICENSE.BSD",
+      "sha256": "602c4c7482de6479dd2e9793cda275e5e63d773dacd1eca689232ab7008fb4fb",
+      "origin": "PyPI cryptography==50.0.1:cryptography-50.0.1.dist-info/licenses/LICENSE.BSD"
+    },
+    {
+      "path": "licenses/python/h11/h11-0.16.0.dist-info/licenses/LICENSE.txt",
+      "sha256": "37db5bb85926db28a427a25867f10b1232003aea1be69ccb851138adb8e6f361",
+      "origin": "PyPI h11==0.16.0:h11-0.16.0.dist-info/licenses/LICENSE.txt"
+    },
+    {
+      "path": "licenses/python/httpcore/httpcore-1.0.9.dist-info/licenses/LICENSE.md",
+      "sha256": "fdcb59154c74cbaba16a11242f7740bea9f23d6feb5547917d8c5f94a80392a5",
+      "origin": "PyPI httpcore==1.0.9:httpcore-1.0.9.dist-info/licenses/LICENSE.md"
+    },
+    {
+      "path": "licenses/python/httpx/httpx-0.28.1.dist-info/licenses/LICENSE.md",
+      "sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d",
+      "origin": "PyPI httpx==0.28.1:httpx-0.28.1.dist-info/licenses/LICENSE.md"
+    },
+    {
+      "path": "licenses/python/httpx-sse/httpx_sse-0.4.3.dist-info/licenses/LICENSE",
+      "sha256": "beec67e4ee83a7af26f242bed9987aa863d6d2dfb776106aa2360c4187f31901",
+      "origin": "PyPI httpx-sse==0.4.3:httpx_sse-0.4.3.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/idna/idna-3.20.dist-info/licenses/LICENSE.md",
+      "sha256": "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04",
+      "origin": "PyPI idna==3.20:idna-3.20.dist-info/licenses/LICENSE.md"
+    },
+    {
+      "path": "licenses/python/jsonschema/jsonschema-4.26.0.dist-info/licenses/COPYING",
+      "sha256": "4f92a015a13c4d1a040bef018aa13430b4f1bc73b41b16bb846c346766de7439",
+      "origin": "PyPI jsonschema==4.26.0:jsonschema-4.26.0.dist-info/licenses/COPYING"
+    },
+    {
+      "path": "licenses/python/jsonschema-specifications/jsonschema_specifications-2025.9.1.dist-info/licenses/COPYING",
+      "sha256": "42dcd63495f87b4eb7c7757afa379bb55a53f94afd7a5f657d9adf57236e515c",
+      "origin": "PyPI jsonschema-specifications==2025.9.1:jsonschema_specifications-2025.9.1.dist-info/licenses/COPYING"
+    },
+    {
+      "path": "licenses/python/mcp/mcp-1.28.1.dist-info/licenses/LICENSE",
+      "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
+      "origin": "PyPI mcp==1.28.1:mcp-1.28.1.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/psutil/psutil-7.2.2.dist-info/LICENSE",
+      "sha256": "b89c063b3786e28e0c0a38f1931db61fed35e69dd2a2966fbecffee0f46c8d10",
+      "origin": "PyPI psutil==7.2.2:psutil-7.2.2.dist-info/LICENSE"
+    },
+    {
+      "path": "licenses/python/pycparser/pycparser-3.0.dist-info/licenses/LICENSE",
+      "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1",
+      "origin": "PyPI pycparser==3.0:pycparser-3.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/pydantic/pydantic-2.13.5.dist-info/licenses/LICENSE",
+      "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3",
+      "origin": "PyPI pydantic==2.13.5:pydantic-2.13.5.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/pydantic-settings/pydantic_settings-2.15.0.dist-info/licenses/LICENSE",
+      "sha256": "eb355a753e020346d33d83bf9769135b89fc610568ac531a01c295bcee7fd998",
+      "origin": "PyPI pydantic-settings==2.15.0:pydantic_settings-2.15.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/pydantic_core/pydantic_core-2.46.5.dist-info/licenses/LICENSE",
+      "sha256": "2afdd30d54b4d62b6f488a6bcc1546e84ec5061f13f4209c03d012348783795a",
+      "origin": "PyPI pydantic_core==2.46.5:pydantic_core-2.46.5.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/PyJWT/pyjwt-2.14.0.dist-info/licenses/AUTHORS.rst",
+      "sha256": "925ce43461029eedbf558ec0b7cf7fc4b045def5120ebb97937c70814071cf07",
+      "origin": "PyPI PyJWT==2.14.0:pyjwt-2.14.0.dist-info/licenses/AUTHORS.rst"
+    },
+    {
+      "path": "licenses/python/PyJWT/pyjwt-2.14.0.dist-info/licenses/LICENSE",
+      "sha256": "797a7a20231d4c433e9f1911db1731d06b5828b98f499819a034f7c0f56f5ce5",
+      "origin": "PyPI PyJWT==2.14.0:pyjwt-2.14.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/python-dotenv/python_dotenv-1.2.3.dist-info/licenses/LICENSE",
+      "sha256": "80619b7049f08c81683ad0e01f08f257a840652dd71ee83146d36658c7d2c2b9",
+      "origin": "PyPI python-dotenv==1.2.3:python_dotenv-1.2.3.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/python-multipart/python_multipart-0.0.32.dist-info/licenses/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "PyPI python-multipart==0.0.32:python_multipart-0.0.32.dist-info/licenses/LICENSE.txt"
+    },
+    {
+      "path": "licenses/python/referencing/referencing-0.37.0.dist-info/licenses/COPYING",
+      "sha256": "42dcd63495f87b4eb7c7757afa379bb55a53f94afd7a5f657d9adf57236e515c",
+      "origin": "PyPI referencing==0.37.0:referencing-0.37.0.dist-info/licenses/COPYING"
+    },
+    {
+      "path": "licenses/python/rpds-py/rpds_py-2026.6.3.dist-info/licenses/LICENSE",
+      "sha256": "314e4e91be3baa93c0fb4bccc9e4e97cd643eb839b065af921782c2175fe9909",
+      "origin": "PyPI rpds-py==2026.6.3:rpds_py-2026.6.3.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/sse-starlette/sse_starlette-3.4.11.dist-info/licenses/AUTHORS",
+      "sha256": "c2ff63d2ecf128bbda8ab1b2016830a5da124202fbb97168685bb9946aed3f1a",
+      "origin": "PyPI sse-starlette==3.4.11:sse_starlette-3.4.11.dist-info/licenses/AUTHORS"
+    },
+    {
+      "path": "licenses/python/sse-starlette/sse_starlette-3.4.11.dist-info/licenses/LICENSE",
+      "sha256": "80af6bfccbebd2c14d4aab96695cab9950e177190cc80f5ef819e99996883e8e",
+      "origin": "PyPI sse-starlette==3.4.11:sse_starlette-3.4.11.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/starlette/starlette-1.6.0.dist-info/licenses/LICENSE.md",
+      "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+      "origin": "PyPI starlette==1.6.0:starlette-1.6.0.dist-info/licenses/LICENSE.md"
+    },
+    {
+      "path": "licenses/python/typing-inspection/typing_inspection-0.4.4.dist-info/licenses/LICENSE",
+      "sha256": "804b59b25f2c31bd278f9202a19ae49a3945aa2664387e2d0a128c7cacc61ec3",
+      "origin": "PyPI typing-inspection==0.4.4:typing_inspection-0.4.4.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/typing_extensions/typing_extensions-4.16.0.dist-info/licenses/LICENSE",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "origin": "PyPI typing_extensions==4.16.0:typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/python/uvicorn/uvicorn-0.53.0.dist-info/licenses/LICENSE.md",
+      "sha256": "efe1acf3e62fb99c288b0ec73e5a773b7268ef4320fe757ea994214e4b63c371",
+      "origin": "PyPI uvicorn==0.53.0:uvicorn-0.53.0.dist-info/licenses/LICENSE.md"
+    },
+    {
+      "path": "licenses/python/pywin32/adodbapi/license.txt",
+      "sha256": "5ea2f23c7f00c3006bacf267183e816d8d4b6dc95ea57a4ddb0ff81de6d8719e",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/adodbapi/license.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pythonwin/License.txt",
+      "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pythonwin/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pythonwin/Scintilla-License.txt",
+      "sha256": "57ec79bbeab4fd1cf7460a7ad450d2ab01471810459aeae9e75e4c66b472095f",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pythonwin/Scintilla-License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pythonwin/pywin/idle/LICENSE.txt",
+      "sha256": "a0fa1e7b8a4230055685e796548ac084a6c0eea395294574093bba72efd9191b",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pythonwin/pywin/idle/LICENSE.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/adodbapi/license.txt",
+      "sha256": "5ea2f23c7f00c3006bacf267183e816d8d4b6dc95ea57a4ddb0ff81de6d8719e",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/adodbapi/license.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/com/License.txt",
+      "sha256": "fad39c18fc3825fa278db1c86fd52cf88d7c525b3c2fbf7817fa383cbae4d423",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/com/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+      "sha256": "1c4cf44d2fb8bf2d10214d6da80cc9e05502824cc4460f35be4c7bcb4cde53da",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/isapi/README.txt",
+      "sha256": "41383bcc95edb8138d37077ae54bfdcbd2a3b77bf745a8529a9c161146e22303",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/isapi/README.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/pythonwin/License.txt",
+      "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/pythonwin/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/pythonwin/Scintilla/License.txt",
+      "sha256": "57ec79bbeab4fd1cf7460a7ad450d2ab01471810459aeae9e75e4c66b472095f",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/pythonwin/Scintilla/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/pythonwin/pywin/idle/LICENSE.txt",
+      "sha256": "a0fa1e7b8a4230055685e796548ac084a6c0eea395294574093bba72efd9191b",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/pythonwin/pywin/idle/LICENSE.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/pywin32-312.dist-info/licenses/win32/License.txt",
+      "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/pywin32-312.dist-info/licenses/win32/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/win32/License.txt",
+      "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/win32/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/win32com/License.txt",
+      "sha256": "fad39c18fc3825fa278db1c86fd52cf88d7c525b3c2fbf7817fa383cbae4d423",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/win32com/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/win32comext/License.txt",
+      "sha256": "fad39c18fc3825fa278db1c86fd52cf88d7c525b3c2fbf7817fa383cbae4d423",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/win32comext/License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/win32comext/mapi/MAPIStubLibrary-License.txt",
+      "sha256": "1c4cf44d2fb8bf2d10214d6da80cc9e05502824cc4460f35be4c7bcb4cde53da",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/win32comext/mapi/MAPIStubLibrary-License.txt"
+    },
+    {
+      "path": "licenses/python/pywin32/win32comext/mapi/NOTICE.md",
+      "sha256": "dedf997c8f5568a0e0aff57d009f501226ea30c401323d67912b6a8f8735a825",
+      "origin": "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl!/win32comext/mapi/NOTICE.md"
+    },
+    {
+      "path": "licenses/python/colorama/colorama-0.4.6.dist-info/licenses/LICENSE.txt",
+      "sha256": "cac35c02686e5d04a5a7140bfb3b36e73aed496656e891102e428886d7930318",
+      "origin": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl!/colorama-0.4.6.dist-info/licenses/LICENSE.txt"
+    }
+  ]
+}

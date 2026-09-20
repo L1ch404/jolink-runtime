@@ -14,6 +14,16 @@ from jolink_runtime.launch import runtime_download
 from jolink_runtime.launch.jdt_compile_session import JdtCandidate
 
 
+def test_jdk_source_archive_uses_exact_mirror_path_without_os_guess(monkeypatch):
+    monkeypatch.setenv("JOLINK_DOWNLOAD_MIRROR", "cn")
+    path = "jdk/temurin-21.0.12.1+1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz"
+    official = "https://example.invalid/sources.tar.gz"
+    assert runtime_download._download_sources(official, path) == [
+        ("jolink", runtime_download.JOLINK_MIRROR + "/" + path),
+        ("official", official),
+    ]
+
+
 @contextmanager
 def download_server(mirror_status=200, *, tuna_status=200, jolink_status=200):
     requests = []
@@ -52,6 +62,19 @@ def download_server(mirror_status=200, *, tuna_status=200, jolink_status=200):
         server.shutdown()
         server.server_close()
         worker.join(2)
+
+
+def test_real_http_jdk_source_mirror_falls_back_to_official(tmp_path, monkeypatch):
+    with download_server(jolink_status=404) as (base, requests):
+        monkeypatch.setenv("JOLINK_DOWNLOAD_MIRROR", "cn")
+        monkeypatch.setattr(runtime_download, "JOLINK_MIRROR", base + "/jolink")
+        monkeypatch.setattr(runtime_download, "TUNA_MIRROR", base + "/tuna")
+        path = "jdk/temurin-21.0.12.1+1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz"
+        output = tmp_path / "sources.tar.gz"
+        digest = runtime_download.download_file(base + "/official/sources.tar.gz", output, mirror_path=path)
+        assert requests == ["/jolink/" + path, "/official/sources.tar.gz"]
+        assert output.read_bytes() == b"pinned official bytes"
+        assert digest == hashlib.sha256(output.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("mirror_status", [200, 403, 404, 503])

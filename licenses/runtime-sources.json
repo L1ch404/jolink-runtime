@@ -1,0 +1,627 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-21",
+  "eclipse_components": [
+    {
+      "symbolic_name": "com.sun.jna",
+      "version": "5.18.1.v20251001-0800",
+      "filename": "com.sun.jna_5.18.1.v20251001-0800.jar",
+      "sha256": "db89e4a3c622d97f2f4e1bdda2f243adad8f19edde83a29185d12675b8d00c15",
+      "license_identity": "Apache-2.0 OR LGPL-2.1-or-later",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna_5.18.1.v20251001-0800.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna_5.18.1.v20251001-0800.jar",
+      "notices": [
+        "licenses/eclipse/com.sun.jna/META-INF/LICENSE"
+      ],
+      "source_archive": "com.sun.jna.source_5.18.1.v20251001-0800.jar"
+    },
+    {
+      "symbolic_name": "com.sun.jna.platform",
+      "version": "5.18.1",
+      "filename": "com.sun.jna.platform_5.18.1.jar",
+      "sha256": "ad14c1b1ec4f43d396231219dfa635ebf828f738eac9f890ea1bc07795892d9a",
+      "license_identity": "Apache-2.0 OR LGPL-2.1-or-later",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.platform_5.18.1.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.platform_5.18.1.jar",
+      "notices": [
+        "licenses/eclipse/com.sun.jna.platform/META-INF/LICENSE"
+      ],
+      "source_archive": "com.sun.jna.platform.source_5.18.1.jar"
+    },
+    {
+      "symbolic_name": "org.apache.felix.scr",
+      "version": "2.2.18",
+      "filename": "org.apache.felix.scr_2.2.18.jar",
+      "sha256": "c5bd887c8fd5ec4cd563249e7552bb1a1a1ca57e05a1f1ef8425a7b7b7bd2fbe",
+      "license_identity": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr_2.2.18.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr_2.2.18.jar",
+      "notices": [
+        "licenses/eclipse/org.apache.felix.scr/META-INF/LICENSE",
+        "licenses/eclipse/org.apache.felix.scr/META-INF/NOTICE"
+      ],
+      "source_archive": "org.apache.felix.scr.source_2.2.18.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.commands",
+      "version": "3.12.500.v20251103-0733",
+      "filename": "org.eclipse.core.commands_3.12.500.v20251103-0733.jar",
+      "sha256": "44713362e55ed28e6db5d2c31bf67524fef087645a44dc3239dac60ece017cb9",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.commands_3.12.500.v20251103-0733.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.commands_3.12.500.v20251103-0733.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.commands/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.ui.git;path=\"bundles/org.eclipse.core.commands\";tag=\"I20251103-1800\";commitId=1a4d1a8e3168d76935c4f3407a8bf7b6e271d28f",
+      "source_archive": "org.eclipse.core.commands.source_3.12.500.v20251103-0733.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.contenttype",
+      "version": "3.9.800.v20251105-1620",
+      "filename": "org.eclipse.core.contenttype_3.9.800.v20251105-1620.jar",
+      "sha256": "e0c2db96600d519ce36a75f9b7c971afd2870d2d059eee4bf2436d9b33aa0b8d",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.contenttype_3.9.800.v20251105-1620.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.contenttype_3.9.800.v20251105-1620.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.contenttype/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.git;path=\"runtime/bundles/org.eclipse.core.contenttype\";tag=\"I20251105-1800\";commitId=f3377bdd718fb8c7d77a8ecadfdcd37107c40ad2",
+      "source_archive": "org.eclipse.core.contenttype.source_3.9.800.v20251105-1620.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.expressions",
+      "version": "3.9.600.v20260514-2026",
+      "filename": "org.eclipse.core.expressions_3.9.600.v20260514-2026.jar",
+      "sha256": "eff84cfc8f20e235448c3a64fa4c2fa65f97e0ed08d26302f331b677dff77a66",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.expressions_3.9.600.v20260514-2026.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.expressions_3.9.600.v20260514-2026.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.expressions/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.git;path=\"runtime/bundles/org.eclipse.core.expressions\";tag=\"I20260514-1800\";commitId=8ff8fb7109bc04fd4ba9a409da9b4caae55abeeb",
+      "source_archive": "org.eclipse.core.expressions.source_3.9.600.v20260514-2026.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.filesystem",
+      "version": "1.11.400.v20251107-0507",
+      "filename": "org.eclipse.core.filesystem_1.11.400.v20251107-0507.jar",
+      "sha256": "6f70b95d14b90ec57b94c5e3dba7e1d189679cf9a4bc4526e9c91beed7d6a0ef",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.filesystem_1.11.400.v20251107-0507.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.filesystem_1.11.400.v20251107-0507.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.filesystem/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.git;path=\"resources/bundles/org.eclipse.core.filesystem\";tag=\"I20251107-1800\";commitId=02c4a8e95f7efc7cd9691e850f81417f6558a5ee",
+      "source_archive": "org.eclipse.core.filesystem.source_1.11.400.v20251107-0507.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.jobs",
+      "version": "3.15.800.v20260325-1353",
+      "filename": "org.eclipse.core.jobs_3.15.800.v20260325-1353.jar",
+      "sha256": "0497acb909d5cbe12080e78845f280d9292838721592b508c85cbfbdc7b2d7fe",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.jobs_3.15.800.v20260325-1353.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.jobs_3.15.800.v20260325-1353.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.jobs/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.git;path=\"runtime/bundles/org.eclipse.core.jobs\";tag=\"I20260325-1800\";commitId=364d6d5c0ba7d966a58bbbead686649c5af4f080",
+      "source_archive": "org.eclipse.core.jobs.source_3.15.800.v20260325-1353.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.resources",
+      "version": "3.24.0.v20260518-1150",
+      "filename": "org.eclipse.core.resources_3.24.0.v20260518-1150.jar",
+      "sha256": "e26702d817d6c26e83e4d6e7e6ff4761a53774487a247b1faf7c975d395683fe",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.resources_3.24.0.v20260518-1150.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.resources_3.24.0.v20260518-1150.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.resources/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.git;path=\"resources/bundles/org.eclipse.core.resources\";tag=\"I20260518-1800\";commitId=b885e3ba061ddb1b796703659d36978197c517b5",
+      "source_archive": "org.eclipse.core.resources.source_3.24.0.v20260518-1150.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.core.runtime",
+      "version": "3.34.200.v20251220-0953",
+      "filename": "org.eclipse.core.runtime_3.34.200.v20251220-0953.jar",
+      "sha256": "b4f36a0acb08f03d0b3db54b21fc5638c820c447446a410ba496a5070fa34363",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.runtime_3.34.200.v20251220-0953.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.runtime_3.34.200.v20251220-0953.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.core.runtime/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.git;path=\"runtime/bundles/org.eclipse.core.runtime\";tag=\"I20251220-1800\";commitId=a3cab84237b9daec5fbbff10f9de0fadbdd17fdf",
+      "source_archive": "org.eclipse.core.runtime.source_3.34.200.v20251220-0953.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.app",
+      "version": "1.7.600.v20251211-1038",
+      "filename": "org.eclipse.equinox.app_1.7.600.v20251211-1038.jar",
+      "sha256": "fd353398835107608f554779a6e91891725efb94e0f57559d0ab3cea4b6156c7",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app_1.7.600.v20251211-1038.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app_1.7.600.v20251211-1038.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.equinox.app/about_files/LICENSE-2.0.txt",
+        "licenses/eclipse/org.eclipse.equinox.app/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-equinox/equinox.git;path=\"bundles/org.eclipse.equinox.app\";tag=\"I20251211-2030\";commitId=4eee650d1efb62626d10acc2d5b9f6a998b799ae",
+      "source_archive": "org.eclipse.equinox.app.source_1.7.600.v20251211-1038.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.common",
+      "version": "3.20.400.v20260512-1534",
+      "filename": "org.eclipse.equinox.common_3.20.400.v20260512-1534.jar",
+      "sha256": "423b58613a4e9bbbe6ec2239690ff329f13d69ebb28406a5f9d70516a6643a24",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.common_3.20.400.v20260512-1534.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.common_3.20.400.v20260512-1534.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.equinox.common/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-equinox/equinox.git;path=\"bundles/org.eclipse.equinox.common\";tag=\"I20260512-1800\";commitId=306fac9f84231b9aa052976629465d8952800bb1",
+      "source_archive": "org.eclipse.equinox.common.source_3.20.400.v20260512-1534.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.launcher",
+      "version": "1.7.100.v20251111-0406",
+      "filename": "org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
+      "sha256": "0209ecc491bdb20a0f09661e11696a8e0cdbd60cf14e2c55dbcb633d5fdd10bf",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.equinox.launcher/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-equinox/equinox.git;path=\"bundles/org.eclipse.equinox.launcher\";tag=\"I20251111-1800\";commitId=bd06ec661a36dcf2c6d8cdafa4e554fb22e6f656",
+      "source_archive": "org.eclipse.equinox.launcher.source_1.7.100.v20251111-0406.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.preferences",
+      "version": "3.12.100.v20251111-0704",
+      "filename": "org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar",
+      "sha256": "fd04e81a28ab32b6bb073286eb293c44b760176fcf1e35ef15614d62df820f86",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences_3.12.100.v20251111-0704.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.equinox.preferences/about_files/LICENSE-2.0.txt",
+        "licenses/eclipse/org.eclipse.equinox.preferences/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-equinox/equinox.git;path=\"bundles/org.eclipse.equinox.preferences\";tag=\"I20251111-1800\";commitId=bd06ec661a36dcf2c6d8cdafa4e554fb22e6f656",
+      "source_archive": "org.eclipse.equinox.preferences.source_3.12.100.v20251111-0704.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.equinox.registry",
+      "version": "3.12.600.v20250906-0651",
+      "filename": "org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar",
+      "sha256": "4f8cd72681446b598390a8c24ee9b9996f6e4c5fabed022b50bd26f6f5a0bf6c",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry_3.12.600.v20250906-0651.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.equinox.registry/about_files/LICENSE-2.0.txt",
+        "licenses/eclipse/org.eclipse.equinox.registry/about_files/NOTICE.txt",
+        "licenses/eclipse/org.eclipse.equinox.registry/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-equinox/equinox.git;path=\"bundles/org.eclipse.equinox.registry\";tag=\"I20250906-1800\";commitId=1132e94cbc9aeb47858efe64aac9db19d2cc930f",
+      "source_archive": "org.eclipse.equinox.registry.source_3.12.600.v20250906-0651.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.jdt.core",
+      "version": "3.46.0.v20260520-1003",
+      "filename": "org.eclipse.jdt.core_3.46.0.v20260520-1003.jar",
+      "sha256": "52b3c3d995bd67f9c1445500d4597299ddcfab7d585e208eec3db3d102239a5f",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core_3.46.0.v20260520-1003.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core_3.46.0.v20260520-1003.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.jdt.core/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-jdt/eclipse.jdt.core.git;path=\"org.eclipse.jdt.core\";tag=\"I20260520-1800\";commitId=247b3dbfeb183cc6fc364722953862664210d516",
+      "source_archive": "org.eclipse.jdt.core.source_3.46.0.v20260520-1003.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.jdt.core.compiler.batch",
+      "version": "3.46.0.v20260528-0407",
+      "filename": "org.eclipse.jdt.core.compiler.batch_3.46.0.v20260528-0407.jar",
+      "sha256": "d0d43f8e2d7003e5efed612e2cbb5f01870043397d8f1bbe536fd9128f4fcbf7",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.compiler.batch_3.46.0.v20260528-0407.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.compiler.batch_3.46.0.v20260528-0407.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.jdt.core.compiler.batch/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-jdt/eclipse.jdt.core.git;path=\"org.eclipse.jdt.core.compiler.batch\";tag=\"I20260528-0011\";commitId=ef3d6f2115df89d7964bc13aa363ab8d6bd21256",
+      "source_archive": "org.eclipse.jdt.core.compiler.batch.source_3.46.0.v20260528-0407.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.osgi",
+      "version": "3.24.200.v20260515-1403",
+      "filename": "org.eclipse.osgi_3.24.200.v20260515-1403.jar",
+      "sha256": "bfe83fcd1fa034eb9a986b3cb6e5e2b18dbbacb67eabdaad2da32804ecd8c65a",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi_3.24.200.v20260515-1403.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi_3.24.200.v20260515-1403.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.osgi/about_files/LICENSE-2.0.txt",
+        "licenses/eclipse/org.eclipse.osgi/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-equinox/equinox.git;path=\"bundles/org.eclipse.osgi\";tag=\"I20260515-1811\";commitId=9b933ab0e894778e518d9500e3566456de7a757e",
+      "source_archive": "org.eclipse.osgi.source_3.24.200.v20260515-1403.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.text",
+      "version": "3.14.700.v20260326-1107",
+      "filename": "org.eclipse.text_3.14.700.v20260326-1107.jar",
+      "sha256": "4075f7aa3a19f2ce6ffd1f555ebc0884e065cc40b59f71d774da0928c1423555",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.text_3.14.700.v20260326-1107.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.text_3.14.700.v20260326-1107.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.text/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-platform/eclipse.platform.ui.git;path=\"bundles/org.eclipse.text\";tag=\"I20260326-1800\";commitId=fa50c5bf156741e0f54f2256837f1ad61880dd36",
+      "source_archive": "org.eclipse.text.source_3.14.700.v20260326-1107.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.service.component",
+      "version": "1.5.1.202212101352",
+      "filename": "org.osgi.service.component_1.5.1.202212101352.jar",
+      "sha256": "0653852deab5c6f6e9c84e3aa8f72e72b9ce7dfaf7a6431f3d80f6f9d7a433ad",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component_1.5.1.202212101352.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component_1.5.1.202212101352.jar",
+      "notices": [
+        "licenses/eclipse/org.osgi.service.component/META-INF/LICENSE",
+        "licenses/eclipse/org.osgi.service.component/META-INF/NOTICE"
+      ],
+      "source_archive": "org.osgi.service.component.source_1.5.1.202212101352.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.service.prefs",
+      "version": "1.1.2.202109301733",
+      "filename": "org.osgi.service.prefs_1.1.2.202109301733.jar",
+      "sha256": "43c7c870710e363405d422da653cce0d798a4537f76e4930f79bceadd3a55345",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs_1.1.2.202109301733.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs_1.1.2.202109301733.jar",
+      "notices": [
+        "licenses/eclipse/org.osgi.service.prefs/META-INF/LICENSE",
+        "licenses/eclipse/org.osgi.service.prefs/META-INF/NOTICE"
+      ],
+      "source_archive": "org.osgi.service.prefs.source_1.1.2.202109301733.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.util.function",
+      "version": "1.2.0.202109301733",
+      "filename": "org.osgi.util.function_1.2.0.202109301733.jar",
+      "sha256": "208819c7c71690c15a6bb8b187474e7f9d0147946b680182a62b9f222ae014ec",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function_1.2.0.202109301733.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function_1.2.0.202109301733.jar",
+      "notices": [
+        "licenses/eclipse/org.osgi.util.function/META-INF/LICENSE",
+        "licenses/eclipse/org.osgi.util.function/META-INF/NOTICE"
+      ],
+      "source_archive": "org.osgi.util.function.source_1.2.0.202109301733.jar"
+    },
+    {
+      "symbolic_name": "org.osgi.util.promise",
+      "version": "1.3.0.202212101352",
+      "filename": "org.osgi.util.promise_1.3.0.202212101352.jar",
+      "sha256": "7053c57e7d7d88fec6b90979a3af125e1d2bb847268a328a2f1ed65ad0a4c185",
+      "license_identity": "Apache-2.0;description=\"This program and the accompanying materials are made available under the terms of the Apache License, Version 2.0.\";link=\"https://opensource.org/licenses/Apache-2.0\"",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise_1.3.0.202212101352.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise_1.3.0.202212101352.jar",
+      "notices": [
+        "licenses/eclipse/org.osgi.util.promise/META-INF/LICENSE",
+        "licenses/eclipse/org.osgi.util.promise/META-INF/NOTICE"
+      ],
+      "source_archive": "org.osgi.util.promise.source_1.3.0.202212101352.jar"
+    },
+    {
+      "symbolic_name": "org.apache.ant",
+      "version": "1.10.17.v20260410-1000",
+      "filename": "org.apache.ant_1.10.17.v20260410-1000.jar",
+      "sha256": "c5c8e0d7665c9ffc9409ecb35d579d3901a6327aada2a3675c4b6486bf3c4fbf",
+      "license_identity": "Apache-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.ant_1.10.17.v20260410-1000.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.ant_1.10.17.v20260410-1000.jar",
+      "notices": [
+        "licenses/eclipse/org.apache.ant/LICENSE",
+        "licenses/eclipse/org.apache.ant/NOTICE"
+      ],
+      "source_archive": "org.apache.ant.source_1.10.17.v20260410-1000.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.jdt.apt.core",
+      "version": "3.8.700.v20260309-1433",
+      "filename": "org.eclipse.jdt.apt.core_3.8.700.v20260309-1433.jar",
+      "sha256": "5f4d54a1984c9dc6ac57d997cd99b8ed8e22b7011399112816764e802258a2e6",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.core_3.8.700.v20260309-1433.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.core_3.8.700.v20260309-1433.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.jdt.apt.core/about.html",
+        "licenses/eclipse/org.eclipse.jdt.apt.core/mirror-api-license.txt"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-jdt/eclipse.jdt.core.git;path=\"org.eclipse.jdt.apt.core\";tag=\"I20260309-1800\";commitId=c9cb9ed549bd265e670138c2341aa5c1df1b403d",
+      "source_archive": "org.eclipse.jdt.apt.core.source_3.8.700.v20260309-1433.jar"
+    },
+    {
+      "symbolic_name": "org.eclipse.jdt.apt.pluggable.core",
+      "version": "1.4.700.v20251202-0459",
+      "filename": "org.eclipse.jdt.apt.pluggable.core_1.4.700.v20251202-0459.jar",
+      "sha256": "1bde3ae8f333266497c999e5160cc3a7ea8951a10d5191bf60dcda2c942242de",
+      "license_identity": "EPL-2.0",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.pluggable.core_1.4.700.v20251202-0459.jar",
+      "mirror_url": "https://7355608.net/jolink/assets/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.pluggable.core_1.4.700.v20251202-0459.jar",
+      "notices": [
+        "licenses/eclipse/org.eclipse.jdt.apt.pluggable.core/about.html"
+      ],
+      "source_reference": "scm:git:https://github.com/eclipse-jdt/eclipse.jdt.core.git;path=\"org.eclipse.jdt.apt.pluggable.core\";tag=\"I20251202-0300\";commitId=e7d99f86e30cd4fa4353598bd1cb00ee2949b145",
+      "source_archive": "org.eclipse.jdt.apt.pluggable.core.source_1.4.700.v20251202-0459.jar"
+    }
+  ],
+  "jdk": {
+    "version": "21.0.12.1+1",
+    "source_archive": "OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+    "build_source_archive": "temurin-build-e6ba7dec3d07654074559310376a3ae89da5f4ac.tar.gz",
+    "platforms": [
+      {
+        "platform": "Darwin-x86_64",
+        "metadata_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_mac_hotspot_21.0.12.1_1.tar.gz.json",
+        "binary_sha256": "44db0f08196daf19a47f90d13388b0c943b67663cb537f998fe29e836fa842ce",
+        "matches_lock": true,
+        "scm_ref": "jdk-21.0.12.1+1_adopt",
+        "build_ref": "https://github.com/adoptium/temurin-build/commit/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+      },
+      {
+        "platform": "Darwin-arm64",
+        "metadata_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz.json",
+        "binary_sha256": "3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998",
+        "matches_lock": true,
+        "scm_ref": "jdk-21.0.12.1+1_adopt",
+        "build_ref": "https://github.com/adoptium/temurin-build/commit/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+      },
+      {
+        "platform": "Linux-x86_64",
+        "metadata_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz.json",
+        "binary_sha256": "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+        "matches_lock": true,
+        "scm_ref": "jdk-21.0.12.1+1_adopt",
+        "build_ref": "https://github.com/adoptium/temurin-build/commit/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+      },
+      {
+        "platform": "Linux-arm64",
+        "metadata_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12.1_1.tar.gz.json",
+        "binary_sha256": "23e37e026f12f3e706f18938ff611db3032d075b09d0879a25d06718c773e223",
+        "matches_lock": true,
+        "scm_ref": "jdk-21.0.12.1+1_adopt",
+        "build_ref": "https://github.com/adoptium/temurin-build/commit/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+      },
+      {
+        "platform": "Windows-x86_64",
+        "metadata_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip.json",
+        "binary_sha256": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e",
+        "matches_lock": true,
+        "scm_ref": "jdk-21.0.12.1+1_adopt",
+        "build_ref": "https://github.com/adoptium/temurin-build/commit/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+      },
+      {
+        "platform": "Windows-arm64",
+        "metadata_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_windows_hotspot_21.0.12.1_1.zip.json",
+        "binary_sha256": "ccf2e51f527d542a70ba5794a600d3aac04b4e967950e227834c7566cb1bec7b",
+        "matches_lock": true,
+        "scm_ref": "jdk-21.0.12.1+1_adopt",
+        "build_ref": "https://github.com/adoptium/temurin-build/commit/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+      }
+    ]
+  },
+  "source_archives": [
+    {
+      "component": "com.sun.jna",
+      "filename": "com.sun.jna.source_5.18.1.v20251001-0800.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.source_5.18.1.v20251001-0800.jar",
+      "sha256": "3182ea6f3b0c8d3a12ac0e079d7ed9ca14c669b3cd4d9c4471e9bacc864e8f2d",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.source_5.18.1.v20251001-0800.jar"
+    },
+    {
+      "component": "com.sun.jna.platform",
+      "filename": "com.sun.jna.platform.source_5.18.1.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.platform.source_5.18.1.jar",
+      "sha256": "90f6b86512ad28df4d289631c407d003bd632d213a27398a4aebfd289262ca81",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/com.sun.jna.platform.source_5.18.1.jar"
+    },
+    {
+      "component": "org.apache.felix.scr",
+      "filename": "org.apache.felix.scr.source_2.2.18.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr.source_2.2.18.jar",
+      "sha256": "0250e9f94d43979dfeadfec5c79bdc27767d525e06e6beb05c916eda8d74c597",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.felix.scr.source_2.2.18.jar"
+    },
+    {
+      "component": "org.eclipse.core.commands",
+      "filename": "org.eclipse.core.commands.source_3.12.500.v20251103-0733.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.commands.source_3.12.500.v20251103-0733.jar",
+      "sha256": "87df6b3db7a228357ada2ee76078d92d8f7f72d0637f8eedf23699bfbbb7003c",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.commands.source_3.12.500.v20251103-0733.jar"
+    },
+    {
+      "component": "org.eclipse.core.contenttype",
+      "filename": "org.eclipse.core.contenttype.source_3.9.800.v20251105-1620.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.contenttype.source_3.9.800.v20251105-1620.jar",
+      "sha256": "ca14fa9ba4c12f3742a600428e0eefef743a2cfb38156ba024b1eb365a9977ef",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.contenttype.source_3.9.800.v20251105-1620.jar"
+    },
+    {
+      "component": "org.eclipse.core.expressions",
+      "filename": "org.eclipse.core.expressions.source_3.9.600.v20260514-2026.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.expressions.source_3.9.600.v20260514-2026.jar",
+      "sha256": "59acdd96ab30db3da710e2992d6a0cca7ee74806b7b09234abad51ebc38ba884",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.expressions.source_3.9.600.v20260514-2026.jar"
+    },
+    {
+      "component": "org.eclipse.core.filesystem",
+      "filename": "org.eclipse.core.filesystem.source_1.11.400.v20251107-0507.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.filesystem.source_1.11.400.v20251107-0507.jar",
+      "sha256": "80a6f51af51ff36ba96daa0a9a7d7ab8b47f1970892cab851980ec54a8b5e0c1",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.filesystem.source_1.11.400.v20251107-0507.jar"
+    },
+    {
+      "component": "org.eclipse.core.jobs",
+      "filename": "org.eclipse.core.jobs.source_3.15.800.v20260325-1353.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.jobs.source_3.15.800.v20260325-1353.jar",
+      "sha256": "fd2a4aa2de89e237fa99e39264d9c7d24ec2f8f35bc1dbbca4097218a3646dc2",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.jobs.source_3.15.800.v20260325-1353.jar"
+    },
+    {
+      "component": "org.eclipse.core.resources",
+      "filename": "org.eclipse.core.resources.source_3.24.0.v20260518-1150.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.resources.source_3.24.0.v20260518-1150.jar",
+      "sha256": "030f377b7b6c281b80a502ba2212b50f12600685261fbbf49daaa94e53cff870",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.resources.source_3.24.0.v20260518-1150.jar"
+    },
+    {
+      "component": "org.eclipse.core.runtime",
+      "filename": "org.eclipse.core.runtime.source_3.34.200.v20251220-0953.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.runtime.source_3.34.200.v20251220-0953.jar",
+      "sha256": "901b875a7218546d32d39c1af5b1ef14a7d23b05a764ee5cb0dd2ef663486430",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.core.runtime.source_3.34.200.v20251220-0953.jar"
+    },
+    {
+      "component": "org.eclipse.equinox.app",
+      "filename": "org.eclipse.equinox.app.source_1.7.600.v20251211-1038.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app.source_1.7.600.v20251211-1038.jar",
+      "sha256": "64a7ee0ea38d93dc2e13c091ba6915deee91592cf238ac5a24e393f1d48ee7d9",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.app.source_1.7.600.v20251211-1038.jar"
+    },
+    {
+      "component": "org.eclipse.equinox.common",
+      "filename": "org.eclipse.equinox.common.source_3.20.400.v20260512-1534.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.common.source_3.20.400.v20260512-1534.jar",
+      "sha256": "a3b60075a11b3efbf0d1e20a5b0b4c6e321f9e4e5bac786db685dc6965fd25bd",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.common.source_3.20.400.v20260512-1534.jar"
+    },
+    {
+      "component": "org.eclipse.equinox.launcher",
+      "filename": "org.eclipse.equinox.launcher.source_1.7.100.v20251111-0406.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.launcher.source_1.7.100.v20251111-0406.jar",
+      "sha256": "c89fcb74816ce24fb3c27c0cd208f451b710c276285495b35677396df66bfd5b",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.launcher.source_1.7.100.v20251111-0406.jar"
+    },
+    {
+      "component": "org.eclipse.equinox.preferences",
+      "filename": "org.eclipse.equinox.preferences.source_3.12.100.v20251111-0704.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences.source_3.12.100.v20251111-0704.jar",
+      "sha256": "7488421cb2ca889373d8b6d2ebe25987d9b010f921e0062de8934ae69267392c",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.preferences.source_3.12.100.v20251111-0704.jar"
+    },
+    {
+      "component": "org.eclipse.equinox.registry",
+      "filename": "org.eclipse.equinox.registry.source_3.12.600.v20250906-0651.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry.source_3.12.600.v20250906-0651.jar",
+      "sha256": "89a66885d7439e030bbcf1b13de941f64796e2bcd639260f1fad57ca9e44bdfc",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.equinox.registry.source_3.12.600.v20250906-0651.jar"
+    },
+    {
+      "component": "org.eclipse.jdt.core",
+      "filename": "org.eclipse.jdt.core.source_3.46.0.v20260520-1003.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.source_3.46.0.v20260520-1003.jar",
+      "sha256": "e586425cbc8846de25ad3389c8298674e09ca4114c7aa8541e6c469855ffd1c4",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.source_3.46.0.v20260520-1003.jar"
+    },
+    {
+      "component": "org.eclipse.jdt.core.compiler.batch",
+      "filename": "org.eclipse.jdt.core.compiler.batch.source_3.46.0.v20260528-0407.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.compiler.batch.source_3.46.0.v20260528-0407.jar",
+      "sha256": "13c0ff613ebeb2571270afbb9674795819885e9b7a4d030718efee6055a435f2",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.core.compiler.batch.source_3.46.0.v20260528-0407.jar"
+    },
+    {
+      "component": "org.eclipse.osgi",
+      "filename": "org.eclipse.osgi.source_3.24.200.v20260515-1403.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi.source_3.24.200.v20260515-1403.jar",
+      "sha256": "6b935c51566efdc62cb3a7bc56c953701ab4662d4d807032138a013c51b2fef1",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.osgi.source_3.24.200.v20260515-1403.jar"
+    },
+    {
+      "component": "org.eclipse.text",
+      "filename": "org.eclipse.text.source_3.14.700.v20260326-1107.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.text.source_3.14.700.v20260326-1107.jar",
+      "sha256": "ddf03c3d1c54aa92943beafd89ce9beae71c0894ed7984b5657e99eb9da148f2",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.text.source_3.14.700.v20260326-1107.jar"
+    },
+    {
+      "component": "org.osgi.service.component",
+      "filename": "org.osgi.service.component.source_1.5.1.202212101352.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component.source_1.5.1.202212101352.jar",
+      "sha256": "a48e350fe727a55668e2851229c22105f2af3688629b085d4b43488be12b2e84",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.component.source_1.5.1.202212101352.jar"
+    },
+    {
+      "component": "org.osgi.service.prefs",
+      "filename": "org.osgi.service.prefs.source_1.1.2.202109301733.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs.source_1.1.2.202109301733.jar",
+      "sha256": "ed3b028be378ca9037da9f8602a77ac3c2e268d41d94ddfed6c2fd0abcfe3287",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.service.prefs.source_1.1.2.202109301733.jar"
+    },
+    {
+      "component": "org.osgi.util.function",
+      "filename": "org.osgi.util.function.source_1.2.0.202109301733.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function.source_1.2.0.202109301733.jar",
+      "sha256": "0b7b502157e1ee16df45b066c81ff5ea09b06923d36d1425ce1af8d71ae49145",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.function.source_1.2.0.202109301733.jar"
+    },
+    {
+      "component": "org.osgi.util.promise",
+      "filename": "org.osgi.util.promise.source_1.3.0.202212101352.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise.source_1.3.0.202212101352.jar",
+      "sha256": "02dd47d0f384c89f3a5f94ed7b4787a43cd45769b91e9bfbb6e6ad62b94608f3",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.osgi.util.promise.source_1.3.0.202212101352.jar"
+    },
+    {
+      "component": "org.apache.ant",
+      "filename": "org.apache.ant.source_1.10.17.v20260410-1000.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.ant.source_1.10.17.v20260410-1000.jar",
+      "sha256": "f1f7954951a7d382a25afdfba8b78c46a7019f062e37047d8e24ef8991239a4a",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.apache.ant.source_1.10.17.v20260410-1000.jar"
+    },
+    {
+      "component": "org.eclipse.jdt.apt.core",
+      "filename": "org.eclipse.jdt.apt.core.source_3.8.700.v20260309-1433.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.core.source_3.8.700.v20260309-1433.jar",
+      "sha256": "68c2e7a2c2fc7e6711cba6ee6b52eea8194c2a833cde90375a7a9957a3e35212",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.core.source_3.8.700.v20260309-1433.jar"
+    },
+    {
+      "component": "org.eclipse.jdt.apt.pluggable.core",
+      "filename": "org.eclipse.jdt.apt.pluggable.core.source_1.4.700.v20251202-0459.jar",
+      "url": "https://download.eclipse.org/eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.pluggable.core.source_1.4.700.v20251202-0459.jar",
+      "sha256": "c6b039db38d03d6f1df3a8faeae3db201c2bad72b56e6baafcfd5abcb5e841ca",
+      "mirror_path": "eclipse/updates/4.40/R-4.40-202606010713/plugins/org.eclipse.jdt.apt.pluggable.core.source_1.4.700.v20251202-0459.jar"
+    },
+    {
+      "component": "temurin-21",
+      "filename": "OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+      "sha256": "573057d03584ae793fb7ec9a14c76d826d9187a53efeefd99da47403a5308234",
+      "mirror_path": "jdk/temurin-21.0.12.1+1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz"
+    },
+    {
+      "component": "temurin-build",
+      "filename": "temurin-build-e6ba7dec3d07654074559310376a3ae89da5f4ac.tar.gz",
+      "url": "https://codeload.github.com/adoptium/temurin-build/tar.gz/e6ba7dec3d07654074559310376a3ae89da5f4ac",
+      "sha256": "b1340378b9ed62b32acfacd012dd069ec2b9d940fc39d3c73f32142d64e89713",
+      "mirror_path": "sources/temurin-build/temurin-build-e6ba7dec3d07654074559310376a3ae89da5f4ac.tar.gz"
+    }
+  ]
+}

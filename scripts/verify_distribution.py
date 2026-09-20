@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -549,6 +550,21 @@ def validate_install_location(expected_source_root: Path | None) -> Path:
     return package_file
 
 
+def validate_legal_materials() -> None:
+    distribution = importlib.metadata.distribution("jolink-runtime")
+    notice = next((file for file in distribution.files or ()
+                   if str(file).endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md")), None)
+    assert notice is not None, "Installed distribution is missing third-party notices"
+    root = Path(distribution.locate_file(notice)).parent
+    assert (root / "LICENSE").is_file()
+    index = json.loads((root / "licenses/runtime-sources.json").read_text())
+    assert index["source_archives"]
+    materials = json.loads((root / "licenses/materials.json").read_text())
+    for item in materials["files"]:
+        data = (root / item["path"]).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == item["sha256"], item["path"]
+
+
 def main() -> None:
     args = parse_args()
     server = args.server.resolve()
@@ -557,6 +573,7 @@ def main() -> None:
     assert jolink_runtime.__version__ == args.expected_version
     assert importlib.metadata.version("jolink-runtime") == args.expected_version
     package_file = validate_install_location(args.expected_source_root)
+    validate_legal_materials()
     for command in ("java", "javac"):
         assert shutil.which(command), f"required JDK command not found: {command}"
     assert shutil.which("mvn") or shutil.which("mvn.cmd"), "Maven is required for project/Fast Test verification"
@@ -597,6 +614,7 @@ def main() -> None:
         "version": args.expected_version,
         "package_file": str(package_file),
         "verified": [
+            "packaged_licenses_and_sources_index",
             "initialize",
             "tools/list",
             "launch",

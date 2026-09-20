@@ -205,4 +205,8 @@ JOLINK_RUN_MCP_JAVA_E2E=1 uv run pytest -q -m mcp_java_e2e tests/e2e/test_stdio_
 - [兼容性与待处理项](docs/java-compatibility-followup-2026-09.md)
 - [英文 README](README.md)
 
-许可证：[MIT](LICENSE)。
+## 许可证
+
+joLink 自有代码采用 [MIT](LICENSE)。下载的 Eclipse/Temurin 运行时和独立安装的
+Python 依赖保留各自许可证，详见[第三方声明与对应源码](THIRD_PARTY_NOTICES.md)。
+对外提供离线运行时资源包时，应同时提供匹配的源码包与许可材料。

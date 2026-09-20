@@ -70,8 +70,12 @@ Windows对应`%USERPROFILE%\.cache\jolink-runtime`。Python wheel及其Python依
 本机已实际完成在线下载/校验/安装，生成约209MiB的Worker离线包；解压到新的HOME，
 禁止下载后恢复Worker并编译Java17 record，使用项目JDK17运行输出正确。
 
-JDK原有legal/LICENSE等材料保留。对外分发还需遵守随包GPLv2＋Classpath Exception
-及其他许可、相应源码提供要求，并维护安全补丁；不要启动时追踪latest。
+JDK原有legal/LICENSE等材料保留。`--offline-bundle worker.tar.gz` 同时生成
+`worker-sources.tar.gz`，包含对应版本的上游源码和构建脚本；两个包都有 `legal/`
+说明。对外分发时一起提供，完全离线转交时也一起携带；运行时无需解压源码包。
+首次准备源码可能额外下载约百余MiB，后续复用 `license-sources` 缓存；普通启动、
+test、restart 不下载源码。许可与源码索引见[第三方声明](../THIRD_PARTY_NOTICES.md)。
+仍需维护安全补丁；不要启动时追踪latest。
 
 ## 真实验证结果
 

@@ -1,6 +1,7 @@
 include README.zh-CN.md INSTALL.md INSTALL.zh-CN.md
 recursive-include java *.java *.xml *.MF *.json *.gradle *.template *.md
 include scripts/build_*.py scripts/resolve_jdt_dependencies.py
+include scripts/prepare_jdt_worker.py
 prune java/maven-probe/target
 prune java/gradle-probe/build
 prune java/gradle-probe/.gradle

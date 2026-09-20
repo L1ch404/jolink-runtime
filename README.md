@@ -616,3 +616,10 @@ commands and limits are not the current product interface.
   [`docs/mcp-contract-v0.1.md`](docs/mcp-contract-v0.1.md)
 - Runtime lineage 2.4.0:
   [`docs/runtime-lineage-contract-2.4.0.md`](docs/runtime-lineage-contract-2.4.0.md)
+
+## License
+
+joLink's own code is [MIT-licensed](LICENSE). Downloaded Eclipse/Temurin runtimes
+and installed Python dependencies retain their own licenses. See
+[third-party notices and corresponding sources](THIRD_PARTY_NOTICES.md).
+Offline runtime kits must be accompanied by the matching source kit and notices.
