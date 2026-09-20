@@ -270,4 +270,3 @@ def private_distribution_zip(
         base_dir=distribution.name,
     )
     return Path(archive).resolve(strict=True)
-
