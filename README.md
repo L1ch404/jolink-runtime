@@ -1,6 +1,8 @@
 # joLink Runtime
 
-Run, observe, and debug local Java applications with coding agents.
+English | [简体中文](README.zh-CN.md)
+
+Fast Java development feedback for coding agents: compile, test, run, observe, and debug.
 
 > **Design principle:** Everything exists to reduce uncertainty for the LLM.
 
@@ -160,7 +162,7 @@ These actions support:
   exporting its Build World without running Maven/Gradle compilation, compiling
   with JDT before JVM startup, and launching without packaging a fat JAR;
 - stopping or restarting an application after code changes;
-- compiling explicit edits in a persistent private JDT session and applying
+- compiling detected edits in a persistent private JDT session and applying
   compatible loaded class definitions with HotSwap;
 - inspecting application status and logs;
 - attaching to an already-running local JVM;
@@ -226,44 +228,22 @@ uv --version
 
 ## Install
 
-### 1. Install uv
+Give your coding agent the URL of [the English installation guide](INSTALL.md):
 
-Install `uv` once if it is not already available.
+> Follow this guide to install joLink MCP and its English Skill for my current
+> agent, at user scope. Preserve existing configuration and verify the connection.
 
-Windows PowerShell:
+The default-branch link is
+[INSTALL.md on GitHub](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md).
 
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+The guide provides official client-specific locations and examples for Codex,
+Claude Code, Cursor, VS Code/Copilot, CodeBuddy, Gemini CLI, OpenCode, Cline,
+Roo Code and Windsurf. All start MCP with `uvx jolink-runtime@latest` and use the same
+[English Skill](skills/jolink-java/SKILL.md); no plugin bundle or universal installer
+is required. MCP performs the work; the Skill helps the agent discover and use it.
+The guide also covers uv setup, preserving configuration, reconnection and verification.
 
-macOS or Linux:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### 2. Add joLink to the MCP client
-
-Many MCP clients support a stdio server configuration similar to the following:
-
-```json
-{
-  "mcpServers": {
-    "jolink-runtime": {
-      "command": "uvx",
-      "args": ["jolink-runtime@0.1.0a3"]
-    }
-  }
-}
-```
-
-`uvx` downloads the package into an isolated environment and caches it
-automatically. No repository clone, virtual environment, or source checkout is
-required.
-
-The exact configuration file varies by MCP client.
-
-Restart the MCP client after changing its configuration.
+For Chinese instructions, use [the Chinese installation guide](INSTALL.zh-CN.md).
 
 ## Quick start
 
@@ -358,9 +338,11 @@ See [runtime mirror setup](docs/runtime-download-mirror.zh-CN.md).
 
 The imported IDEA Make/Build flag does not cause Maven or Gradle compilation.
 On the first launch, the Probe exports compiler/runtime facts and JDT performs
-FULL compilation. Later launches trust the persisted Probe model and use saved
-source size/mtime to detect edits. Configuration/dependency changes require
-manually clearing the project-launch and jdt-workspaces cache before launch.
+FULL compilation. Later launches reuse the persisted Probe model and use saved
+source size/mtime to detect edits. Changes to tracked Maven/Gradle configuration
+refresh the model. Untracked external scripts and hidden inputs remain recorded
+in the [compatibility follow-up](docs/java-compatibility-followup-2026-09.md);
+cache deletion is not a routine startup or installation step.
 
 See [JDT-first startup](docs/jdt-first-launch.zh-CN.md) for the current
 single-module startup and cache behavior.
@@ -430,7 +412,7 @@ startup from application TCP readiness:
 }
 ```
 
-For `java_application(launch)` and `java_fast_test`, `timeout` limits the synchronous result wait, including
+For `java_application(launch/restart)` and `java_fast_test`, `timeout` limits the synchronous result wait, including
 runtime preparation and compilation. It defaults to 30 seconds; larger values
 are accepted but wait only 30 seconds. Zero returns after task submission.
 The original task continues after this reply deadline. Test Runner execution
@@ -500,25 +482,12 @@ Some current CodeBuddy environments may initially display:
 Description: No description
 ```
 
-The full joLink tool description and action schema remain available after the
-tool definition is loaded. This is a client-side discovery limitation rather
-than a joLink runtime failure.
-
-A project-level agent rule can improve discovery:
-
-```markdown
-## joLink Java Runtime
-
-For local Java application tasks, use the `jolink-runtime` MCP to start or
-restart the application, inspect status and logs, and verify code changes
-against real runtime behavior.
-
-When actual outputs and logs are insufficient, use its breakpoints, exception
-events, stack frames, and variables for deeper investigation.
-
-After inspecting a suspended JVM, always call `resume` or
-`cleanup_debug_state`.
-```
+Use the host's tool-definition loading/search facility to obtain the actual schema.
+Do not infer arguments from a tool name alone. The independently installed
+`jolink-java` Skill provides a discovery and workflow entry point; it does not
+replace the MCP connection or guarantee tool selection. Follow the
+[installation guide](INSTALL.md) for the specific CodeBuddy surface (CLI, IDE or
+editor plugin), rather than assuming their configuration files are interchangeable.
 
 ## Development
 
