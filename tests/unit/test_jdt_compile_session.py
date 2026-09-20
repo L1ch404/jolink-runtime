@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -130,7 +131,7 @@ def test_portable_product_candidate_accepts_verified_minimum_worker_jdk(
     monkeypatch,
 ) -> None:
     java_home = tmp_path / "jdk"
-    java = java_home / "bin/java"
+    java = java_home / "bin" / ("java.exe" if os.name == "nt" else "java")
     java.parent.mkdir(parents=True)
     java.write_bytes(b"portable-java")
     candidate = JdtCandidate(
@@ -1004,10 +1005,16 @@ def test_source_edit_during_compile_is_detected_on_next_source_scan(
         "package example; class App { int value() { return 2; } }",
         encoding="utf-8",
     )
-    worker.on_build = lambda: source.write_text(
-        "package example; class App { int value() { return 3; } }",
-        encoding="utf-8",
-    )
+    def edit_during_build():
+        before = source.stat()
+        source.write_text(
+            "package example; class App { int value() { return 3; } }",
+            encoding="utf-8",
+        )
+        # Two same-size writes can share a filesystem timestamp on Windows.
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    worker.on_build = edit_during_build
 
     result = session.compile((source,))
 

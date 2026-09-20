@@ -18,7 +18,7 @@ def legal_materials_root() -> Path:
         return checkout
     distribution = importlib.metadata.distribution("jolink-runtime")
     for file in distribution.files or ():
-        if str(file).endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md"):
+        if file.as_posix().endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md"):
             return Path(distribution.locate_file(file)).parent
     raise RuntimeError("Installed joLink distribution is missing third-party notices.")
 

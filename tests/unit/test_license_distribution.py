@@ -3,7 +3,7 @@ import hashlib
 import importlib.util
 import json
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -57,15 +57,16 @@ def test_nested_licenses_and_original_attribution_are_present():
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in (ROOT / adodb).read_text()
 
 
-def test_installed_materials_can_be_found_without_a_checkout(tmp_path, monkeypatch):
+@pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
+def test_installed_materials_can_be_found_without_a_checkout(tmp_path, monkeypatch, path_type):
     script = tmp_path / "tools/prepare_jdt_worker.py"
     notice = tmp_path / "site/pkg.dist-info/licenses/THIRD_PARTY_NOTICES.md"
     notice.parent.mkdir(parents=True)
     notice.write_text("notices")
-    relative = Path("pkg.dist-info/licenses/THIRD_PARTY_NOTICES.md")
+    relative = path_type("pkg.dist-info/licenses/THIRD_PARTY_NOTICES.md")
     monkeypatch.setattr(prepare, "__file__", str(script))
     monkeypatch.setattr(prepare.importlib.metadata, "distribution", lambda _: SimpleNamespace(
-        files=[relative], locate_file=lambda p: tmp_path / "site" / p))
+        files=[relative], locate_file=lambda p: tmp_path / "site" / p.as_posix()))
     assert prepare.legal_materials_root() == notice.parent
 
 

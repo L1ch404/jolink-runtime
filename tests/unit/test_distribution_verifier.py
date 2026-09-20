@@ -40,14 +40,18 @@ def test_release_calls_route_to_advertised_tool(tool):
     anyio.run(scenario)
 
 
-def test_release_fixture_has_real_sources_and_no_precompiled_output(tmp_path):
-    project, source = verifier.project_fixture(tmp_path, 12345)
+@pytest.mark.parametrize("java_major", [8, 17, 21])
+def test_release_fixture_has_real_sources_and_no_precompiled_output(tmp_path, java_major):
+    project, source = verifier.project_fixture(tmp_path, 12345, java_major)
     assert source.is_file()
     assert source.with_name("App.java").is_file()
     assert (project / "src/test/java/example/ReplyTest.java").is_file()
     assert (project / ".run/Distribution.run.xml").is_file()
     assert not (project / "target").exists()
     assert not list(project.rglob("*.class"))
+    pom = verifier.ET.parse(project / "pom.xml").getroot()
+    for name in ("source", "target"):
+        assert pom.findtext(f"properties/maven.compiler.{name}") == str(java_major)
 
 
 def test_release_logging_is_explicit_and_checkout_path_is_not_inherited(monkeypatch):

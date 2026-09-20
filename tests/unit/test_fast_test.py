@@ -6,6 +6,7 @@ import threading
 import time
 import socket
 import json
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -133,7 +134,8 @@ def test_product_gradle_probe_assets_are_content_checked(
     assert prepared.probe_jar.is_file()
     assert prepared.probe_sha256 == probe.sha256
     assert prepared.task_name.endswith(probe.sha256[:12])
-    assert prepared.init_script.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":  # Windows chmod does not implement POSIX owner bits.
+        assert prepared.init_script.stat().st_mode & 0o777 == 0o600
 
     runtime = probe.prepare(tmp_path / "runtime-attempt", scope="runtime")
     command = probe.command(
@@ -167,7 +169,8 @@ def test_gradle_freshness_tracks_optional_configuration_and_environment(
     assert (project / "gradle/wrapper/gradle-wrapper.jar").resolve(
         strict=False
     ) in inputs
-    assert "ORG_GRADLE_PROJECT_privateRepo" in (
+    key = "ORG_GRADLE_PROJECT_privateRepo"
+    assert (key.upper() if os.name == "nt" else key) in (
         gradle_configuration_environment_names()
     )
 

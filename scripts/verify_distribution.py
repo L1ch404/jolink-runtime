@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -379,7 +380,7 @@ def clean_server_environment() -> dict[str, str]:
     return environment
 
 
-def project_fixture(directory: Path, port: int) -> tuple[Path, Path]:
+def project_fixture(directory: Path, port: int, java_major: int) -> tuple[Path, Path]:
     """A real Maven project; no checkout imports or precompiled classes."""
     project = directory / "maven-project"
     source = project / "src/main/java/example/Reply.java"
@@ -407,7 +408,8 @@ def project_fixture(directory: Path, port: int) -> tuple[Path, Path]:
     (project / "pom.xml").write_text(
         '<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId>'
         '<artifactId>distribution-smoke</artifactId><version>1</version><properties>'
-        '<maven.compiler.source>8</maven.compiler.source><maven.compiler.target>8</maven.compiler.target>'
+        f'<maven.compiler.source>{java_major}</maven.compiler.source>'
+        f'<maven.compiler.target>{java_major}</maven.compiler.target>'
         '<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>'
         '<dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId>'
         '<version>4.13.2</version><scope>test</scope></dependency></dependencies>'
@@ -437,7 +439,11 @@ def http_value(port: int) -> str:
 
 async def verify_project_flow(session: ClientSession, directory: Path) -> None:
     port = reserve_local_port()
-    project, source = project_fixture(directory, port)
+    # compile_fixture used this job's javac. Match its target instead of
+    # requiring an unrelated JDK 8 installation in every JDK 17 CI lane.
+    header = (directory / "DistributionFixture.class").read_bytes()[:8]
+    java_major = int.from_bytes(header[6:8], "big") - 44
+    project, source = project_fixture(directory, port, java_major)
 
     async def status():
         return assert_ok(await call_payload(session, {"action": "status"}))
@@ -553,7 +559,7 @@ def validate_install_location(expected_source_root: Path | None) -> Path:
 def validate_legal_materials() -> None:
     distribution = importlib.metadata.distribution("jolink-runtime")
     notice = next((file for file in distribution.files or ()
-                   if str(file).endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md")), None)
+                   if file.as_posix().endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md")), None)
     assert notice is not None, "Installed distribution is missing third-party notices"
     root = Path(distribution.locate_file(notice)).parent
     assert (root / "LICENSE").is_file()
@@ -604,6 +610,11 @@ def main() -> None:
             assert pid_is_alive(attached_process.pid)
             (directory / "attached-stop").write_text("stop", encoding="utf-8")
             wait_until(lambda: attached_process.poll() is not None)
+        except BaseException:
+            # Keep the actual launch/Worker error visible before temp cleanup.
+            if stderr_path.exists():
+                print(stderr_path.read_text(encoding="utf-8")[-32768:], file=sys.stderr)
+            raise
         finally:
             if attached_process is not None:
                 terminate_process(attached_process)

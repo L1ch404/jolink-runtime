@@ -3,6 +3,7 @@ src/jolink_runtime/launch/maven-build-world-probe.pom text eol=lf
 src/jolink_runtime/launch/jdt-product-config.ini text eol=lf
 src/jolink_runtime/launch/*.json text eol=lf
 src/jolink_runtime/launch/*.b64 text eol=lf
+src/jolink_runtime/launch/*.gradle text eol=lf
 
 # Keep product build-input fingerprints identical across platform checkouts.
 java/**/*.java text eol=lf
