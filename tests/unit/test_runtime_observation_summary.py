@@ -68,18 +68,26 @@ def test_status_and_details_do_not_read_build_log_or_return_mcp_log(product, mon
     anyio.run(scenario)
 
 
-def test_build_logs_are_explicit_bounded_and_redacted(product):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_build_logs_are_explicit_bounded_and_redacted(product, newline):
     boundary, runtime, _, directory = product
     app_log = directory / "application.log"
-    app_log.write_text("application output\n", encoding="utf-8")
+    app_line = "application output" + newline
+    # Write exact bytes so both newline formats are exercised on every OS.
+    app_log.write_bytes(app_line.encode("utf-8"))
+    (directory / "build.log").write_bytes(
+        newline.join(("first", "Authorization=Bearer private-token", "last", "")).encode("utf-8")
+    )
     runtime._log._current_file = str(app_log)
     async def scenario():
         default = await boundary.call_tool("java_status", {"action": "logs", "tail": 1})
-        assert default.structuredContent["lines"] == ["application output\n"]
+        assert default.structuredContent["lines"] == [app_line]
+        assert default.structuredContent["returned_bytes"] == len(app_line.encode("utf-8"))
         build = await boundary.call_tool("java_status", {"action": "logs", "source": "build", "tail": 2})
         assert not build.isError
         payload = build.structuredContent
         assert payload["returned_lines"] == 2
+        assert payload["lines"][-1] == "last" + newline
         assert payload["source"] == "build"
         assert "private-token" not in build.content[0].text
         assert "<redacted>" in build.content[0].text
