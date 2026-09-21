@@ -19,7 +19,15 @@ joLink 不提供编辑器界面，而是通过 MCP，将增量编译、测试、
 
 ## 安装
 
-> 按照这份文档 [https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md)，为我当前使用的 Agent 安装 joLink MCP 和英文 Skill。默认用户级安装，保留现有配置，并验证连接。
+1. 在你使用的编程 Agent 中**新开一个对话窗口**。
+2. 点击下方代码块右上角的复制按钮，将整段提示词粘贴到对话框中并发送。
+
+```text
+按照这份文档：
+https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md
+为我当前使用的 Agent 安装 joLink MCP 和英文 Skill。
+默认用户级安装，保留现有配置，并验证连接。
+```
 
 安装文档覆盖 Codex、Claude Code、Cursor、VS Code/Copilot、CodeBuddy、Gemini CLI、
 OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP 和 Skill 分开安装，

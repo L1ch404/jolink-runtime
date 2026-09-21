@@ -22,7 +22,15 @@ provider, or separate agent application.
 
 ## Install
 
-> Follow this guide [https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md) to install joLink MCP and its English Skill for my current agent. Use user-level installation by default, preserve existing configuration, and verify the connection.
+1. Open a **new chat** in your coding agent.
+2. Click the copy button in the code block below, paste the entire prompt into that chat, and send it.
+
+```text
+Follow this guide:
+https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md
+Install joLink MCP and its English Skill for my current agent.
+Use user-level installation by default, preserve existing configuration, and verify the connection.
+```
 
 The guide provides official client-specific locations and examples for Codex,
 Claude Code, Cursor, VS Code/Copilot, CodeBuddy, Gemini CLI, OpenCode, Cline,
