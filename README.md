@@ -2,19 +2,20 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**Closing the loop for autonomous Java development.**
+**A lightweight, headless Java IDE for AI coding agents.**
 
-Give coding agents the runtime feedback to test, debug, and verify their own changes.
+Closing the loop for autonomous Java development.
 
 > **Design principle:** Everything exists to reduce uncertainty for the LLM.
 
-joLink gives coding agents access to real Java runtime behavior instead of
-forcing them to rely only on source code, naming conventions, and assumptions.
+joLink does not provide an editor UI. Instead, it exposes incremental compilation,
+testing, application startup and breakpoint debugging through MCP to the coding
+agent you already use—so it can run the code, inspect real state, and verify its
+own changes.
 
-It can start or restart a local Java application, inspect its status and logs,
-and provide runtime evidence for verifying code changes. When surface-level
-evidence is not enough, the agent can continue with breakpoints, exception
-events, stack frames, and variables.
+Persistent compilation state and HotSwap reduce repeated full rebuilds and JVM
+restarts. When tests, logs and endpoint responses are not enough, the agent can
+use breakpoints and inspect exception events, stack frames and variables.
 
 Free and local. It does not require a joLink account, model API key, inference
 provider, or separate agent application.
@@ -145,6 +146,7 @@ The screenshots below show a debugging example: an agent starts a Java
 application, checks an endpoint, notices an unexpected result, and uses
 joLink to investigate the execution path.
 
+> This is a constructed demonstration scenario, not a record of an actual business incident.
 > Some sensitive information in the screenshots has been redacted for privacy.
 
 ### 1. Start the application and check the actual response
@@ -258,7 +260,7 @@ These actions support:
 Current package version:
 
 ```text
-0.1.0a5
+0.1.0a6
 ```
 
 Status:
@@ -501,7 +503,7 @@ without sending it.
 
 ## Runtime safety
 
-joLink `0.1.0a5` is designed for local, trusted development environments.
+joLink `0.1.0a6` is designed for local, trusted development environments.
 
 Current safety boundaries:
 
