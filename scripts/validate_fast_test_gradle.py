@@ -37,7 +37,7 @@ def wait(manager: FastTestManager, timeout: float = 180.0) -> dict:
             "compiling",
             "running",
         }:
-            return result
+            return manager.result(result["test_run_id"])
         time.sleep(0.05)
     raise TimeoutError(manager.status())
 

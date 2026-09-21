@@ -290,6 +290,7 @@ public static void main(String[] args) throws Exception {
                     active = await poll(
                         lambda s: s.get("launch_phase") == "runtime_active"
                     )
+                    active = await call("java_status", {"action": "status", "details": True})
                     assert active["jdt_bootstrap_reused"] is bool(cycle), active
                     if cycle:
                         assert active["jdt_bootstrap_build_kind"] is None

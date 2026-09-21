@@ -20,6 +20,7 @@ from typing import Optional
 import psutil
 
 from ...launch.process_tree import ProcessTreeHandle, ProcessTreeTerminator
+from ...launch.startup_timing import StartupTimings
 from .log_manager import read_log_tail_snapshot
 
 
@@ -78,6 +79,7 @@ class ProcessInfo:
         readiness_config_source: str = "not_configured",
         retained_files: tuple[Path, ...] = (),
         process_tree: ProcessTreeHandle | None = None,
+        startup_timing_key: tuple | None = None,
     ):
         self.proc = proc
         self._pid = proc.pid if proc is not None else int(pid or 0)
@@ -93,6 +95,9 @@ class ProcessInfo:
         )
         self.readiness_config_source = readiness_config_source
         self._started_monotonic = time.monotonic()
+        self.jdwp_startup_ms: float | None = None
+        self._startup_timing_key = startup_timing_key
+        self._startup_timing_attempted = False
         self._readiness_lock = threading.Lock()
         self._startup_state = (
             "starting" if self.ready_port > 0 else "unverified"
@@ -142,6 +147,14 @@ class ProcessInfo:
         with self._readiness_lock:
             if self._startup_state == "starting":
                 self._startup_wait_timed_out = True
+
+    def record_startup_timing(self, duration_ms: float) -> None:
+        if self._startup_timing_key is None or not self.owned:
+            return
+        with self._readiness_lock:
+            if not self._startup_timing_attempted:
+                StartupTimings().save(self._startup_timing_key, duration_ms)
+                self._startup_timing_attempted = True
 
     def mark_startup_failed(self, failure_type: str) -> None:
         now = time.time()
@@ -307,6 +320,7 @@ class ProcessManager:
         on_published: Callable[[ProcessInfo], None] | None = None,
         command_argv: tuple[str, ...] | None = None,
         retained_files: tuple[Path, ...] = (),
+        startup_timing_key: tuple | None = None,
     ) -> ProcessInfo:
         """Launch a Java process with JDWP enabled, return ProcessInfo.
 
@@ -437,6 +451,7 @@ class ProcessManager:
                     readiness_config_source=readiness_config_source,
                     retained_files=retained_files,
                     process_tree=process_tree,
+                    startup_timing_key=startup_timing_key,
                 )
                 with self._state_lock:
                     if not self._accept_new_targets:
@@ -597,6 +612,9 @@ class ProcessManager:
 
         if log_fp:
             log_fp.close()
+        process.jdwp_startup_ms = (time.monotonic() - started_at) * 1000
+        if process.ready_port <= 0:
+            process.record_startup_timing(process.jdwp_startup_ms)
         logger.info(
             "java_runtime.process.start.ready pid=%s launch_mode=%s target=%s jdwp_port=%s "
             "elapsed_ms=%.1f log_file=%s",
@@ -648,6 +666,8 @@ class ProcessManager:
                 return snapshot
         snapshot = process.readiness_snapshot()
         snapshot["process_state"] = "running"
+        if snapshot["startup_state"] == "ready" and process.owned:
+            process.record_startup_timing(snapshot["startup_elapsed_ms"])
         return snapshot
 
     def wait_for_readiness(

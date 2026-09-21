@@ -74,7 +74,7 @@ async def _await_reload(
                 isinstance(terminal, dict)
                 and terminal.get("reload_id") == reload_id
             ):
-                return terminal
+                return assert_ok(await call_payload(session, {"action": "status", "details": True}))["last_reload"]
             await anyio.sleep(0.05)
 
 
@@ -1160,7 +1160,7 @@ public class PersistentFixture {{
                     status.get("launch_phase") == "runtime_active"
                     and status.get("compile_ready") is True
                 ):
-                    return status
+                    return assert_ok(await call_payload(session, {"action": "status", "details": True}))
                 await anyio.sleep(0.05)
 
     def request_value(request: bytes = b"?") -> str:
@@ -1629,7 +1629,7 @@ public class LazyValue {
                         "after-update"
                     )
                     observed = assert_ok(await call_payload(session, {
-                        "action": "status",
+                        "action": "status", "details": True,
                     }))
                     assert observed["runtime_overlay_active"] is True
                     assert observed["code_revision"] == 1
@@ -1639,7 +1639,7 @@ public class LazyValue {
                     second_update = await reload_source()
                     assert second_update["status"] == "reloaded"
                     second_status = assert_ok(await call_payload(session, {
-                        "action": "status",
+                        "action": "status", "details": True,
                     }))
                     assert second_status["generation"] == 1
                     assert await anyio.to_thread.run_sync(request_value) == (
@@ -1700,6 +1700,7 @@ public class LazyValue {
                         if restarted_status["launch_phase"] == "runtime_active":
                             break
                         await anyio.sleep(0.1)
+                    restarted_status = assert_ok(await call_payload(session, {"action": "status", "details": True}))
                     assert restarted_status["generation"] == 1
                     assert await anyio.to_thread.run_sync(request_value) == (
                         "second-update"

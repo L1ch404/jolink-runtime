@@ -344,7 +344,7 @@ def test_fast_test_manager_rejects_unknown_build_system(tmp_path: Path) -> None:
         manager.close()
 
 
-def test_fast_test_attempt_exposes_compiled_source_identity(tmp_path: Path) -> None:
+def test_fast_test_attempt_reports_source_count_without_bulk_inventory(tmp_path: Path) -> None:
     attempt = FastTestAttempt(
         test_run_id="test_compiled_identity",
         generation=1,
@@ -360,9 +360,8 @@ def test_fast_test_attempt_exposes_compiled_source_identity(tmp_path: Path) -> N
     snapshot = attempt.snapshot()
 
     assert snapshot["compiled_source_count"] == 1
-    assert snapshot["compiled_source_units"] == [
-        "test-src/example/AppTest.java"
-    ]
+    assert "compiled_source_units" not in snapshot
+    assert attempt.compiled_source_units == ("test-src/example/AppTest.java",)
     assert snapshot["build_system"] == "auto"
 
 
@@ -430,7 +429,7 @@ def test_fast_test_accepts_shared_test_compile_source_target_encoding() -> None:
 
 def test_fast_test_schema_exposes_independent_test_intent() -> None:
     actions = JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["enum"]
-    assert actions == ["run", "cancel"]
+    assert actions == ["run", "cancel", "result"]
     assert "test" not in JAVA_APPLICATION_INPUT_SCHEMA["properties"]["action"]["enum"]
     assert "tests" not in JAVA_APPLICATION_INPUT_SCHEMA["properties"]
     assert "tests" in JAVA_FAST_TEST_INPUT_SCHEMA["properties"]
@@ -1165,7 +1164,8 @@ def test_gradle_module_failure_preserves_error_code(tmp_path, monkeypatch) -> No
         result = manager.start(project_path=tmp_path, source_files=(),
                                tests=("example.Test",), timeout_seconds=30)
         assert result["error_code"] == "GRADLE_COMPILE_CONFIGURATION_UNMODELED"
-        assert result["error"] == "unmodeled compiler arguments"
+        assert "error" not in result
+        assert manager.result(result["test_run_id"])["error"] == "unmodeled compiler arguments"
     finally:
         manager.close()
 

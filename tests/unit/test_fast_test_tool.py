@@ -104,6 +104,7 @@ def test_default_and_explicit_run_and_cancel_use_same_manager(
         ("java_fast_test", {"project_path": "/fixture"}),
         ("java_fast_test", {"tests": ["example.Test"]}),
         ("java_fast_test", {"action": "cancel"}),
+        ("java_fast_test", {"action": "result"}),
         (
             "java_fast_test",
             {"action": "test", "project_path": "/fixture", "tests": ["example.Test"]},

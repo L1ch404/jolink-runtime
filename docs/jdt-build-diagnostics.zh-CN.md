@@ -24,8 +24,8 @@
 }
 ```
 
-保留原有 JAVA_HOME 等其他 env 项，不只是改外层 shell。实际生效级别在
-`java_status(status).server_diagnostics.level`；OFF 时 status 为 disabled。
+保留原有 JAVA_HOME 等其他 env 项，不只是改外层 shell。
+`status` 不再回传日志配置；按 MCP 启动配置中的 `JOLINK_LOG_LEVEL` 和本地日志核对，OFF 关闭文件日志。
 这不关闭应用自身日志，也不改变结构化工具错误、测试结果或编译规则。
 HTTP/MCP 原始协议报文不会因为设置 DEBUG 就自动写入诊断文件。
 新增 JDT 日志统一通过 `log_diagnostic()` 输出，级别判断只在该函数内完成；
@@ -36,7 +36,7 @@ HTTP/MCP 原始协议报文不会因为设置 DEBUG 就自动写入诊断文件�
 - Windows：`%LOCALAPPDATA%\jolink-runtime\logs\mcp.log`。
 - macOS/Linux：`$XDG_CACHE_HOME/jolink-runtime/logs/mcp.log`，或默认
   `~/.cache/jolink-runtime/logs/mcp.log`。
-- 以 `java_status(status).server_diagnostics.log_file` 的实际路径为准。
+- 路径按启动 MCP 的进程环境解析；`status`（包括 `details=true`）不再回传 `mcp.log` 路径或内容。
 
 以下完整事件在 INFO/DEBUG 下可见。搜索 `jdt.workspace`、`jdt.worker`、`jdt.sources`、`jdt.build`。沿同一个 workspace、
 Worker PID、build_id 和时间顺序读取，不混用不同启动或 Fast Test workspace。

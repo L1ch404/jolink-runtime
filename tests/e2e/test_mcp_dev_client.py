@@ -48,5 +48,5 @@ def test_dev_client_starts_current_worktree_and_calls_real_mcp(
     assert ready["repository"] == str(repository)
     assert len(ready["source_fingerprint"]) == 64
     assert result["process_state"] == "absent"
-    assert result["server_diagnostics"]["status"] == "active"
+    assert "server_diagnostics" not in result
     assert (tmp_path / "stderr.log").is_file()

@@ -771,6 +771,7 @@ def main() -> int:
                     "FAST_TEST_SUREFIRE_CONFIGURATION_UNSUPPORTED"
                 ):
                     raise AssertionError(surefire_rejected)
+                surefire_rejected = surefire_manager.result(surefire_rejected["test_run_id"])
                 if not {
                     "jdkToolchain",
                     "useSystemClassLoader",

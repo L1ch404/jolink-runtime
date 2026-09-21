@@ -126,6 +126,7 @@ public static void main(String[] args) throws Exception {
                     accepted = await call("java_application", {"action":"launch","project_path":str(project),"launch_name":"App","jdwp_port":debug,"ready_port":port,"timeout":10})
                     assert accepted["ok"], accepted
                     active = await poll(lambda s:s.get("launch_phase")=="runtime_active")
+                    active = await call("java_status", {"action": "status", "details": True})
                     assert active["jdt_bootstrap_reused"] is bool(cycle)
                     if cycle: assert active["jdt_bootstrap_build_kind"] is None
                     def value():

@@ -98,10 +98,7 @@ def test_product_tool_names_map_to_existing_runtime_actions(monkeypatch) -> None
         session_key="product-tools",
     )
     assert status["status"] == "status"
-    assert status["server_diagnostics"]["status"] in {
-        "active",
-        "stderr_only",
-    }
+    assert "server_diagnostics" not in status
     assert dispatcher.dispatch(
         "java_debugger",
         {"action": "threads"},

@@ -58,13 +58,8 @@ def test_real_stdio_subprocess_initialize_list_status_and_shutdown(
                     assert result.structuredContent["ok"] is True
                     assert result.structuredContent["process_state"] == "absent"
                     assert result.structuredContent["debug_state"] == "detached"
-                    diagnostics = result.structuredContent[
-                        "server_diagnostics"
-                    ]
-                    assert diagnostics["status"] == "active"
-                    assert diagnostics["log_file"] == str(
-                        tmp_path / "jolink-runtime/logs/mcp.log"
-                    )
+                    assert "server_diagnostics" not in result.structuredContent
+                    assert (tmp_path / "jolink-runtime/logs/mcp.log").is_file()
 
                     assert len(result.content) == 1
                     assert isinstance(result.content[0], types.TextContent)

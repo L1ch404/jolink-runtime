@@ -426,7 +426,7 @@ PUBLIC_APPLICATION_ACTIONS = (
     "stop",
     "detach",
 )
-PUBLIC_FAST_TEST_ACTIONS = ("run", "cancel")
+PUBLIC_FAST_TEST_ACTIONS = ("run", "cancel", "result")
 PUBLIC_STATUS_ACTIONS = ("processes", "status", "logs")
 PUBLIC_DEBUGGER_ACTIONS = (
     "breakpoint",
@@ -513,7 +513,8 @@ JAVA_FAST_TEST_INPUT_SCHEMA = _schema_for_actions(
 JAVA_FAST_TEST_INPUT_SCHEMA["required"] = []
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["default"] = "run"
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["description"] = (
-    "Omit or use run to execute tests; use cancel with a returned test_run_id to stop that test run."
+    "Omit or use run to execute tests; use result with test_run_id to read diagnostics "
+    "and failure details without rerunning; use cancel to stop that test run."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
     "Maven project or Gradle Wrapper project directory containing the selected tests. "
@@ -535,10 +536,11 @@ JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["timeout"]["description"] = (
     "This does not change the test Runner's separate execution time limit."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["test_run_id"]["description"] = (
-    "Test run ID returned by java_fast_test; required for action='cancel'."
+    "Test run ID returned by java_fast_test; required for action='cancel' or 'result'. "
+    "Results are retained for the active and most recently finished run in this MCP session."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["allOf"] = [{
-    "if": {"properties": {"action": {"const": "cancel"}}, "required": ["action"]},
+    "if": {"properties": {"action": {"enum": ["cancel", "result"]}}, "required": ["action"]},
     "then": {"required": ["test_run_id"]},
     "else": {"required": ["project_path", "tests"]},
 }]
@@ -549,14 +551,25 @@ JAVA_STATUS_INPUT_SCHEMA = {
         "action": {
             "type": "string",
             "enum": list(PUBLIC_STATUS_ACTIONS),
-            "description": "Status operation to perform.",
+            "description": "status returns a compact overview; use details=true for launch/update details; logs reads a bounded log tail.",
         },
         "filter": deepcopy(JAVA_PROCESSES_INPUT_SCHEMA["properties"]["filter"]),
         "full": deepcopy(JAVA_PROCESSES_INPUT_SCHEMA["properties"]["full"]),
+        "details": {
+            "type": "boolean", "default": False,
+            "description": "For status: include current launch/update diagnostics and internal settings. Does not rerun work or read build logs.",
+        },
         "tail": deepcopy(JAVA_RUNTIME_INPUT_SCHEMA["properties"]["tail"]),
+        "source": {
+            "type": "string", "enum": ["application", "build"], "default": "application",
+            "description": "For logs: application output (default), or the current project launch's build log.",
+        },
     },
     "required": ["action"],
 }
+JAVA_STATUS_INPUT_SCHEMA["properties"]["tail"]["description"] = (
+    "Lines from the selected application/build log tail. Returns truncation and scan metadata."
+)
 JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
     PUBLIC_DEBUGGER_ACTIONS,
     tuple(
@@ -594,7 +607,11 @@ JAVA_APPLICATION_DESCRIPTION = (
     "HotSwap (hotswap=true by default). Incompatible changes use the same compiled "
     "outputs to restart the JVM. Set hotswap=false for a real process restart and "
     "application reinitialization. apply_method reports hotswap or restart; HotSwap "
-    "does not refresh framework state. A pending restart returns reload_id; observe "
+    "does not refresh framework state or count as a JVM startup. "
+    "previous_startup_ms reports the prior successful "
+    "startup duration saved locally for this launch, or null if unavailable. "
+    "It survives MCP restarts and excludes compilation. "
+    "A pending restart returns reload_id; observe "
     "active_operation and last_reload using java_status. Direct JAR/classpath "
     "launches restart their existing artifact without source compilation."
 )
@@ -608,11 +625,17 @@ JAVA_FAST_TEST_DESCRIPTION = (
     "Waits up to timeout (maximum 30 seconds); unfinished work returns its "
     "test_run_id and continues in the background. Observe it with java_status "
     "or cancel it here using action='cancel' and the same test_run_id. "
+    "run and java_status return summaries; use action='result' with test_run_id "
+    "for compiler diagnostics and failed-test details without rerunning tests. "
     "This is not the complete Maven/Gradle verification or packaging lifecycle."
 )
 JAVA_STATUS_DESCRIPTION = (
-    "Discover local Java processes, inspect joLink application/build state, or "
-    "read a bounded captured-log tail."
+    "Discover local Java processes, inspect a compact application/build overview "
+    "with status, or request current launch/restart details with status and details=true. "
+    "Use logs with source=application (default) or source=build for log text. "
+    "status omits build logs, internal configuration and full restart results. "
+    "It includes only a Fast Test summary; "
+    "read test details with java_fast_test(action='result', test_run_id=...)."
 )
 JAVA_DEBUGGER_DESCRIPTION = (
     "Observe executed paths and runtime state with JDWP breakpoints, exception "

@@ -104,7 +104,7 @@ public class ChainTest {
                 status = (
                     await session.call_tool("java_status", {"action": "status"})
                 ).structuredContent
-                assert status["server_diagnostics"]["level"] == (level or "WARNING")
+                assert "server_diagnostics" not in status
                 (sources / "Short0.java").write_text(
                     "package example; public class Short0 { public static final int VALUE=2; }",
                     encoding="utf-8",
@@ -113,9 +113,9 @@ public class ChainTest {
                 short = await run_test()
                 # The former 5-round policy fell back to FULL for this chain.
                 assert short["compiled_source_count"] < 22
-                assert not any(
-                    "/Long" in name for name in short["compiled_source_units"]
-                )
+                # The nine Short units and their dependent test compile, not
+                # any of the twelve unrelated Long units.
+                assert short["compiled_source_count"] == 10
 
                 (sources / "Long0.java").write_text(
                     "package example; public class Long0 { public static final int VALUE=2; }",
@@ -156,7 +156,7 @@ public class ChainTest {
                     assert "jdt.build.finished" not in text
                     if level == "OFF":
                         assert not log.exists()
-                        assert status["server_diagnostics"]["status"] == "disabled"
+                        assert "server_diagnostics" not in status
 
                 (sources / "Long11.java").write_text(
                     "package example; public class Long11 { public static final int VALUE=3; }",

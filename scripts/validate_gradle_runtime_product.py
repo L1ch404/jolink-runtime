@@ -235,11 +235,13 @@ async def _run(
                 )
                 if status.get("startup_state") != "ready":
                     raise RuntimeError(status)
-                if status.get("fast_update", {}).get("build_system") != "gradle":
-                    raise RuntimeError(status)
-                if status.get("fast_update", {}).get("offline") is not offline:
-                    raise RuntimeError(status)
-                build_log = Path(status["build"]["log_tail"]["log_file"])
+                initial_details = await _payload(session, "java_status", {"action": "status", "details": True})
+                if initial_details.get("fast_update", {}).get("build_system") != "gradle":
+                    raise RuntimeError(initial_details)
+                if initial_details.get("fast_update", {}).get("offline") is not offline:
+                    raise RuntimeError(initial_details)
+                log_result = await _payload(session, "java_status", {"action": "logs", "source": "build"})
+                build_log = Path(log_result["log_file"])
                 private_model = (
                     build_log.parent
                     / "gradle-probe/gradle-build-world.private.json"
@@ -281,6 +283,7 @@ async def _run(
                         lambda value: value.get("launch_phase") == "runtime_active"
                         and value.get("startup_state") == "ready",
                     )
+                    status = await _payload(session, "java_status", {"action": "status", "details": True})
                     if (
                         status.get("probe_cache_reused") is not True
                         or status.get("jdt_bootstrap_reused") is not True
@@ -412,7 +415,7 @@ compileJava.doLast {
                 return {
                     "ok": True,
                     "build_system": "gradle",
-                    "target_java": int(status["fast_update"]["target_level"]),
+                    "target_java": int(initial_details["fast_update"]["target_level"]),
                     "baseline_ready": True,
                     "warm_probe_cache_reused": True,
                     "warm_incremental_startup": True,

@@ -11,7 +11,8 @@ from typing import Any
 from ..adapters.java.jdwp_adapter import JavaRuntime
 from ..adapters.java.process_discovery import discover_java_processes
 from ..launch import ProjectLaunchRequest
-from .diagnostic_logging import private_diagnostic_logging_status
+from ..launch.runtime_observation import status_summary
+from ..launch.startup_timing import StartupTimings
 from .models import RuntimeAction, RuntimeResult
 from .session_manager import SessionManager
 from .wait_state import WaitControl
@@ -92,6 +93,8 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action.test_run_id = arguments.get("test_run_id")
     if arguments.get("_product_status") is True:
         action._product_status = True
+    if action.action == "logs":
+        action.log_source = arguments.get("source", "application")
     action.configure_startup_readiness(
         ready_port=int(arguments.get("ready_port", 0)),
         wait_timeout_seconds=(
@@ -253,7 +256,7 @@ _APPLICATION_OPERATIONS = {
         "launch": "run", "attach": "attach",
         "restart": "restart", "stop": "stop", "detach": "detach",
     },
-    "java_fast_test": {"run": "test", "cancel": "cancel_test"},
+    "java_fast_test": {"run": "test", "cancel": "cancel_test", "result": "test_result"},
 }
 
 
@@ -292,11 +295,13 @@ class Dispatcher:
             args["action"] = runtime_operation(tool_name, args)
             if not args["action"]:
                 return {"ok": False, "error_code": "INVALID_ARGUMENT", "error": f"Unknown action for {tool_name}."}
+            include_startup_timing = tool_name == "java_application" and args["action"] in {"run", "restart"}
             return _product_application_payload(
                 self.dispatch_java_runtime(
                     args,
                     session_key=session_key,
                     wait_control=wait_control,
+                    include_startup_timing=include_startup_timing,
                 )
             )
         if tool_name == "java_status":
@@ -306,6 +311,7 @@ class Dispatcher:
                     full=bool(args.get("full", False)),
                 )
             args["_product_status"] = True
+            detailed = _bool_arg(args, "details")
             payload = _product_application_payload(
                 self.dispatch_java_runtime(
                     args,
@@ -313,10 +319,8 @@ class Dispatcher:
                     wait_control=wait_control,
                 )
             )
-            if args.get("action") == "status":
-                payload["server_diagnostics"] = (
-                    private_diagnostic_logging_status()
-                )
+            if args.get("action") == "status" and not detailed:
+                return status_summary(payload)
             return payload
         if tool_name == "java_debugger":
             return self.dispatch_java_runtime(
@@ -343,6 +347,7 @@ class Dispatcher:
         *,
         session_key: str = "default",
         wait_control: WaitControl | None = None,
+        include_startup_timing: bool = False,
     ) -> dict[str, Any]:
         """Run one Java Runtime action with the established handler semantics."""
         started_at = time.monotonic()
@@ -353,6 +358,9 @@ class Dispatcher:
             return dict(error.payload)
         context_key = str(session_key or "default")
         runtime = self.sessions.get_runtime(context_key)
+        previous_startup_ms = None
+        if include_startup_timing:
+            previous_startup_ms = StartupTimings().previous(runtime, arguments)
         logger.info(
             "java_runtime.action.start action=%s context=%s pid=%s main_class=%s "
             "jar_path=%s jdwp=%s:%s breakpoint=%s:%s breakpoint_id=%s "
@@ -392,6 +400,7 @@ class Dispatcher:
             "update": getattr(runtime, "update", None),
             "test": getattr(runtime, "test", None),
             "cancel_test": getattr(runtime, "cancel_test", None),
+            "test_result": getattr(runtime, "test_result", None),
         }
         handler = handlers.get(action.action)
         if handler is None:
@@ -445,7 +454,10 @@ class Dispatcher:
                 data.get("complete", "-"),
                 _log_error_summary(result.error),
             )
-            return _runtime_result_payload(result)
+            payload = _runtime_result_payload(result)
+            if include_startup_timing:
+                payload["previous_startup_ms"] = previous_startup_ms
+            return payload
         except Exception as error:
             logger.exception(
                 "java_runtime.action.crash action=%s context=%s duration_ms=%.1f",

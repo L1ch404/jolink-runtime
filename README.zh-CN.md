@@ -42,9 +42,9 @@ OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP �
 
 | 工具 | 用途 |
 |---|---|
-| `java_fast_test` | 运行所选 Java 测试、取消测试任务；不要求先启动业务应用 |
+| `java_fast_test` | 运行所选 Java 测试、读取结果详情、取消任务；不要求先启动业务应用 |
 | `java_application` | 启动、增量编译后 HotSwap/重启、停止、attach/detach |
-| `java_status` | 查看进程、启动/编译/测试状态和日志 |
+| `java_status` | 查看进程、精简状态、按需详情和日志 |
 | `java_debugger` | 断点、异常监听、等待事件、调用栈、变量、恢复执行 |
 
 工具描述和参数 schema 是当前接口依据；宿主可能给工具名添加 MCP 服务前缀。
@@ -71,6 +71,11 @@ OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP �
 
 `passed=false` 表示测试运行后发现失败，与编译失败或工具基础设施错误不同。
 只报告实际运行的测试，不把所选测试通过等同于整个项目构建通过。
+
+`run` 和 `java_status(status).fast_test` 默认只返回摘要，不附带完整错误诊断、失败堆栈
+或编译文件清单。需要详情时，跟随失败结果中的 `next_action`，或调用
+`java_fast_test(action="result", test_run_id=...)`，不会重新运行测试。
+结果只保留当前 MCP 会话中的活动任务和最近完成任务；已不保留的 ID 返回 `TEST_RUN_NOT_FOUND`。
 
 取消时调用 `java_fast_test(action="cancel", test_run_id=...)`。
 详见 [Fast Test 流程与边界](docs/fast-test-v0.1.zh-CN.md)。
@@ -162,9 +167,24 @@ macOS/Linux: $XDG_CACHE_HOME/jolink-runtime/logs/mcp.log
              或 ~/.cache/jolink-runtime/logs/mcp.log
 ```
 
-实际路径通过 `java_status` 返回的 `server_diagnostics` 查看。`JOLINK_LOG_LEVEL`
+`status`（包括 `details=true`）不再返回 `mcp.log` 路径或日志配置；排查 joLink 自身问题时按上面的
+本地路径读取，文件仍照常写入。`JOLINK_LOG_LEVEL`
 默认 `WARNING`；`INFO` 增加编译/缓存/生命周期摘要，`DEBUG` 更详细，`OFF` 关闭。
 日志分享前检查并脱敏，尤其是公司项目路径、配置和应用输出。
+
+`java_status(action=status)` 默认只返回就绪状态、进程/调试状态、当前操作和最近更新/测试摘要。
+`java_status(action=status, details=true)` 按需读取当前启动错误、完整 `last_reload`、编译缓存和内部耗时。
+`launch/restart` 在同步等待内完成时，本身就返回本次详细结果；可选字段主要用于超时转后台后读取结果。
+两者都不读取或附带构建日志正文。读取构建日志用 `java_status(action=logs, source=build)`；
+省略 `source` 默认读取应用日志，两者都支持 `tail`。最近更新摘要附带指向详情的 `next_action`。
+
+`launch/restart` 返回 `previous_startup_ms`：本次操作开始前，同一启动配置上一次成功的
+JVM 启动耗时（毫秒），不包含 Probe/JDT 编译。有 `ready_port` 时计到 TCP 就绪；
+未配置时仅表示 JVM/JDWP 启动，不代表业务就绪。HotSwap 或启动失败不覆盖此记录。
+启动成功时立即写入 joLink 本地缓存下的 `startup-timings/` 小型 JSON 文件，
+stop、换对话或重启 MCP 后都可复用。下一次 launch 直接读取，不设过期时间，
+不检查构建输入，也不在每次 status 时重复写入。没有历史记录时才返回 `null`。
+它只供等待时间参考，不是本次启动预测，也不是 readiness 判定。
 
 joLink 面向本机可信开发环境，不用于生产或远程 JDWP 暴露。一个 MCP 实例管理一个
 Java 目标；自己启动的进程可以停止，外部 attach 的进程不主动终止。

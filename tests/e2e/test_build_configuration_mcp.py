@@ -222,7 +222,7 @@ def test_configuration_changes_refresh_test_and_restart_models(
                                 await anyio.sleep(0.1)
                                 result = await status()
                         assert result.get("launch_phase") == "runtime_active", result
-                        return result
+                        return dict((await session.call_tool("java_status", {"action": "status", "details": True})).structuredContent)
 
                     async def test():
                         result = await call(
@@ -289,6 +289,7 @@ def test_configuration_changes_refresh_test_and_restart_models(
                             updated = await status()
                     assert updated["launch_phase"] == "runtime_active", updated
                     assert updated["pid"] != active["pid"], updated
+                    updated = dict((await session.call_tool("java_status", {"action": "status", "details": True})).structuredContent)
                     assert (
                         updated["probe_cache_reused"] is False and response() == "B"
                     ), updated

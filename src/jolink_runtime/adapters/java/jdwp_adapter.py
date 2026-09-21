@@ -12,7 +12,6 @@ LLM never sees JDWP, thread IDs, or protocol details.
 from __future__ import annotations
 
 import hashlib
-import locale
 import logging
 import os
 import re
@@ -49,6 +48,8 @@ from ...launch.jdt_workspace_store import (
 )
 from ...launch.jdt_reload_service import JdtReloadService
 from ...launch.jdt_launch_service import JdtLaunchService
+from ...launch.runtime_observation import read_build_log, runtime_logs
+from ...launch.startup_timing import StartupTimings
 from ..base import Runtime
 from .jdwp_client import (
     Cmd,
@@ -58,7 +59,7 @@ from .jdwp_client import (
     SuspendPolicy,
     Tag,
 )
-from .log_manager import LogManager, read_log_tail_snapshot
+from .log_manager import LogManager
 from .process_manager import (
     ProcessManager,
     ProcessStartCancelledError,
@@ -111,15 +112,6 @@ def _error_summary(error: Exception) -> str:
     """Return one safe diagnostic line, excluding captured application logs."""
     message = str(error)
     return message.splitlines()[0][:240] if message else "-"
-
-
-def _host_build_log_encoding() -> str:
-    """Use the real host code page even when Python UTF-8 mode is enabled."""
-
-    get_encoding = getattr(locale, "getencoding", None)
-    if callable(get_encoding):
-        return str(get_encoding())
-    return locale.getpreferredencoding(False)
 
 
 @dataclass
@@ -1051,6 +1043,7 @@ class JavaRuntime(Runtime):
                 ),
                 command_argv=prepared.command.argv,
                 retained_files=prepared.command.retained_files,
+                startup_timing_key=StartupTimings._project_key(request),
             )
             context.check_cancelled()
             startup_ms = (time.monotonic() - startup_started) * 1000
@@ -1513,6 +1506,7 @@ class JavaRuntime(Runtime):
                     or ("explicit" if action.ready_port else "not_configured")
                 ),
                 should_stop=lambda: self._closing_requested,
+                startup_timing_key=StartupTimings._direct_key(action),
             )
             closing = self._release_late_published_target(
                 info,
@@ -1962,7 +1956,7 @@ class JavaRuntime(Runtime):
         clean = _BUILD_SECRET_FLAG.sub(r"\1\2<redacted>", clean)
         return _URL_USERINFO.sub(r"\1<redacted>@", clean)
 
-    def _project_launch_snapshot(self) -> dict[str, Any] | None:
+    def _project_launch_snapshot(self, *, include_build_log: bool = True) -> dict[str, Any] | None:
         snapshot = self._reconcile_project_process_exit()
         if snapshot.get("launch_phase") == LaunchPhase.IDLE.value:
             return None
@@ -2066,23 +2060,9 @@ class JavaRuntime(Runtime):
                 if directory is not None
                 else None
             )
-            if build_log is not None and build_log.is_file():
+            if include_build_log and build_log is not None and build_log.is_file():
                 try:
-                    tail = read_log_tail_snapshot(
-                        str(build_log),
-                        50,
-                        encoding=_host_build_log_encoding(),
-                        max_scan_bytes=512 * 1024,
-                        max_return_bytes=32 * 1024,
-                    )
-                    tail["lines"] = [
-                        self._redact_build_log_line(line)
-                        for line in tail["lines"]
-                    ]
-                    tail["returned_bytes"] = sum(
-                        len(line.encode("utf-8"))
-                        for line in tail["lines"]
-                    )
+                    tail = read_build_log(build_log, 50, self._redact_build_log_line)
                     snapshot.setdefault("build", {})["log_tail"] = tail
                     if snapshot.get("launch_error") is not None:
                         snapshot["build_log_tail"] = tail
@@ -2101,7 +2081,9 @@ class JavaRuntime(Runtime):
             if getattr(action, "_product_status", False)
             else None
         )
-        project = self._project_launch_snapshot()
+        project = self._project_launch_snapshot(
+            include_build_log=not getattr(action, "_product_status", False),
+        )
         project_phase = (
             str(project.get("launch_phase"))
             if project is not None
@@ -2356,10 +2338,7 @@ class JavaRuntime(Runtime):
         }
 
     def logs(self, action: RuntimeAction) -> RuntimeResult:
-        data = self._log.tail(action.tail)
-        if "error" in data:
-            return RuntimeResult(ok=False, error=data["error"])
-        return RuntimeResult(ok=True, data=data)
+        return runtime_logs(self, action)
 
     def update(self, action: RuntimeAction) -> RuntimeResult:
         """Compile explicit project sources and HotSwap compatible classes."""
@@ -2591,6 +2570,20 @@ class JavaRuntime(Runtime):
                     **dict(getattr(error, "context", {}) or {}),
                 },
             )
+
+    def test_result(self, action: RuntimeAction) -> RuntimeResult:
+        """Delegate a read-only Fast Test detail request to its manager."""
+        try:
+            payload = self._fast_tests.result(str(getattr(action, "test_run_id", "")))
+            return RuntimeResult(
+                ok=bool(payload.get("ok", True)),
+                data={key: value for key, value in payload.items() if key != "ok"},
+                error=str(payload.get("error", "")),
+            )
+        except FastTestManagerError as error:
+            return RuntimeResult(ok=False, error=str(error), data={
+                "error_code": error.error_code, **error.context,
+            })
 
     def cancel_test(self, action: RuntimeAction) -> RuntimeResult:
         try:

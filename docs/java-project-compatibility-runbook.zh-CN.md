@@ -193,8 +193,9 @@ Windows 使用实际 Windows 路径和分号 PATH；缓存隔离设该 MCP 进�
 可参考该脚本的真实 stdio 会话写法，在 RUN_ROOT 写驱动，不修改 joLink 脚本。
 
 初始化后检查 tools/list，确认有 `java_application`、`java_fast_test`、`java_status`。记录 joLink
-commit、dirty 状态、Python 路径、启动命令、stderr 路径；检查 `java_status(status)`
-里的 `server_diagnostics.log_file` 是否位于预期缓存。若服务旧/路径错误，先修正连接，
+commit、dirty 状态、Python 路径、启动命令、stderr 路径。`status`（包括 `details=true`）不再返回
+`server_diagnostics`；若开启文件日志，按显式传给 MCP 进程的 `LOCALAPPDATA`（Windows）
+或 `XDG_CACHE_HOME`（macOS/Linux）定位 `jolink-runtime/logs/mcp.log`。若服务旧/路径错误，先修正连接，
 不得把内存里旧版本的结果归给当前提交。
 
 以下 JSON 都是工具的 arguments；使用宿主 UI 调工具，或 SDK 的

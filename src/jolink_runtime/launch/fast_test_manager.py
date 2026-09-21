@@ -166,7 +166,8 @@ class TestAttempt:
                 "The Fast Test attempt was cancelled.",
             )
 
-    def snapshot(self) -> dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Small repeatable observation; diagnostics are read via result()."""
         payload: dict[str, Any] = {
             "ok": True,
             "status": self.state,
@@ -192,9 +193,28 @@ class TestAttempt:
             if value is not None:
                 payload[name] = value
         payload["compiled_source_count"] = self.compiled_source_count
-        payload["compiled_source_units"] = list(
-            self.compiled_source_units
-        )
+        if self.result is not None:
+            payload.update({
+                key: value for key, value in self.result.items()
+                if key in {
+                    "ok", "passed", "error_code", "error_count",
+                    "main_compile_ok", "test_compile_ok", "working_compile_state",
+                    "framework", "tests", "passed_count", "failed_count",
+                    "failed_test_count", "failed_container_count", "skipped_count",
+                    "test_ms", "source_changes_pending", "build_world_changes_pending",
+                }
+            })
+            if payload.get("passed") is not True:
+                payload["next_action"] = {
+                    "tool": "java_fast_test",
+                    "arguments": {"action": "result", "test_run_id": self.test_run_id},
+                }
+        return payload
+
+    def snapshot(self) -> dict[str, Any]:
+        """Detailed result without the compiler's bulk source-file inventory."""
+        payload = self.summary()
+        payload.pop("next_action", None)
         if self.result is not None:
             payload.update(self.result)
         return payload
@@ -286,7 +306,7 @@ class FastTestManager:
             self._active = attempt
             thread.start()
         attempt.done.wait(min(max(short_wait_seconds, 0.0), timeout))
-        return attempt.snapshot()
+        return attempt.summary()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -300,11 +320,23 @@ class FastTestManager:
                         project is not None and project.compiler.ready
                     ),
                 }
-            result = attempt.snapshot()
+            result = attempt.summary()
             result["test_compile_ready"] = bool(
                 project is not None and project.compiler.ready
             )
             return result
+
+    def result(self, test_run_id: str) -> dict[str, Any]:
+        """Read an existing active/latest attempt, without starting any work."""
+        with self._lock:
+            for attempt in (self._active, self._last):
+                if attempt is not None and attempt.test_run_id == test_run_id:
+                    return attempt.snapshot()
+        raise FastTestManagerError(
+            "TEST_RUN_NOT_FOUND",
+            "The requested Fast Test result is not retained in this MCP session.",
+            context={"test_run_id": test_run_id},
+        )
 
     def cancel(self, test_run_id: str) -> dict[str, Any]:
         with self._lock:
@@ -391,6 +423,7 @@ class FastTestManager:
                             "test_compile_ok": compiled.test_compile_ok,
                             "error_count": compiled.error_count,
                             "diagnostics": list(compiled.diagnostics),
+                            "diagnostics_truncated": compiled.diagnostics_truncated,
                             "suggested_next_step": (
                                 "Fix the reported main/test diagnostics, then "
                                 "retry test with every edited source_file."
@@ -411,6 +444,10 @@ class FastTestManager:
                         ),
                         "diagnostics": list(
                             project.compiler.last_compile_diagnostics
+                        ),
+                        "diagnostics_truncated": (
+                            project.compiler.last_compile_error_count
+                            > len(project.compiler.last_compile_diagnostics)
                         ),
                         "suggested_next_step": (
                             "Fix the prior compile errors and retry test with "
@@ -1402,7 +1439,11 @@ class FastTestManager:
             raise FastTestManagerError(
                 "JDT_TEST_FULL_COMPILE_FAILED",
                 "The initial JDT main/test FULL build failed.",
-                context={"diagnostics": list(full.diagnostics)},
+                context={
+                    "error_count": full.error_count,
+                    "diagnostics": list(full.diagnostics),
+                    "diagnostics_truncated": full.diagnostics_truncated,
+                },
             )
         compiler.accept_baseline()
         compiler.save_source_index()

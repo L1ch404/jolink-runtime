@@ -3,6 +3,19 @@
 Fast Test不是`mvn test`或`gradle test`的包装。构建系统只负责通过Probe导出测试
 Build World；main/test编译由持久JDT workspace完成，测试由独立Runner JVM执行。
 
+## 状态摘要与结果详情
+
+`java_fast_test` 支持 `run`（默认）、`cancel` 和 `result`。
+`run` 的直接返回和 `java_status(status).fast_test` 都是摘要：任务 ID、阶段、结果、
+计数和耗时。错误诊断、失败测试堆栈、准备阶段的错误细节不再反复混入全局状态。
+
+失败摘要提供可直接调用的 `next_action`。读取详情用
+`java_fast_test(action="result", test_run_id=...)`，不编译、不启动 Runner、不消费结果。
+活动任务尚未结束时返回当前观察；完成后返回已有诊断和失败详情。
+只复用当前 MCP 进程已有的活动/最近完成任务，不增加历史数据库或对话已读状态；
+已不保留的 ID 返回 `TEST_RUN_NOT_FOUND`，不会误读另一次测试。
+所有测试输出保留 `compiled_source_count`，不再默认输出完整编译文件清单。
+
 ## 流程
 
 ```text

@@ -233,6 +233,7 @@ tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Grad
 
                         assert await anyio.to_thread.run_sync(value) == "1"
                         if cycle:
+                            state = await call("java_status", {"action": "status", "details": True})
                             assert (
                                 state["probe_cache_reused"]
                                 and state["jdt_bootstrap_reused"]

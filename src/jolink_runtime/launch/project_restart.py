@@ -15,6 +15,7 @@ from .controller import LaunchCancelled, LaunchContext, LaunchControlError, Laun
 from .jdt_compile_session import JdtCompileError, PersistentJdtCompileSession
 from .jdt_launch_service import JdtLaunchService
 from .project_session import JavaProjectSession, ProjectSessionError
+from .startup_timing import StartupTimings
 
 
 def start_project_restart(runtime, action):
@@ -152,6 +153,7 @@ def _launch_compiled(
                 ),
                 command_argv=selected_command.argv,
                 retained_files=selected_command.retained_files,
+                startup_timing_key=StartupTimings._project_key(request),
             )
             context.check_cancelled()
             readiness = runtime._proc.observe_readiness(selected_process)

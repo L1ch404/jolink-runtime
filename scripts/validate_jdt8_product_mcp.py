@@ -192,6 +192,7 @@ async def _run(
                         and value.get("startup_state") == "ready"
                     ),
                 )
+                status = await _payload(session, "java_status", {"action": "status", "details": True})
                 worker = status.get("jdt_worker", {})
                 if (worker.get("java_major", 0) < 17 or worker.get("data_model") != 64
                         or status.get("fast_update", {}).get("target_level") != 8):
@@ -228,7 +229,7 @@ async def _run(
                     raise RuntimeError(hot_status)
                 if _message(ready_port) != "after":
                     raise RuntimeError("HotSwap behavior mismatch")
-                status = await _payload(session, "java_status", {"action": "status"})
+                status = await _payload(session, "java_status", {"action": "status", "details": True})
                 hot_generation = status["generation"]
                 old_pid = status["pid"]
 
@@ -242,6 +243,7 @@ async def _run(
                     lambda value: value.get("launch_phase") == "runtime_active"
                     and value.get("pid") != old_pid,
                 )
+                status = await _payload(session, "java_status", {"action": "status", "details": True})
                 if status.get("generation") != hot_generation:
                     raise RuntimeError(status)
                 if _message(ready_port) != "after":
@@ -288,7 +290,7 @@ async def _run(
                     raise RuntimeError("restart did not apply structural output")
                 await _payload(session, "java_application", {"action": "stop"})
                 return {
-                    "worker": status["jdt_worker"],
+                    "worker": worker,
                     "hot_reload_ms": hot.get("compile_ms"),
                     "restart_uses_current_jdt_output": True,
                     "structural_restart_applied": True,

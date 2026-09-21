@@ -19,13 +19,32 @@ is frozen separately in
 ## Exposed tools
 
 - `java_application`: `launch`, `attach`, `restart`, `stop`, `detach`
-- `java_fast_test`: optional `action=run` (default), or `action=cancel`
+- `java_fast_test`: optional `action=run` (default), `action=cancel`, `action=result`
 - `java_status`: `processes`, `status`, `logs`
 - `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
   `stack`, `variables`, `resume`, `cleanup_debug_state`
 
+`java_status(status)` returns a compact overview with readiness, process/debug
+state, current operation and recent restart/Test summaries. Internal Worker/cache
+configuration, output/source inventories, detailed timings and full reload/launch
+errors are available on demand through `java_status(action=status, details=true)`. The last reload
+and launch-error summaries include a `next_action` requesting that flag. No extra
+status action is added. This is a
+current-state observation, not an archive of earlier launches or reloads.
+Completed `launch/restart` calls return their own detailed outcome. The optional
+status flag retrieves the later outcome if the original call returned pending.
+Both status modes omit build-log text and do not read the build log.
+`java_status(logs)` defaults to `source=application`; `source=build` reads the
+current launch's build log with the existing encoding/redaction policy, 512 KiB
+scan and 32 KiB log-body return budgets. `tail` defaults to 50, maximum 500.
+An absent build log returns `BUILD_LOG_UNAVAILABLE` without starting any work.
+Cached launches may not create a new build log because no build-tool invocation
+was needed; their compiler errors remain available through `details`.
+`mcp.log` continues to be written locally; neither status mode includes
+`server_diagnostics` or the private logging configuration.
+
 `java_fast_test` is independent of an application JVM. It requires `project_path`
-and explicit `tests` for run, or `test_run_id` for cancel. Omitted action is
+and explicit `tests` for run, or `test_run_id` for cancel/result. Omitted action is
 defaulted by dispatch, not just by a Schema annotation. The old application
 test/cancel_test actions are not public aliases. First use obtains the Maven or
 Gradle model through the existing Probe and source preparation, then initializes
@@ -40,6 +59,18 @@ or deletions. For deletion, the Worker must return the exact private
 `deleted_source_units`; omission poisons the CompileSession even if a class
 appears to disappear. Application updates use `java_application(action='restart')`;
 Fast Test does not modify the application JVM.
+
+`run` (including its synchronous wait) and `java_status(status).fast_test` return
+summaries with state, counts, timings and the original `test_run_id`. Compiler
+diagnostics, failed-test stacks and bootstrap error details belong to `result`.
+Failures include `next_action = {tool: "java_fast_test", arguments: {action:
+"result", test_run_id: ...}}`. Reading details neither reruns nor consumes a test.
+`compiled_source_count` is retained; bulk `compiled_source_units` is not returned.
+`result` addresses the active or most recently finished attempt by ID in the
+current MCP process; unknown, superseded or pre-reconnection IDs return
+`TEST_RUN_NOT_FOUND`, never a different test's result. An active attempt may still
+be pending. The original outcome semantics also apply to detail reads: assertion
+failure is `ok=true, passed=false`; compilation/infrastructure failure is `ok=false`.
 
 Current Fast Test uses independent main/test compiler settings and supports
 Maven/Gradle module dependencies; current validation includes Java 8/11/17/21.
@@ -90,6 +121,20 @@ Gradle Daemon JDK.
 is not advertised or accepted as a public MCP action.
 
 ## Application startup readiness
+
+Product `launch/restart` replies include `previous_startup_ms`, captured before
+the operation from the same launch's previously observed successful startup,
+stored in the local joLink cache. This value is not replaced by the current
+result; only an unavailable record yields `null`. It excludes Probe/JDT preparation. With a configured
+ready port it measures JVM startup through TCP readiness; otherwise it is only
+the completed JVM/JDWP startup. HotSwap and failed startups do not replace the
+record. A successful startup immediately writes one JSON file under
+`startup-timings/`, using a stable launch-identity filename and file replacement.
+The next launch reads that file, including from a different MCP process; repeated
+status calls do not rewrite it. There is no TTL or build-input fingerprint check.
+Stop and MCP shutdown retain the observation; distinct project/launch
+configurations and direct JAR/classpath targets do not share timings. The value
+is a waiting reference, not a timeout or a new readiness predicate.
 
 `launch` and `restart` distinguish JVM launch from optional application TCP
 readiness.

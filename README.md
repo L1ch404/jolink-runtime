@@ -86,8 +86,8 @@ joLink exposes four focused MCP tools:
 
 - `java_application` — project launch, compile-aware restart (HotSwap by default),
   stop, and attach;
-- `java_fast_test` — selected Java tests and cancellation, without an application launch;
-- `java_status` — Java process discovery, application/build status, and logs;
+- `java_fast_test` — selected Java tests, result details and cancellation, without an application launch;
+- `java_status` — Java process discovery, compact status, on-demand details and logs;
 - `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
 
 After editing a managed project, call `java_application(action=restart)`.
@@ -108,8 +108,15 @@ java_fast_test(action=run,
   source_files=[src/main/java/example/Service.java],
   tests=[example.ServiceTest#works], timeout=60)
 -> if unfinished, choose a suitable waiting interval, then call java_status(action=status)
+-> read diagnostics/failures with java_fast_test(action=result, test_run_id=...)
 -> cancel with java_fast_test(action=cancel, test_run_id=...)
 ```
+
+`run` and `java_status(status).fast_test` return summaries, not compiler file lists,
+diagnostics or failure stacks. Follow a failure's `next_action`, or call `result`
+with its `test_run_id`, to read details without rerunning tests. Only the active
+and most recently completed test attempts are retained in the current MCP session;
+an unavailable ID returns `TEST_RUN_NOT_FOUND`.
 
 `passed=false` means the selected tests executed and found a failure; it is not
 a Tool infrastructure error. Fast Test does not require or modify a running
@@ -176,10 +183,30 @@ macOS/Linux: $XDG_CACHE_HOME/jolink-runtime/logs/mcp.log
                or ~/.cache/jolink-runtime/logs/mcp.log
 ```
 
-`java_status(action=status)` returns `server_diagnostics` with the active path
-and level, `disabled` when logging is off, or `stderr_only` when file logging could not be initialized. A diagnostic-file
+`status` does not return `mcp.log` paths or logging configuration, even with `details=true`.
+Read the local file at the path above when diagnosing joLink itself. A diagnostic-file
 failure never prevents the MCP server from starting. The file is limited to
 4 MiB with three rotated backups; stdout remains untouched.
+
+`java_status(action=status)` is a compact overview: readiness, process/debug state,
+active operation and recent restart/Test summaries. Read `java_status(action=status, details=true)`
+for current launch errors, full `last_reload`, compiler/cache settings and timings.
+Completed `launch/restart` calls already return their own detailed result; the
+flag is useful when an operation continued after the synchronous reply timeout.
+Neither call reads or embeds build logs. Use `java_status(action=logs, source=build)`
+for the current launch's build log, or omit `source` to read application output;
+both accept `tail`. Restart summaries include a `next_action` pointing to details.
+
+`launch/restart` replies include `previous_startup_ms`: the prior successful JVM
+startup duration saved locally for the same launch, captured before
+the new operation. It excludes Probe/JDT compilation. With `ready_port` it
+measures startup through observed TCP readiness; otherwise it only measures JVM/
+JDWP startup. HotSwap and failed startups do not replace this observation.
+It is written once when startup succeeds to a small JSON file under the joLink
+cache's `startup-timings/` directory. Stop, a new conversation or an MCP restart
+does not discard it. The next launch reads that file; no expiry, build-input
+validation or repeated status writes are involved. An unseen launch returns
+`null`. Treat it as a waiting reference, not a prediction or a readiness check.
 
 Set `JOLINK_LOG_LEVEL` in the MCP server's environment and restart it:
 `WARNING` (default) keeps warnings/errors only; `INFO` records JDT

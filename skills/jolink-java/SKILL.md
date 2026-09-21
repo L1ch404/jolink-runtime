@@ -93,9 +93,20 @@ Example — tool `java_application` (an application already managed by joLink):
   or completion. Keep its ID, choose an appropriate waiting interval, then call
   `java_status(action="status")`; do not rapidly poll or submit duplicate work.
   Follow `fast_test`, or `active_operation` / `last_reload`, for the original task.
+  `previous_startup_ms` on launch/restart is a locally persisted JVM startup observation,
+  excluding compilation, not a readiness guarantee; it can be null.
+- `java_status(action="status")` is a compact overview. Follow its `next_action`
+  or use `java_status(action="status", details=true)` for current launch/restart error details.
+  Read build logs with `java_status(action="logs", source="build")`; logs default
+  to application output when source is omitted. Do not fetch details on every poll.
 - For HTTP applications, provide the actual `ready_port`. `starting` means wait;
   `unverified` is not a claim of readiness. TCP readiness is not endpoint correctness.
-- Read test counts, failures and diagnostics. `passed=false` is a test outcome;
+- Fast Test `run` and `java_status` return summaries. For compiler diagnostics or
+  failed-test details, follow `next_action` or call
+  `java_fast_test(action="result", test_run_id=...)`; this reads the retained
+  result without rerunning tests. Read details when needed, not on every poll.
+  Results are retained only for the active/latest completed run in this MCP session.
+  `passed=false` is a test outcome;
   compilation/infrastructure errors are different. Report the tests actually run,
   not a claim that the entire project's build or test suite passed.
 - After HotSwap, verify with a fresh request or relevant test. It does not rerun
