@@ -126,6 +126,45 @@ constants to affected downstream sources. Local module dependencies use current
 workspace output rather than installed JARs; Maven also supports test-jar
 dependencies. See [Gradle multi-module flow and evidence](docs/gradle-modules.zh-CN.md).
 
+
+## Demo
+
+**From an unexpected API response to runtime investigation.**
+
+Reading source code tells an agent what might happen. Running the application
+and inspecting its state helps the agent check what actually happens.
+
+The screenshots below show a debugging example: an agent starts a Java
+application, checks an endpoint, notices an unexpected result, and uses
+joLink to investigate the execution path.
+
+> Some sensitive information in the screenshots has been redacted for privacy.
+
+### 1. Start the application and check the actual response
+
+The agent uses `java_application` to launch the application and `java_status`
+to check its state, then sends an HTTP request to a sample risk-scoring endpoint.
+
+For `score=80`, the expected category is `High Risk`, but the agent reports
+`Medium Risk`. It checks additional boundary values before investigating further.
+
+![Agent launching a Java application and checking an unexpected endpoint response](docs/images/demo-launch-and-check.png)
+
+### 2. Set a breakpoint and inspect runtime variables
+
+The agent uses `java_debugger` to set a breakpoint on the `Medium Risk` branch,
+triggers another request, and inspects the variables after the breakpoint is hit.
+
+The conversation shows `score=80` while execution is in the `Medium Risk`
+branch. This gives the agent runtime evidence to investigate its
+boundary-condition hypothesis, rather than relying only on source-code assumptions.
+
+![Agent using a breakpoint and runtime variables to investigate a boundary-condition issue](docs/images/demo-breakpoint-and-variables.png)
+
+This example demonstrates application startup and runtime investigation.
+It is not a Fast Test performance benchmark; the screenshots cover the
+investigation stage, not the subsequent fix and re-verification.
+
 ## Private diagnostics
 
 joLink keeps stdout exclusively for MCP JSON-RPC. Python lifecycle logs and
