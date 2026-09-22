@@ -8,6 +8,12 @@ Complete the steps you can perform; ask only when the target client or an action
 requiring the user's participation is unclear. Do not launch a business application
 or run its tests as part of installation.
 
+**Configuration and client verification are separate stages.** This conversation
+can finish by saving and checking the MCP configuration and Skill file. If the
+client has not loaded them, hand off to the user in step 5 and stop; that is a
+normal completion of configuration, not a failed installation. Step 6 is only
+for a conversation in which the client has loaded the tools and Skill.
+
 ## 1. Select the client and destination
 
 Identify the client, its surface (CLI / IDE / editor extension), OS and active
@@ -192,28 +198,52 @@ directory if necessary. Install the English file regardless of this guide's lang
   a customized copy.
 
 Verify that the file contains the `name: jolink-java` frontmatter and the actual
-instructions. Enable the Skill in the client's UI if it was disabled. Do not install
-a second Chinese Skill or add global rules: this Skill is the usage guidance.
+instructions. If enabling it requires user interaction, include that in the
+handoff below. Do not install a second Chinese Skill or add global rules.
 
-## 5. Reconnect and verify
+## 5. Check configuration and hand off if reloading is needed
 
-Reload joLink in the client's MCP settings, then:
+Check the results of steps 1–4: uvx is available, the selected client's saved
+configuration contains the joLink entry with its environment settings, unrelated
+configuration is preserved, and the English Skill file is in the selected location.
+These checks establish **configuration complete**, not a connected MCP server or
+a Skill loaded by the client. Package downloads may still happen on first start.
 
-1. Confirm the server connects and the client lists its tools. Inspect the actual
-   tool schemas; don't assume the installed release has a newer interface.
-2. Call the available status tool once: `java_status(action="status")`, or
-   `java_runtime(action="status")` when the server exposes that older interface.
+If the client has already loaded the new tools and Skill into this conversation,
+continue to step 6. Otherwise, **stop here** and tell the user the required client
+action: reconnect MCP or restart the client as appropriate, then start a new chat.
+Opening a chat before installation does not guarantee it sees what is installed later.
+
+Do not bypass an unavailable client tool list by writing a standalone MCP client,
+manually sending protocol messages, or directly launching the server from a terminal.
+Do not reinstall, edit the configuration repeatedly, or kill/restart the user's
+agent process to finish verification in this chat. Independently connecting to a
+server does not prove this client is connected; reading SKILL.md as a file does
+not prove the client has registered the Skill.
+
+Report the client, MCP configuration location, Skill location and the next user
+action. For example: “Configuration complete; client loading and connection
+verification are pending. Please reload the client, then verify in a new chat.
+No reinstall is needed.” Do not claim “connected” without observing it.
+
+## 6. Verify through the loaded client
+
+This is verification of an existing installation, not another installation run.
+Use the current client's supported tool/Skill discovery or loading facilities.
+If either remains unavailable, report the missing item and stop. Do not repeat
+steps 1–4 just because the conversation still lacks the tools or Skill.
+
+1. Inspect the joLink tools actually exposed by the client; do not assume the
+   installed release has a newer interface.
+2. Call the exposed status tool once: `java_status(action="status")`, or
+   `java_runtime(action="status")` only if that older interface is exposed.
    Do not launch or stop a business application for this check.
-3. Confirm `jolink-java` appears in the client's Skill list or can be loaded there.
+3. Confirm `jolink-java` appears in the client's Skill list or can be loaded
+   through the client. File existence alone is not this check.
 
-If this conversation cannot refresh its tool/Skill list, finish writing the files
-and ask the user to reconnect or start a new conversation in that client. Do not
-kill the user's agent process. A native `mcp list` command showing saved settings
-proves registration, not a completed server connection.
-
-Finish with a short report: which client was configured, the Skill location,
-whether MCP and Skill loading were verified, and any single remaining user action.
-Do not report “connected” when only the configuration was written.
+Report the observed MCP and Skill results separately. Diagnose a concrete client
+connection error if one is reported; an unchanged conversation tool list alone
+is not evidence of a broken installation.
 
 ## If a step fails
 

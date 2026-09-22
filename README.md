@@ -29,7 +29,20 @@ provider, or separate agent application.
 Follow this guide:
 https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md
 Install joLink MCP and its English Skill for my current agent.
-Use user-level installation by default, preserve existing configuration, and verify the connection.
+Use user-level installation by default and preserve existing configuration.
+Check the saved configuration and Skill file. If this chat cannot load the new MCP or Skill,
+stop and tell me how to reload the client; leave connection verification to a chat after reloading.
+```
+
+3. If the agent reports that a reload is needed, reconnect MCP or restart the client
+   as instructed, then open a new chat. Configuration complete but not yet loaded
+   is not an installation failure. In the loaded chat, you can send:
+
+```text
+Verify the existing joLink MCP and jolink-java Skill in this client without reinstalling them.
+Call the joLink status tool exposed by this client once, and check its Skill list or loading facility.
+If either is still unavailable, report what is missing and stop; do not write a standalone verification script.
+Do not start applications or run tests.
 ```
 
 The guide provides official client-specific locations and examples for Codex,

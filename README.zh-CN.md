@@ -26,7 +26,19 @@ joLink 不提供编辑器界面，而是通过 MCP，将增量编译、测试、
 按照这份文档：
 https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md
 为我当前使用的 Agent 安装 joLink MCP 和英文 Skill。
-默认用户级安装，保留现有配置，并验证连接。
+默认用户级安装，保留现有配置。
+检查已保存的配置和 Skill 文件。如果当前会话无法加载新的 MCP 或 Skill，
+请停止并告诉我如何重新加载客户端，连接验证留到重新加载后的会话。
+```
+
+3. 如果 Agent 提示需要重新加载，由你按提示重连 MCP 或重启客户端，再新建对话。
+   配置完成但尚未加载，不是安装失败。在加载后的对话里可以发送：
+
+```text
+验证当前客户端已经配置的 joLink MCP 和 jolink-java Skill，不要重新安装。
+调用当前客户端暴露的 joLink 状态查询工具一次，并通过客户端的技能列表或加载入口确认 Skill。
+如果仍不可用，说明缺少哪一项后停止，不要另写验证脚本。
+不启动应用、不运行测试。
 ```
 
 安装文档覆盖 Codex、Claude Code、Cursor、VS Code/Copilot、CodeBuddy、Gemini CLI、
