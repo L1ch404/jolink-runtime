@@ -109,9 +109,13 @@ def test_skill_examples_validate_against_current_mcp_schemas():
     assert examples
     for name, arguments in examples:
         Draft202012Validator(schemas[name]).validate(json.loads(arguments))
-    # References to public tools should not silently drift to retired names.
+    # java_* can name a tool or a documented parameter (for example java_home).
+    # Both must belong to the current public schemas, not retired names.
     names = set(re.findall(r"`(java_\w+)(?:`|\()", SKILL.read_text(encoding="utf-8")))
-    assert names and names <= schemas.keys()
+    public_names = set(schemas) | {
+        name for schema in schemas.values() for name in schema["properties"]
+    }
+    assert names and names <= public_names
 
 
 def test_translated_readme_examples_validate_against_current_mcp_schemas():

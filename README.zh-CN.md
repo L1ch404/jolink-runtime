@@ -104,7 +104,8 @@ OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP �
 
 ### 启动与更新应用
 
-项目启动读取已有 IDEA Application/Spring Boot 启动配置，通过 Maven/Gradle Probe
+项目启动可直接提供 `project_path + main_class`，也可读取已有 IDEA Application/Spring Boot
+启动配置；`java_home` 可指定应用 JDK。通过 Maven/Gradle Probe
 获得模型，在 JVM 启动前完成必要的 JDT 编译，不要求先打 fat JAR。也支持直接启动
 已有 JAR/classpath，或 attach 到本机已有 JVM。
 

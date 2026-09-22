@@ -261,8 +261,8 @@ processes / status / logs
 These actions support:
 
 - launching a Java application as an owned JVM process;
-- importing an IntelliJ IDEA Application/Spring Boot launch from Maven, or a
-  verified IDEA Application launch from a supported Gradle Wrapper project,
+- launching a Maven/Gradle project with `project_path` and `main_class`, or
+  optionally importing an IntelliJ IDEA Application/Spring Boot configuration,
   exporting its Build World without running Maven/Gradle compilation, compiling
   with JDT before JVM startup, and launching without packaging a fat JAR;
 - stopping or restarting an application after code changes;

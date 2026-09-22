@@ -17,8 +17,8 @@ from java_support import (
 
 
 @pytest.mark.mcp_java_e2e
-@pytest.mark.parametrize("dsl", ["groovy", "kotlin"])
-def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: str):
+@pytest.mark.parametrize("dsl,headless", [("groovy", False), ("kotlin", False), ("groovy", True)])
+def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: str, headless: bool):
     require_real_mcp_java_e2e()
     gradle = os.environ.get("JOLINK_FAST_TEST_GRADLE")
     if not gradle:
@@ -138,6 +138,9 @@ public static void main(String[] args) throws Exception {
     (project / ".run/App.xml").write_text(
         f'''<component name="ProjectRunConfigurationManager"><configuration name="App" type="Application"><module name="app"/><option name="MAIN_CLASS_NAME" value="example.App"/><option name="WORKING_DIRECTORY" value="$PROJECT_DIR$"/><option name="PROGRAM_PARAMETERS" value="{port}"/><method v="2"><option name="Make" enabled="true"/></method></configuration></component>'''
     )
+    if headless:
+        (project / ".run/App.xml").unlink()
+        (project / ".run").rmdir()
     env = {
         **os.environ,
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
@@ -280,7 +283,8 @@ public static void main(String[] args) throws Exception {
                         {
                             "action": "launch",
                             "project_path": str(alias if cycle == 0 else project),
-                            "launch_name": "App",
+                            **({"main_class": "example.App", "app_args": [str(port)]}
+                               if headless else {"launch_name": "App"}),
                             "jdwp_port": debug,
                             "ready_port": port,
                             "timeout": 10,

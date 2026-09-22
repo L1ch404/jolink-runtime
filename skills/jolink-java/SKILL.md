@@ -61,9 +61,12 @@ or silently switch installation sources. Installation is a separate user task.
   class or `Class#method` selectors. `action` defaults to `run`. An application
   launch or IDEA run configuration is not required just to execute these tests.
 - **Run an application:** use `java_application(action="launch")`. For project
-  launch, use its existing IDEA Application/Spring Boot configuration; inspect
-  returned launch choices rather than guessing. Specify `build_system` when the
-  project contains both Maven and Gradle and the authority is ambiguous.
+  launch, supply `project_path` and `main_class`, or use an existing IDEA
+  Application/Spring Boot configuration (`launch_name` selects one). IDEA is
+  optional. Use `java_home` to select the application JDK;
+  `app_args` and `vm_args` override imported launch arguments.
+  Specify `build_system` when both Maven and Gradle are present and the authority
+  is ambiguous.
 - **Apply edits to a managed application:** use `java_application(action="restart")`.
   It detects source changes, incrementally compiles, prefers HotSwap, and restarts
   the JVM when HotSwap cannot apply the output. No explicit source list is needed.
@@ -118,7 +121,7 @@ Example — tool `java_application` (an application already managed by joLink):
 - Cancel a Test with `java_fast_test(action="cancel", test_run_id=...)`. Stop only
   the managed application when the user's task calls for it; do not stop unrelated JVMs.
 
-Keep project JDKs and build settings; the compiler Worker has a separate runtime.
+Keep the project's intended JDK and build settings.
 Use normal Maven/Gradle for packaging, full lifecycle/CI validation, or work the
 current joLink result shows it cannot perform. Report that concrete gap; do not
 silently weaken the project to turn a rejected workflow into a claimed success.

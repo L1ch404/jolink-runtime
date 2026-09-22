@@ -47,7 +47,7 @@ class StartupTimings:
     def _project_key(request, ready_port=None):
         return (
             "project", os.path.normcase(str(request.project_path)),
-            request.launch_name or "", request.build_system,
+            request.launch_name or getattr(request, "main_class", None) or "", request.build_system,
             bool(request.ready_port if ready_port is None else ready_port),
         )
 
@@ -70,7 +70,7 @@ class StartupTimings:
         if arguments.get("project_path"):
             key = (
                 "project", os.path.normcase(str(Path(arguments["project_path"]).expanduser().resolve())),
-                arguments.get("launch_name") or "", arguments.get("build_system", ""),
+                arguments.get("launch_name") or arguments.get("main_class") or "", arguments.get("build_system", ""),
                 bool(arguments.get("ready_port", 0)),
             )
         elif arguments["action"] == "restart" and not arguments.get("jar_path") and not arguments.get("main_class"):

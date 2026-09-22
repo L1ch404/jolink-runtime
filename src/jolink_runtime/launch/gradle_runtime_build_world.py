@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .build_world_identity import build_world_fingerprint
-from .jdt_compile_session import SUPPORTED_JAVA_LEVELS, JdtBuildWorldPlan, resource_tree_fingerprint
+from .jdt_compile_session import SUPPORTED_JAVA_LEVELS, JdtBuildWorldPlan, resource_tree_fingerprint, select_target_system_home
 
 
 _PROCESSOR_SERVICE = "META-INF/services/javax.annotation.processing.Processor"
@@ -374,7 +374,7 @@ def create_gradle_runtime_build_world(
             dependency_entries=dependencies,
             processor_entries=(),
             lombok_entries=tuple(lombok_entries),
-            target_java_home=target_java_home,
+            target_java_home=select_target_system_home((target_java_home,), source_level),
             source_encoding=encoding,
             source_level=source_level,
             target_level=source_level,

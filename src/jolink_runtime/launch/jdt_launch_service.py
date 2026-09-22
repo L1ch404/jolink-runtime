@@ -73,7 +73,6 @@ class JdtLaunchService:
             candidate, selected = prepared_runtime(
                 (prepared.build_jdk.home,), check_request=context.check_cancelled
             )
-            persist_model = not prepared.probe_cache_reused or plan.worker_java_home != selected.home
             if plan.worker_java_home is None or not plan.system_entries:
                 target_home = select_target_system_home(
                     (
@@ -146,11 +145,11 @@ class JdtLaunchService:
                 (time.monotonic() - started) * 1000,
                 reused=workspace.reusable, build_kind=result.actual_build_kind,
             )
-            if persist_model:
-                try:
-                    runtime._project_pipeline.save_cache(prepared, request)
-                except OSError:
-                    logger.warning("Build World cache write failed; launch continues.")
+            # Persist the current launch JDK/settings even when compilation was reused.
+            try:
+                runtime._project_pipeline.save_cache(prepared, request)
+            except OSError:
+                logger.warning("Build World cache write failed; launch continues.")
 
             generation = session.generations.prepare_startup(compiler.output_directory)
             old_roots = set(prepared.generation_input_roots)

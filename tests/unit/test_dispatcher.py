@@ -374,9 +374,9 @@ def test_project_launch_routes_without_changing_runtime_action(
             {
                 "action": "run",
                 "project_path": "/tmp/project",
-                "main_class": "Example",
+                "classpath": ".",
             },
-            "main_class",
+            "classpath",
         ),
     ],
 )
@@ -404,7 +404,7 @@ def test_product_restart_rejects_project_path_before_runtime_allocation() -> Non
     assert result["ok"] is False
     assert result["error_code"] == "INVALID_ARGUMENT"
     assert result["argument"] == "project_path"
-    assert "sealed Generation" in result["error"]
+    assert "current project session" in result["error"]
     assert sessions.session_keys == ()
 
 

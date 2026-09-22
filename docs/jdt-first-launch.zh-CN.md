@@ -15,6 +15,30 @@ joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspa
 
 ## 启动
 
+没有 IDEA 配置也可以启动：
+
+```json
+{
+  "action": "launch",
+  "project_path": "/path/to/project",
+  "main_class": "example.Application",
+  "ready_port": 8080
+}
+```
+
+`java_home` 可明确指定**应用 JDK**目录；`app_args`、`vm_args` 可传启动参数数组。
+应用 JDK 按显式 `java_home` → IDEA 启动 JRE → IDEA 项目 SDK → Build World
+目标平台 JDK 的顺序选择。没有显式设置时，Java8 目标平台默认用对应 JDK8 启动，
+不再直接跟随运行 Maven 的 JDK17；明确指定其他版本仍然允许。Worker JDK 与此独立。
+
+有 `launch_name` 时读取指定 IDEA 启动配置，显式参数覆盖对应配置；参数传 `[]`
+表示清空。只有 `main_class` 而没有 `launch_name` 时，不要求 IDEA 启动配置，
+工作目录默认为 `project_path`，已有 IDEA 构建工具偏好仍可复用。
+
+每次启动按当前配置重新组装应用 JDK和启动参数，不能被旧启动缓存覆盖。
+仅修改应用 JDK或参数不清空 Probe/JDT 缓存；main class或所选模块变化则刷新模块模型。
+本次启动信息随已有小型 JSON 缓存保存，实际 Java 路径可在启动详情中查看。
+
 ```text
 读取已有 Build World JSON（没有或已跟踪构建配置变化时才重新导出）
 → 使用固定JDT3.46与私有Temurin21 Worker，复用项目目标system libraries

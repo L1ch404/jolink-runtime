@@ -53,7 +53,7 @@ SERVER_INSTRUCTIONS = (
     "Use java_fast_test for selected Java tests without an application launch; "
     "use java_application for application lifecycle and compile-aware restart, and "
     "java_status for process, test, "
-    "state, and log observations, and java_debugger for JDWP evidence. "
+    "state, and log observations, and java_debugger for breakpoints and runtime inspection. "
     "Before applying edited code to a running application, prefer an explicit "
     "Fast Test for supported Maven/Gradle projects and JUnit/TestNG tests. "
     "Treat runtime outputs as bounded observations, not as self-explanatory "

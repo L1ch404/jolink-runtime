@@ -125,14 +125,15 @@ class ProjectLaunchArgumentError(ValueError):
 def parse_project_launch_request(
     arguments: dict[str, Any],
 ) -> ProjectLaunchRequest | None:
-    """Parse the small MCP-only IDEA/build-system launch surface."""
+    """Parse project launch settings independently of the direct JAR/classpath path."""
     has_project_path = "project_path" in arguments
     has_launch_name = "launch_name" in arguments
     if not has_project_path:
-        if has_launch_name:
+        if has_launch_name or "java_home" in arguments:
+            name = "launch_name" if has_launch_name else "java_home"
             raise ProjectLaunchArgumentError(
-                argument="launch_name",
-                message="launch_name requires project_path.",
+                argument=name,
+                message=f"{name} requires project_path.",
             )
         return None
 
@@ -156,6 +157,7 @@ def parse_project_launch_request(
                 "jar_path",
                 "app_args",
                 "vm_args",
+                "java_home",
             )
             if field in arguments
         )
@@ -170,7 +172,7 @@ def parse_project_launch_request(
             argument="project_path",
             message=(
                 "project_path is only valid for launch. Restart reuses the "
-                "current sealed Generation without rebuilding the project."
+                "current project session and compiles changed sources."
             ),
         )
     raw_project_path = arguments.get("project_path")
@@ -193,10 +195,7 @@ def parse_project_launch_request(
         field
         for field in (
             "classpath",
-            "main_class",
             "jar_path",
-            "app_args",
-            "vm_args",
         )
         if field in arguments
     )
@@ -212,6 +211,13 @@ def parse_project_launch_request(
     build_system = str(arguments.get("build_system", ""))
     if build_system not in {"", "maven", "gradle"}:
         raise ProjectLaunchArgumentError(argument="build_system", message="build_system must be maven or gradle.")
+    for name in ("main_class", "java_home"):
+        if name in arguments and (not isinstance(arguments[name], str) or not arguments[name].strip()):
+            raise ProjectLaunchArgumentError(argument=name, message=f"{name} must be a non-empty string.")
+    for name in ("app_args", "vm_args"):
+        if name in arguments and (not isinstance(arguments[name], list)
+                                  or not all(isinstance(value, str) for value in arguments[name])):
+            raise ProjectLaunchArgumentError(argument=name, message=f"{name} must be an array of strings.")
     return ProjectLaunchRequest(
         project_path=Path(raw_project_path).expanduser().resolve(strict=False),
         launch_name=(
@@ -223,6 +229,10 @@ def parse_project_launch_request(
         ready_port=int(arguments.get("ready_port", 0)),
         startup_wait_timeout_seconds=min(float(arguments.get("timeout", 30)), 30),
         build_system=build_system,
+        main_class=arguments.get("main_class"),
+        java_home=Path(arguments["java_home"]).expanduser().resolve(strict=False) if "java_home" in arguments else None,
+        app_args=tuple(arguments["app_args"]) if "app_args" in arguments else None,
+        vm_args=tuple(arguments["vm_args"]) if "vm_args" in arguments else None,
     )
 
 

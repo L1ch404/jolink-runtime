@@ -16,7 +16,7 @@ See the [MCP contract](mcp-contract-v0.1.md) for argument/result semantics.
 ## Project launch path
 
 ```text
-IDEA launch configuration
+Explicit launch parameters or an optional IDEA launch configuration
 → cached Maven/Gradle Probe model (refresh when tracked build configuration changes)
 → persistent JDT projects in dependency order
 → FULL for a cold workspace / INCREMENTAL for changed sources / reuse for no changes
@@ -35,7 +35,31 @@ automatically forcing a new formal Maven build. Runtime uses the persistent
 JDT output directly, without copying the whole class tree for every launch.
 Resources remain part of the runtime classpath.
 
-The import reads `.run/*.xml`, `.idea/runConfigurations/*.xml`, and
+For an IDEA-independent launch, supply `project_path` and `main_class`:
+
+```json
+{"action":"launch","project_path":"/path/to/project","main_class":"example.Application","ready_port":8080}
+```
+
+`app_args` and `vm_args` are optional argument arrays. `java_home` optionally
+selects the **application** JDK, without changing the build-tool or Worker JDK.
+The application JDK order is: explicit `java_home`, IDEA launch JRE, IDEA project
+SDK, then the resolved Build World's target-platform JDK. Thus an unconfigured
+Java 8 application uses the discovered Java 8 platform even when Maven runs on
+Java 17. An explicitly selected newer runtime is still allowed.
+
+Current launch settings are applied on every launch, including cache hits.
+Changing only the application JDK or arguments reuses the Probe/JDT compilation
+state; a changed main class or selected module refreshes the module model.
+The resolved Java executable is included in launch details.
+
+With `launch_name`, IDEA supplies the base configuration; explicitly supplied
+`main_class`, `java_home`, `app_args`, and `vm_args` override its values. An empty
+argument array clears imported arguments. With `main_class` and no `launch_name`,
+no IDEA launch configuration is needed and the working directory defaults to
+`project_path`. Build-tool preferences may still be read from IDEA if present.
+
+The optional import reads `.run/*.xml`, `.idea/runConfigurations/*.xml`, and
 `.idea/workspace.xml` for supported Application/Spring Boot configurations.
 Equivalent duplicated configurations collapse; genuine ambiguity requires an
 exact `launch_name` or fixing conflicting IDE configurations. joLink does not

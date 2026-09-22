@@ -923,9 +923,9 @@ class IdeaLaunchImporter:
                 ],
                 "source_warnings": list(source_warnings),
                 "suggested_next_step": (
-                    "Create or choose an IDEA Application or Spring Boot "
-                    "configuration, or use the existing direct classpath/JAR "
-                    "launch parameters."
+                    "Supply project_path and main_class without launch_name to "
+                    "launch without IDEA, or select an existing IDEA Application "
+                    "or Spring Boot configuration."
                 ),
             },
         )

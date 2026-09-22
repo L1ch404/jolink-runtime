@@ -152,6 +152,11 @@ class ProjectLaunchCache:
                 or raw.get("build_system") != build_system
             ):
                 return None
+            # A different entry/module may need a different dependency graph.
+            # JDK and argument changes only refresh the JVM plan in the caller.
+            if any(raw.get("intent", {}).get(key) != getattr(intent, key)
+                   for key in ("main_class", "ide_module_name")):
+                return None
             plan_raw = raw["jdt_plan"]
             inputs = _paths(plan_raw["configuration_inputs"])
             if build_system == "maven":

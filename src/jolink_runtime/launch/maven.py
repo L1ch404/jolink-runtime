@@ -230,8 +230,8 @@ class MavenBuildSystemAdapter:
             "No Maven module can contain the selected main class.",
             retryable=True,
             suggested_next_step=(
-                "Choose an IDEA configuration whose module maps to one Maven "
-                "module, or provide a direct classpath launch."
+                "Use the application module's project_path and main_class, "
+                "or select an IDEA configuration mapped to that module."
             ),
             context={
                 "ide_module_name": intent.ide_module_name,
@@ -1589,11 +1589,11 @@ class MavenBuildSystemAdapter:
     ) -> None:
         raise MavenResolutionError(
             LaunchErrorCode.AMBIGUOUS_BUILD_MODULE,
-            "Multiple Maven modules match the IDEA launch intent.",
+            "Multiple Maven modules match the launch intent.",
             retryable=True,
             suggested_next_step=(
-                "Choose an IDEA configuration with an exact module/main "
-                "class mapping."
+                "Use the application module's project_path, or choose an IDEA "
+                "configuration with an exact module/main class mapping."
             ),
             context={
                 "ide_module_name": intent.ide_module_name,

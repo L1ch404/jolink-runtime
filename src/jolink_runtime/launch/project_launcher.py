@@ -1,4 +1,4 @@
-"""IDEA-to-Maven project launch preparation for one supervised attempt."""
+"""Project launch preparation from explicit parameters or IDEA preferences."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import shlex
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from .idea_environment import (
     IdeaEnvironmentImporter,
 )
 from .idea_importer import (
+    ImportedIdeaLaunch,
     IdeaLaunchImportError,
     IdeaLaunchImporter,
 )
@@ -81,6 +82,10 @@ class ProjectLaunchRequest:
     ready_port: int
     startup_wait_timeout_seconds: float
     build_system: str = ""
+    main_class: str | None = None
+    java_home: Path | None = None
+    app_args: tuple[str, ...] | None = field(default=None, repr=False)
+    vm_args: tuple[str, ...] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -144,6 +149,55 @@ class ProjectLaunchPipeline:
             pass
         return directory
 
+    def _launch_intent(self, request: ProjectLaunchRequest) -> ImportedIdeaLaunch:
+        if request.main_class and not request.launch_name:
+            imported = ImportedIdeaLaunch(
+                intent=LaunchIntent(
+                    source="arguments", launch_name=request.main_class,
+                    launch_type="java_application", main_class=request.main_class,
+                    working_directory=request.project_path,
+                ),
+                source_file="", configuration_type="",
+            )
+        else:
+            try:
+                imported = self._idea_launches.select(request.project_path, request.launch_name)
+            except IdeaLaunchImportError as error:
+                raise self._idea_failure(error) from error
+        intent = imported.intent
+        return replace(imported, intent=replace(
+            intent,
+            main_class=request.main_class or intent.main_class,
+            runtime_jdk_reference=(str(request.java_home) if request.java_home else intent.runtime_jdk_reference),
+            program_args=intent.program_args if request.app_args is None else request.app_args,
+            jvm_args=intent.jvm_args if request.vm_args is None else request.vm_args,
+        ))
+
+    def _select_runtime_java(self, context, intent, preferences, plan, previous, build_log):
+        reference = intent.runtime_jdk_reference
+        use_target = not reference and not preferences.project_jdk_name
+        runtime = self._select_java(
+            context, preferences=preferences,
+            explicit_reference=str(plan.target_java_home) if use_target else reference,
+            for_build=False, cwd=plan.project_root, build_log=build_log,
+            already_probed=previous,
+        )
+        if use_target:
+            runtime = replace(runtime, source="project_target_jdk")
+        elif runtime.source == "idea_explicit_jdk":
+            runtime = replace(runtime, source="explicit_runtime_jdk")
+        return runtime
+
+    @staticmethod
+    def _runtime_plan(plan, intent, runtime_jdk):
+        """Reuse compiled outputs, not a previous invocation's launch settings."""
+        return replace(
+            plan, java_executable=runtime_jdk.java_executable,
+            main_class=intent.main_class, working_directory=intent.working_directory,
+            jvm_args=intent.jvm_args, program_args=intent.program_args,
+            environment_overrides=dict(intent.environment),
+        )
+
     def prepare(
         self,
         context: LaunchContext,
@@ -152,17 +206,17 @@ class ProjectLaunchPipeline:
         attempt_directory: Path,
     ) -> PreparedProjectLaunch:
         context.check_cancelled()
-        try:
-            imported = self._idea_launches.select(
-                request.project_path,
-                request.launch_name,
-            )
-        except IdeaLaunchImportError as error:
-            raise self._idea_failure(error) from error
+        imported = self._launch_intent(request)
         context.set_intent(imported.intent)
         context.transition(LaunchPhase.RESOLVING_BUILD)
 
-        preferences_identity = None
+        preferences = self._idea_environment.import_preferences(request.project_path)
+        preferences_identity = preferences.redacted_summary()
+        preferences_identity.pop("warnings", None)
+        preferences_identity["jdk_homes_by_name"] = {
+            name: [str(path) for path in paths]
+            for name, paths in preferences.jdk_homes_by_name.items()
+        }
         has_maven = (request.project_path / "pom.xml").is_file()
         has_gradle = gradle_build_root(request.project_path) is not None
         if has_maven and has_gradle and not request.build_system:
@@ -192,6 +246,10 @@ class ProjectLaunchPipeline:
             build_preferences=preferences_identity,
         )
         if cached is not None:
+            runtime_jdk = self._select_runtime_java(
+                context, imported.intent, preferences, cached.jdt_plan,
+                cached.runtime_jdk, attempt_directory / "build.log",
+            )
             context.set_build_plan(
                 BuildPlan(
                     build_system=cached.build_system,
@@ -204,7 +262,7 @@ class ProjectLaunchPipeline:
             )
             context.transition(LaunchPhase.RESOLVING_RUNTIME)
             plan, command = self.materialize_command(
-                cached.jvm_plan,
+                self._runtime_plan(cached.jvm_plan, imported.intent, runtime_jdk),
                 jdwp_port=request.jdwp_port,
                 attempt_directory=attempt_directory,
             )
@@ -220,7 +278,7 @@ class ProjectLaunchPipeline:
                 resource_source_roots=cached.resource_source_roots,
                 resource_input_manifest={},
                 build_world_inputs=cached.jdt_plan.configuration_inputs,
-                runtime_jdk=cached.runtime_jdk,
+                runtime_jdk=runtime_jdk,
                 jvm_plan=plan,
                 command=command,
                 warnings=(
@@ -234,15 +292,6 @@ class ProjectLaunchPipeline:
                 launch_intent=imported.intent,
                 build_preferences_identity=preferences_identity,
             )
-        preferences = self._idea_environment.import_preferences(
-            request.project_path
-        )
-        preferences_identity = preferences.redacted_summary()
-        preferences_identity.pop("warnings", None)
-        preferences_identity["jdk_homes_by_name"] = {
-            name: [str(path) for path in paths]
-            for name, paths in preferences.jdk_homes_by_name.items()
-        }
         if build_system == "gradle":
             try:
                 prepared = self._prepare_gradle(
@@ -286,15 +335,6 @@ class ProjectLaunchPipeline:
             cwd=workspace.build_root,
             build_log=build_log,
         )
-        runtime_jdk = self._select_java(
-            context,
-            preferences=preferences,
-            explicit_reference=imported.intent.runtime_jdk_reference,
-            for_build=False,
-            cwd=workspace.build_root,
-            build_log=build_log,
-            already_probed=build_jdk,
-        )
         maven = self._select_maven(
             context,
             project_root=workspace.project_root,
@@ -304,7 +344,7 @@ class ProjectLaunchPipeline:
         )
         prepared = self._prepare_maven_probe(
             context, request, imported.intent, preferences, workspace, module,
-            build_jdk, runtime_jdk, maven, attempt_directory, build_log,
+            build_jdk, maven, attempt_directory, build_log,
         )
         return self._stabilize(replace(
             prepared,
@@ -314,7 +354,7 @@ class ProjectLaunchPipeline:
         ))
 
     def _prepare_maven_probe(self, context, request, intent, preferences, workspace,
-                               module, build_jdk, runtime_jdk, maven, directory, log):
+                               module, build_jdk, maven, directory, log):
         import json
         probe = ProductMavenProbe.load()
         local_repository = preferences.local_repository or Path.home() / ".m2/repository"
@@ -373,6 +413,9 @@ class ProjectLaunchPipeline:
             worker_min_heap_mb=max(m["worker_min_heap_mb"] for m in modules),
             worker_max_heap_mb=max(m["worker_max_heap_mb"] for m in modules),
             modules=modules if len(modules) > 1 else ())
+        runtime_jdk = self._select_runtime_java(
+            context, intent, preferences, plan, build_jdk, log,
+        )
         jvm = JvmLaunchPlan(java_executable=runtime_jdk.java_executable,
             classpath=tuple(Path(p) for p in snapshot["runtimeClasspathElements"]),
             main_class=intent.main_class, working_directory=intent.working_directory,
@@ -520,15 +563,6 @@ class ProjectLaunchPipeline:
             cwd=project,
             build_log=build_log,
         )
-        runtime_jdk = self._select_java(
-            context,
-            preferences=preferences,
-            explicit_reference=imported.intent.runtime_jdk_reference,
-            for_build=False,
-            cwd=project,
-            build_log=build_log,
-            already_probed=build_jdk,
-        )
         probe = ProductGradleProbe.load()
         version = wrapper_version(project)
         wrapper = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
@@ -645,13 +679,16 @@ class ProjectLaunchPipeline:
                 retryable=False,
                 suggested_next_step="Use the formal Gradle launch for this project.",
             ) from error
+        runtime_jdk = self._select_runtime_java(
+            context, imported.intent, preferences, world.jdt_plan, build_jdk, build_log,
+        )
         runtime_major = runtime_jdk.major_version
         if runtime_major is not None and runtime_major < world.jdt_plan.target_level:
             raise LaunchPipelineFailure(
                 LaunchErrorCode.JAVA_TOOLCHAIN_NOT_FOUND,
                 "The selected Runtime JDK is older than Gradle compile target.",
                 retryable=True,
-                suggested_next_step="Select a compatible IDEA Runtime JDK.",
+                suggested_next_step="Select a compatible application java_home or IDEA Runtime JDK.",
             )
         plan = JvmLaunchPlan(
             java_executable=runtime_jdk.java_executable,
@@ -800,13 +837,11 @@ class ProjectLaunchPipeline:
         )
         if (
             already_probed is not None
-            and any(
-                candidate.java_executable == already_probed.java_executable
-                for candidate in candidates
-            )
+            and candidates
+            and candidates[0].java_executable == already_probed.java_executable
             and (not for_build or already_probed.has_compiler)
         ):
-            return already_probed
+            return replace(already_probed, source=candidates[0].source)
         for candidate in candidates:
             if not candidate.has_runtime:
                 continue
@@ -859,11 +894,12 @@ class ProjectLaunchPipeline:
         role = "build" if for_build else "runtime"
         raise LaunchPipelineFailure(
             LaunchErrorCode.JAVA_TOOLCHAIN_NOT_FOUND,
-            f"No usable {role} Java toolchain matched the IDEA intent.",
+            f"No usable {role} Java toolchain matched the requested configuration.",
             retryable=True,
             suggested_next_step=(
                 "Configure the referenced IDEA JDK on this machine, or "
-                "correct JAVA_HOME/PATH when the project has no IDEA JDK."
+                "supply java_home for the application. JAVA_HOME/PATH selects "
+                "the build JDK when IDEA has not configured one."
             ),
             context={
                 "toolchain_role": role,

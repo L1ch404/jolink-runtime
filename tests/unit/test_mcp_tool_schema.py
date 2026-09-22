@@ -22,6 +22,26 @@ def test_mcp_product_surface_exposes_focused_tools() -> None:
     assert all(tool.outputSchema is None for tool in tools)
 
 
+def test_public_descriptions_focus_on_calls_not_compiler_internals() -> None:
+    def descriptions(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "description":
+                    yield item.lower()
+                else:
+                    yield from descriptions(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from descriptions(item)
+
+    for tool in get_mcp_tools():
+        for text in descriptions(tool.model_dump(exclude_none=True)):
+            for implementation_detail in (
+                "jdt", "worker", "probe", "build world", "workspace_source_changes", "equinox",
+            ):
+                assert implementation_detail not in text, (tool.name, text)
+
+
 def test_focused_schemas_expose_only_their_public_actions() -> None:
     application, fast_test, status, debugger = get_mcp_tools()
     actions = application.inputSchema["properties"]["action"]["enum"]
@@ -105,7 +125,7 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
         "await",
         "one call",
         "wait_handle",
-        "jdwp",
+        "event waiting",
         "resume",
     ):
         assert signal in wait_description
@@ -114,7 +134,7 @@ def test_wait_mode_description_contains_two_phase_and_safety_signals() -> None:
         "one-call",
         "arm",
         "later await",
-        "jdwp",
+        "event waiting",
     ):
         assert signal in trigger_description
 
@@ -172,6 +192,8 @@ def test_project_launch_schema_stays_small_and_optional() -> None:
 
     assert properties["project_path"]["type"] == "string"
     assert properties["launch_name"]["type"] == "string"
+    assert properties["java_home"]["type"] == "string"
+    assert "without requiring IDEA" in properties["main_class"]["description"]
     assert "project_path" not in get_mcp_tools()[0].inputSchema["required"]
     assert "default" not in properties["classpath"]
     assert (

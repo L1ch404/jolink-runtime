@@ -468,6 +468,9 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         user_settings_file=custom if explicit else None,
         local_repository=None,
         active_profiles=(),
+        project_jdk_name=None,
+        maven_runner_jdk_name=None,
+        jdk_homes_by_name={},
     )
     prepared = pipeline._prepare_maven_probe(
         context,
@@ -476,7 +479,6 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         preferences,
         workspace,
         target,
-        model.toolchain,
         model.toolchain,
         SimpleNamespace(argv_prefix=("mvn",)),
         directory,

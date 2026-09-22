@@ -74,8 +74,14 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "main_class": {
             "type": "string",
             "description": (
-                "Fully qualified main class for direct classpath launch; "
-                "omit with project_path."
+                "Fully qualified application entry class. With project_path, launch "
+                "without requiring IDEA configuration; otherwise uses classpath."
+            ),
+        },
+        "java_home": {
+            "type": "string",
+            "description": (
+                "Application JDK home directory for project_path launch."
             ),
         },
         "jar_path": {
@@ -87,46 +93,37 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "project_path": {
             "type": "string",
             "description": (
-                "Local Maven or supported Gradle Wrapper project root for "
-                "launch or Fast Test. Maven launch imports an IntelliJ IDEA "
-                "Application or Spring Boot configuration; Gradle launch uses "
-                "the resolved Java/Application plugin model. "
-                "Maven/Gradle only export the Build World; JDT compiles before "
-                "the JVM starts. A matching persisted Build World skips the "
-                "build tool and uses workspace_source_changes for incremental "
-                "startup. Do not combine with "
-                "classpath, main_class, jar_path, app_args, or vm_args. "
-                "Fast Test can use a supported Gradle Java module, "
-                "a headless Maven jar project, or one "
-                "selector-identified jar module in a standard Reactor and "
-                "does not require a running application. Restart never accepts "
-                "project_path; it compiles changes in the current project session."
+                "Local Maven or Gradle Wrapper project directory for launch or Fast Test. "
+                "Supply main_class to launch without IDEA, or select an IDEA launch_name. "
+                "Changed sources are compiled before launch. Do not combine with "
+                "classpath or jar_path. Restart uses the current project; omit project_path. "
+                "Fast Test does not require a running application."
             ),
         },
         "launch_name": {
             "type": "string",
             "description": (
-                "Exact case-sensitive IntelliJ IDEA launch configuration "
-                "name. Required only when multiple supported launches match; "
-                "requires project_path."
+                "Optional exact case-sensitive IDEA launch configuration name; requires project_path. "
+                "With main_class and no launch_name, no IDEA launch configuration is required. "
+                "Explicit main_class, java_home, app_args and vm_args override imported values."
             ),
         },
         "app_args": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Application arguments for launch/restart.",
+            "description": "Application arguments for launch/restart. Replaces imported or current arguments; [] clears them.",
         },
         "jdwp_port": {
             "type": "integer",
             "minimum": 1024,
             "maximum": 65535,
             "default": 5005,
-            "description": "Local JDWP port for launch or attach.",
+            "description": "Local Java debug port for launch or attach.",
         },
         "vm_args": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Additional JVM arguments for launch/restart.",
+            "description": "JVM arguments for launch/restart. Replaces imported or current arguments; [] clears them.",
         },
         "pid": {
             "type": "integer",
@@ -137,7 +134,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "type": "string",
             "enum": ["127.0.0.1", "localhost"],
             "default": "127.0.0.1",
-            "description": "JDWP host; v0.1 accepts localhost only.",
+            "description": "Debug connection host; localhost only.",
         },
         "ready_port": {
             "type": "integer",
@@ -286,7 +283,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "description": (
                 "blocking waits directly; with http_trigger it performs "
                 "arm, trigger, and await in one call. Use arm then await with "
-                "its wait_handle when an external action is needed after JDWP "
+                "its wait_handle when an external action is needed after event waiting "
                 "is armed. Resume every suspension."
             ),
         },
@@ -294,7 +291,7 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "description": (
-                "Optional loopback request started only after JDWP is armed. "
+                "Optional loopback request started only after event waiting is armed. "
                 "Use with blocking for one-call arm/trigger/await, or with arm "
                 "when work must occur before a later await. "
                 "It is rejected while configured application readiness is "
@@ -351,15 +348,9 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
                 "minLength": 1,
             },
             "description": (
-                "Explicit Java source paths changed for reload or Fast Test. "
-                "For Fast Test this may include added, edited, or deleted main/test "
-                "sources and may be "
-                "omitted on the initial unchanged baseline; paths are relative "
-                "to project_path, including a Reactor module prefix. For reload, paths are "
-                "in the selected "
-                "build module. joLink compiles them in a persistent private JDT "
-                "session and applies compatible loaded class definitions with "
-                "HotSwap."
+                "Optional changed Java source paths for restart or Fast Test. Normally "
+                "omit: changes are detected automatically. For Fast Test, paths are "
+                "relative to project_path and may include added, edited, or deleted main/test files."
             ),
         },
         "hotswap": {
@@ -465,6 +456,7 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "jar_path",
         "project_path",
         "launch_name",
+        "java_home",
         "app_args",
         "jdwp_port",
         "vm_args",
@@ -478,8 +470,10 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
     ),
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
-    "Maven or Gradle project directory for an IDEA-derived application launch. "
-    "Use instead of direct jar_path, classpath or main_class launch arguments."
+    "Maven or Gradle project directory. Supply main_class for an IDEA-independent launch, "
+    "or import an IDEA launch configuration (launch_name selects one). "
+    "Compiles changed sources before starting the application. "
+    "Do not combine with direct jar_path or classpath."
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["source_files"]["description"] = (
     "Optional edited-source hints for restart. Normally omit: restart detects all changed "
@@ -521,8 +515,8 @@ JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
     "No IDEA launch configuration or running application is required."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["source_files"]["description"] = (
-    "Optional edited source paths. Normally omit: the persistent workspace "
-    "automatically detects changed Java sources."
+    "Optional changed Java source paths relative to project_path, including module prefixes. "
+    "May include added, edited, or deleted main/test files. Normally omit: changes are detected automatically."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["build_system"]["description"] = (
     "Optional authoritative build system for tests; specify maven or gradle when both exist."
@@ -533,7 +527,7 @@ JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["timeout"] = deepcopy(
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["timeout"]["description"] = (
     "Seconds to wait for this test result: default 30, values above 30 wait only 30, "
     "zero submits immediately. Expiry leaves the same task running. "
-    "This does not change the test Runner's separate execution time limit."
+    "This controls how long the call waits, not the test execution time limit."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["test_run_id"]["description"] = (
     "Test run ID returned by java_fast_test; required for action='cancel' or 'result'. "
@@ -551,13 +545,13 @@ JAVA_STATUS_INPUT_SCHEMA = {
         "action": {
             "type": "string",
             "enum": list(PUBLIC_STATUS_ACTIONS),
-            "description": "status returns a compact overview; use details=true for launch/update details; logs reads a bounded log tail.",
+            "description": "status returns a compact overview; use details=true for launch/restart details; logs reads a bounded log tail.",
         },
         "filter": deepcopy(JAVA_PROCESSES_INPUT_SCHEMA["properties"]["filter"]),
         "full": deepcopy(JAVA_PROCESSES_INPUT_SCHEMA["properties"]["full"]),
         "details": {
             "type": "boolean", "default": False,
-            "description": "For status: include current launch/update diagnostics and internal settings. Does not rerun work or read build logs.",
+            "description": "For status: include current launch/restart diagnostics, configuration and detailed results. Does not rerun work; use logs for log text.",
         },
         "tail": deepcopy(JAVA_RUNTIME_INPUT_SCHEMA["properties"]["tail"]),
         "source": {
@@ -583,6 +577,7 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
             "jar_path",
             "project_path",
             "launch_name",
+            "java_home",
             "app_args",
             "vm_args",
             "pid",
@@ -599,11 +594,12 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
 
 JAVA_APPLICATION_DESCRIPTION = (
     "Launch, attach, restart, stop, or detach Java applications. "
+    "For Maven/Gradle, use project_path plus main_class without IDEA, or select an IDEA launch. "
     "Use java_fast_test to run tests without launching an application. "
     "Launch and restart wait up to timeout (at most 30 seconds), returning the "
     "result if finished or the original background task if still running. "
     "After editing a managed Maven/Gradle project, use restart: it detects changed "
-    "sources, incrementally compiles in the persistent JDT workspace, and prefers "
+    "sources, incrementally compiles them, and prefers "
     "HotSwap (hotswap=true by default). Incompatible changes use the same compiled "
     "outputs to restart the JVM. Set hotswap=false for a real process restart and "
     "application reinitialization. apply_method reports hotswap or restart; HotSwap "
@@ -616,12 +612,12 @@ JAVA_APPLICATION_DESCRIPTION = (
     "launches restart their existing artifact without source compilation."
 )
 JAVA_FAST_TEST_DESCRIPTION = (
-    "Run selected Java tests in Maven or Gradle projects using persistent "
-    "incremental compilation. Supports JUnit 4/5 and TestNG. No application "
+    "Run selected Java tests in Maven or Gradle projects, incrementally compiling "
+    "changed sources. Supports JUnit 4/5 and TestNG. No application "
     "launch is required, and an existing application is left running. "
     "Provide project_path and tests (Class or Class#method); action defaults to run. "
-    "The first build-model preparation and JDT compilation can take minutes; "
-    "subsequent calls reuse them and compile changed sources. "
+    "First-time preparation and compilation can take minutes; "
+    "subsequent calls reuse unchanged results. "
     "Waits up to timeout (maximum 30 seconds); unfinished work returns its "
     "test_run_id and continues in the background. Observe it with java_status "
     "or cancel it here using action='cancel' and the same test_run_id. "
@@ -633,12 +629,12 @@ JAVA_STATUS_DESCRIPTION = (
     "Discover local Java processes, inspect a compact application/build overview "
     "with status, or request current launch/restart details with status and details=true. "
     "Use logs with source=application (default) or source=build for log text. "
-    "status omits build logs, internal configuration and full restart results. "
+    "status omits build-log text and detailed launch/restart results. "
     "It includes only a Fast Test summary; "
     "read test details with java_fast_test(action='result', test_run_id=...)."
 )
 JAVA_DEBUGGER_DESCRIPTION = (
-    "Observe executed paths and runtime state with JDWP breakpoints, exception "
+    "Observe executed paths and runtime state with breakpoints, exception "
     "events, stacks, and variables. Always resume or clean up every suspension."
 )
 

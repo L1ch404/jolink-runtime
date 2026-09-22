@@ -142,16 +142,19 @@ readiness.
 They support two launch forms:
 
 - direct JVM launch with `jar_path`, or `main_class` plus `classpath`;
-- IDEA/Maven or IDEA/Gradle project launch with `project_path` and an optional exact
-  `launch_name`.
+- Maven/Gradle project launch with `project_path` plus `main_class`, or an
+  imported IDEA configuration selected by optional exact `launch_name`.
 
-Project launch imports a supported IntelliJ IDEA Application or Spring Boot
-configuration. Maven or Gradle exports the Build World but does not compile
+IDEA launch configuration is optional when `main_class` is supplied. `java_home`
+selects the application JDK, not the build-tool/Worker JDK. Explicit launch
+parameters override imported values; see [project launch](project-launch-contract-v0.1.md)
+for JDK selection and cached-setting refresh. Maven or Gradle exports the Build World but does not compile
 application classes. JDT is initialized before the JVM: a cold workspace uses
 FULL build, while a reusable workspace calls `workspace_source_changes()` and
 uses INCREMENTAL only when sources changed. The managed JVM directly uses the
 persistent JDT class output; resource roots remain direct classpath entries.
-`project_path` is mutually exclusive with direct JVM launch arguments.
+`project_path` is mutually exclusive with `classpath` and `jar_path`; it accepts
+`main_class`, `java_home`, `app_args`, and `vm_args`.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
 

@@ -26,6 +26,17 @@ def project_request(root, name="App", ready_port=8080):
     return SimpleNamespace(project_path=root, launch_name=name, build_system="", ready_port=ready_port)
 
 
+def test_headless_entry_has_its_own_persisted_startup_timing(tmp_path):
+    request = project_request(tmp_path, name=None)
+    request.main_class = "example.First"
+    timings = StartupTimings()
+    timings.save(timings._project_key(request), 1234)
+    arguments = dict(action="launch", project_path=str(tmp_path),
+                     main_class="example.First", ready_port=8080)
+    assert StartupTimings().previous(None, arguments) == 1234
+    assert timings.previous(None, {**arguments, "main_class": "example.Second"}) is None
+
+
 def test_project_timing_survives_stop_but_does_not_cross_projects_or_profiles(tmp_path, monkeypatch):
     dispatcher = Dispatcher()
     runtime = dispatcher.sessions.get_runtime()
