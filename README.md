@@ -1,5 +1,7 @@
 # joLink Runtime
 
+<!-- mcp-name: io.github.L1ch404/jolink-runtime -->
+
 English | [简体中文](README.zh-CN.md)
 
 **A lightweight, headless Java IDE for AI coding agents.**
