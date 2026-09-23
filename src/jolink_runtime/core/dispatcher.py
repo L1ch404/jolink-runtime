@@ -285,10 +285,16 @@ class Dispatcher:
         self.sessions = sessions if sessions is not None else SessionManager(JavaRuntime)
 
     def application_waiter(self, action, payload, *, session_key="default"):
-        from ..launch.application_wait import application_waiter
+        from ..launch.application_wait import ApplicationWait, application_waiter
 
-        return application_waiter(
+        waiter = application_waiter(
             self.sessions.get_runtime(session_key), "launch" if action == "run" else action, payload
+        )
+        if waiter is None:
+            return None
+        return ApplicationWait(
+            pending=waiter.pending,
+            result=lambda: _product_application_payload(waiter.result()),
         )
 
     def dispatch(

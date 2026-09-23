@@ -76,7 +76,7 @@ def finish(running, **args):
 
 
 def test_restart_defaults_to_hotswap_and_scans_whole_workspace(running):
-    result = finish(running, source_files=["ignored-hint.java"])
+    result = finish(running)
     assert result["ok"] and result["apply_method"] == "hotswap"
     running.compiler.compile.assert_called_once_with(running.sources)
     running.compiler.mark_published.assert_called_once()

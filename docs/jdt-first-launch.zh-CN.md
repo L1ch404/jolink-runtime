@@ -53,7 +53,7 @@ joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspa
 
 源码镜像和原文件的大小/mtime索引持久化到workspace。启动时仍需枚举源码文件的元数据
 以发现离线修改，但不再逐个读取新旧源码内容。若外部工具刻意保持mtime和大小不变，
-启动扫描可能看不到该编辑；显式 `restart(source_files)` 会直接读取指定文件。
+启动扫描可能看不到该编辑，需要让文件的修改时间或大小发生变化后再调用 `restart`。
 
 resources 作为运行classpath中的源码资源目录直接读取，不再每次reload复制整棵资源树。
 上次编译成功或失败的结果随源码索引一起保存；重开workspace时直接读取，
@@ -62,7 +62,7 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 ## restart
 
 ```text
-扫描变化文件，可附带 source_files 提示
+扫描变化文件
 → 读取并同步变化的源码；无变化时复用
 → 通知 Eclipse 对应文件已更改
 → JavaBuilder INCREMENTAL

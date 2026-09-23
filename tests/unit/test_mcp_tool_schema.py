@@ -75,7 +75,8 @@ def test_focused_schemas_expose_only_their_public_actions() -> None:
         "DELETE",
     ]
     assert "json_body" in http_trigger["properties"]
-    source_files = application.inputSchema["properties"]["source_files"]
+    assert "source_files" not in application.inputSchema["properties"]
+    source_files = fast_test.inputSchema["properties"]["source_files"]
     assert source_files["minItems"] == 1
     assert source_files["maxItems"] == 16
     assert source_files["uniqueItems"] is True

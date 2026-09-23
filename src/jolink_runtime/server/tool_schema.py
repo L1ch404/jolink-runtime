@@ -463,7 +463,6 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "pid",
         "host",
         "ready_port",
-        "source_files",
         "hotswap",
         "build_system",
         "timeout",
@@ -474,10 +473,6 @@ JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
     "or import an IDEA launch configuration (launch_name selects one). "
     "Compiles changed sources before starting the application. "
     "Do not combine with direct jar_path or classpath."
-)
-JAVA_APPLICATION_INPUT_SCHEMA["properties"]["source_files"]["description"] = (
-    "Optional edited-source hints for restart. Normally omit: restart detects all changed "
-    "Java sources in the project and required upstream modules automatically."
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["hotswap"]["description"] = (
     "For restart, default true: incrementally compile edits and prefer HotSwap; "

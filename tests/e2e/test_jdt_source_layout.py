@@ -191,7 +191,7 @@ public static void main(String[] args) throws Exception {
                             )
                             reload = await call(
                                 "java_application",
-                                {"action": "restart", "timeout": 0, "source_files": [str(foo)]},
+                                {"action": "restart", "timeout": 0},
                             )
                             assert reload["status"] == "restart_started", reload
                             state = await poll(

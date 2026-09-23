@@ -1241,9 +1241,6 @@ public class PersistentFixture {{
                 with anyio.fail_after(1):
                     started = assert_ok(await call_payload(second_session, {
                         "action": "update",
-                        "source_files": [
-                            "src/main/java/example/PersistentFixture.java"
-                        ],
                     }))
                 assert started["status"] == "restart_started"
                 terminal = await _await_reload(
@@ -1278,9 +1275,6 @@ public class PersistentFixture {{
 
                 reapplied = assert_ok(await call_payload(second_session, {
                     "action": "update",
-                    "source_files": [
-                        "src/main/java/example/PersistentFixture.java"
-                    ],
                 }))
                 reapply_terminal = await _await_reload(
                     second_session, reapplied, timeout=30
@@ -1502,9 +1496,6 @@ public class LazyValue {
                     async def reload_source() -> dict[str, Any]:
                         started = assert_ok(await call_payload(session, {
                             "action": "update",
-                            "source_files": [
-                                "src/main/java/example/UpdateMcpFixture.java",
-                            ],
                         }))
                         assert started["status"] == "restart_started"
                         return await _await_reload(

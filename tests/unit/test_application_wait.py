@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
-from jolink_runtime.core.dispatcher import runtime_operation
+from jolink_runtime.core.dispatcher import Dispatcher as RuntimeDispatcher, runtime_operation
+from jolink_runtime.core.models import RuntimeResult
 from jolink_runtime.launch.application_wait import ApplicationWait, application_waiter
 from jolink_runtime.launch.contracts import LaunchAttempt, LaunchPhase
 from jolink_runtime.server import mcp_server
@@ -88,6 +89,44 @@ def test_launch_observer_keeps_original_attempt_after_replacement():
     assert result["ok"] is False and result["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("action", ["launch", "restart"])
+@pytest.mark.parametrize("state", ["ready", "unverified"])
+def test_project_result_uses_current_guidance_instead_of_submission_guidance(action, state):
+    record = SimpleNamespace(attempt=LaunchAttempt("current", 1, phase=LaunchPhase.RUNTIME_ACTIVE))
+    message = "Application readiness is unverified; configure ready_port or verify the service."
+    observation = {"startup_state": state}
+    if state == "unverified":
+        observation["suggested_next_step"] = message
+    runtime = SimpleNamespace(
+        _launch_controller=SimpleNamespace(_lock=threading.Lock(), _current=record),
+        status=lambda _: RuntimeResult(ok=True, data=observation),
+    )
+    initial = {"ok": True, "attempt_id": "current", "suggested_next_step": "Wait for the submitted task."}
+    waiter = application_waiter(runtime, action, initial)
+    assert not waiter.pending()
+    result = waiter.result()
+    assert result["ok"] and result["startup_state"] == state
+    if state == "unverified":
+        assert result["suggested_next_step"] == message
+    else:
+        assert "suggested_next_step" not in result
+    assert initial["suggested_next_step"] == "Wait for the submitted task."
+
+
+def test_completed_wait_guidance_uses_public_action_names():
+    record = SimpleNamespace(attempt=LaunchAttempt("current", 1, phase=LaunchPhase.RUNTIME_ACTIVE))
+    runtime = SimpleNamespace(
+        _launch_controller=SimpleNamespace(_lock=threading.Lock(), _current=record),
+        status=lambda _: RuntimeResult(ok=True, data={
+            "startup_state": "unverified",
+            "suggested_next_step": "Configure ready_port on run/restart when possible.",
+        }),
+    )
+    dispatcher = RuntimeDispatcher(SimpleNamespace(get_runtime=lambda _: runtime))
+    waiter = dispatcher.application_waiter("run", {"ok": True, "attempt_id": "current"})
+    assert waiter.result()["suggested_next_step"] == "Configure ready_port on launch/restart when possible."
+
+
 @pytest.mark.parametrize("timeout", [0, 0.02])
 @pytest.mark.parametrize("action", ["launch", "restart", "test"])
 def test_timeout_returns_original_background_task(action, timeout):
@@ -163,7 +202,8 @@ def test_removed_startup_parameter_is_not_accepted():
 
 
 @pytest.mark.parametrize("state", ["ready", "unverified", "failed", "starting"])
-def test_direct_launch_guidance_matches_final_state(state):
+@pytest.mark.parametrize("action", ["launch", "restart"])
+def test_direct_launch_guidance_matches_final_state(state, action):
     process = SimpleNamespace(pid=42, is_alive=lambda: state != "failed")
     runtime = SimpleNamespace(
         _proc=SimpleNamespace(
@@ -179,16 +219,23 @@ def test_direct_launch_guidance_matches_final_state(state):
         "suggested_next_step": "still starting",
         "startup_wait_timed_out": True,
     }
-    waiter = application_waiter(runtime, "launch", initial)
+    if state == "unverified":
+        initial.update(startup_state="unverified", suggested_next_step="Verify application readiness before testing behavior; configure ready_port.")
+    waiter = application_waiter(runtime, action, initial)
     result = waiter.result()
     assert waiter.pending() is (state == "starting")
     if state == "starting":
-        assert result == initial
+        assert result["suggested_next_step"] == initial["suggested_next_step"]
+        assert result["startup_state"] == "starting"
     else:
         assert "startup_wait_timed_out" not in result
         if state == "failed":
             assert result["ok"] is False and result["next_action"] == "logs"
             assert "starting" not in result["suggested_next_step"]
+        elif state == "unverified":
+            assert result["ok"] is True
+            assert result["suggested_next_step"] == initial["suggested_next_step"]
+            assert "next_action" not in result
         else:
             assert result["ok"] is True
             assert "next_action" not in result and "suggested_next_step" not in result

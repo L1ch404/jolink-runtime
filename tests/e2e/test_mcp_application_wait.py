@@ -1,6 +1,7 @@
 """Real MCP launch/Test: wait, background continuation, errors and controls."""
 
 import http.client
+import json
 import os
 import subprocess
 import sys
@@ -265,10 +266,99 @@ def test_direct_launch_readiness_and_stop_while_waiting(tmp_path):
                             await anyio.sleep(0.1)
                         await call({"action": "stop"})
                 assert results[0]["ok"] is False, results
-                unverified = await call(launch(0, verified=False))
+                unverified = await call(launch(5000, verified=False))
                 assert (
                     unverified["ok"] and unverified["startup_state"] == "unverified"
                 ), unverified
+                assert "ready_port" in unverified["suggested_next_step"], unverified
+                restarted = await call({"action": "restart"})
+                assert restarted["ok"] and restarted["startup_state"] == "unverified", restarted
+                assert "ready_port" in restarted["suggested_next_step"], restarted
                 await call({"action": "stop"})
+
+    anyio.run(scenario)
+
+
+@pytest.mark.mcp_java_e2e
+def test_project_launch_and_restart_preserve_unverified_guidance(tmp_path):
+    require_real_mcp_java_e2e()
+    java = os.environ.get("JOLINK_TEST_JAVA8_HOME")
+    if not java:
+        pytest.skip("set JOLINK_TEST_JAVA8_HOME")
+    port = reserve_local_port()
+    project = make_test_project(tmp_path, port)
+    gate = tmp_path / "allow-http-start"
+    app = project / "src/main/java/example/App.java"
+    app.write_text(app.read_text().replace(
+        'com.sun.net.httpserver.HttpServer s=',
+        f'while (!java.nio.file.Files.exists(java.nio.file.Paths.get({json.dumps(str(gate))}))) Thread.sleep(50);\n'
+        'com.sun.net.httpserver.HttpServer s=',
+    ).replace('"42".getBytes', 'Reply.value().getBytes'))
+    reply = app.with_name("Reply.java")
+    original = ('package example; public class Reply { '
+                'public static String value(){return "old";} '
+                'public static class Deferred { public static String value(){return "old";} } }')
+    reply.write_text(original)
+    parameters = StdioServerParameters(
+        command=sys.executable, args=["-m", "jolink_runtime.transport.stdio"],
+        cwd=REPOSITORY_ROOT,
+        env={**os.environ, "JAVA_HOME": java,
+             "PATH": str(Path(java) / "bin") + os.pathsep + os.environ["PATH"],
+             "MAVEN_ARGS": "--offline", "XDG_CACHE_HOME": str(tmp_path / "cache")},
+    )
+
+    def response():
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        try:
+            connection.request("GET", "/")
+            reply = connection.getresponse()
+            assert reply.status == 200
+            return reply.read().decode()
+        finally:
+            connection.close()
+
+    async def scenario():
+        with (tmp_path / "mcp.log").open("w+") as log:
+            async with (stdio_client(parameters, errlog=log) as (r, w), ClientSession(r, w) as session):
+                await session.initialize()
+
+                async def call(tool, **args):
+                    return dict((await session.call_tool(tool, args)).structuredContent)
+
+                async def check_unverified(result):
+                    assert result["ok"] and result["startup_state"] == "unverified", result
+                    assert result["process_state"] == "running", result
+                    assert "ready_port" in result["suggested_next_step"], result
+                    observed = await call("java_status", action="status")
+                    assert result["suggested_next_step"] == observed["suggested_next_step"]
+                    with pytest.raises(OSError):
+                        await anyio.to_thread.run_sync(response)
+
+                async def allow_http(expected):
+                    gate.write_text("go")
+                    with anyio.fail_after(10):
+                        while True:
+                            try:
+                                value = await anyio.to_thread.run_sync(response)
+                                break
+                            except OSError:
+                                await anyio.sleep(.05)
+                    assert value == expected
+
+                try:
+                    launched = await call("java_application", action="launch", project_path=str(project),
+                                          launch_name="Preparation", jdwp_port=reserve_local_port())
+                    await check_unverified(launched)
+                    await allow_http("old")
+                    gate.unlink()
+                    reply.write_text(original.replace('"old"', '"new"'))
+                    restarted = await call("java_application", action="restart")
+                    assert restarted["restart_reason"] == "CLASS_NOT_LOADED", restarted
+                    assert restarted["pid"] != launched["pid"]
+                    await check_unverified(restarted)
+                    await allow_http("new")
+                finally:
+                    gate.write_text("go")
+                    await call("java_application", action="stop")
 
     anyio.run(scenario)

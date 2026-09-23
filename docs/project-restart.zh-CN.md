@@ -20,7 +20,7 @@
 4. 正常编译结果和构建状态沿用现有持久化，无产物副本。
 5. 根据结果选择 HotSwap 或真实重启。
 
-不要求 LLM 提供 `source_files`，不套用旧 reload 的 16 文件限制。Maven/Gradle、
+公开 `restart` 不接收 `source_files`，自动发现所有变化，不套用旧 reload 的 16 文件限制。Maven/Gradle、
 单模块/多模块共用这条编译流程，不调用正式 Maven/Gradle 编译任务。
 
 | 情况 | 处理 |

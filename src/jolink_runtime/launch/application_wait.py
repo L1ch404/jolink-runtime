@@ -62,12 +62,15 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
                 status = runtime.status(RuntimeAction(action="status"))
                 snapshot = {**snapshot, **(status.data or {})}
             phase = snapshot.get("launch_phase")
+            # Discard submission-time waiting guidance, then use the current
+            # observation, including any unverified-readiness instructions.
+            payload = dict(initial)
+            payload.pop("suggested_next_step", None)
             payload = {
-                **initial,
+                **payload,
                 **snapshot,
                 "ok": phase not in {"failed", "cancelled", "stopped"},
             }
-            payload.pop("suggested_next_step", None)
             if phase == "runtime_active":
                 payload["status"] = "restarted" if action == "restart" else "process_started"
             elif phase == "failed":
@@ -104,8 +107,10 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
         payload = {**initial, **observation}
         failed = observation.get("startup_state") == "failed" or not process.is_alive()
         if failed or observation.get("startup_state") in {"ready", "unverified"}:
-            for name in ("next_action", "suggested_next_step", "startup_wait_timed_out"):
+            for name in ("next_action", "startup_wait_timed_out"):
                 payload.pop(name, None)
+            if failed or observation.get("startup_state") == "ready":
+                payload.pop("suggested_next_step", None)
         if failed:
             payload.update(
                 ok=False,

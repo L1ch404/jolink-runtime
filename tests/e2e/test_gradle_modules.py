@@ -315,9 +315,6 @@ public static void main(String[] args) throws Exception {
                             "java_application",
                             {
                                 "action": "restart", "timeout": 0,
-                                "source_files": [
-                                    "base/src/main/java/example/Base.java"
-                                ],
                             },
                         )
                         assert reload["status"] == "restart_started", reload

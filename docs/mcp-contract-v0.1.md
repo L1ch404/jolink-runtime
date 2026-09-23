@@ -139,6 +139,11 @@ is a waiting reference, not a timeout or a new readiness predicate.
 `launch` and `restart` distinguish JVM launch from optional application TCP
 readiness.
 
+Omitting `ready_port` still starts the application, but its readiness remains
+`unverified`. Completed launch/restart replies retain the readiness guidance in
+`suggested_next_step`; JVM startup success alone does not establish that the
+service can handle requests.
+
 They support two launch forms:
 
 - direct JVM launch with `jar_path`, or `main_class` plus `classpath`;
