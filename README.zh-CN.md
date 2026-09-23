@@ -94,8 +94,9 @@ OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP �
 `passed=false` 表示测试运行后发现失败，与编译失败或工具基础设施错误不同。
 只报告实际运行的测试，不把所选测试通过等同于整个项目构建通过。
 
-`run` 和 `java_status(status).fast_test` 默认只返回摘要，不附带完整错误诊断、失败堆栈
-或编译文件清单。需要详情时，跟随失败结果中的 `next_action`，或调用
+`java_status(status).fast_test` 保持精简。如果 `run` 回复时已经编译失败，直接返回
+编译诊断，无需追加调用。超时返回后才发生的错误、测试失败堆栈等详情，跟随摘要中的
+`next_action`，或调用
 `java_fast_test(action="result", test_run_id=...)`，不会重新运行测试。
 结果只保留当前 MCP 会话中的活动任务和最近完成任务；已不保留的 ID 返回 `TEST_RUN_NOT_FOUND`。
 

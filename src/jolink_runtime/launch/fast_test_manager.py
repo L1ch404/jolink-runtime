@@ -167,7 +167,7 @@ class TestAttempt:
             )
 
     def summary(self) -> dict[str, Any]:
-        """Small repeatable observation; diagnostics are read via result()."""
+        """Small repeatable status observation."""
         payload: dict[str, Any] = {
             "ok": True,
             "status": self.state,
@@ -210,6 +210,13 @@ class TestAttempt:
                     "arguments": {"action": "result", "test_run_id": self.test_run_id},
                 }
         return payload
+
+    def run_response(self) -> dict[str, Any]:
+        """Return compiler diagnostics directly to the caller who ran the test."""
+        if (self.result is not None and self.result.get("ok") is False
+                and "diagnostics" in self.result):
+            return self.snapshot()
+        return self.summary()
 
     def snapshot(self) -> dict[str, Any]:
         """Detailed result without the compiler's bulk source-file inventory."""
@@ -306,7 +313,7 @@ class FastTestManager:
             self._active = attempt
             thread.start()
         attempt.done.wait(min(max(short_wait_seconds, 0.0), timeout))
-        return attempt.summary()
+        return attempt.run_response()
 
     def status(self) -> dict[str, Any]:
         with self._lock:

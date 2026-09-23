@@ -136,9 +136,11 @@ java_fast_test(action=run,
 -> cancel with java_fast_test(action=cancel, test_run_id=...)
 ```
 
-`run` and `java_status(status).fast_test` return summaries, not compiler file lists,
-diagnostics or failure stacks. Follow a failure's `next_action`, or call `result`
-with its `test_run_id`, to read details without rerunning tests. Only the active
+`java_status(status).fast_test` stays compact. If compilation fails before `run`
+returns, its reply includes compiler diagnostics directly. Errors that occur after
+a timeout reply and failed-test details are available through `result`; follow
+the summary's `next_action` or use its `test_run_id`, without rerunning tests.
+Full compiler file lists are omitted. Only the active
 and most recently completed test attempts are retained in the current MCP session;
 an unavailable ID returns `TEST_RUN_NOT_FOUND`.
 

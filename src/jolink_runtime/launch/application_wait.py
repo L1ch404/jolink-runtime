@@ -36,7 +36,7 @@ def application_waiter(runtime, action: str, initial: dict) -> ApplicationWait |
                 return None
         return ApplicationWait(
             pending=lambda: not attempt.done.is_set(),
-            result=attempt.summary,
+            result=attempt.run_response,
         )
     if action not in {"launch", "restart"}:
         return None

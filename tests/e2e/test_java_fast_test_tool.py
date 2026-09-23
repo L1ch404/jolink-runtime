@@ -117,6 +117,16 @@ def test_fast_test_without_idea_or_application_and_cached_reopen(tmp_path, frame
                         return result, payload
 
                     assert (await status())["process_state"] == "absent"
+                    if not reopened:
+                        source.write_text("this is not valid Java")
+                        cold_error, cold_failed = await run()
+                        assert cold_error.isError, cold_failed
+                        assert cold_failed["error_code"] == "JDT_TEST_FULL_COMPILE_FAILED", cold_failed
+                        assert cold_failed["diagnostics"] and cold_failed["error_count"] > 0
+                        assert "next_action" not in cold_failed
+                        assert "runner_ms" not in cold_failed
+                        assert "diagnostics" not in (await status())["fast_test"]
+                        source.write_text(original)
                     _, passed = await run()
                     assert passed["passed"] and passed["tests"] == 1, passed
                     assert passed["framework"] == framework, passed
@@ -135,10 +145,17 @@ def test_fast_test_without_idea_or_application_and_cached_reopen(tmp_path, frame
                         error.isError
                         and failed["error_code"] == "JDT_TEST_COMPILE_FAILED"
                     ), failed
-                    assert "diagnostics" not in failed
-                    hint = failed["next_action"]
-                    detail = await session.call_tool(hint["tool"], hint["arguments"])
-                    assert detail.isError and detail.structuredContent["diagnostics"]
+                    assert failed["diagnostics"] and failed["error_count"] > 0
+                    assert any(d["line"] > 0 and d["resource"] for d in failed["diagnostics"])
+                    assert "next_action" not in failed
+                    assert "compiled_source_units" not in failed
+                    assert "diagnostics" not in (await status())["fast_test"]
+                    detail = await session.call_tool("java_fast_test", {
+                        "action": "result", "test_run_id": failed["test_run_id"],
+                    })
+                    assert detail.isError and detail.structuredContent["diagnostics"] == failed["diagnostics"]
+                    repeated_error, repeated = await run()
+                    assert repeated_error.isError and repeated["diagnostics"], repeated
                     source.write_text(
                         'package example; public class ReadyTest { @ANNOTATION public void ready(){ASSERTIONS.fail("expected failure");} }'.replace(
                             "ANNOTATION", annotation

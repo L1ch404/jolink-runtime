@@ -104,8 +104,9 @@ Example — tool `java_application` (an application already managed by joLink):
   to application output when source is omitted. Do not fetch details on every poll.
 - For HTTP applications, provide the actual `ready_port`. `starting` means wait;
   `unverified` is not a claim of readiness. TCP readiness is not endpoint correctness.
-- Fast Test `run` and `java_status` return summaries. For compiler diagnostics or
-  failed-test details, follow `next_action` or call
+- Fast Test `run` includes compiler diagnostics when compilation has failed before
+  the reply; use those errors directly. `java_status` stays compact. For errors
+  after a timeout reply or failed-test details, follow `next_action` or call
   `java_fast_test(action="result", test_run_id=...)`; this reads the retained
   result without rerunning tests. Read details when needed, not on every poll.
   Results are retained only for the active/latest completed run in this MCP session.

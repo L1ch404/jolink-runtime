@@ -616,8 +616,9 @@ JAVA_FAST_TEST_DESCRIPTION = (
     "Waits up to timeout (maximum 30 seconds); unfinished work returns its "
     "test_run_id and continues in the background. Observe it with java_status "
     "or cancel it here using action='cancel' and the same test_run_id. "
-    "run and java_status return summaries; use action='result' with test_run_id "
-    "for compiler diagnostics and failed-test details without rerunning tests. "
+    "If compilation fails before run returns, it includes compiler diagnostics directly. "
+    "java_status stays compact; use action='result' with test_run_id for background "
+    "error diagnostics and failed-test details without rerunning tests. "
     "This is not the complete Maven/Gradle verification or packaging lifecycle."
 )
 JAVA_STATUS_DESCRIPTION = (

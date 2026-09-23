@@ -60,10 +60,14 @@ or deletions. For deletion, the Worker must return the exact private
 appears to disappear. Application updates use `java_application(action='restart')`;
 Fast Test does not modify the application JVM.
 
-`run` (including its synchronous wait) and `java_status(status).fast_test` return
-summaries with state, counts, timings and the original `test_run_id`. Compiler
-diagnostics, failed-test stacks and bootstrap error details belong to `result`.
-Failures include `next_action = {tool: "java_fast_test", arguments: {action:
+`java_status(status).fast_test` returns a summary with state, counts, timings and
+the original `test_run_id`. `run` normally returns the same summary, but includes
+compiler diagnostics directly when compilation has failed before the reply.
+This covers initial and incremental compilation and retained compile errors;
+diagnostic truncation and total error counts are preserved. A failure occurring
+after a timeout reply is read through `result`. Failed-test stacks and other
+preparation error details also remain available through `result`.
+Failure summaries include `next_action = {tool: "java_fast_test", arguments: {action:
 "result", test_run_id: ...}}`. Reading details neither reruns nor consumes a test.
 `compiled_source_count` is retained; bulk `compiled_source_units` is not returned.
 `result` addresses the active or most recently finished attempt by ID in the

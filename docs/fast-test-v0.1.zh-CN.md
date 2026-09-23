@@ -6,10 +6,13 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 ## 状态摘要与结果详情
 
 `java_fast_test` 支持 `run`（默认）、`cancel` 和 `result`。
-`run` 的直接返回和 `java_status(status).fast_test` 都是摘要：任务 ID、阶段、结果、
-计数和耗时。错误诊断、失败测试堆栈、准备阶段的错误细节不再反复混入全局状态。
+`java_status(status).fast_test` 始终是摘要：任务 ID、阶段、结果、计数和耗时。
+`run` 通常也返回摘要；如果本次回复时已经编译失败，会直接返回编译诊断（文件、行号、
+错误信息、错误总数和截断标记），无需再调用 `result`。覆盖首次全量编译、增量编译，
+以及尚未修复的已有编译错误，不输出完整编译文件清单。
 
-失败摘要提供可直接调用的 `next_action`。读取详情用
+若调用已因 `timeout` 返回后台任务，之后才发生的错误仍通过 `result` 读取；不会补发
+或改写已经返回的响应。其他失败摘要提供可直接调用的 `next_action`。读取详情用
 `java_fast_test(action="result", test_run_id=...)`，不编译、不启动 Runner、不消费结果。
 活动任务尚未结束时返回当前观察；完成后返回已有诊断和失败详情。
 只复用当前 MCP 进程已有的活动/最近完成任务，不增加历史数据库或对话已读状态；
