@@ -153,3 +153,27 @@ def test_language_entrypoints_link_to_matching_installation_guide():
     # Both installation guides point to the same deployable English Skill.
     for path in INSTALL:
         assert "](skills/jolink-java/SKILL.md)" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("suffix,stop,reload,no_reinstall", [
+    ("", "stop", "reload", "without reinstalling"),
+    (".zh-CN", "停止", "重新加载", "不要重新安装"),
+])
+def test_installation_handoff_is_part_of_the_copied_prompts(suffix, stop, reload, no_reinstall):
+    readme = ROOT / f"README{suffix}.md"
+    url = f"https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL{suffix}.md"
+    prompts = blocks(readme, "text")
+    install = next(prompt for prompt in prompts if url in prompt)
+    # The installer must see the handoff even when it receives only the copied prompt.
+    assert stop in install and reload in install
+    verification = [prompt for prompt in prompts if no_reinstall in prompt]
+    assert len(verification) == 1
+    assert stop in verification[0]
+    assert "joLink" in verification[0] and "Skill" in verification[0]
+
+    guide = (ROOT / f"INSTALL{suffix}.md").read_text(encoding="utf-8")
+    handoff, client_verification = guide.split("## 5.", 1)[1].split("## 6.", 1)
+    assert stop in handoff
+    # A status call is a client-loaded verification step, not an installer obligation.
+    assert "java_status(" not in handoff
+    assert "java_status(" in client_verification
