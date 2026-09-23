@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v6
+      - name: Prepare Registry metadata from package version
+        run: python scripts/prepare_registry_metadata.py
       - name: Build wheel and sdist without workspace sources
         run: uv build --no-sources --clear
       - uses: actions/upload-artifact@v4
@@ -27,6 +29,7 @@ jobs:
             dist/*.tar.gz
             scripts/verify_distribution.py
             pyproject.toml
+            server.json
 
   verify-windows:
     name: Clean Windows MCP/JVM release E2E
@@ -83,3 +86,44 @@ jobs:
           path: release
       - name: Publish with PyPI Trusted Publishing
         run: uv publish --trusted-publishing always release/dist/*
+
+  publish-registry:
+    name: Publish MCP Registry metadata
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: release
+      - name: Install official MCP publisher
+        run: |
+          curl --fail --show-error --location --retry 3 \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz \
+            --output mcp-publisher.tar.gz
+          printf '%s\n' 'a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz' | sha256sum --check
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+      - name: Authenticate with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
+      - name: Verify published Registry entry
+        run: |
+          registry_name=$(jq -r '.name | @uri' server.json)
+          registry_version=$(jq -r '.version | @uri' server.json)
+          curl --fail --show-error --location --retry 3 --retry-all-errors --max-time 30 \
+            "https://registry.modelcontextprotocol.io/v0.1/servers/$registry_name/versions/$registry_version" \
+            --output registry-published.json
+          jq --exit-status --slurpfile expected server.json '
+            .server.name == $expected[0].name and
+            .server.version == $expected[0].version and
+            any(.server.packages[]; .registryType == "pypi" and
+              .identifier == $expected[0].packages[0].identifier and
+              .version == $expected[0].packages[0].version and
+              .runtimeHint == "uvx" and .transport.type == "stdio")
+          ' registry-published.json

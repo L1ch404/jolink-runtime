@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.L1ch404/jolink-runtime",
+  "title": "joLink",
+  "description": "A lightweight Java IDE for AI agents: incremental builds, fast tests, HotSwap and live debugging.",
+  "repository": {
+    "url": "https://github.com/L1ch404/jolink-runtime",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/L1ch404/jolink-runtime",
+  "version": "0.1.0a7",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "jolink-runtime",
+      "version": "0.1.0a7",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "JOLINK_DOWNLOAD_MIRROR",
+          "description": "Download source for Java tooling. Use cn in China.",
+          "default": "official",
+          "choices": [
+            "official",
+            "cn"
+          ]
+        },
+        {
+          "name": "JOLINK_JDT_GC_AFTER_BUILD",
+          "description": "Request memory cleanup after compilation: 1 enables it, 0 disables it.",
+          "default": "1",
+          "choices": [
+            "1",
+            "0"
+          ]
+        }
+      ]
+    }
+  ]
+}
