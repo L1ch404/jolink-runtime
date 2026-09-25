@@ -13,6 +13,6 @@
   "schema_version": 1,
   "test_runner": {
     "main_class": "net.jolink.runtime.test.TestRunner",
-    "sha256": "c33470dd8e340274546a8e0d9eb24a828e1bf1eb595ea62b22b6f2b581544400"
+    "sha256": "51f3df0416af18170f04b985f495aa2b11af83d09402d853853099088b61ebcd"
   }
 }

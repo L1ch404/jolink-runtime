@@ -471,6 +471,16 @@ public final class TestRunner {
         recordMethodFrameworks(
                 type, selector.methodName, frameworks,
                 new LinkedHashSet<Class<?>>());
+        if (selector.methodName == null) {
+            // A Jupiter container may have only @Nested children, no test methods.
+            for (Class<?> nested : type.getDeclaredClasses()) {
+                for (java.lang.annotation.Annotation annotation : nested.getAnnotations()) {
+                    if ("org.junit.jupiter.api.Nested".equals(annotation.annotationType().getName())) {
+                        frameworks.add("junit5");
+                    }
+                }
+            }
+        }
         if (frameworks.size() != 1) {
             return "unknown";
         }
@@ -530,8 +540,10 @@ public final class TestRunner {
                 || "org.junit.runner.RunWith".equals(annotation)) {
             frameworks.add("junit4");
         }
-        if (annotation.startsWith("org.junit.jupiter.api.")
-                || annotation.startsWith("org.junit.jupiter.params.")) {
+        // Use Platform's test marker, including composed tests/templates/factories.
+        // Extensions and lifecycle annotations do not choose a test framework.
+        if ("org.junit.platform.commons.annotation.Testable".equals(annotation)
+                || "org.junit.jupiter.api.Nested".equals(annotation)) {
             frameworks.add("junit5");
         }
         if (annotation.startsWith("org.testng.annotations.")) {
