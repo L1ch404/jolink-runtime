@@ -31,9 +31,10 @@ provider, or separate agent application.
 Follow this guide:
 https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.md
 Install joLink MCP and its English Skill for my current agent.
+Enable the global Java change-verification rule for this agent across projects.
 Use user-level installation by default and preserve existing configuration.
-Check the saved configuration and Skill file. If this chat cannot load the new MCP or Skill,
-stop and tell me how to reload the client; leave connection verification to a chat after reloading.
+Check the saved configuration, Skill and rule. If a client UI action or reload is needed,
+stop and tell me what to do; leave connection and rule-loading verification to a chat after reloading.
 ```
 
 3. If the agent reports that a reload is needed, reconnect MCP or restart the client
@@ -43,15 +44,19 @@ stop and tell me how to reload the client; leave connection verification to a ch
 ```text
 Verify the existing joLink MCP and jolink-java Skill in this client without reinstalling them.
 Call the joLink status tool exposed by this client once, and check its Skill list or loading facility.
-If either is still unavailable, report what is missing and stop; do not write a standalone verification script.
+If I enabled it, also check whether the global Java change-verification rule is loaded through the client's native instructions view.
+If anything is unavailable or its loading cannot be confirmed, report it and stop; do not write a standalone verification script.
 Do not start applications or run tests.
 ```
 
 The guide provides official client-specific locations and examples for Codex,
 Claude Code, Cursor, VS Code/Copilot, CodeBuddy, Gemini CLI, OpenCode, Cline,
-Roo Code and Windsurf. All start MCP with `uvx jolink-runtime@latest` and use the same
+Roo Code, Windsurf and Kiro. All start MCP with `uvx jolink-runtime@latest` and use the same
 [English Skill](skills/jolink-java/SKILL.md); no plugin bundle or universal installer
-is required. MCP performs the work; the Skill helps the agent discover and use it.
+is required. MCP performs the work; the Skill explains the workflows; the optional
+[global verification rule](rules/jolink-java-verification.md) makes proportionate
+Java verification part of implementation tasks across projects. The prompt above
+explicitly enables it; remove that line if you only want MCP and the Skill.
 The guide also covers uv setup, preserving configuration, reconnection and verification.
 
 For Chinese instructions, use [the Chinese installation guide](https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md).

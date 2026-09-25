@@ -9,6 +9,25 @@ Use joLink to obtain execution evidence for the user's Java task. Prefer its
 persistent incremental compilation for repeated test and application feedback.
 Keep the user's chosen scope: a request to explain code is not a request to run it.
 
+## Verify implementation changes
+
+For Java implementation tasks, include relevant verification before handoff rather
+than waiting for a separate testing request. Choose evidence for the changed
+behavior, not a confidence score or a mandatory sequence of tools:
+
+- Non-behavioral edits: review the diff and relevant static constraints.
+- Behavior covered by isolated tests: run relevant existing tests; add focused
+  coverage where needed. Prefer `java_fast_test` for the supported selection.
+- Runtime integration changes: exercise the relevant application behavior when
+  isolated tests cannot establish it, using the known development/test setup.
+- Unexplained failures: use logs/responses first, then debugger evidence as needed;
+  rerun the relevant verification after fixing the cause.
+
+Verify a coherent batch of edits, not every file write. Respect explicit user
+opt-outs and project requirements. If joLink cannot perform the required check,
+use the project's native checks and state what remains unverified. Do not turn a
+verification task into tool installation or treat missing tools as test success.
+
 ## How it works
 
 - Native Maven/Gradle probes export resolved source roots, classpaths, compiler and

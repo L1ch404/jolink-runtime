@@ -1,14 +1,17 @@
-# 安装 joLink MCP 与 Agent Skill
+# 安装 joLink MCP、Skill 与 Java 验证准则
 
 [English](INSTALL.md) · [项目介绍](README.zh-CN.md)
 
 为用户当前使用的编程 Agent 配置 joLink MCP，并安装英文 `jolink-java` Skill。
+用户要求时，在第 5 步启用全局 Java 自动验证准则。README 的安装提示词已明确要求
+启用，不重复询问。如果用户只要求安装 MCP/Skill，则询问一次是否启用；不同意不影响
+安装。用户明确不启用时直接跳过，不再追问。
 默认用户级安装，保留已有配置。直接完成你能执行的步骤；只有不清楚目标客户端，
 或确实需要用户操作时再询问。本次安装不启动业务应用、不运行业务测试。
 
-**配置安装与客户端验证是两个阶段。** 当前会话完成 MCP 配置和 Skill 文件的写入、
-检查即可。如果客户端尚未加载它们，在第 5 步交给用户并停止，这是配置完成后的正常
-交接，不是安装失败。第 6 步只在客户端已加载工具和 Skill 的会话中执行。
+**配置安装与客户端验证是两个阶段。** 当前会话完成 MCP 配置、Skill 和用户要求的
+规则的写入、检查即可。如果客户端尚未加载它们，在第 6 步交给用户并停止，这是配置
+完成后的正常交接，不是安装失败。第 7 步只在客户端已加载工具和指令的会话中执行。
 
 ## 1. 确定客户端和安装位置
 
@@ -32,6 +35,7 @@
 | Cline | IDE：**MCP Servers → Configure → Configure MCP Servers** 打开扩展实际 JSON；CLI：`~/.cline/mcp.json` | `~/.cline/skills/jolink-java/SKILL.md` | A · [MCP](https://docs.cline.bot/mcp/mcp-overview) · [Skills](https://docs.cline.bot/customization/skills) |
 | Roo Code | **MCP → Edit Global MCP** 打开 `mcp_settings.json`；项目级是 `.roo/mcp.json` | `~/.roo/skills/jolink-java/SKILL.md` | A · [MCP](https://docs.roocode.com/features/mcp/using-mcp-in-roo) · [Skills](https://docs.roocode.com/features/skills) |
 | Windsurf / Cascade | `~/.codeium/windsurf/mcp_config.json` 中的 `mcpServers` | `~/.codeium/windsurf/skills/jolink-java/SKILL.md` | A · [MCP](https://docs.windsurf.com/windsurf/cascade/mcp) · [Skills](https://docs.windsurf.com/windsurf/cascade/skills) |
+| Kiro IDE / CLI | **Kiro: Open user MCP config (JSON)**，通常是 `~/.kiro/settings/mcp.json`，合入 `mcpServers`；保留原审批设置 | `~/.kiro/skills/jolink-java/SKILL.md`；自定义 Agent 需在 resources 中包含此 Skill | A · [MCP](https://kiro.dev/docs/mcp/) · [Skills](https://kiro.dev/docs/skills/) |
 
 客户端不在表中时，查它的官方本地 stdio MCP 和 Skill 安装说明，接入同一条 uvx
 命令和同一份 Skill，不需要另一套 joLink。没有 Skill 支持时，先配置 MCP，
@@ -179,16 +183,88 @@ OpenCode 使用 `environment`，其他模板使用 `env`（TOML 为嵌套表）�
   保留定制或先确认再替换。
 
 确认文件具有 `name: jolink-java` 的 frontmatter 和正文。如果启用它需要用户操作，
-在下面的交接中说明。不安装另一份中文 Skill，也不额外写全局规则。
+在下面的交接中说明。不安装另一份中文 Skill。可选的全局规则在第 5 步单独安装，
+不属于 Skill 注册的一部分。
 
-## 5. 检查配置，需要重新加载时交给用户
+## 5. 按用户要求安装全局 Java 验证准则
 
-检查第 1–4 步的结果：uvx 可用，选中客户端的配置已保存 joLink 项及环境变量，
+读取 [rules/jolink-java-verification.md](rules/jolink-java-verification.md)，安装其
+**完整英文正文**，包括开始／结束标记。与 Skill 一样，使用当前文档所在的源码目录或
+Git 分支/ref；默认分支的[规则原文](https://raw.githubusercontent.com/L1ch404/jolink-runtime/main/rules/jolink-java-verification.md)
+可直接获取。不要保存 HTML/错误页，不要只写一个链接，也不要把整个 Skill 复制进去。
+
+从下表选择**当前客户端的一处有效用户级入口**。短规则应跨项目自动加载，由正文限定
+仅在 Java 实现任务中触发行为。不用 `**/*.java` 限制加载，不要求手动提及，也不让模型
+自行判断是否需要加载规则全文。
+
+| 客户端 / 使用形态 | 全局目标或原生界面 | 加载设置 / 官方文档 |
+|---|---|---|
+| Codex 桌面端 / CLI / IDE 插件 | 追加到 `~/.codex/AGENTS.md`，尊重 `CODEX_HOME`；如果同目录已有非空且生效的 `AGENTS.override.md`，则写入该文件 | 不新建 override 遮蔽用户原有指令。新会话生效。[指令](https://learn.chatgpt.com/docs/agent-configuration/agents-md) |
+| Claude Code | `~/.claude/rules/jolink-java-verification.md` | 不加 `paths` 条件，用户规则跨项目加载。[记忆](https://code.claude.com/docs/en/memory#user-level-rules) |
+| Cursor IDE | **Customize → Rules → User Rules**，把带标记的正文加入现有用户规则 | 用于 Agent Chat，不用于 Tab/Inline Edit。通过界面操作，不猜全局文件、不改内部数据库。[规则](https://cursor.com/docs/rules#user-rules) |
+| Cursor CLI | 依照当前 CLI 官方文档检查其实际支持的全局规则入口 | 不假定 IDE User Rules 已加载到 CLI，也不偷偷改成项目级规则。无法确认时将此项列为待完成。[CLI 规则](https://cursor.com/docs/cli/using) |
+| VS Code / GitHub Copilot | Copilot Agent Host：`~/.copilot/instructions/jolink-java-verification.instructions.md`。Local Agent：通过活动 profile 的 **Chat: New Instructions File → User** 创建，再使用实际创建的文件 | 加下方 frontmatter A。Local Agent 的用户文件在 profile 存储中，不一定是 `~/.copilot`。[指令](https://code.visualstudio.com/docs/agent-customization/custom-instructions) |
+| GitHub Copilot CLI | `~/.copilot/instructions/jolink-java-verification.instructions.md`，尊重 `COPILOT_HOME` | 加 frontmatter A；通过 `/instructions` 查看发现的文件和启用状态。[指令](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions) |
+| CodeBuddy Code CLI | `~/.codebuddy/rules/jolink-java-verification.md` | 加 frontmatter B。配置 CLI 不代表配置了 IDE/插件。[记忆](https://www.codebuddy.cn/docs/cli/memory) |
+| CodeBuddy IDE | **设置／规则 → 创建规则 → 用户规则**，名称 `jolink-java-verification`，粘贴带标记的正文 | 类型选择**总是**，不是智能体请求或手动。新建对话生效。[规则](https://www.codebuddy.cn/docs/ide/User-guide/Rules) |
+| CodeBuddy 编辑器插件 | 检查该插件版本自己的规则设置，寻找**用户／全局**规则及自动加载开关 | 不套用 IDE/CLI 入口。如果仅支持项目规则，说明全局规则尚未配置；未经许可不写入业务仓库。[插件文档](https://www.codebuddy.cn/docs/plugin/) |
+| Gemini CLI | 追加到 `~/.gemini/GEMINI.md`，尊重已配置的上下文文件名 | 用户级上下文跨项目生效；重新加载后可用 `/memory show` 查看。[上下文](https://geminicli.com/docs/cli/gemini-md/) |
+| OpenCode | 追加到实际使用的全局 `AGENTS.md`，通常为 `~/.config/opencode/AGENTS.md` | 若正在使用 Claude 全局回退，保留这部分指令：通过全局配置的 `instructions` 列表登记独立规则，不新建文件遮蔽原回退。[规则](https://opencode.ai/docs/rules/) |
+| Cline | 在实际 **Global Rules** 目录添加 `jolink-java-verification.md`，通常为 `~/Documents/Cline/Rules/`；Windows 使用系统实际 Documents 目录 | 启用规则，不加路径条件。通过 Rules 面板处理 Documents/OneDrive 重定向，不向多个回退目录重复写入。[规则](https://docs.cline.bot/customization/cline-rules) |
+| Roo Code | `~/.roo/rules/jolink-java-verification.md` | 使用通用全局目录，不限定单个工作模式。[指令](https://docs.roocode.com/features/custom-instructions) |
+| Windsurf / Cascade | 追加到 `~/.codeium/windsurf/memories/global_rules.md` | 始终加载；整个文件上限 6,000 字符。追加会超限时请用户整理空间，不删除用户规则。[记忆](https://docs.windsurf.com/windsurf/cascade/memories) |
+| Kiro IDE / CLI | `~/.kiro/steering/jolink-java-verification.md` | 加 frontmatter C。自定义 Agent 还需在 `resources` 中包含此文件，保留已有条目。[Steering](https://kiro.dev/docs/steering/) |
+
+**Frontmatter A — Copilot 指令。** 添加到规则正文之前：
+
+```yaml
+---
+applyTo: "**"
+---
+```
+
+**Frontmatter B — CodeBuddy CLI。** 添加到规则正文之前：
+
+```yaml
+---
+enabled: true
+alwaysApply: true
+---
+```
+
+**Frontmatter C — Kiro steering。** 添加到规则正文之前：
+
+```yaml
+---
+inclusion: always
+---
+```
+
+其他客户端按其当前官方文档，使用用户级指令入口和自动加载设置，不根据别的产品猜
+路径。需要界面操作时，给出规则正文和准确步骤，用户完成前如实报告待完成。缺少全局
+规则入口不影响 MCP/Skill 配置继续完成。
+
+写入前读取目标并备份。共享文件只添加或更新
+`<!-- jolink-java-verification:begin -->` 与 `<!-- jolink-java-verification:end -->`
+之间的段落，保留段落外的全部内容。独立文件只管理 joLink 的规则和所需原生
+frontmatter。重复安装不得重复追加；用户有定制时保留定制或先确认再覆盖。不删除冲突
+的用户规则，不替换系统提示词，不修改审批设置。有些客户端会加载其他客户端的兼容
+文件：复用已生效的 joLink 段落，不要往多个识别位置各写一份。
+
+用户要求关闭或卸载规则时，通过客户端界面关闭 joLink 规则，或仅移除其标记段落／
+独立文件。除非用户也要求移除 MCP、Skill 或其他指令，否则保留它们。
+
+## 6. 检查配置，需要重新加载时交给用户
+
+检查第 1–5 步的结果：uvx 可用，选中客户端的配置已保存 joLink 项及环境变量，
 无关配置保留，英文 Skill 文件在指定位置。这只能确认**安装配置完成**，不代表
-MCP 已连接或 Skill 已被客户端加载；软件包下载可能在首次启动时才发生。
+MCP 已连接或 Skill/规则已被客户端加载；软件包下载可能在首次启动时才发生。
+用户要求启用准则时，还要检查全局规则位置、原内容保留情况和自动加载设置；未完成
+的界面操作单独报告。
 
-如果客户端已经把新的工具和 Skill 加载到当前会话，可继续第 6 步。否则**到此停止**，
-告诉用户需要执行的客户端操作：按实际情况重连 MCP 或重启客户端，再新建对话。
+如果客户端已经把新的工具、Skill 和用户要求的规则加载到当前会话，可继续第 7 步。
+否则**到此停止**，告诉用户需要执行的客户端操作：按实际情况重连 MCP 或重启客户端，
+再新建对话。
 安装前新开的对话，不保证能看到安装后新增的工具和 Skill。
 
 不要为了绕过当前会话的工具不可见问题，编写独立 MCP 客户端、手动发送协议消息，
@@ -196,22 +272,28 @@ MCP 已连接或 Skill 已被客户端加载；软件包下载可能在首次启
 进程来强行完成本会话验证。独立脚本连接成功不代表当前客户端已接入；直接读取
 SKILL.md 文件不代表客户端已注册该 Skill。
 
-报告客户端、MCP 配置位置、Skill 位置和下一步用户操作。例如：“安装配置已完成，
-客户端加载和连接验证尚未完成。请重新加载客户端，再在新对话中验证，无需重复安装。”
+报告客户端、MCP 配置位置、Skill 位置、全局规则状态／位置和下一步用户操作。例如：
+“安装配置已完成，客户端加载和连接验证尚未完成。请重新加载客户端，再在新对话中
+验证，无需重复安装。”
 没有实际观察到连接成功，就不要报告“已经连接成功”。
 
-## 6. 通过已加载的客户端验证
+## 7. 通过已加载的客户端验证
 
 这是验证已有安装，不是再安装一次。使用当前客户端提供的工具/Skill 发现或加载入口。
-如果仍不可用，说明缺少哪一项后停止，不因会话仍看不到工具或 Skill 就重做第 1–4 步。
+如果仍不可用，说明缺少哪一项后停止，不因会话仍看不到工具、Skill 或规则就重做第 1–5 步。
 
 1. 查看客户端实际提供的 joLink 工具，不假定已安装版本具有新版接口。
 2. 调用一次已暴露的状态工具：`java_status(action="status")`；仅在确实暴露旧接口时用
    `java_runtime(action="status")`。不为了检查安装而启动或停止业务应用。
 3. 确认客户端的 Skill 列表能看到 `jolink-java`，或能通过客户端加载它；仅有文件不算。
+4. 启用准则时，通过客户端原生的活动指令／规则视图或加载诊断确认 joLink 段落。
+   文件存在、或模型复述出规则，都不等于已自动加载。客户端没有相应证据入口时，报告
+   加载尚未验证，不为了演示规则而修改业务代码。
 
-分别报告实际观察到的 MCP 和 Skill 验证结果。若客户端报告了具体连接错误，再据此
-排查；仅仅是当前对话的工具列表没有更新，不能据此判断安装损坏。
+分别报告 MCP、Skill 和全局规则的验证结果。观察到规则加载，不代表模型一定遵循；
+后者在正常授权的开发任务中观察，不在安装时运行业务测试。
+若客户端报告了具体连接错误，再据此排查；仅仅是当前对话的工具列表没有更新，
+不能据此判断安装损坏。
 
 ## 遇到问题时
 
@@ -225,4 +307,5 @@ SKILL.md 文件不代表客户端已注册该 Skill。
 - **配置位置不同：** 查表中官方文档，或用当前客户端“打开配置”的入口找到实际文件，
   然后继续安装同一条命令和同一份 Skill。
 
-客户端入口依据 2026-09-20 核对的官方文档。
+MCP/Skill 入口依据 2026-09-20 核对的官方文档；全局规则和 Kiro 入口于 2026-09-25
+核对。这是文档确认的接入方式，不代表已经在每个客户端和版本上完成安装实测。

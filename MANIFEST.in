@@ -1,5 +1,7 @@
 include README.zh-CN.md INSTALL.md INSTALL.zh-CN.md
 include server.json
+recursive-include rules *.md
+recursive-include skills *.md
 recursive-include java *.java *.xml *.MF *.json *.gradle *.template *.md
 include scripts/build_*.py scripts/resolve_jdt_dependencies.py
 include scripts/prepare_jdt_worker.py

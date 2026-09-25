@@ -26,9 +26,10 @@ joLink 不提供编辑器界面，而是通过 MCP，将增量编译、测试、
 按照这份文档：
 https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md
 为我当前使用的 Agent 安装 joLink MCP 和英文 Skill。
+为该 Agent 启用跨项目生效的全局 Java 自动验证准则。
 默认用户级安装，保留现有配置。
-检查已保存的配置和 Skill 文件。如果当前会话无法加载新的 MCP 或 Skill，
-请停止并告诉我如何重新加载客户端，连接验证留到重新加载后的会话。
+检查已保存的配置、Skill 和规则。如果需要客户端界面操作或重新加载，
+请停止并告诉我如何操作，连接与规则加载的验证留到重新加载后的会话。
 ```
 
 3. 如果 Agent 提示需要重新加载，由你按提示重连 MCP 或重启客户端，再新建对话。
@@ -37,14 +38,18 @@ https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL.zh-CN.md
 ```text
 验证当前客户端已经配置的 joLink MCP 和 jolink-java Skill，不要重新安装。
 调用当前客户端暴露的 joLink 状态查询工具一次，并通过客户端的技能列表或加载入口确认 Skill。
-如果仍不可用，说明缺少哪一项后停止，不要另写验证脚本。
+如果我启用过全局 Java 自动验证准则，同时通过客户端原生的指令查看入口确认它是否已加载。
+如果仍不可用或无法确认加载，说明情况后停止，不要另写验证脚本。
 不启动应用、不运行测试。
 ```
 
 安装文档覆盖 Codex、Claude Code、Cursor、VS Code/Copilot、CodeBuddy、Gemini CLI、
-OpenCode、Cline、Roo Code、Windsurf 等客户端的官方接入方式。MCP 和 Skill 分开安装，
+OpenCode、Cline、Roo Code、Windsurf、Kiro 等客户端的官方接入方式。MCP 和 Skill 分开安装，
 所有客户端通过 `uvx jolink-runtime@latest` 启动 MCP，并使用同一份
 [英文 Skill](skills/jolink-java/SKILL.md)。
+MCP 负责执行，Skill 说明方法，可选的[全局验证准则](rules/jolink-java-verification.md)
+让 Agent 在 Java 实现任务中主动做适量验证，并跨项目生效。上面的提示词明确启用它；
+如果只需要 MCP 和 Skill，删掉启用准则的那一行即可。
 
 ## 为什么需要 joLink
 

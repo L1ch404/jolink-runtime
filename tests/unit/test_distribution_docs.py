@@ -15,6 +15,7 @@ from jolink_runtime.server.tool_schema import get_mcp_tools
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL = (ROOT / "INSTALL.md", ROOT / "INSTALL.zh-CN.md")
 SKILL = ROOT / "skills/jolink-java/SKILL.md"
+RULE = ROOT / "rules/jolink-java-verification.md"
 
 
 def blocks(path, language):
@@ -126,7 +127,7 @@ def test_translated_readme_examples_validate_against_current_mcp_schemas():
         Draft202012Validator(schemas[tool]).validate(arguments)
 
 
-@pytest.mark.parametrize("path", [ROOT / "README.md", ROOT / "README.zh-CN.md", *INSTALL, SKILL,
+@pytest.mark.parametrize("path", [ROOT / "README.md", ROOT / "README.zh-CN.md", *INSTALL, SKILL, RULE,
                                   ROOT / "THIRD_PARTY_NOTICES.md", ROOT / "licenses/README.md"],
                          ids=lambda p: p.name)
 def test_distribution_relative_links_resolve(path):
@@ -144,15 +145,18 @@ def test_language_entrypoints_link_to_matching_installation_guide():
         readme = path.read_text(encoding="utf-8")
         url = f"https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL{suffix}.md"
         # Copying the code block must include the actual installation URL and
-        # both install targets, without requiring text outside the block.
+        # all install targets, without requiring text outside the block.
         prompts = [block for block in blocks(path, "text") if url in block]
         assert len(prompts) == 1
         assert url in prompts[0].splitlines()
         assert "MCP" in prompts[0] and "Skill" in prompts[0]
+        assert "Java" in prompts[0]
+        assert ("global" if not suffix else "全局") in prompts[0]
         assert not re.search(r"\]\(INSTALL(?:\.zh-CN)?\.md\)", readme)
     # Both installation guides point to the same deployable English Skill.
     for path in INSTALL:
         assert "](skills/jolink-java/SKILL.md)" in path.read_text(encoding="utf-8")
+        assert "](rules/jolink-java-verification.md)" in path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("suffix,stop,reload,no_reinstall", [
@@ -170,10 +174,68 @@ def test_installation_handoff_is_part_of_the_copied_prompts(suffix, stop, reload
     assert len(verification) == 1
     assert stop in verification[0]
     assert "joLink" in verification[0] and "Skill" in verification[0]
+    assert ("global" if not suffix else "全局") in verification[0]
 
     guide = (ROOT / f"INSTALL{suffix}.md").read_text(encoding="utf-8")
-    handoff, client_verification = guide.split("## 5.", 1)[1].split("## 6.", 1)
+    handoff, client_verification = guide.split("## 6.", 1)[1].split("## 7.", 1)
     assert stop in handoff
     # A status call is a client-loaded verification step, not an installer obligation.
     assert "java_status(" not in handoff
     assert "java_status(" in client_verification
+
+
+def test_rule_markers_and_tool_references_are_deployable():
+    rule = RULE.read_text(encoding="utf-8")
+    begin = "<!-- jolink-java-verification:begin -->"
+    end = "<!-- jolink-java-verification:end -->"
+    # These markers delimit only joLink's content in a shared user rules file.
+    assert rule.startswith(begin + "\n") and rule.rstrip().endswith(end)
+    assert rule.count(begin) == rule.count(end) == 1
+    assert len(rule) < 6000  # Must fit even in an empty Windsurf global rules file.
+    names = set(re.findall(r"`(java_\w+)`", rule))
+    # Tool names are optional when the rule delegates tool choice to the Skill.
+    assert names <= {tool.name for tool in get_mcp_tools()}
+    assert re.search(r"\bjolink-java\b", rule)
+    for path in INSTALL:
+        guide = path.read_text(encoding="utf-8")
+        assert begin in guide and end in guide
+        assert "raw.githubusercontent.com/L1ch404/jolink-runtime/main/" + RULE.relative_to(ROOT).as_posix() in guide
+
+
+def rule_section(path):
+    return path.read_text(encoding="utf-8").split("## 5.", 1)[1].split("## 6.", 1)[0]
+
+
+def test_global_rule_translations_use_same_destinations_and_native_headers():
+    english, chinese = (rule_section(path) for path in INSTALL)
+    paths = lambda text: sorted(re.findall(r"`(~[^`]+)`", text))
+    assert paths(english) and paths(english) == paths(chinese)
+    headers = blocks(INSTALL[0], "yaml")
+    assert headers == blocks(INSTALL[1], "yaml")
+    parsed = []
+    for header in headers:
+        lines = header.strip().splitlines()
+        assert lines[0] == lines[-1] == "---"
+        # Native wrappers use only simple scalar fields; no extra YAML dependency.
+        fields = dict(line.split(":", 1) for line in lines[1:-1])
+        parsed.append({key: value.strip() for key, value in fields.items()})
+    assert {"applyTo": '"**"'} in parsed
+    assert {"enabled": "true", "alwaysApply": "true"} in parsed
+    assert {"inclusion": "always"} in parsed
+
+
+@pytest.mark.parametrize("path", INSTALL, ids=lambda p: p.name)
+def test_each_mcp_client_has_a_global_rule_route_or_explicit_handoff(path):
+    guide = path.read_text(encoding="utf-8")
+    mcp_table = guide.split("## 1.", 1)[1].split("## 2.", 1)[0]
+    rule_table = rule_section(path)
+
+    def brands(text):
+        return {
+            line.split("|")[1].strip().split()[0]
+            for line in text.splitlines()
+            if line.startswith("| ") and "https://" in line
+        }
+
+    # A newly documented MCP client must not silently miss rule installation.
+    assert brands(mcp_table) and brands(mcp_table) <= brands(rule_table)
