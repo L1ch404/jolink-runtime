@@ -19,6 +19,7 @@ from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import build_configuration_stamps
+from .idea_environment import build_preferences_key
 
 
 _SCHEMA = "jolink.project-launch-cache.v3"
@@ -150,6 +151,10 @@ class ProjectLaunchCache:
             if (
                 raw.get("schema") != _SCHEMA
                 or raw.get("build_system") != build_system
+            ):
+                return None
+            if build_preferences_key(raw.get("build_preferences"), build_system) != build_preferences_key(
+                build_preferences, build_system
             ):
                 return None
             # A different entry/module may need a different dependency graph.

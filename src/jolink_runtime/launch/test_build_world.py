@@ -48,6 +48,7 @@ class JavaTestBuildWorld:
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = field(default_factory=dict)
     configuration_stamps: dict[str, str] | None = None
+    build_preferences: dict[str, object] = field(default_factory=dict)
 
 
 class TestBuildWorldBootstrap(Protocol):

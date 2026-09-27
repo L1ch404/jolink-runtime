@@ -11,6 +11,7 @@ import uuid
 from .jdt_workspace_store import JdtWorkspaceStore, jolink_cache_root
 from .test_build_world import JavaTestBuildWorld
 from .toolchain import JavaToolchainCandidate
+from .idea_environment import build_preferences_key
 from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import (
     configuration_file_stamps,
@@ -18,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v5"
+_SCHEMA = "jolink.fast-test-world.v6"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -67,25 +68,30 @@ class FastTestCache:
     def workspace_store(self, project: Path, build_system: str) -> JdtWorkspaceStore:
         return JdtWorkspaceStore(self._directory(project, build_system) / "workspace")
 
-    def is_current(self, project: Path, build_system: str) -> bool:
+    def is_current(self, project: Path, build_system: str, *, build_preferences=None) -> bool:
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            return raw.get("schema") == _SCHEMA and self.snapshot_is_current(project, build_system, raw)
+            return raw.get("schema") == _SCHEMA and self.snapshot_is_current(
+                project, build_system, raw, build_preferences=build_preferences
+            )
         except (OSError, json.JSONDecodeError):
             return False
 
-    def load(self, project: Path, build_system: str):
+    def load(self, project: Path, build_system: str, *, build_preferences=None):
         path = self._directory(project, build_system) / "build-world.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if raw.get("schema") != _SCHEMA or not self.snapshot_is_current(project, build_system, raw):
+            if raw.get("schema") != _SCHEMA or not self.snapshot_is_current(
+                project, build_system, raw, build_preferences=build_preferences
+            ):
                 return None
             world = raw["world"]
             toolchain = raw["build_jdk"]
             return (
                 JavaTestBuildWorld(
                     configuration_stamps=dict(raw["inputs"]),
+                    build_preferences=dict(raw["build_preferences"]),
                     test_run_order=world.get("test_run_order", ""),
                     processor_names=tuple(world.get("processor_names", ())),
                     processor_options=dict(world.get("processor_options", {})),
@@ -196,6 +202,7 @@ class FastTestCache:
         inputs = [str(p) for m in world.modules for p in m.get("preparation_inputs", ())]
         roots = [str(p) for m in world.modules for p in m.get("preparation_roots", ())]
         return {
+            "build_preferences": dict(world.build_preferences),
             "configuration_files": [str(p) for p in _world_configuration_files(world)],
             "inputs": dict(world.configuration_stamps) if world.configuration_stamps is not None else FastTestCache.input_snapshot(world),
             "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
@@ -205,9 +212,13 @@ class FastTestCache:
         }
 
     @staticmethod
-    def snapshot_is_current(project, build_system, snapshot):
+    def snapshot_is_current(project, build_system, snapshot, *, build_preferences=None):
         """Compare the supplied model's baseline, never substitute a disk model."""
         try:
+            if build_preferences_key(snapshot.get("build_preferences"), build_system) != build_preferences_key(
+                build_preferences, build_system
+            ):
+                return False
             prepared = preparation_stamps(
                 snapshot.get("preparation_inputs", ()),
                 snapshot.get("preparation_roots", ()),

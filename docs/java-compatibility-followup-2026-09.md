@@ -1,53 +1,114 @@
-# 第一批开源兼容性：小范围修复与待讨论项
+# joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-09-16，优先于下方历史记录）
+## 最新汇总（2026-09-27，优先于下方历史记录）
 
-### 已提交基线与本轮范围
+本轮在 `main` 的 `36cd3c6` 基线上修复U11，已通过用户review并随本次修复提交。
+下面单独记录实现和验收；其他事项未开展修复。没有重新跑完整开源项目矩阵。“已提交”不自动等同于
+用户已经安装到该修复或公司原项目已经完成验收。
 
-JDT3.46＋私有Temurin21升级与APT修复已提交为`a168058`，不再是待review工作区。
-运行时后台下载准备已提交为`bb5ae70`；launch/test同步等待及统一timeout已提交为
-`3b2e2bd`。上一轮配置缓存修复已提交为`eea26fe`，但Review确认其生产接线仍有遗漏。
-本轮只修Review第1/2/3/6项；第4/5项按用户决定只记录，Gradle引用脚本也继续暂缓。
-不将这些剩余问题写成已解决。Java17语言限制已在新引擎
-消除，main8/test17与main11/test21的Maven/Gradle真实回归通过；新版Petclinic的
-所选测试、启动和HTTP通过。MyBatis在测试副本关闭format/license profile后87项
-通过，原样准备阶段仍阻断。详见[升级实现、离线准备、性能与剩余问题](jdt-346-upgrade.zh-CN.md)。
+继续沿用原 U 编号，区分：仍阻断使用、用户暂缓的兼容项、已实现但待专项回归、
+尚未取证的反馈。常见项目被拒绝仍是产品缺口，不能以“安全拒绝”代替支持。
+除用户本轮选定的U11外，不改变此前的暂缓决定；后续继续逐项推进。
 
-新实测也暴露了回归，未用忽略错误或修改业务源码掩盖：Checkstyle5条注解位置错误，
-Guava14条泛型错误。隐式APT遗漏已定位到JavaProject缓存的旧首选项节点仍关闭APT，
-`a168058`已改为初始化编译选项时直接写入最终开关，U7已关闭；详见升级文档第5项。
-Lombok1.18.20历史已知问题按用户要求只记录，不修、不自动换依赖、不增加版本拦截。
+### 当前待办
 
-源码生成改动已提交为 `24df38e`。以下将已解决的入口问题、当前确认的项目阻断、
-尚未覆盖的能力分开，不把同一问题重复记账，也不把越过入口当作项目全流程通过。
-
-2026-09-13后续：U1的私有源码包路径适配已提交为 `05ea849`。Checkstyle原SHA
-通过真实MCP完成4079份源码FULL，0 errors；6个相关测试类共132项通过。
-新MCP无变更重开不编译；临时修改一个原默认包样本后，实际INCREMENTAL只编译
-1个文件，相关15项测试通过，恢复后再次通过，原项目git状态干净。
-这解决的是U1及所选测试，不代表Checkstyle全部测试套件已验收。
-映射持久化、性能和通用回归见[源码布局适配](jdt-source-layout.zh-CN.md)。
-
-### 尚未解决的功能兼容项
-
-| 编号 | 当前问题 | 最新事实 / 与旧问题的关系 | 下一步 |
+| 编号 | 当前状态 / 问题 | 已有证据与边界 | 后续落点 |
 |---|---|---|---|
-| U2 | Guava 泛型错误 | 新3.46原选择器FULL仍失败，14条诊断（旧版本13条），升级没有自动解决 | 缩小表达式并对齐输入，区分编译器差异 |
-| U4 | Error Prone等javac专属检查 | TestNG/Mockito相关配置仍未转成“明确不执行检查但继续编译”的行为。Gradle构建逻辑、动态参数导出、main/test分离已解决，不能再用这些旧原因解释它们。TestNG框架本身已通过测试 | 当前只记录、不实现检查；放行项目并说明检查未执行的策略需另行接入、复跑项目 |
-| U5 | Checkstyle新引擎注解位置错误 | 已定位为泛型方法类型参数后的声明/类型注解归属差异；独立ECJ及原生Eclipse Java Builder均复现，不是U1目录映射复发 | 2026-09-13用户决定只记录、暂不处理；保留原错误，不修改输入或屏蔽诊断，详见升级文档第2项 |
-| U6 | MyBatis准备阶段 | format profile中OpenRewrite fork被拒；关闭format后license处理等待。关闭两者后main8/test17编译和87项通过 | 后续讨论准备步骤；不把专项结果当成原样全通过 |
-| U8 | 旧Lombok1.18.20兼容 | 部分用法依赖旧ECJ内部接口，`@Builder(toBuilder=true)`等有已知失败；不是所有注解都不能使用 | 用户决定暂缓，不自动换项目依赖、不增加版本拦截 |
-| U9 | Reload遇到未加载类 | 新的restart统一入口会用已编好的产物自动重启；仍不做“部分class热更、未加载class延迟加载”的优化 | 自动重启路径本轮已实现，部分HotSwap优化仍暂缓；见project-restart.zh-CN.md |
-| U13 | Gradle编译后处理未接入（产品兼容边界） | JDT快速路径未执行修改class的compileJava.doLast，也未按旧验收约定拒绝；应用能启动不等于包含了正式构建的后处理效果。两个Gradle版本的失败属于同一个问题 | 2026-09-21用户确认先记录、暂不实现；不是本轮整理引入的启动故障。不因存在doLast就一律拒绝，不删除失败断言；详见下文 |
-| U10 | Gradle引用脚本漏入配置清单 | 真实MCP：`apply from: 'config/resources.gradle'`不在已记录输入内；只改脚本后，launch和Test仍复用旧模型 | 2026-09-15用户决定先记录，不实现脚本收集；不能用正则支持一个写法就宣称完整支持动态脚本 |
-| U11 | IDEA切换构建选择/启动意图仍复用旧计划（Review第4项） | 真实MCP：只把选中的settings从A切到B，两文件内容不变，仍返回旧HTTP内容；生产load也忽略新的主类/参数/构建偏好。读取新BuildPreferences发生在缓存命中之后 | 2026-09-16用户决定先记录。不把“同一settings文件内容变化可感知”当成“切换settings/Profile也已支持”；后续区分构建选择与纯启动参数 |
-| U12 | Probe执行期间改配置的基线窗口（Review第5项） | 生产方法受控复现：Probe返回旧UTF-8模型，但返回前POM已改US-ASCII；之后_stabilize拍到新文件，误认为旧模型仍有效。尚未跑真实Maven并发编辑窗口 | 2026-09-16用户决定先记录。本轮仍在Probe结束、JDT开始前取快照；不增加Probe重试/事务或业务源码快照。临时避免在Probe运行时编辑构建配置 |
+| U2 | 待定位：Guava 泛型错误 | JDT3.46在原选择器上仍有14条诊断（旧版本13条）；未拆清源码兼容差异与编译输入问题。这不是14个独立根因 | 沿固定Guava样本缩小表达式，先对齐原生构建与JDT输入，再决定修输入映射还是处理编译器差异 |
+| U4 | 待接线：Error Prone等javac专属检查 | 已决定快速流程可以不执行这类检查，但“说明未执行、继续编译”的接线尚未完成，Mockito/TestNG项目仍可能受阻。TestNG框架本身能运行 | 通用地区分质量检查与影响产物的编译扩展，明确跳过前者，再回归原项目；不是给插件名字加白名单 |
+| U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |
+| U6 | 待讨论：MyBatis准备步骤 | 默认format profile的OpenRewrite fork被拒；关闭format后license处理等待。在副本中关闭两者后，main8/test17及87项所选测试通过 | 区分必要生成步骤与格式化/license检查，接入合理的快速准备流程后，用原配置验证；不能把关闭profile的结果算成原样通过 |
+| U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
+| U9 | 功能已有替代路径，优化暂缓：未加载类的HotSwap | `05a8bf0`后公开restart会增量编译，并在`CLASS_NOT_LOADED`时使用本轮产物自动重启；尚不支持已加载类热更、未加载类留待正常加载 | 待讨论的是减少不必要重启，不再记成“restart无法应用变更”。见[restart流程](project-restart.zh-CN.md) |
+| U10 | 用户暂缓：Gradle引用脚本变化未感知 | 历史真实MCP：只改`apply from: 'config/resources.gradle'`指向的脚本，启动和Fast Test仍复用旧模型；该脚本不在已记录输入中 | 从Gradle实际导出的配置输入补齐跟踪；以改脚本后运行行为改变验收，不靠正则支持一个写法就宣称完整覆盖 |
+| U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
+| U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 
-U4与U6可合并讨论快速流程中构建步骤的边界：必要源码生成（如ANTLR）继续执行；
-格式化、license检查及javac专属质量检查是否留给正式构建，需要明确接线和说明。
-不能一概执行，也不能把所有准备步骤一起跳过。Guava的14条诊断不是14个独立根因。
+U11已完成下节记录的修复，不再作为待实现项。后续可讨论U10的配置输入、
+U4/U6/U13的构建步骤、U2的编译兼容性。
+必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
+事项继续保留，不因这次更新文档就自动开展实现。
 
-### 2026-09-16：Review第1/2/3/6项收口（工作区，待review）
+### U11：已修复（2026-09-27）
+
+`3102b49`已经修了应用JDK、启动参数和主类/模块变化。本轮补齐的是构建选择的
+缓存与运行路径，不重新实现启动流程。
+
+修复前用真实stdio MCP再次确认了两层问题：
+
+1. settings-A/B、POM和Java源码内容全部不变，只改IDEA选项：启动仍返回A，
+   Fast Test仍使用A的系统属性/资源，独立预期为B的测试失败。
+2. 补上Probe缓存比较后，只切Profile，资源已经变B，但新的`-parameters`编译设置
+   没有使旧JDT workspace失效。HTTP反射返回`B|false`，预期为`B|true`。
+
+本轮实现：
+
+- 启动与Fast Test共用`build_preferences_key()`，比较Maven/settings/local repository/
+  Profile选择和实际影响构建的SDK引用、对应目录。忽略应用启动JRE/参数、无关SDK及警告。
+  Gradle不因无关Maven settings/Profile变化而重新准备。
+- 如果Maven/Gradle构建本身选用了IDEA项目SDK，改变该SDK也是构建变化，应重新Probe；
+  单纯修改`java_home`、启动配置的JRE或启动参数不因此使编译缓存失效。
+- 启动缓存命中前比较选择；重新Probe时，把同一构建选择纳入已有workspace身份，避免
+  新Profile模型继续使用旧编译选项。配置不变仍走原缓存，不增加源码/class扫描。
+- Fast Test把Probe所用选择随模型快照保存；活跃模型与磁盘模型分别比较自己的基线，
+  不借另一个会话写入的新磁盘记录为旧Worker背书。
+- 活跃应用的restart也复用现有配置变化检查，构建选择变了就走已有重新启动/Probe路径；
+  不继续在旧模型上编译。`jdwp_adapter.py`只多传一份快照字段，未增加构建编排逻辑。
+
+缓存升级：启动缓存继续读取已有选择字段，不全量作废。旧Fast Test v5没有保存这份
+基线，升为v6后首次重新Probe；JDT workspace和下载缓存不删除，是否重新编译由现有
+workspace身份/持久状态决定，不承诺任意模型变化都无需FULL。
+
+回归入口：[单元测试](../tests/unit/test_build_preferences.py)、
+[settings/Profile真实MCP](../tests/e2e/test_build_preferences_mcp.py)、
+[应用JDK回归](../tests/e2e/test_project_launch_jdk_mcp.py)。已覆盖单模块/Reactor、
+launch/restart/Fast Test、A→B→A、跨MCP切换与不变重开，以及真实HTTP/测试结果和
+编译参数反射；不是仅断言`probe_cache_reused`标志。
+
+本轮提交前本机验收（macOS）：
+
+- 常规测试899 passed；125项需显式开启的MCP/JVM测试未混入此结果。
+- 最终定向真实MCP：12组U11场景＋3组既有Maven/Gradle应用JDK场景，15 passed。
+  另有既有settings内容刷新、Profile模块父POM、活跃模型隔离回归通过。
+- 20轮Fast Test开发循环通过，包含增量、错误恢复、混合JUnit、取消及进程隔离。
+- wheel/sdist构建成功；独立安装wheel后的实际MCP启动、HotSwap、restart、Fast Test、
+  调试及清理验证通过。新增测试文件lint、Python编译检查及diff检查通过。
+
+本轮没有处理U10的Gradle引用脚本、U12的Probe中途编辑窗口，也未扩大到任意环境变量
+或远端配置输入。Gradle既有启动/JDK/Fast Test回归继续验证；公司原项目仍待实测。
+
+### 最近已修复：不再作为待实现项
+
+| 事项 | 提交 / 实际变化 | 验收范围与保留边界 |
+|---|---|---|
+| 配置缓存Review第1/2/3/6项 | `068ec6d`：模块/父POM输入、Fast Test settings来源、活跃模型独立快照、同步等待后的状态指导 | 已有真实MCP及生产接线单测；不是U10、U11剩余部分或U12全部解决 |
+| 应用JDK与无IDEA启动 | `3102b49`：当前应用JDK及参数不被旧缓存覆盖；默认按项目目标平台选应用JDK，显式选择仍可覆盖 | Maven/Gradle相关单测、真实MCP；仅改应用JDK/参数仍可复用编译产物。U11剩余构建选择由上节本轮改动修复 |
+| restart接口与未就绪提示 | `607ba14`：移除`java_application`的`source_files`，自动扫描变化；保留同步等待最终结果的readiness指导 | 未配置`ready_port`仍可启动，但`unverified`不等于HTTP服务已就绪；没有因此解决所有“请求返回旧内容”的反馈 |
+| Fast Test直接返回编译错误 | `7d97321`：`run`返回前已发生编译错误时，直接带诊断；状态查询保持精简 | 超过同步等待后才完成的后台错误仍通过`result(test_run_id)`读取；不是让单次MCP无限等待 |
+| Spring/JUnit框架误判 | `467e182`：不把`@SpringBootTest`包含的Jupiter辅助扩展算成JUnit5测试入口；使用`@Testable`及嵌套测试容器识别 | 真实MCP的JUnit4 Spring随机端口/MockBean/HTTP用例在JDK8、17通过；类/方法选择、缓存重开、混合JUnit以及独立安装wheel通过。公司原项目仍待回归 |
+
+Spring回归已沉淀在[test_fast_test_spring.py](../tests/e2e/test_fast_test_spring.py)。
+当时865项常规测试与3组既有JUnit4/5、TestNG完整流程通过；其后的规则文档提交
+`36cd3c6`对应870项常规测试通过。这些是已有验收记录，不是本次重新执行的结果，
+也不覆盖下表中所有高级测试配置。
+
+### 待取证的现场反馈：restart之后仍看到旧内容
+
+用户曾报告修改少量业务代码后，restart返回`applied=true`、`apply_method=restart`、
+`startup_state=unverified`，之后请求仍见旧内容。当时没有带回完整MCP日志及端口PID
+证据；请求目标已确认是本机`127.0.0.1`。
+
+本机已有对照中，旧受管进程退出、新JVM从JDT输出运行、就绪后HTTP读取新内容均正常。
+目前只能确认未就绪指导曾被丢失，相关提示已修；**不能把“旧JVM仍在服务”或“JDT产物
+没落盘”写成已确认根因，也不能把它们写成已修复**。此项不与U9的未加载类优化合并。
+无readiness配置时几秒的启动观察值不能证明需要更长初始化的业务服务已就绪。
+
+若再出现，优先带回同一轮请求/返回、joLink版本、MCP/应用日志和时间点对应的端口PID，
+再判断停旧进程、运行classpath、编译产物或验证时机哪一段出了问题；无需提供公司源码。
+
+### 历史修复记录：2026-09-16 Review第1/2/3/6项（已提交068ec6d）
+
+以下记录描述当时的实现与验收；U11此后的修复以上方最新汇总为准。
 
 本地已核对Review包的两份完整源码哈希及9个方法AST。6项问题均复现，其中1/2/4/6
 补了真实MCP验证；3/5当时为完整生产Python方法的受控验证，不混称完整JVM验收。
@@ -80,7 +141,7 @@ U4与U6可合并讨论快速流程中构建步骤的边界：必要源码生成�
   此证据不等于所有同目录多Worker并发场景都已验收。
 - 延迟开放端口的直接启动最终ready后，不再残留要求继续查status的提示。
 
-本轮验收（macOS，未提交）：
+该轮验收记录（macOS，已随068ec6d提交；以下数字为当时结果）：
 
 - 新增18项单元用例/参数组合，重点经过实际生产转换和发布方法，而非由测试提前补齐输入。
   普通回归867 passed / 13 skipped，另外89项需显式开启的MCP/JVM测试未混入普通结果。
@@ -90,12 +151,13 @@ U4与U6可合并讨论快速流程中构建步骤的边界：必要源码生成�
   ANTLR单模块/Reactor。ANTLR初次因缺少JDK11测试变量跳过，补齐本机JDK11后两项实际通过。
 - 定向lint、compileall、git diff --check、离线wheel/sdist构建通过。
 
-U11/U12只记录，未改代码；U10亦未处理。没有修改jdwp_adapter、Worker/JDK交付或增加新工具。
+该轮U11/U12只记录，U10亦未处理；U11后来已有部分修复，见最新汇总。
+该轮没有修改jdwp_adapter、Worker/JDK交付或增加新工具。
 旧Fast Test v4缓存首次会重新Probe以补齐配置来源，编译状态是否复用仍走原有规则；不清空
 JDK/JDT下载缓存。本轮不宣称完整Windows验证，也不将同一Eclipse workspace的任意并发使用
 算作已覆盖。
 
-### 上一轮：构建配置缓存感知（2026-09-15，已提交eea26fe）
+### 历史修复记录：构建配置缓存感知（2026-09-15，已提交eea26fe）
 
 修复前的真实MCP对照只改资源目录配置，Java源码保持不变：
 
@@ -242,18 +304,28 @@ socket超时，不让后续普通命令继承30秒。真正超时/失联仍保�
 | 其他编译/模块配置 | 未映射编译参数、processor-module-path等未覆盖组合 | 名称选择、-A参数和-Xpkginfo:always已解决，不再混在此项；其他组合需实际验证 |
 | 平台与JDK矩阵 | 新版Windows/Linux、更多JDK/Processor组合、完整JPMS | 已实测Java8/11/17/21；不能把Worker运行于21等同于所有目标版本已测，macOS证据不替代其他平台 |
 | 进程保活 | Worker跨MCP常驻、Test Runner保活 | 尚未实现，属于后续能力；已有磁盘缓存和Worker重开恢复不是跨MCP常驻 |
+| 源码变化发现的工程取舍 | 外部操作保持文件大小和mtime不变 | 当前元数据扫描可能不发现该编辑，见[JDT-first启动](jdt-first-launch.zh-CN.md)；不是已经复现的日常git切分支必然失效，也不在本轮恢复每次全量哈希 |
 
 ### 已解决，不再作为待办
 
 - 旧Petclinic启动中的direct-javac遗留路径；已有启动、HTTP、reload/restart和测试证据。
 - Maven真实源码根/模块定位、Gradle build-logic加载与ArgumentProvider求值。
 - main/test各自的语言级别、依赖、Processor与参数表达；Java17语言能力也已在新引擎实测。
+  main8/test17、main11/test21的Maven/Gradle回归，以及新版Petclinic所选测试、启动和HTTP
+  已通过；不代表所有更高Java版本或所有JDK/Processor组合都已验证。
 - Processor加载路径、显式名称、-A参数、Lombok/MapStruct初始化，以及无值flag适配。
 - Surefire字母排序、MyBatis的useIncrementalCompilation拦截、Checkstyle的-Xpkginfo:always。
-- Checkstyle所需ANTLR生成及Maven源码准备；U1包路径适配已实现，132项所选测试通过。
+- Checkstyle所需ANTLR生成及Maven源码准备已随`24df38e`接入；U1包路径适配由`05ea849`
+  实现。旧candidate下真实MCP完成4079份源码FULL、0 errors和132项所选测试；无改动
+  重开不编译，修改一个默认包样本后增量编译1个文件、15项相关测试通过。详见
+  [源码布局适配](jdt-source-layout.zh-CN.md)。后来JDT3.46的U5注解差异仍单独保留，
+  不能把旧candidate的通过结果当作当前Checkstyle全量编译已通过。
 - U3：新引擎已支持Java17编译；旧JDT3.25的限制留在下方历史记录。Java25/26等未实测组合不宣称已验证。
 - U7：APT旧首选项节点导致偶发漏跑/假成功，已随`a168058`修复并回归，不再列为未解决。
 - 已复现的HotSwap确认5秒超时已由`45beb4f`改为独立30秒等待；真正失联或超过30秒仍可unknown，不能混为同一个已修问题。
+- 配置缓存的生产接线修复、当前应用JDK/参数刷新、readiness提示、Fast Test编译错误
+  直接返回和Spring/JUnit误判，分别见上方“最近已修复”表；U11剩余构建选择已在本轮
+  修复并提交，见上方专项记录。
 
 已有项目通过证据包括旧Petclinic的22项、Commons Lang的12项所选测试、MapStruct
 示例的所选测试。它们不是每个项目全部测试套件的验收，也不是本次重新全量跑分。

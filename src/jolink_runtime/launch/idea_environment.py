@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 _MAX_XML_BYTES = 2 * 1024 * 1024
@@ -50,6 +52,33 @@ class IdeaBuildPreferences:
             "known_jdk_names": sorted(self.jdk_homes_by_name),
             "warnings": list(self.warnings),
         }
+
+    def cache_values(self) -> dict[str, object]:
+        values = self.redacted_summary()
+        values.pop("warnings", None)
+        values["jdk_homes_by_name"] = {
+            name: [str(path) for path in paths]
+            for name, paths in self.jdk_homes_by_name.items()
+        }
+        return values
+
+
+def build_preferences_key(values: Mapping[str, Any] | None, build_system: str) -> dict:
+    """Compare build choices, not application JREs or unrelated installed SDKs."""
+    values = values or {}
+    key = {}
+    if build_system == "maven":
+        for name in ("custom_maven_home", "user_settings_file", "local_repository"):
+            key[name] = values.get(name)
+        key["active_profiles"] = list(values.get("active_profiles") or ())
+    # Mirrors JavaToolchainResolver: project SDK is a build choice only when
+    # the build runner uses it, explicitly or as the default reference.
+    reference = values.get("maven_runner_jdk_name")
+    if not reference or reference in {"#USE_PROJECT_JDK", "Project JDK"}:
+        reference = values.get("project_jdk_name")
+    key["build_jdk_reference"] = reference
+    key["build_jdk_homes"] = values.get("jdk_homes_by_name", {}).get(reference, [])
+    return key
 
 
 class IdeaEnvironmentImporter:

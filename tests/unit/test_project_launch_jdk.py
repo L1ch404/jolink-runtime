@@ -93,7 +93,8 @@ def cached_launch(tmp_path, monkeypatch):
         cache.save(project_root=project, intent=intent, build_system=system, build_offline=False,
                    build_jdk=jdk17, runtime_jdk=jdk17, module_output=project / "target/classes",
                    generation_input_roots=(project / "target/classes",), resource_source_roots=(),
-                   jvm_plan=jvm, jdt_plan=plan)
+                   jvm_plan=jvm, jdt_plan=plan,
+                   build_preferences=pipeline._idea_environment.import_preferences(project).cache_values())
     save()
     attempt = tmp_path / "attempt"
     attempt.mkdir()
@@ -105,6 +106,11 @@ def cached_launch(tmp_path, monkeypatch):
 @pytest.mark.parametrize("choice", ["target", "idea_named", "idea_project", "explicit", "explicit_override"])
 def test_cached_world_uses_current_runtime_choice_and_arguments(cached_launch, system, choice):
     f = cached_launch
+    if choice == "idea_project":
+        # Keep the build on JAVA_HOME, so changing the project SDK is runtime-only.
+        workspace = f.project / ".idea/workspace.xml"
+        workspace.write_text(workspace.read_text().replace("</project>",
+            '<component name="MavenRunner"><option name="jreName" value="#JAVA_HOME"/></component></project>'))
     f.save(system)
     request = replace(f.request, build_system=system)
     if system == "gradle":

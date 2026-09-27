@@ -180,6 +180,7 @@ class ProjectUpdatePlan:
     build_system: str = "maven"
     build_offline: bool = False
     probe_cache_reused: bool = False
+    build_preferences_identity: dict[str, Any] | None = None
 
 
 class JavaRuntime(Runtime):
@@ -997,6 +998,7 @@ class JavaRuntime(Runtime):
                         build_system=prepared.build_system,
                         build_offline=prepared.build_offline,
                         probe_cache_reused=prepared.probe_cache_reused,
+                        build_preferences_identity=prepared.build_preferences_identity,
                     )
                 )
             context.transition(LaunchPhase.STARTING_JVM)

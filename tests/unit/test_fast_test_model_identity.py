@@ -12,6 +12,7 @@ from jolink_runtime.launch.fast_test_cache import FastTestCache
 from jolink_runtime.launch.fast_test_manager import FastTestManager
 from jolink_runtime.launch.fast_test_manager import TestAttempt as Attempt
 from jolink_runtime.launch.process_supervisor import AttemptToken
+from jolink_runtime.launch.idea_environment import IdeaBuildPreferences
 
 model = shared_model
 
@@ -124,11 +125,12 @@ def test_live_model_preserves_environment_and_preparation_checks(
     assert not FastTestCache.snapshot_is_current(model.root, "gradle", snapshot)
 
 
-def test_v4_fast_test_cache_cannot_hide_missing_settings_inputs(model):
+@pytest.mark.parametrize("version", [4, 5])
+def test_legacy_fast_test_cache_requires_current_configuration_identity(model, version):
     model.save("test")
     path = model.fast._directory(model.root, "maven") / "build-world.json"
     raw = json.loads(path.read_text())
-    raw["schema"] = "jolink.fast-test-world.v4"
+    raw["schema"] = f"jolink.fast-test-world.v{version}"
     path.write_text(json.dumps(raw))
     assert model.fast.load(model.root, "maven") is None
     assert not model.fast.is_current(model.root, "maven")
@@ -206,7 +208,7 @@ def test_maven_producer_keeps_settings_but_not_effective_pom_or_resources(
         ),
         module=module,
         build_jdk=model.toolchain,
-        preferences=SimpleNamespace(),
+        preferences=IdeaBuildPreferences(user_settings_file=selected if custom else None),
         effective_pom=effective,
         source_settings=selected if custom else None,
         snapshot=snapshot,
@@ -218,9 +220,9 @@ def test_maven_producer_keeps_settings_but_not_effective_pom_or_resources(
     )
     assert not effective.exists()  # The actual bootstrap cleanup has run.
     model.fast.save(world, model.toolchain)
-    assert model.fast.is_current(model.root, "maven")
+    assert model.fast.is_current(model.root, "maven", build_preferences=world.build_preferences)
     resource.write_text("B")
-    assert model.fast.is_current(model.root, "maven")
+    assert model.fast.is_current(model.root, "maven", build_preferences=world.build_preferences)
     selected.parent.mkdir(parents=True, exist_ok=True)
     selected.write_text("<settings><!-- edited or newly created --></settings>")
-    assert not model.fast.is_current(model.root, "maven")
+    assert not model.fast.is_current(model.root, "maven", build_preferences=world.build_preferences)

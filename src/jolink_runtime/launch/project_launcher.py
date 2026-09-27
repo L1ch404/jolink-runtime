@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -27,6 +28,7 @@ from .contracts import (
 from .idea_environment import (
     IdeaBuildPreferences,
     IdeaEnvironmentImporter,
+    build_preferences_key,
 )
 from .idea_importer import (
     ImportedIdeaLaunch,
@@ -211,12 +213,7 @@ class ProjectLaunchPipeline:
         context.transition(LaunchPhase.RESOLVING_BUILD)
 
         preferences = self._idea_environment.import_preferences(request.project_path)
-        preferences_identity = preferences.redacted_summary()
-        preferences_identity.pop("warnings", None)
-        preferences_identity["jdk_homes_by_name"] = {
-            name: [str(path) for path in paths]
-            for name, paths in preferences.jdk_homes_by_name.items()
-        }
+        preferences_identity = preferences.cache_values()
         has_maven = (request.project_path / "pom.xml").is_file()
         has_gradle = gradle_build_root(request.project_path) is not None
         if has_maven and has_gradle and not request.build_system:
@@ -448,7 +445,15 @@ class ProjectLaunchPipeline:
             plan,
             attempt_directory=prepared.attempt_directory,
         )
-        stable = replace(stable, configuration_stamps=build_configuration_stamps(
+        # Profile/tool selection can change compiler options while all POM and
+        # dependency files stay identical. The JDT workspace must follow it too.
+        fingerprint = hashlib.sha256(json.dumps({
+            "configuration": stable.fingerprint,
+            "build_preferences": build_preferences_key(
+                prepared.build_preferences_identity, prepared.build_system
+            ),
+        }, sort_keys=True).encode()).hexdigest()
+        stable = replace(stable, fingerprint=fingerprint, configuration_stamps=build_configuration_stamps(
             stable.project_root, prepared.build_system, stable.configuration_inputs
         ))
         return replace(

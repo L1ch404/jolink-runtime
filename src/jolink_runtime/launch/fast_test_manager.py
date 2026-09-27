@@ -40,6 +40,7 @@ from .maven_probe import MavenProbeError, ProductMavenProbe
 from .gradle_probe import (
     GradleProbeError,
     ProductGradleProbe,
+    gradle_build_root,
     gradle_configuration_environment_names,
     gradle_configuration_inputs,
 )
@@ -598,6 +599,11 @@ class FastTestManager:
 
     def _ensure_project(self, attempt: TestAttempt) -> _FastTestProject:
         provider = self._select_bootstrap(attempt)
+        preferences_root = (
+            gradle_build_root(attempt.project_path) or attempt.project_path
+            if provider.kind == "gradle" else attempt.project_path
+        )
+        preferences = self._idea.import_preferences(preferences_root).cache_values()
         project = self._project
         if (
             project is not None
@@ -606,13 +612,14 @@ class FastTestManager:
             and project.compiler.ready
             and self._test_selection_in_module(project.compiler.test_source_roots, attempt.tests)
             and self._cache.snapshot_is_current(
-                attempt.project_path, provider.kind, project.configuration_snapshot
+                attempt.project_path, provider.kind, project.configuration_snapshot,
+                build_preferences=preferences,
             )
         ):
             return project
         self._drop_project()
         attempt.state = "bootstrapping"
-        cached = self._cache.load(attempt.project_path, provider.kind)
+        cached = self._cache.load(attempt.project_path, provider.kind, build_preferences=preferences)
         if cached is not None:
             world, build_jdk = cached
             if self._test_selection_in_module(world.test_source_roots, attempt.tests):
@@ -752,7 +759,6 @@ class FastTestManager:
         return project
 
     def _bootstrap_gradle(self, attempt: TestAttempt) -> _FastTestProject:
-        from .gradle_probe import gradle_build_root
         attempt.require_not_cancelled()
         session_root = Path(
             tempfile.mkdtemp(prefix="jolink-gradle-fast-test-session-")
@@ -846,6 +852,7 @@ class FastTestManager:
                 configuration_environment_names
             ),
         )
+        world = replace(world, build_preferences=preferences.cache_values())
         result = self._start_build_world(
             attempt=attempt,
             world=world,
@@ -1250,6 +1257,7 @@ class FastTestManager:
         )))
         world = JavaTestBuildWorld(
             build_system="maven",
+            build_preferences=preferences.cache_values(),
             project_root=workspace.project_root,
             module_root=module.directory,
             main_source_roots=main_roots,
