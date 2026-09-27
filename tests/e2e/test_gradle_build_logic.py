@@ -1,5 +1,6 @@
 """Configured source roots and build-logic refresh through the product MCP."""
 
+import json
 import os
 import socket
 from pathlib import Path
@@ -15,9 +16,10 @@ from java_support import (
 
 
 @pytest.mark.mcp_java_e2e
-@pytest.mark.parametrize("kind", ["buildSrc", "included"])
+@pytest.mark.parametrize("kind", ["buildSrc", "included", "buildSrc-script", "included-script"])
 def test_build_logic_and_custom_roots_survive_mcp_reopen(tmp_path, kind):
     require_real_mcp_java_e2e()
+    included = kind.startswith("included")
     gradle = os.environ.get("JOLINK_FAST_TEST_GRADLE")
     if not gradle:
         pytest.skip("set JOLINK_FAST_TEST_GRADLE")
@@ -36,19 +38,19 @@ def test_build_logic_and_custom_roots_survive_mcp_reopen(tmp_path, kind):
     properties.write_text(
         f"distributionUrl=https\\://services.gradle.org/distributions/gradle-{version}-bin.zip\n"
     )
-    logic = project / ("buildSrc" if kind == "buildSrc" else "convention-tools")
+    logic = project / ("convention-tools" if included else "buildSrc")
     source = logic / "implementation/fixture/Convention.java"
     source.parent.mkdir(parents=True)
     (project / "settings.gradle").write_text(
         (
             "pluginManagement { includeBuild 'convention-tools' }\n"
-            if kind == "included"
+            if included
             else ""
         )
         + "rootProject.name='application'\n"
     )
     nested = project / "shared-tools"
-    if kind == "included":
+    if included:
         nested.mkdir()
         (nested / "settings.gradle").write_text("rootProject.name='layout'\n")
         (nested / "build.gradle").write_text(
@@ -71,7 +73,7 @@ gradlePlugin { plugins { layout { id='fixture.layout'; implementationClass='fixt
 """
         + (
             "dependencies { implementation 'fixture.logic:layout:1' }\n"
-            if kind == "included"
+            if included
             else ""
         )
     )
@@ -95,7 +97,7 @@ public class Convention implements Plugin<Project> {
  }
 }""".replace(
             "MAIN_ROOT",
-            "fixture.Layout.main()" if kind == "included" else '"business-java"',
+            "fixture.Layout.main()" if included else '"business-java"',
         )
     )
     junit = Path.home() / ".m2/repository/junit/junit/4.13.2/junit-4.13.2.jar"
@@ -144,6 +146,18 @@ tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Grad
     }
     if os.name == "nt":
         env["LOCALAPPDATA"] = str(tmp_path / "cache")
+    if kind.endswith("-script"):
+        # Applied outside the build-logic source roots: editing only this script
+        # changes the convention plugin generated during native Gradle setup.
+        script = tmp_path / "configuration outside/build-logic.inc"
+        script.parent.mkdir()
+        script.write_text(
+            "new File(" + json.dumps(helper.as_posix()) + ").setText("
+            + json.dumps(helper.read_text()) + ", 'UTF-8')\n"
+        )
+        build_file = logic / "build.gradle"
+        build_file.write_text(build_file.read_text() + "\napply from: " + json.dumps(script.as_posix()) + "\n")
+        helper = script
     original_logic = helper.read_text()
 
     def loads():

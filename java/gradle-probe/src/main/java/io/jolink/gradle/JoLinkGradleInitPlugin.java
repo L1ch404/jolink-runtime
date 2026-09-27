@@ -50,6 +50,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private String probeSha256;
     private String exportTaskName;
     private String exportScope;
+    private Set<File> scriptInputs;
 
     private static final class BoundaryException extends RuntimeException {
         final String code;
@@ -74,6 +75,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
             throw new GradleException(
                     "GRADLE_PROBE_SCOPE_INVALID: " + exportScope);
         }
+        scriptInputs = GradleConfigurationInputs.observeScripts(gradle, outputPath());
         gradle.beforeProject(new Action<Project>() {
             @Override
             public void execute(final Project project) {
@@ -214,7 +216,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         }
         result.put("modules", modules);
         result.put("projectArtifacts", graph.artifacts);
-        result.putAll(GradleConfigurationInputs.collect(project.getRootProject(), outputPath()));
+        result.putAll(GradleConfigurationInputs.collect(project.getRootProject(), outputPath(), scriptInputs));
         return json(result) + "\n";
     }
 

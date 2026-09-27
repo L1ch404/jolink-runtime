@@ -22,6 +22,11 @@ Wrapper 配置和相关 Gradle 环境有变化时重新 Probe；普通 Java 修�
 这里只比较小配置文件，不重新扫描依赖 JAR、哈希整棵 class 树或复制整份输出。
 关闭 MCP 后 workspace/源码索引保留，下次直接打开。
 
+2026-09-27补充：Probe会记录Gradle实际应用的本地Groovy/Kotlin脚本，包括嵌套、
+变量路径和项目外引用，并入上述配置清单。不是解析`apply from`文本，也不扫描整个
+业务仓库；没有变化时不为检查脚本而重启Gradle。远端内容及未执行分支的隐藏输入尚未
+完整覆盖，验收和范围见[U10跟进记录](java-compatibility-followup-2026-09.md)。
+
 同时有 Maven 和 Gradle 构建的项目，launch 和 test 都可以显式指定
 `"build_system": "gradle"`，避免猜测使用哪套构建。
 
@@ -30,6 +35,8 @@ Wrapper 配置和相关 Gradle 环境有变化时重新 Probe；普通 Java 修�
 - `GradleModuleGraph.java`：从 resolved project artifacts 收集所需模块及产物归属。
 - `JoLinkGradleInitPlugin.java`：目标选择、每模块导出；处理 Gradle 默认 JDK/
   Test executable，补齐独立 Runner 所需的同版本 JUnit Platform launcher。
+- `GradleConfigurationInputs.java`：收集构建逻辑输入和实际应用的本地脚本；仍由
+  公共配置快照完成后续缓存比较。
 - `gradle_module_world.py`：Gradle facts 转换成公共 modules 数据。
 - 现有 Runtime/Test 转换层及缓存：接线、保存配置；后续仍走原有 JDT 服务。
 - `jdt_modules.py` / `ModuleWorkspace.java`：直接复用上一轮 Maven 多模块实现。
@@ -98,10 +105,11 @@ uv run python scripts/validate_gradle_modules_project.py /path/to/project \
 
 ## 当前尚未完成
 
-- composite / included build、testFixtures 或自定义 classifier 产物映射。
+- 作为业务依赖的composite / included build、testFixtures或自定义classifier产物映射。
+  用于构建逻辑的included build已支持，不应与业务产物映射混为一项。
 - 需要先运行代码生成任务的源码；不会偷偷执行正式 Gradle 编译。
-- 一个模块 main/test 需要不同 compiler/Processor 配置时，目前不能在同一个
-  JDT 工程中分别表达。现有明确的 Test filters 等配置也没有在本轮扩展。
+- main/test不同compiler/Processor配置已通过分工程接入，不再作为未支持项；
+  其余Test filters等配置仍按[当前跟进清单](java-compatibility-followup-2026-09.md)推进。
 - Gradle 单Project此前的部分限制仍在；这轮接的是多Project公共模型。
 - 多模块真实 Windows 尚未执行；本轮是 macOS 实测，不声称 Windows 已验证。
 

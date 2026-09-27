@@ -1,14 +1,14 @@
 # joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-09-27，优先于下方历史记录）
+## 最新汇总（2026-09-28，优先于下方历史记录）
 
-本轮在 `main` 的 `36cd3c6` 基线上修复U11，已通过用户review并随本次修复提交。
-下面单独记录实现和验收；其他事项未开展修复。没有重新跑完整开源项目矩阵。“已提交”不自动等同于
-用户已经安装到该修复或公司原项目已经完成验收。
+U11已在 `main` 的 `2f1f4d3` 提交。本轮提交U10的本地Gradle引用脚本跟踪修复，
+已完成review；其他事项未开展修复。没有重新跑完整开源项目矩阵。
+“已提交”不自动等同于用户已经安装到该修复或公司原项目已经完成验收。
 
 继续沿用原 U 编号，区分：仍阻断使用、用户暂缓的兼容项、已实现但待专项回归、
 尚未取证的反馈。常见项目被拒绝仍是产品缺口，不能以“安全拒绝”代替支持。
-除用户本轮选定的U11外，不改变此前的暂缓决定；后续继续逐项推进。
+U11和本轮选定的U10分别记录在下方，不改变其他事项的暂缓决定。
 
 ### 当前待办
 
@@ -20,14 +20,61 @@
 | U6 | 待讨论：MyBatis准备步骤 | 默认format profile的OpenRewrite fork被拒；关闭format后license处理等待。在副本中关闭两者后，main8/test17及87项所选测试通过 | 区分必要生成步骤与格式化/license检查，接入合理的快速准备流程后，用原配置验证；不能把关闭profile的结果算成原样通过 |
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
 | U9 | 功能已有替代路径，优化暂缓：未加载类的HotSwap | `05a8bf0`后公开restart会增量编译，并在`CLASS_NOT_LOADED`时使用本轮产物自动重启；尚不支持已加载类热更、未加载类留待正常加载 | 待讨论的是减少不必要重启，不再记成“restart无法应用变更”。见[restart流程](project-restart.zh-CN.md) |
-| U10 | 用户暂缓：Gradle引用脚本变化未感知 | 历史真实MCP：只改`apply from: 'config/resources.gradle'`指向的脚本，启动和Fast Test仍复用旧模型；该脚本不在已记录输入中 | 从Gradle实际导出的配置输入补齐跟踪；以改脚本后运行行为改变验收，不靠正则支持一个写法就宣称完整覆盖 |
 | U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 
-U11已完成下节记录的修复，不再作为待实现项。后续可讨论U10的配置输入、
-U4/U6/U13的构建步骤、U2的编译兼容性。
+U11已提交；U10的本地引用脚本跟踪已修复并完成review，随本轮提交，不再作为待实现项。
+后续可讨论U4/U6/U13的构建步骤、U2的编译兼容性。
 必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
 事项继续保留，不因这次更新文档就自动开展实现。
+
+### U10：本地Gradle引用脚本跟踪（2026-09-28，已修复）
+
+修复前通过真实MCP再次复现：根build文件、Java源码和测试均不修改，只改嵌套引用
+脚本的资源目录、测试属性与`-parameters`设置，Fast Test仍使用旧模型，独立预期为B
+的测试失败。原因是这些实际应用的脚本没有进入Probe导出的配置文件清单。
+
+本轮在Gradle Probe中监听`ApplyScriptPluginBuildOperationType`事件，读取Gradle已经
+解析出的本地文件路径，合并到现有`configurationFiles`。不解析`apply from`字符串，
+不靠扩展名或全仓库扫描找脚本，不增加MCP参数。使用的是Gradle内部构建事件接口，
+已实际验证7.4.2、8.10、8.14；后续Gradle升级要继续跑这些回归，不能据此保证所有版本。
+对应[上游事件实现](https://github.com/gradle/gradle/blob/v8.14.0/subprojects/core/src/main/java/org/gradle/configuration/BuildOperationScriptPlugin.java)。
+
+- Groovy/Kotlin DSL、变量拼接、嵌套引用、项目外文件、空脚本和非标准扩展名均有回归。
+  空Groovy脚本不会产生普通脚本执行监听事件，实测确认选用的“应用脚本”事件能记录它。
+- 清单随现有Build World保存，launch、运行中restart和Fast Test共用原配置比较。
+  配置不变不启动Gradle；也不新增源码、class或依赖JAR扫描。
+- 新增/切换脚本引用后重新记录清单；旧引用移除后不继续影响缓存。测试中的未应用脚本
+  位于既有固定配置目录之外，不被新增跟踪机制纳入；原有固定配置目录跟踪保持不变。
+- 排除joLink自己的临时init脚本，构建结束移除监听器；成功、脚本删除失败及恢复路径
+  均经过真实Gradle，避免临时文件或上一轮监听数据导致反复重新Probe。
+- `buildSrc`和included build的构建逻辑脚本也有行为验证。这里不代表已经支持
+  composite业务依赖产物映射，也不代表U13的编译后处理已经接入。
+
+旧Gradle模型已跟踪Probe lock文件；分发产物更新后会按原机制重新Probe，补齐实际脚本
+清单。不删除缓存目录、不升级缓存格式；JDT workspace是否需要FULL仍由原身份决定。
+
+本轮macOS验收：
+
+- 新增5类真实MCP用例，在Gradle7.4.2、8.10、8.14分别通过，共15组，包含HTTP内容、
+  Java反射编译参数、Fast Test结果、文件删除/恢复、引用切换、跨MCP重开与不变复用。
+- 既有Gradle构建逻辑和多模块回归5组通过；另外2组构建逻辑引用外部脚本的用例通过。
+- 单元测试覆盖启动/Test缓存的内容修改、同mtime/size修改、删除、恢复和活跃模型基线；
+  常规回归912 passed，132项需显式开启的MCP/JVM用例未混入此结果。
+- wheel/sdist构建成功；独立安装wheel后，真实MCP的嵌套脚本修改/重启/Test用例通过，
+  确认实际使用的是site-packages内的新版Probe产物，而非源码目录。
+- 当前客户端连接的joLink MCP也完成A→B与无改动复用：仅修改被引用脚本后，测试
+  读到新的资源/系统属性；无改动再跑约150ms，freshness约1.4ms。仅为本机小样例，
+  不作为企业项目性能保证。新增/修改测试lint、Python编译及diff检查通过。
+
+回归文件：[真实MCP脚本用例](../tests/e2e/test_gradle_script_inputs.py)、
+[构建逻辑用例](../tests/e2e/test_gradle_build_logic.py)、
+[缓存单测](../tests/unit/test_gradle_script_input_cache.py)。
+
+仍未覆盖：远端URL内容变化、脚本通过普通文件读取/目录条件间接依赖的其他输入，
+以及首次未执行某个`apply`分支、之后仅新增条件文件的情况。它们继续属于“隐藏/远端
+配置输入”边界；本轮没有把任意Gradle配置依赖宣称为完整跟踪。U12的Probe中途编辑
+窗口、U13的`compileJava.doLast`均未处理，也未改变它们的原有验收结论。
 
 ### U11：已修复（2026-09-27）
 
@@ -74,8 +121,9 @@ launch/restart/Fast Test、A→B→A、跨MCP切换与不变重开，以及真�
 - wheel/sdist构建成功；独立安装wheel后的实际MCP启动、HotSwap、restart、Fast Test、
   调试及清理验证通过。新增测试文件lint、Python编译检查及diff检查通过。
 
-本轮没有处理U10的Gradle引用脚本、U12的Probe中途编辑窗口，也未扩大到任意环境变量
-或远端配置输入。Gradle既有启动/JDK/Fast Test回归继续验证；公司原项目仍待实测。
+U11提交当时未包含U10，后续的U10修复见上节。U12的Probe中途编辑窗口、任意
+环境变量或远端配置输入不在U11范围内。Gradle既有启动/JDK/Fast Test回归通过；
+公司原项目仍待实测。
 
 ### 最近已修复：不再作为待实现项
 
