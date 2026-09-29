@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/L1ch404/jolink-runtime",
-  "version": "0.1.0a7",
+  "version": "0.1.0a8",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "jolink-runtime",
-      "version": "0.1.0a7",
+      "version": "0.1.0a8",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

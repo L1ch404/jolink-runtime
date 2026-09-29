@@ -290,7 +290,7 @@ These actions support:
 Current package version:
 
 ```text
-0.1.0a7
+0.1.0a8
 ```
 
 Status:
@@ -533,7 +533,7 @@ without sending it.
 
 ## Runtime safety
 
-joLink `0.1.0a7` is designed for local, trusted development environments.
+joLink `0.1.0a8` is designed for local, trusted development environments.
 
 Current safety boundaries:
 

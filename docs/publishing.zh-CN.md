@@ -37,10 +37,10 @@ Publishing；Registry 使用工作流的 GitHub OIDC 身份认证，无需额外
 发布任务使用同一份构建产物里的 `server.json`。只有 Windows 验证和 PyPI 发布均成功，
 才会运行 Registry 发布。工作流最后回读准确的 Registry 名称、版本、包和启动方式。
 
-本轮版本为 `0.1.0a7`，发布后检查：
+本轮版本为 `0.1.0a8`，发布后检查：
 
-- [PyPI 0.1.0a7](https://pypi.org/project/jolink-runtime/0.1.0a7/)
-- [官方 MCP Registry 0.1.0a7 条目](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.L1ch404%2Fjolink-runtime/versions/0.1.0a7)
+- [PyPI 0.1.0a8](https://pypi.org/project/jolink-runtime/0.1.0a8/)
+- [官方 MCP Registry 0.1.0a8 条目](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.L1ch404%2Fjolink-runtime/versions/0.1.0a8)
 
 ## 某一步失败时
 
