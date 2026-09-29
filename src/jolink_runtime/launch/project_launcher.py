@@ -72,6 +72,7 @@ from .toolchain import (
     MavenToolResolver,
 )
 from .test_build_world import build_input_manifest
+from .build_environment import apply_build_preferences, maven_local_repository
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,9 @@ class ProjectLaunchRequest:
     build_system: str = ""
     main_class: str | None = None
     java_home: Path | None = None
+    build_java_home: Path | None = None
+    maven_home: Path | None = None
+    maven_settings: Path | None = None
     app_args: tuple[str, ...] | None = field(default=None, repr=False)
     vm_args: tuple[str, ...] | None = field(default=None, repr=False)
 
@@ -212,7 +216,11 @@ class ProjectLaunchPipeline:
         context.set_intent(imported.intent)
         context.transition(LaunchPhase.RESOLVING_BUILD)
 
-        preferences = self._idea_environment.import_preferences(request.project_path)
+        preferences = apply_build_preferences(
+            self._idea_environment.import_preferences(request.project_path),
+            build_java_home=request.build_java_home,
+            maven_home=request.maven_home, maven_settings=request.maven_settings,
+        )
         preferences_identity = preferences.cache_values()
         has_maven = (request.project_path / "pom.xml").is_file()
         has_gradle = gradle_build_root(request.project_path) is not None
@@ -338,6 +346,7 @@ class ProjectLaunchPipeline:
             preferences=preferences,
             build_jdk=build_jdk,
             build_log=build_log,
+            explicit_home=request.maven_home,
         )
         prepared = self._prepare_maven_probe(
             context, request, imported.intent, preferences, workspace, module,
@@ -354,11 +363,11 @@ class ProjectLaunchPipeline:
                                module, build_jdk, maven, directory, log):
         import json
         probe = ProductMavenProbe.load()
-        local_repository = preferences.local_repository or Path.home() / ".m2/repository"
         settings = preferences.user_settings_file
         settings_input = settings if settings is not None else Path.home() / ".m2/settings.xml"
         if settings is None and settings_input.is_file():
             settings = settings_input
+        local_repository = maven_local_repository(preferences, maven, settings)
         offline = "-o" in shlex.split(os.environ.get("MAVEN_ARGS", "")) or "--offline" in shlex.split(os.environ.get("MAVEN_ARGS", ""))
         prepared = probe.prepare(attempt_directory=directory / "probe",
             source_settings=settings, local_repository=local_repository, offline=offline)
@@ -402,6 +411,7 @@ class ProjectLaunchPipeline:
                 *(m.pom_file for m in workspace.modules),
                 *(Path(m["module_root"]) / "pom.xml" for m in modules),
                 settings_input,
+                *((maven.home / "conf/settings.xml",) if maven.home is not None else ()),
                 *(workspace.build_root / ".mvn" / name for name in
                   ("maven.config", "jvm.config", "extensions.xml")),
             ))),
@@ -965,11 +975,13 @@ class ProjectLaunchPipeline:
         preferences: IdeaBuildPreferences,
         build_jdk: JavaToolchainCandidate,
         build_log: Path,
+        explicit_home: Path | None = None,
     ) -> MavenToolCandidate:
         environment = self._java.maven_environment(build_jdk)
         for candidate in self._maven_tools.candidates(
             project_root=project_root,
             preferences=preferences,
+            explicit_home=explicit_home,
         ):
             result = context.run_operation(
                 self._maven_tools.probe_spec(
@@ -986,8 +998,8 @@ class ProjectLaunchPipeline:
             "No usable Maven installation matched the project environment.",
             retryable=True,
             suggested_next_step=(
-                "Restore the IDEA Maven installation or Maven wrapper, or "
-                "configure Maven on PATH and retry run."
+                "Check maven_home, the project's Maven installation/Wrapper, "
+                "or Maven on PATH, then retry launch."
             ),
         )
 

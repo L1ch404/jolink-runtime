@@ -448,6 +448,11 @@ def _schema_for_actions(
     }
 
 
+_MAVEN_ENVIRONMENT_PROPERTIES = {
+    "maven_home": {"type": "string", "description": "Optional Maven installation directory, used instead of the project Wrapper or automatically selected Maven."},
+    "maven_settings": {"type": "string", "description": "Optional Maven user settings.xml path, including repository mirrors and credentials. The file is not modified."},
+}
+
 JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
     PUBLIC_APPLICATION_ACTIONS,
     (
@@ -468,6 +473,11 @@ JAVA_APPLICATION_INPUT_SCHEMA = _schema_for_actions(
         "timeout",
     ),
 )
+JAVA_APPLICATION_INPUT_SCHEMA["properties"].update(deepcopy(_MAVEN_ENVIRONMENT_PROPERTIES))
+JAVA_APPLICATION_INPUT_SCHEMA["properties"]["build_java_home"] = {
+    "type": "string",
+    "description": "JDK home used to prepare a Maven or Gradle project during project_path launch. Separate from the application's java_home. Omit to use project/environment settings. Restart inherits the launch choices.",
+}
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
     "Maven or Gradle project directory. Supply main_class for an IDEA-independent launch, "
     "or import an IDEA launch configuration (launch_name selects one). "
@@ -497,8 +507,12 @@ JAVA_APPLICATION_INPUT_SCHEMA["properties"]["timeout"] = {
 }
 JAVA_FAST_TEST_INPUT_SCHEMA = _schema_for_actions(
     PUBLIC_FAST_TEST_ACTIONS,
-    ("project_path", "tests", "source_files", "build_system", "timeout", "test_run_id"),
+    ("project_path", "tests", "source_files", "build_system", "java_home", "timeout", "test_run_id"),
 )
+JAVA_FAST_TEST_INPUT_SCHEMA["properties"].update({
+    "java_home": {"type": "string", "description": "JDK home for project preparation and the default test JVM. Explicit project test JVM settings still apply."},
+    **deepcopy(_MAVEN_ENVIRONMENT_PROPERTIES),
+})
 JAVA_FAST_TEST_INPUT_SCHEMA["required"] = []
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["default"] = "run"
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["description"] = (

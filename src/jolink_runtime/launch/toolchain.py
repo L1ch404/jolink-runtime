@@ -316,7 +316,13 @@ class MavenToolResolver:
         *,
         project_root: Path,
         preferences: IdeaBuildPreferences,
+        explicit_home: Path | None = None,
     ) -> tuple[MavenToolCandidate, ...]:
+        if explicit_home is not None:
+            return (MavenToolCandidate(
+                argv_prefix=(str(self._home_executable(explicit_home)),),
+                source="explicit_maven", home=explicit_home,
+            ),)
         candidates: list[MavenToolCandidate] = []
 
         if preferences.custom_maven_home is not None:

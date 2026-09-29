@@ -339,6 +339,9 @@ public static void main(String[] args) throws Exception {
                     raw["jdt_plan"]["module_root"] = str(alias / "app")
                     cached.write_text(json.dumps(raw))
         for name in ("base", "core", "app", "runtime", "unused"):
-            assert not (project / name / "build").exists()
+            assert not (project / name / "build/classes").exists()
+            assert not (project / name / "build/libs").exists()
+        assert (project / "base/build/resources/main/base.txt").read_text() == "upstream-resource"
+        assert not (project / "unused/build").exists()
 
     anyio.run(scenario)

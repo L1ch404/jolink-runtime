@@ -57,9 +57,9 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
     for item in facts.values():
         for source in (item["main"], item.get("test", {})):
             if source.get("resourcesDirectory"):
-                output_sources[source["resourcesDirectory"]] = source[
-                    "resourceDirectories"
-                ]
+                output_sources[source["resourcesDirectory"]] = source.get(
+                    "preparedResourceDirectories", source["resourceDirectories"]
+                )
 
     def classpath(entries, *, runtime=False):
         paths = []
@@ -72,7 +72,7 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                 if runtime and artifact["kind"] in {"jar", "resources"}:
                     paths.extend(
                         p
-                        for p in producer["main"]["resourceDirectories"]
+                        for p in producer["main"].get("preparedResourceDirectories", producer["main"]["resourceDirectories"])
                         if Path(p).is_dir()
                     )
             elif raw in output_sources:
@@ -118,7 +118,12 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                 ]
                 if test
                 else [],
-                "resource_roots": main["resourceDirectories"],
+                "resource_roots": main.get("preparedResourceDirectories", main["resourceDirectories"]),
+                "test_resource_roots": item.get("test", {}).get("preparedResourceDirectories", []),
+                "preparation_inputs": list(dict.fromkeys(
+                    p for sources in (main, item.get("test", {}))
+                    for p in sources.get("resourcePreparationInputs", ())
+                )),
                 **settings,
             }
         )

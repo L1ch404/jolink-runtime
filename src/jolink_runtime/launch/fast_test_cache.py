@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v6"
+_SCHEMA = "jolink.fast-test-world.v7"
 
 
 def _paths(values) -> tuple[Path, ...]:

@@ -24,7 +24,7 @@ def module_name(directory: str | Path) -> str:
 
 def compilation_modules(modules):
     """Preparation bookkeeping is not a change to JDT's compiler configuration."""
-    metadata = {"preparation_inputs", "preparation_roots", "preparation_executions"}
+    metadata = {"preparation_inputs", "preparation_roots", "preparation_executions", "resource_roots", "test_resource_roots"}
     return tuple(
         {key: value for key, value in module.items() if key not in metadata}
         for module in modules
@@ -127,6 +127,7 @@ class ModuleCompileSession(PersistentJdtCompileSession):
             str(Path(m["output_directory"])): m.get("resource_roots", ())
             for m in self.modules
         }
+        resources.update({str(Path(m["test_output_directory"])): m.get("test_resource_roots", ()) for m in self.modules})
         for entry in entries:
             output = self._outputs.get(str(Path(entry)))
             result.append(output if output is not None else Path(entry))

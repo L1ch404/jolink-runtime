@@ -136,6 +136,20 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         Task task = project.getTasks().create(exportTaskName);
         task.setGroup("joLink");
         task.setDescription("Export a private task-native Java Build World.");
+        // Resolve dependencies while Gradle builds this task's graph (under
+        // project locking), not from the global projectsEvaluated listener.
+        task.dependsOn((java.util.concurrent.Callable<List<Task>>) () -> {
+            Project target = selectTarget(project);
+            GradleModuleGraph graph = new GradleModuleGraph(target, exportScope.equals("test"));
+            List<Task> resources = new ArrayList<>();
+            for (Project module : graph.projects.values()) {
+                SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
+                resources.add(module.getTasks().getByName(sets.getByName("main").getProcessResourcesTaskName()));
+                if (module.equals(target) && exportScope.equals("test"))
+                    resources.add(module.getTasks().getByName(sets.getByName("test").getProcessResourcesTaskName()));
+            }
+            return resources;
+        });
         task.doLast(ignored -> export(project));
     }
 
@@ -206,7 +220,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
             SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
             SourceSet main = sets.getByName("main");
             Map<String, Object> facts = commonModel(module);
-            facts.put("main", sourceSet(main));
+            facts.put("main", sourceSet(module, main));
             facts.put("compileJava", compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
             if (module.equals(project) && exportScope.equals("test")) {
                 facts.put("test", result.get("test"));
@@ -260,7 +274,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         }
         JavaCompile compileJava = (JavaCompile) rawCompileJava;
         Map<String, Object> root = commonModel(project);
-        root.put("main", sourceSet(main));
+        root.put("main", sourceSet(project, main));
         root.put("compileJava", compileTask(compileJava));
         root.put("runtimeExecution", runtimeExecution(
                 project, main, compileJava));
@@ -287,8 +301,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         Test testTask = (Test) project.getTasks().getByName("test");
 
         Map<String, Object> root = commonModel(project);
-        root.put("main", sourceSet(main));
-        root.put("test", sourceSet(test));
+        root.put("main", sourceSet(project, main));
+        root.put("test", sourceSet(project, test));
         root.put("compileJava", compileTask(compileJava));
         root.put("compileTestJava", compileTask(compileTestJava));
         root.put("testRuntime", testTask(testTask));
@@ -398,7 +412,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return result;
     }
 
-    private static Map<String, Object> sourceSet(SourceSet sourceSet)
+    private static Map<String, Object> sourceSet(Project project, SourceSet sourceSet)
             throws IOException {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("name", sourceSet.getName());
@@ -410,6 +424,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 sourceSet.getJava().getExcludes()));
         result.put("resourceDirectories", orderedFiles(
                 sourceSet.getResources().getSrcDirs()));
+        GradleResourcePreparation.describe(project, sourceSet, result);
         result.put("resourceIncludes", sorted(
                 sourceSet.getResources().getIncludes()));
         result.put("resourceExcludes", sorted(

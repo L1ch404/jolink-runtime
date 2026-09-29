@@ -89,6 +89,10 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action.tests = arguments.get("tests")
     if action.action == "test" and "build_system" in arguments:
         action.build_system = arguments.get("build_system")
+    if action.action == "test":
+        for name in ("java_home", "maven_home", "maven_settings"):
+            if name in arguments:
+                setattr(action, name, arguments[name])
     if "test_run_id" in arguments:
         action.test_run_id = arguments.get("test_run_id")
     if arguments.get("_product_status") is True:
@@ -129,8 +133,9 @@ def parse_project_launch_request(
     has_project_path = "project_path" in arguments
     has_launch_name = "launch_name" in arguments
     if not has_project_path:
-        if has_launch_name or "java_home" in arguments:
-            name = "launch_name" if has_launch_name else "java_home"
+        launch_settings = [name for name in ("launch_name", "java_home", "build_java_home", "maven_home", "maven_settings") if name in arguments]
+        if launch_settings:
+            name = launch_settings[0]
             raise ProjectLaunchArgumentError(
                 argument=name,
                 message=f"{name} requires project_path.",
@@ -157,7 +162,6 @@ def parse_project_launch_request(
                 "jar_path",
                 "app_args",
                 "vm_args",
-                "java_home",
             )
             if field in arguments
         )
@@ -211,7 +215,7 @@ def parse_project_launch_request(
     build_system = str(arguments.get("build_system", ""))
     if build_system not in {"", "maven", "gradle"}:
         raise ProjectLaunchArgumentError(argument="build_system", message="build_system must be maven or gradle.")
-    for name in ("main_class", "java_home"):
+    for name in ("main_class", "java_home", "build_java_home", "maven_home", "maven_settings"):
         if name in arguments and (not isinstance(arguments[name], str) or not arguments[name].strip()):
             raise ProjectLaunchArgumentError(argument=name, message=f"{name} must be a non-empty string.")
     for name in ("app_args", "vm_args"):
@@ -231,6 +235,9 @@ def parse_project_launch_request(
         build_system=build_system,
         main_class=arguments.get("main_class"),
         java_home=Path(arguments["java_home"]).expanduser().resolve(strict=False) if "java_home" in arguments else None,
+        build_java_home=Path(arguments["build_java_home"]).expanduser().resolve(strict=False) if "build_java_home" in arguments else None,
+        maven_home=Path(arguments["maven_home"]).expanduser().resolve(strict=False) if "maven_home" in arguments else None,
+        maven_settings=Path(arguments["maven_settings"]).expanduser().resolve(strict=False) if "maven_settings" in arguments else None,
         app_args=tuple(arguments["app_args"]) if "app_args" in arguments else None,
         vm_args=tuple(arguments["vm_args"]) if "vm_args" in arguments else None,
     )

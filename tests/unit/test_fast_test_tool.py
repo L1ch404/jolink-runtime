@@ -30,6 +30,9 @@ def test_test_tool_is_discoverable_and_its_schema_is_focused():
         "tests",
         "source_files",
         "build_system",
+        "java_home",
+        "maven_home",
+        "maven_settings",
         "timeout",
         "test_run_id",
     }

@@ -27,6 +27,7 @@ from .maven_module_world import load_module_worlds, combine_effective_poms
 from .maven_compile_scope import compiler_scope, compiler_parameters
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
+from .build_environment import apply_build_preferences, maven_local_repository
 from .jdt_compile_session import (
     SUPPORTED_JAVA_LEVELS,
     JdtCompileError,
@@ -141,6 +142,9 @@ class TestAttempt:
     tests: tuple[str, ...]
     timeout_seconds: float
     build_system: str = ""
+    java_home: str = ""
+    maven_home: str = ""
+    maven_settings: str = ""
     bootstrap_timeout_seconds: float = _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
     state: str = "starting"
     started_at: float = field(default_factory=time.time)
@@ -261,6 +265,9 @@ class FastTestManager:
         tests: Sequence[str],
         timeout_seconds: float = 300.0,
         build_system: str = "",
+        java_home: str = "",
+        maven_home: str = "",
+        maven_settings: str = "",
         bootstrap_timeout_seconds: float = (
             _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
         ),
@@ -301,6 +308,9 @@ class FastTestManager:
                 source_files=tuple(str(value) for value in source_files),
                 tests=tuple(str(value) for value in tests),
                 build_system=authority,
+                java_home=java_home,
+                maven_home=maven_home,
+                maven_settings=maven_settings,
                 timeout_seconds=timeout,
                 bootstrap_timeout_seconds=bootstrap_timeout,
             )
@@ -603,7 +613,7 @@ class FastTestManager:
             gradle_build_root(attempt.project_path) or attempt.project_path
             if provider.kind == "gradle" else attempt.project_path
         )
-        preferences = self._idea.import_preferences(preferences_root).cache_values()
+        preferences = self._preferences(attempt, preferences_root).cache_values()
         project = self._project
         if (
             project is not None
@@ -686,7 +696,7 @@ class FastTestManager:
         bootstrap = session_root / "bootstrap"
         bootstrap.mkdir(mode=0o700)
         log = bootstrap / "maven-test-bootstrap.log"
-        preferences = self._idea.import_preferences(attempt.project_path)
+        preferences = self._preferences(attempt, attempt.project_path)
         root = attempt.project_path.resolve(strict=True)
         workspace = MavenWorkspace(root, root, root / "pom.xml", ())
         attempt.require_not_cancelled()
@@ -701,10 +711,7 @@ class FastTestManager:
         if source_settings is None:
             default_settings = Path.home() / ".m2/settings.xml"
             source_settings = default_settings if default_settings.is_file() else None
-        local_repository = (
-            preferences.local_repository
-            or Path.home() / ".m2/repository"
-        ).expanduser().resolve(strict=False)
+        local_repository = maven_local_repository(preferences, maven, source_settings)
         offline = any(
             token in {"-o", "--offline"}
             for token in shlex.split(os.environ.get("MAVEN_ARGS", ""))
@@ -753,6 +760,7 @@ class FastTestManager:
             effective_pom=effective_pom,
             source_settings=source_settings,
             snapshot=snapshot,
+            maven_home=maven.home,
         )
         with self._lock:
             self._pending_roots.discard(session_root)
@@ -769,7 +777,7 @@ class FastTestManager:
         bootstrap.mkdir(mode=0o700)
         log = bootstrap / "gradle-test-bootstrap.log"
         project = gradle_build_root(attempt.project_path) or attempt.project_path
-        preferences = self._idea.import_preferences(project)
+        preferences = self._preferences(attempt, project)
         build_jdk = self._select_build_jdk(
             preferences, project, log, attempt
         )
@@ -977,6 +985,7 @@ class FastTestManager:
         effective_pom: Path,
         source_settings: Path | None,
         snapshot: dict[str, Any],
+        maven_home: Path | None = None,
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
         main_roots = self._paths(snapshot, "compileSourceRoots", module.directory)
@@ -1004,10 +1013,10 @@ class FastTestManager:
             snapshot, "testClasspathElements", module.directory
         )
         resource_roots = (
-            *self._paths(snapshot, "resourceDirectories", module.directory),
             *self._paths(
-                snapshot, "testResourceDirectories", module.directory
+                snapshot, "preparedTestResourceDirectories" if "preparedTestResourceDirectories" in snapshot else "testResourceDirectories", module.directory
             ),
+            *self._paths(snapshot, "preparedResourceDirectories" if "preparedResourceDirectories" in snapshot else "resourceDirectories", module.directory),
         )
         output_keys = {
             os.path.normcase(str(main_output)),
@@ -1253,6 +1262,7 @@ class FastTestManager:
             *(item.pom_file for item in workspace.modules),
             *(Path(m["module_root"]) / "pom.xml" for m in snapshot.get("moduleWorlds", ())),
             source_settings if source_settings is not None else Path.home() / ".m2/settings.xml",
+            *((maven_home / "conf/settings.xml",) if maven_home is not None else ()),
             *(workspace.build_root / ".mvn" / name for name in ("maven.config", "jvm.config", "extensions.xml")),
         )))
         world = JavaTestBuildWorld(
@@ -1299,7 +1309,7 @@ class FastTestManager:
                 java_agents=tuple(dict.fromkeys(f"{p}=ECJ" for m in world.modules
                     for p in (*m["lombok_entries"], *m.get("test_compiler", {}).get("lombok_entries", ())))),
                 test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support + additional_classpath,
-                resource_roots=tuple(self._paths(snapshot,"testResourceDirectories",module.directory)) + tuple(self._paths(snapshot,"resourceDirectories",module.directory)),
+                resource_roots=tuple(resource_roots),
             )
         result = self._start_build_world(
             attempt=attempt,
@@ -1575,6 +1585,13 @@ class FastTestManager:
         raise FastTestManagerError(
             "FAST_TEST_BUILD_JDK_UNAVAILABLE",
             "Fast Test requires a usable project build JDK.",
+        )
+
+    def _preferences(self, attempt, project):
+        return apply_build_preferences(
+            self._idea.import_preferences(project),
+            build_java_home=attempt.java_home, maven_home=attempt.maven_home,
+            maven_settings=attempt.maven_settings,
         )
 
     def _unshared_test_compiler_configuration(
@@ -1952,7 +1969,8 @@ class FastTestManager:
     ) -> Any:
         environment = JavaToolchainResolver.maven_environment(build_jdk)
         for candidate in self._maven_tools.candidates(
-            project_root=root, preferences=preferences
+            project_root=root, preferences=preferences,
+            explicit_home=preferences.custom_maven_home if attempt.maven_home else None,
         ):
             result = self._supervisor.run(
                 self._maven_tools.probe_spec(

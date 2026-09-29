@@ -1,5 +1,8 @@
 # Maven 源码准备与生成（2026-09-12）
 
+2026-09-29更新：默认main/test资源处理已纳入准备阶段，见
+[执行环境与资源准备](fast-test-environment-resources.zh-CN.md)。下方生成器实测为历史记录。
+
 ## 流程
 
 ```text
@@ -19,15 +22,14 @@
 
 从 Maven 自己计算的执行计划取得 phase、goal、execution 配置，保持 Maven 顺序。
 使用 Maven 保留的 POM 声明位置识别执行项（包含继承/合并后的信息），而不是把
-执行计划里自动注入的 packaging 默认绑定当成用户声明。完整回归曾抓到默认资源
-复制被误触发，修复后保留原来的“普通项目不产生 Maven classes 输出”断言。
-只执行目标及所需上游模块**显式声明**在这些阶段的执行项：
+执行计划里自动注入的 packaging 默认绑定当成用户声明。现在除默认资源处理外，
+继续只执行目标及所需上游模块**显式声明**在这些阶段的执行项：
 
 - main：generate-sources、process-sources、generate-resources、process-resources；
 - test：另加 generate-test-sources、process-test-sources、generate-test-resources、process-test-resources。
 
-没有显式声明的默认资源复制不因此被启用；compile、test、package、verify等阶段
-不执行。这样既能运行生成器，也能取得 build-helper 等目录注册的真实结果。
+默认resources/testResources已经启用，compile、test、package、verify等阶段仍不执行。
+这样既能运行生成器/资源处理，也能取得 build-helper 等目录注册的真实结果。
 需要 fork 生命周期的 goal 当前明确报告失败，不偷偷执行或忽略其前置链路。
 
 生成文件写到插件本来配置的目录（通常为项目 target 下），不是去改用户源码。

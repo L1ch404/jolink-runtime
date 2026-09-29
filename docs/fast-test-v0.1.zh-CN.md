@@ -40,10 +40,12 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 
 这条路径不执行Maven`test-compile`、Gradle`classes/testClasses`，不创建源码或
 resource快照，不比较Maven/JDT class输出，也不在测试前后全量哈希Build World。
-main/test resource源码目录直接加入Runner classpath。
+main/test资源由原生资源步骤处理，Runner读取处理后的资源；同名时test优先。
+Maven同时保留原生资源输出路径，支持通过文件路径读取测试资源。资源未变则复用，
+普通Java修改不重新运行资源准备。详见[执行环境与资源准备](fast-test-environment-resources.zh-CN.md)。
 
 Maven 项目声明了源码/资源准备执行项时，Probe 使用 Maven 的实际执行计划运行
-这些 goal，再导出 source roots；不进入 compile/test 生命周期。语法/模板输入变化
+这些 goal，并包含默认main/test资源处理，再导出 source roots；不进入 compile/test 生命周期。语法/模板输入变化
 会更新生成结果，普通 Java 变更仍直接增量，见[源码准备实测](maven-source-preparation.zh-CN.md)。
 
 同一个 Worker 内，每个参与测试的模块分别使用 main / test 两个持久 JDT 工程。
@@ -109,6 +111,10 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 
 `source_files`可以省略。joLink会用持久源码mtime/size索引自动发现main/test变化，
 调用方显式提供的文件与实际变化文件合并后一次增量编译。
+
+可选`java_home`指定本次项目准备和默认测试JDK；`maven_home`指定Maven安装，
+`maven_settings`指定用户settings文件。无需修改全局环境或重连MCP。
+项目明确配置的测试JVM仍按项目配置，编译source/target不会因此被改写。
 
 `timeout`现在与启动统一表示本次工具调用的同步等待时间，默认30秒；大于30按30秒等，
 不报错；0表示提交后立即返回。该时间包含下载、准备和编译，不是每阶段各等一次。

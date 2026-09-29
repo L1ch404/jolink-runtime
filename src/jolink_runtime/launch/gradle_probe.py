@@ -128,6 +128,7 @@ class ProductGradleProbe:
             )
         command = [
             str(wrapper),
+            "--no-daemon",
             "--no-configuration-cache",
             "--stacktrace",
             "-I",

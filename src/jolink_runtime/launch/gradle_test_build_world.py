@@ -431,7 +431,7 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         resource_roots=tuple(
             Path(p)
             for sources in (model["test"], model["main"])
-            for p in sources["resourceDirectories"]
+            for p in sources.get("preparedResourceDirectories", sources["resourceDirectories"])
         ),
         target_java_home=home,
         source_encoding=target["source_encoding"],

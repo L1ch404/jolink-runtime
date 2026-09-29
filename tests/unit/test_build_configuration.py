@@ -25,7 +25,7 @@ from jolink_runtime.launch.project_launcher import (
     ProjectLaunchRequest,
 )
 from jolink_runtime.launch.test_build_world import JavaTestBuildWorld
-from jolink_runtime.launch.toolchain import JavaToolchainCandidate
+from jolink_runtime.launch.toolchain import JavaToolchainCandidate, MavenToolCandidate
 
 
 @pytest.fixture
@@ -480,7 +480,7 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         workspace,
         target,
         model.toolchain,
-        SimpleNamespace(argv_prefix=("mvn",)),
+        MavenToolCandidate(argv_prefix=("mvn",), source="test"),
         directory,
         directory / "build.log",
     )

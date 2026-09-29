@@ -94,7 +94,8 @@ def load_module_worlds(
                 "runtime_classpath": snapshot.get(
                     "runtimeClasspathElements", snapshot["compileClasspathElements"]
                 ),
-                "resource_roots": snapshot["resourceDirectories"],
+                "resource_roots": snapshot.get("preparedResourceDirectories", snapshot["resourceDirectories"]),
+                "test_resource_roots": snapshot.get("preparedTestResourceDirectories", snapshot.get("testResourceDirectories", [])),
                 "source_level": compiler["source_level"],
                 "source_encoding": maven._source_encoding(main_scope),
                 "worker_min_heap_mb": max(profile.worker_min_heap_mb, minimum_heap),

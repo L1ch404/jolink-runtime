@@ -196,10 +196,12 @@ tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Grad
                                 state = (
                                     await call("java_status", {"action": "status"})
                                 )["fast_test"]
+                        if not state.get("passed"):
+                            state = await call("java_fast_test", {"action": "result", "test_run_id": state["test_run_id"]})
                         return state
 
                     first = await run_test()
-                    assert first.get("passed"), first
+                    assert first.get("passed"), json.dumps(first)
                     count = loads()
                     assert (await run_test())["passed"]
                     assert loads() == count

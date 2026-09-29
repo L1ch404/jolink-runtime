@@ -944,10 +944,10 @@ class PersistentJdtCompileSession:
         self.candidate = candidate
         self.worker_java_home = worker_java_home
         self.source_roots = tuple(
-            path.expanduser().resolve(strict=True) for path in source_roots
+            path.expanduser().resolve(strict=False) for path in source_roots
         )
         self.baseline_source_roots = tuple(
-            path.expanduser().resolve(strict=True)
+            path.expanduser().resolve(strict=baseline_source_roots is not None)
             for path in (baseline_source_roots or source_roots)
         )
         if len(self.baseline_source_roots) != len(self.source_roots):
@@ -957,10 +957,10 @@ class PersistentJdtCompileSession:
             )
         self.classpath_entries = tuple(Path(path) for path in classpath_entries)
         self.test_source_roots = tuple(
-            path.expanduser().resolve(strict=True) for path in test_source_roots
+            path.expanduser().resolve(strict=False) for path in test_source_roots
         )
         self.baseline_test_source_roots = tuple(
-            path.expanduser().resolve(strict=True)
+            path.expanduser().resolve(strict=baseline_test_source_roots is not None)
             for path in (baseline_test_source_roots or test_source_roots)
         )
         if len(self.baseline_test_source_roots) != len(self.test_source_roots):

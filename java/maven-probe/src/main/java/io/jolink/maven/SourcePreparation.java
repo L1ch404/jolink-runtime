@@ -16,7 +16,7 @@ import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 
-/** Run declared source/resource preparation, not the compile/test lifecycle. */
+/** Run declared preparation and native resources, not the compile/test lifecycle. */
 final class SourcePreparation {
     static final String INPUTS = "jolink.preparation.inputs";
     static final String EXECUTIONS = "jolink.preparation.executions";
@@ -34,18 +34,18 @@ final class SourcePreparation {
     }
 
     void execute(MavenSession session, MavenProject project, boolean tests) throws MojoExecutionException {
-        boolean declared = project.getBuildPlugins().stream().anyMatch(p -> p.getExecutions().stream().anyMatch(SourcePreparation::hasDeclaration));
-        if (!declared) return;
         MavenProject previous = session.getCurrentProject();
         Set<String> inputs = new LinkedHashSet<>();
         Set<String> registrations = new LinkedHashSet<>();
         List<String> executions = new ArrayList<>();
+        ResourcePreparation resources = new ResourcePreparation();
         try {
             session.setCurrentProject(project);
             List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-resources" : "process-resources"));
             for (MojoExecution execution : plans.calculateExecutionPlan(session, project, tasks, false).getMojoExecutions()) {
                 String phase = execution.getLifecyclePhase();
-                if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase))) || !isDeclared(project, execution)) continue;
+                boolean resource = ResourcePreparation.handles(execution);
+                if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase))) || !(resource || isDeclared(project, execution))) continue;
                 plans.setupMojoExecution(session, project, execution);
                 // A fork may re-enter compile/test. Do not silently run or omit
                 // it while promising that business compilation stays in JDT.
@@ -56,10 +56,20 @@ final class SourcePreparation {
                 collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths);
                 String identity = execution.getGroupId() + ":" + execution.getArtifactId() + ":" + execution.getGoal() + "@" + execution.getExecutionId();
                 log.info("joLink source preparation: " + identity + " (" + phase + ")");
-                plugins.executeMojo(session, execution);
+                if (resource) resources.execute(session, project, execution, plugins);
+                else plugins.executeMojo(session, execution);
                 // Include newly created output/source roots in the same small
                 // file-input snapshot, so deleting generated outputs refreshes it.
                 collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths);
+                if (resource) {
+                    // Native output may also contain javac classes. Track only
+                    // resource inputs and the individual outputs we produced.
+                    Xpp3Dom output = execution.getConfiguration().getChild("outputDirectory");
+                    Set<String> destinations = new LinkedHashSet<>();
+                    String value = output.getValue() == null ? output.getAttribute("default-value") : output.getValue();
+                    collectPath(value, true, new PluginParameterExpressionEvaluator(session, execution), project, destinations);
+                    paths.removeAll(destinations);
+                }
                 Set<String> addedRoots = sourceRoots(project);
                 addedRoots.removeAll(rootsBefore);
                 // If all file parameters merely register new Java roots,
@@ -68,6 +78,7 @@ final class SourcePreparation {
                 else inputs.addAll(paths);
                 executions.add(identity);
             }
+            resources.finish(project, inputs);
             List<String> inputPaths = new ArrayList<>(inputs);
             List<String> rootPaths = new ArrayList<>(registrations);
             Collections.sort(inputPaths);
@@ -127,6 +138,16 @@ final class SourcePreparation {
             MavenProject project, Set<String> paths) throws Exception {
         if (value == null) return;
         Object evaluated = evaluator.evaluate(value);
+        if (evaluated instanceof Collection<?>) {
+            for (Object item : (Collection<?>) evaluated) {
+                if (item instanceof org.apache.maven.model.Resource) {
+                    collectPath(((org.apache.maven.model.Resource) item).getDirectory(), true, evaluator, project, paths);
+                } else if (item instanceof String || item instanceof File) {
+                    collectPath(item.toString(), true, evaluator, project, paths);
+                }
+            }
+            return;
+        }
         if (!(evaluated instanceof String) && !(evaluated instanceof File)) return;
         File file = evaluator.alignToBaseDirectory(evaluated instanceof File ? (File)evaluated : new File((String)evaluated));
         // Pattern/enum/text options are not paths. Check existence before

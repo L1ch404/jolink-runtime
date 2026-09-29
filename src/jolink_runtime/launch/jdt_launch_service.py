@@ -20,6 +20,7 @@ from .project_session import JavaProjectSession
 from .jdt_modules import ModuleCompileSession
 from .runtime_preparation import prepared_runtime
 from .idea_environment import IdeaEnvironmentImporter, build_preferences_key
+from .build_environment import apply_build_preferences
 
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,18 @@ class JdtLaunchService:
         if plan is None:
             return None  # Direct/non-JDT runtimes do not own a Probe model.
         try:
+            request = getattr(prepared, "request", None)
+            preferences = apply_build_preferences(
+                IdeaEnvironmentImporter().import_preferences(plan.project_root),
+                build_java_home=getattr(request, "build_java_home", None),
+                maven_home=getattr(request, "maven_home", None),
+                maven_settings=getattr(request, "maven_settings", None),
+            )
             saved_preferences = getattr(prepared, "build_preferences_identity", None)
             preferences_match = saved_preferences is None or build_preferences_key(
                 saved_preferences, prepared.build_system
             ) == build_preferences_key(
-                IdeaEnvironmentImporter().import_preferences(plan.project_root).cache_values(),
+                preferences.cache_values(),
                 prepared.build_system,
             )
             current = build_configuration_stamps(

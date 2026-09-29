@@ -43,6 +43,18 @@ For an IDEA-independent launch, supply `project_path` and `main_class`:
 
 `app_args` and `vm_args` are optional argument arrays. `java_home` optionally
 selects the **application** JDK, without changing the build-tool or Worker JDK.
+`build_java_home` independently selects the JDK used to prepare the Maven/Gradle
+project. Optional `maven_home` and `maven_settings` select an installed Maven and
+an existing user settings file. Explicit Maven selection does not fall back to a
+different Wrapper/PATH installation. Omitted options retain project/environment
+defaults; no global settings or project files are rewritten.
+
+These build choices are applied before cache lookup and retained by `restart`,
+including when changed configuration requires a new Probe. Their paths and
+tracked configuration participate in the existing cache checks. A new `launch`
+is a new request: repeat non-default choices rather than relying on hidden sticky
+settings. See [build environment and resources](fast-test-environment-resources.zh-CN.md).
+
 The application JDK order is: explicit `java_home`, IDEA launch JRE, IDEA project
 SDK, then the resolved Build World's target-platform JDK. Thus an unconfigured
 Java 8 application uses the discovered Java 8 platform even when Maven runs on

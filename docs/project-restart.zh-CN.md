@@ -52,6 +52,9 @@ applying_hotswap、restarting。终态明确返回：
 
 ## 与完整启动的关系
 
+- restart继承原launch的`build_java_home`、`maven_home`和`maven_settings`；构建配置
+  改变需要重新Probe时也保留这些选择，不退回环境默认值。应用`java_home`仍独立。
+  要换一套启动选择，使用stop后新的launch；不是给restart重新填写构建参数。
 - 没有可用的旧 JDT 会话（例如已 stop）时，复用现有项目 launch 流程，读取持久缓存。
 - POM/Gradle 配置已改变时，也走现有重新 launch 路径，刷新 Probe 模型和对应 JDT
   workspace；不拿旧编译配置去编译新项目。**这条模型重建路径沿用先停止旧 JVM 的
@@ -61,7 +64,8 @@ applying_hotswap、restarting。终态明确返回：
 
 HotSwap 不重新执行构造器、静态初始化或 Spring 启动流程。修改初始化逻辑、框架
 配置、资源且需要重新加载时，明确使用 `hotswap=false`。不能因为 JVM 接受字节码，
-就认为框架已重新初始化。资源目录仍直接在 Runtime classpath 上，不新增全量资源扫描。
+就认为框架已重新初始化。资源使用原生处理后的输出，配置/资源变化更新准备缓存；
+仅Java变化仍使用已准备的资源，详见[环境与资源](fast-test-environment-resources.zh-CN.md)。
 
 ## 回归位置
 

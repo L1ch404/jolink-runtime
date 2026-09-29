@@ -52,7 +52,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest23";
+    private static final String PROBE_VERSION = "0.1.0-fasttest24";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -365,6 +365,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         );
         stringList(out, "resourceDirectories", resourceDirectories(false), true);
         stringList(out, "testResourceDirectories", resourceDirectories(true), true);
+        stringList(out, "preparedResourceDirectories", contextPaths(ResourcePreparation.MAIN), true);
+        stringList(out, "preparedTestResourceDirectories", contextPaths(ResourcePreparation.TEST), true);
         out.append(",\"testRuntime\":{");
         stringList(
             out,
