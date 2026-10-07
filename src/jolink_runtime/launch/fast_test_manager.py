@@ -23,6 +23,7 @@ from .compiler_profile import parse_maven_memory_megabytes
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
 from .jdt_modules import ModuleCompileSession, compilation_modules
+from .maven_reactor import maven_build_root
 from .maven_module_world import load_module_worlds, combine_effective_poms
 from .maven_compile_scope import compiler_scope, compiler_parameters
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
@@ -698,13 +699,14 @@ class FastTestManager:
         log = bootstrap / "maven-test-bootstrap.log"
         preferences = self._preferences(attempt, attempt.project_path)
         root = attempt.project_path.resolve(strict=True)
-        workspace = MavenWorkspace(root, root, root / "pom.xml", ())
+        build_root = maven_build_root(root)
+        workspace = MavenWorkspace(root, build_root, build_root / "pom.xml", ())
         attempt.require_not_cancelled()
         build_jdk = self._select_build_jdk(
             preferences, workspace.build_root, log, attempt
         )
         maven = self._select_maven(
-            preferences, workspace.project_root, build_jdk, log, attempt
+            preferences, workspace.build_root, build_jdk, log, attempt
         )
         attempt.require_not_cancelled()
         source_settings = preferences.user_settings_file

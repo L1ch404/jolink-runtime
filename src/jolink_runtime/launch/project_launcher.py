@@ -52,6 +52,7 @@ from .jdt_compile_session import JdtBuildWorldPlan
 from .jdt_modules import compilation_modules
 from .maven_probe import ProductMavenProbe
 from .maven_module_world import load_module_worlds
+from .maven_reactor import maven_build_root
 from .project_launch_cache import (
     ProjectLaunchCache,
     stabilize_jdt_plan,
@@ -331,6 +332,8 @@ class ProjectLaunchPipeline:
             )
         except MavenResolutionError as error:
             raise self._maven_failure(error) from error
+        build_root = maven_build_root(workspace.build_root)
+        workspace = replace(workspace, build_root=build_root, root_pom=build_root / "pom.xml")
         build_log = attempt_directory / "build.log"
         build_jdk = self._select_java(
             context,
@@ -342,7 +345,7 @@ class ProjectLaunchPipeline:
         )
         maven = self._select_maven(
             context,
-            project_root=workspace.project_root,
+            project_root=workspace.build_root,
             preferences=preferences,
             build_jdk=build_jdk,
             build_log=build_log,
@@ -408,6 +411,7 @@ class ProjectLaunchPipeline:
             source_level=target["source_level"], target_level=target["source_level"],
             fingerprint=hashlib.sha256(json.dumps(compilation_modules(modules), sort_keys=True).encode()).hexdigest(),
             configuration_inputs=tuple(dict.fromkeys((
+                workspace.root_pom,
                 *(m.pom_file for m in workspace.modules),
                 *(Path(m["module_root"]) / "pom.xml" for m in modules),
                 settings_input,

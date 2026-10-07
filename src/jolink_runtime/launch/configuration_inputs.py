@@ -4,6 +4,8 @@ import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from .maven_reactor import maven_build_root
+
 
 def maven_configuration_files(project, additional=()):
     """Small Maven inputs, including parent chains of Probe-discovered modules.
@@ -12,7 +14,8 @@ def maven_configuration_files(project, additional=()):
     profiles/properties; additional inputs supply its selected module POMs.
     """
     project = Path(project).resolve(strict=False)
-    pending = [project / "pom.xml", *(Path(p) for p in additional)]
+    build_root = maven_build_root(project)
+    pending = [project / "pom.xml", build_root / "pom.xml", *(Path(p) for p in additional)]
     found = {}
     while pending:
         path = pending.pop().resolve(strict=False)
@@ -41,6 +44,7 @@ def maven_configuration_files(project, additional=()):
                 )
     for name in ("maven.config", "jvm.config", "extensions.xml"):
         found[project / ".mvn" / name] = None
+        found[build_root / ".mvn" / name] = None
     return tuple(found)
 
 

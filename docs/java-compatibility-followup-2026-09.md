@@ -1,9 +1,57 @@
 # joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-10-03，优先于下方历史记录）
+## 最新汇总（2026-10-07，优先于下方历史记录）
 
-`eec9429`的0.1.0a8已经发布。对照Eclipse m2e源码后，本轮先补Maven源码过滤与WAR
-普通Java测试入口；下列实现仍在工作区，待用户review，未提交。其他兼容项没有一并改动。
+`eec9429`的0.1.0a8已经发布。源码过滤与WAR普通Java测试入口已提交为`1d3c772`，
+随后修复下面的Reactor子模块入口问题，已完成用户review并纳入本次提交。
+这两轮改动尚未发布新的PyPI版本；其他兼容项没有一并改动。
+
+### 子模块入口：区分Maven构建根与目标模块（本轮修复）
+
+原复现是`project_path=reactor/app`：joLink以`app/pom.xml`开始整个Maven session，
+同级library未进入reactor，导致缺少本地上游依赖或使用仓库里的旧JAR。根目录入口能通过。
+启动有同类入口问题，本轮与Fast Test共用修复，不只改测试路径。
+
+现在的流程：沿祖先POM中的模块声明找到聚合根 → 从根选择Wrapper并运行原Probe →
+仍将用户选中的app作为target → 复用Probe已有的依赖解析及JDT多工程编译。
+不执行Maven compile/install，不把所有模块都编译，也不修改用户POM或源码。
+
+- 共用一个`maven_build_root()`；不会因为存在上层POM或继承parent，就把无关工程当成
+  聚合根。支持字面模块路径、跳层目录、嵌套聚合和Profile里的模块声明。
+- Profile是否激活、依赖关系与编译模型仍由Maven处理。这里不自动启用Profile，
+  不实现属性表达式求值；依赖动态module路径或不在祖先目录的聚合器仍未覆盖。
+- `project_path`、目标模块、Runner/应用工作目录的原语义不变，只调整Probe构建入口。
+  启动仍使用调用者的主类/启动配置，不新增MCP参数，也不改JDWP adapter或Worker。
+- 根POM及根`.mvn/maven.config`、`jvm.config`、`extensions.xml`进入原缓存输入。
+  子模块入口能感知根配置修改；旧缓存缺少这些记录时重新Probe。没有新增缓存格式、
+  清空编译目录或加入源码/JAR全量扫描。
+
+实际回归覆盖根/子模块入口、三模块传递依赖、上游test-jar、错误恢复、增删源码、
+restart实际输出、MCP重开、嵌套聚合、根Wrapper、Profile激活与根配置A→B刷新。
+无关模块故意放置坏源码，确认没有顺便编译它；旧WAR子模块预期失败已转为正常验收，
+不再保留xfail。测试均使用新的真实stdio MCP进程。
+
+另从官方源码重新下载java-diff-utils 4.12（`0fd3bd8e061eed09dbb937c8ab9ba0969ba12264`）：
+直接选择核心子模块，所选41项通过；直接选择依赖该模块的jgit子模块，所选3项通过，
+均验证冷编译、无改动复用和MCP重开。jgit同样3项在原生Maven reactor中通过。
+MCP用例使用不含target的源码副本，未改业务代码/依赖，没有先install上游；
+本机只通过显式临时settings选择依赖镜像。
+
+本机常规回归967 passed，158项需显式启用的集成测试未混入这个数值。wheel/sdist
+构建成功；独立安装wheel后，嵌套/Profile根配置与WAR子模块的4组真实MCP回归通过，
+包括此前失败的未安装上游依赖路径。单元测试还覆盖未聚合的继承parent、无关上层POM、
+根配置新增/修改及旧缓存刷新。Python编译、新增测试lint与diff检查通过。
+最终源码环境回归：Maven模块/源码过滤/根配置/配置刷新15组通过，Gradle模块和
+Maven/Gradle应用JDK共享流程6组通过；没有跳过此前的子模块失败来获得绿色结果。
+
+回归入口：[发现与配置单测](../tests/unit/test_maven_reactor.py)、
+[实际缓存加载单测](../tests/unit/test_build_configuration.py)、
+[根配置/嵌套真实MCP](../tests/e2e/test_maven_child_entry.py)、
+[三模块真实MCP](../tests/e2e/test_maven_modules.py)、
+[公开项目真实MCP](../tests/e2e/test_fast_test_public_resources.py)。
+
+下节的源码过滤/WAR记录属于上一轮；其中子模块入口的xfail是修复前证据，不代表
+当前仍未修复。资源时间戳引发的重复Probe仍保留为待办，本轮未改。
 
 ### m2e对齐第一批：源码过滤与WAR测试
 
@@ -48,7 +96,7 @@ m2e给JDT source entry配置main/test各自的inclusion/exclusion；joLink因为
 [公开项目真实MCP](../tests/e2e/test_fast_test_public_resources.py)。
 公开WAR用例通过`JOLINK_TEST_WAR_PETCLINIC`指定本地checkout；不把第三方源码放入仓库。
 
-本轮额外发现，先记录、不扩改：
+上一轮额外发现（子模块入口已在2026-10-07后续修复）：
 
 1. **显式Reactor子模块入口遗漏上游**：从聚合根选择测试能够导出上游，但直接把
    `project_path`指到子模块时，Maven session可能只有该子模块；未安装到本地仓库的

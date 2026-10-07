@@ -15,6 +15,10 @@ from java_support import open_mcp_session, require_real_mcp_java_e2e, temporary_
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("project_key,module,selectors,count,java_key", [
     ("JOLINK_TEST_DIFF_UTILS", "java-diff-utils", ["com.github.difflib.text.DiffRowGeneratorTest"], 41, "JOLINK_TEST_JAVA8_HOME"),
+    ("JOLINK_TEST_DIFF_UTILS", "java-diff-utils-jgit", [
+        "com.github.difflib.algorithm.jgit.HistogramDiffTest",
+        "com.github.difflib.algorithm.jgit.LRHistogramDiffTest",
+    ], 3, "JOLINK_TEST_JAVA8_HOME"),
     ("JOLINK_TEST_PETCLINIC", ".", ["org.springframework.samples.petclinic.vet.VetControllerTests", "org.springframework.samples.petclinic.service.ClinicServiceTests"], 14, "JOLINK_TEST_JAVA17_HOME"),
     ("JOLINK_TEST_WAR_PETCLINIC", ".", [
         "org.springframework.samples.petclinic.web.PetTypeFormatterTests",

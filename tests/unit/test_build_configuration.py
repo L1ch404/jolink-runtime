@@ -255,6 +255,38 @@ def test_new_maven_configuration_is_detected(model, kind, name):
     assert model.load(kind) is None
 
 
+@pytest.mark.parametrize("kind", ["launch", "test"])
+@pytest.mark.parametrize("name", ["maven.config", "jvm.config", "extensions.xml"])
+def test_child_entry_cache_tracks_enclosing_root_config(model, kind, name):
+    root = model.root.parent
+    (root / "pom.xml").write_text("<project><modules><module>project</module></modules></project>")
+    model.save(kind)
+    assert model.load(kind) is not None
+    path = root / ".mvn" / name
+    path.parent.mkdir()
+    path.write_text("root configuration changed")
+    assert model.load(kind) is None
+
+
+@pytest.mark.parametrize("kind", ["launch", "test"])
+def test_old_child_cache_missing_reactor_inputs_is_refreshed(model, kind):
+    root = model.root.parent
+    (root / "pom.xml").write_text("<project><modules><module>project</module></modules></project>")
+    model.save(kind)
+    if kind == "launch":
+        file = model.launch._file(model.root, model.intent.launch_name)
+        key = "configuration_stamps"
+    else:
+        file = model.fast._directory(model.root, "maven") / "build-world.json"
+        key = "inputs"
+    raw = json.loads(file.read_text())
+    for name in ("maven.config", "jvm.config", "extensions.xml"):
+        raw[key].pop(str(root / ".mvn" / name))
+    file.write_text(json.dumps(raw))
+    assert model.load(kind) is None
+    assert file.is_file(), "Refresh the model, do not remove compilation caches"
+
+
 def test_parent_defaults_empty_relative_path_directories_and_cycles(model):
     parent = model.root.parent / "pom.xml"
     parent.write_text("<project/>")

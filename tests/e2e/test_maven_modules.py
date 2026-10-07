@@ -12,7 +12,8 @@ from java_support import open_mcp_session, temporary_stderr, require_real_mcp_ja
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("custom_test_root", [False, True])
-def test_three_module_mcp_compile_reload_test_and_reopen(tmp_path: Path, custom_test_root):
+@pytest.mark.parametrize("entry", ["root", "child"])
+def test_three_module_mcp_compile_reload_test_and_reopen(tmp_path: Path, custom_test_root, entry):
     require_real_mcp_java_e2e()
     project = tmp_path / "模块 workspace"
     project.mkdir()
@@ -70,6 +71,8 @@ public static void main(String[] args) throws Exception {
     jdk = os.environ.get("JOLINK_TEST_JAVA8_HOME")
     if jdk:
         env.update(JAVA_HOME=jdk, PATH=str(Path(jdk)/"bin")+os.pathsep+env.get("PATH",""))
+    requested = project / "app" if entry == "child" else project
+    launch_selection = {"main_class": "example.App", "app_args": [str(port)]} if entry == "child" else {"launch_name": "App"}
 
     async def scenario():
         for cycle in range(2):
@@ -85,7 +88,7 @@ public static void main(String[] args) throws Exception {
                                 if predicate(state): return state
                                 await anyio.sleep(.03)
                     async def run_test():
-                        value = await call("java_fast_test", {"action":"run","project_path":str(project),"tests":["example.AppTest#value"],"timeout":20})
+                        value = await call("java_fast_test", {"action":"run","project_path":str(requested),"tests":["example.AppTest#value"],"timeout":20})
                         if value.get("status") in {"starting","bootstrapping","compiling","running"}:
                             state = await poll(lambda s:s.get("fast_test",{}).get("status") not in {"starting","bootstrapping","compiling","running"})
                             value = state["fast_test"]
@@ -123,7 +126,7 @@ public static void main(String[] args) throws Exception {
                         assert (await run_test())["ok"] is False
                         base.write_text(original)
                         assert (await run_test())["passed"] is True
-                    accepted = await call("java_application", {"action":"launch","project_path":str(project),"launch_name":"App","jdwp_port":debug,"ready_port":port,"timeout":10})
+                    accepted = await call("java_application", {"action":"launch","project_path":str(requested),**launch_selection,"jdwp_port":debug,"ready_port":port,"timeout":10})
                     assert accepted["ok"], accepted
                     active = await poll(lambda s:s.get("launch_phase")=="runtime_active")
                     active = await call("java_status", {"action": "status", "details": True})

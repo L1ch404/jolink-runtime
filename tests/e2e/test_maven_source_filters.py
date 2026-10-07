@@ -263,11 +263,5 @@ def test_war_module_selection_reports_ambiguity_and_accepts_explicit_module(tmp_
                 assert ambiguous.get("error_code") == "FAST_TEST_MODULE_AMBIGUOUS", ambiguous
                 for directory in (app, other):
                     result = await run(directory)
-                    if (with_upstream and result.get("error_code") == "FAST_TEST_BOOTSTRAP_FAILED"
-                            and any("example:lib:jar:1" in line for line in result.get("bootstrap_log_tail", ()))):
-                        return result
                     assert result.get("passed") is True and result["tests"] == 1, json.dumps(result)
-    if anyio.run(scenario) is not None:
-        # Mark outside AnyIO's task groups so pytest receives the XFailed itself,
-        # not an exception group wrapping it.
-        pytest.xfail("Child-path discovery omits uninstalled upstream Reactor modules")
+    anyio.run(scenario)
