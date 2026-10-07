@@ -8,7 +8,11 @@ from pathlib import Path
 
 from .jdt_compile_session import select_target_system_home
 from .maven import MavenBuildSystemAdapter
-from .maven_compile_scope import compiler_parameters, compiler_scope
+from .maven_compile_scope import (
+    compiler_parameters,
+    compiler_scope,
+    compiler_source_patterns,
+)
 from .processor_path import jdt_processor_paths, processor_path, processor_settings
 
 
@@ -110,8 +114,14 @@ def load_module_worlds(
                 **processor_settings(processing),
             }
         )
+        main_patterns = compiler_source_patterns(main_scope)
+        if main_patterns:
+            modules[-1]["source_patterns"] = main_patterns
         if include_tests:
             scoped = compiler_scope(root, test=True)
+            test_patterns = compiler_source_patterns(scoped, test=True)
+            if test_patterns:
+                modules[-1]["test_source_patterns"] = test_patterns
             test_model = maven._compiler_model(
                 scoped, build_jdk=build_jdk, runtime_jdk=build_jdk
             )

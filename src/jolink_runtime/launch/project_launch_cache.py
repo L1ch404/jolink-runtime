@@ -22,7 +22,7 @@ from .configuration_inputs import build_configuration_stamps
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v4"
+_SCHEMA = "jolink.project-launch-cache.v5"
 
 
 def _path(value: Any) -> Path:

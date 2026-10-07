@@ -1,4 +1,4 @@
-"""Opt-in cold-clone regressions for the two reported public projects.
+"""Opt-in cold-clone regressions for public Maven projects, including WAR.
 
 Point the environment variables at local checkouts; tests copy them without
 build outputs and never modify the originals or invoke mvn test/resources first.
@@ -16,6 +16,21 @@ from java_support import open_mcp_session, require_real_mcp_java_e2e, temporary_
 @pytest.mark.parametrize("project_key,module,selectors,count,java_key", [
     ("JOLINK_TEST_DIFF_UTILS", "java-diff-utils", ["com.github.difflib.text.DiffRowGeneratorTest"], 41, "JOLINK_TEST_JAVA8_HOME"),
     ("JOLINK_TEST_PETCLINIC", ".", ["org.springframework.samples.petclinic.vet.VetControllerTests", "org.springframework.samples.petclinic.service.ClinicServiceTests"], 14, "JOLINK_TEST_JAVA17_HOME"),
+    ("JOLINK_TEST_WAR_PETCLINIC", ".", [
+        "org.springframework.samples.petclinic.web.PetTypeFormatterTests",
+        "org.springframework.samples.petclinic.model.OwnerTests",
+        "org.springframework.samples.petclinic.model.PetTests",
+        "org.springframework.samples.petclinic.model.VetTests",
+        "org.springframework.samples.petclinic.model.ValidatorTests",
+        "org.springframework.samples.petclinic.service.ClinicServiceJdbcTests",
+        "org.springframework.samples.petclinic.service.ClinicServiceJpaTests",
+        "org.springframework.samples.petclinic.service.ClinicServiceSpringDataJpaTests",
+        "org.springframework.samples.petclinic.web.CrashControllerTests",
+        "org.springframework.samples.petclinic.web.OwnerControllerTests",
+        "org.springframework.samples.petclinic.web.PetControllerTests",
+        "org.springframework.samples.petclinic.web.VetControllerTests",
+        "org.springframework.samples.petclinic.web.VisitControllerTests",
+    ], 75, "JOLINK_TEST_JAVA17_HOME"),
 ])
 def test_cold_public_project_explicit_environment(tmp_path, project_key, module, selectors, count, java_key):
     require_real_mcp_java_e2e()

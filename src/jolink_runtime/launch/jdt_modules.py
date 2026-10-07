@@ -11,6 +11,7 @@ from .jdt_compile_session import (
     discover_target_system_entries,
 )
 from .processor_path import write_processor_settings
+from .source_selection import SourceSelection
 
 
 def module_name(directory: str | Path) -> str:
@@ -53,6 +54,7 @@ class ModuleCompileSession(PersistentJdtCompileSession):
         )
         self._module_destinations = {}
         self._module_encodings = {}
+        self._module_source_patterns = {}
         self._outputs = {}
         self.projects = []
         for module in self.modules:
@@ -78,6 +80,7 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                         **module.get("test_compiler", {}),
                         "name": name + "_test",
                         "scope": "test",
+                        "source_patterns": module.get("test_source_patterns", {}),
                         "source_roots": module["test_source_roots"],
                         "test_source_roots": [],
                         "output_directory": module["test_output_directory"],
@@ -93,6 +96,11 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                 for source in module.get(field, ()):
                     self._module_destinations[Path(source)] = destination / leaf
                     self._module_encodings[Path(source)] = module["source_encoding"]
+                    patterns = module.get(
+                        "source_patterns" if field == "source_roots" else "test_source_patterns", {}
+                    )
+                    if patterns:
+                        self._module_source_patterns[Path(source)] = SourceSelection(patterns)
             self._outputs[str(Path(module["output_directory"]))] = destination / "bin"
             if not split_tests:
                 self._outputs[str(Path(module["test_output_directory"]))] = (
@@ -116,6 +124,10 @@ class ModuleCompileSession(PersistentJdtCompileSession):
 
     def workspace_source_roots(self):
         return tuple(self._module_destinations)
+
+    def _source_included(self, source, root):
+        selection = self._module_source_patterns.get(root)
+        return selection is None or selection.accepts(source.relative_to(root).as_posix())
 
     def class_file(self, relative):
         name, path = relative.split("/", 1)

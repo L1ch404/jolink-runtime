@@ -62,6 +62,13 @@ Maven 冷入口由 Probe 在同一次 Maven session 中，按各模块解析后�
 定位测试类，再导出目标及所需上游模块；不再先按 `src/test/java` 猜模块，也不额外
 调用 help:effective-pom。普通项目与自定义目录、父 POM 继承的目录使用同一条路径。
 
+Maven的main `includes/excludes`与test `testIncludes/testExcludes`分别作用于各自的
+原始源码根，使用Ant风格的相对路径规则；先筛选、再归一化package目录。FULL、增量和
+显式`source_files`使用相同规则；被排除源码变化不触发编译，过滤规则本身改变则更新模型。
+普通WAR项目里的Java测试也走同一条JDT/Runner流程，不要求packaging为jar；这不包含
+WAR部署或外部Servlet容器管理。当前验收与剩余边界见
+[m2e对齐记录](java-compatibility-followup-2026-09.md#m2e对齐第一批源码过滤与war测试)。
+
 Gradle 正常加载 buildSrc 和 included builds 后，Probe 读取配置完成的 SourceSet/
 JavaCompile/Test 对象。单项目与多项目共用现有模块转换；构建逻辑目录不再触发拒绝。
 编译 ArgumentProvider 通过其 asArguments() 导出实际参数，不因 Provider 的存在而
@@ -193,8 +200,8 @@ JDT Worker、Probe模型及编译缓存；工具改名不改变缓存身份。�
   等具体项目仍需实测，依赖额外生命周期或未导出输入的生成链没有因此宣称支持；
 - Runner JVM尚未保活，Spring测试的大部分后续耗时通常在Runner启动和框架初始化。
 
-本轮 main/test 工程布局与缓存模型发生变化：旧 Test Build World 会重新导出并建立
-一次新 workspace；新布局建立后继续复用。不是每次 test 都重建。
+此前拆分 main/test 工程时，旧 Test Build World 需重新导出并建立一次新 workspace；
+新布局建立后继续复用。不是每次 test 都重建，也不是每次模型重新Probe都会FULL。
 
 2026-09-12 后续的名称/参数接入同时更新启动与 Test 缓存模型；旧缓存需要重新导出一次，
 避免复用之前未保存显式名称的模型。实现及真实结果见[Processor 配置](maven-processor-path.zh-CN.md)。

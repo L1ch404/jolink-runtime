@@ -1,6 +1,72 @@
 # joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-09-29，优先于下方历史记录）
+## 最新汇总（2026-10-03，优先于下方历史记录）
+
+`eec9429`的0.1.0a8已经发布。对照Eclipse m2e源码后，本轮先补Maven源码过滤与WAR
+普通Java测试入口；下列实现仍在工作区，待用户review，未提交。其他兼容项没有一并改动。
+
+### m2e对齐第一批：源码过滤与WAR测试
+
+- Maven Probe已经导出Maven解析后的effective model。本轮从现有main/test scoped
+  model分别读取`includes/excludes`和`testIncludes/testExcludes`，保留父POM、profile、
+  execution及属性插值后的值。不把main规则误用到test，也不另写一套POM发现机制。
+- 普通Ant路径规则（`*`、`?`、`**`）按**各原始source root下的相对路径**匹配，再做
+  joLink已有的package目录映射。FULL、增量扫描、显式source hint、持久化恢复共用一个
+  选择器；被排除文件不读取内容、不进入私有源码镜像。新增/删除规则走既有配置失效流程。
+- 无规则的模块不增加空规则字段，保持原来的编译身份。Test模型缓存升为v8、启动缓存
+  升为v5，旧模型首次重新Probe以补齐字段；不删除JDT缓存或下载缓存。实测普通无过滤
+  项目的旧schema重新Probe后，仍使用原class文件，没有重新编译；另将a8真实jar Reactor
+  缓存交给本轮代码，原有3个class的路径与mtime也均保持不变。
+- Probe选测试模块时不再只接受`jar`。WAR里的JUnit测试使用相同的JDT和Runner路径；
+  并非新增WAR部署功能，不负责打WAR包、部署外部Tomcat或执行容器部署插件。
+  本轮未宣称所有自定义packaging、多个不同compile execution或Maven特殊regex规则均已验证。
+
+对照依据：[m2e源码固定版本](https://github.com/eclipse-m2e/m2e-core/blob/66500f4ff361757de9f244a03ed76c73284cb6d2/org.eclipse.m2e.jdt/src/org/eclipse/m2e/jdt/internal/AbstractJavaProjectConfigurator.java)。
+m2e给JDT source entry配置main/test各自的inclusion/exclusion；joLink因为有package布局
+归一化，在原始目录筛选后再映射到自己的JDT工程，并未照搬IDE/UI或新增Worker协议。
+
+本轮macOS证据：
+
+- 原生Maven能通过、旧joLink会编译到被排除坏文件的最小复现，现在通过真实stdio MCP。
+- 4组单模块/Reactor、jar/WAR、公共配置/execution/profile场景，覆盖父POM继承、
+  main/test独立、增删文件、无效编码的排除文件、显式hint、规则切换、启动HTTP、restart
+  新内容和跨MCP重开；另测两个WAR模块同名测试的歧义与独立模块显式选择。
+- [Spring Framework Petclinic固定版本](https://github.com/spring-petclinic/spring-framework-petclinic/tree/09351b3ee0bd5aec2d480c0280e84700978f56d3)
+  是真实WAR项目，Java17/Spring7/JUnit6。原生Maven全部75项通过；joLink从不含target的
+  源码副本FULL后，同样75项通过，并验证无改动复用与MCP重开。覆盖MVC、JDBC/JPA、
+  Spring Data及H2，不修改项目源码/POM/依赖；本机使用显式临时Maven镜像配置。
+- 既有Maven模块/源码生成/布局/Processor回归20组通过；Gradle模块/构建逻辑、资源与
+  JDK选择等共享流程16组通过。新回归已沉淀，不只保留一次手工日志。
+- 常规测试948 passed，153项需显式开启的集成用例未计入；Python编译、新增测试lint
+  及diff检查通过。wheel/sdist构建成功，独立安装wheel后，公开WAR的75项测试及
+  冷/热/跨MCP复用再次通过；未用工作区的editable安装代替发布包验证。
+  独立安装后的本轮过滤/模块选择/schema刷新用例6 passed、1 xfailed，后者就是下述
+  尚未修复的Reactor子模块入口问题，不计作通过。
+
+入口：[过滤与模块选择真实MCP](../tests/e2e/test_maven_source_filters.py)、
+[匹配与恢复单测](../tests/unit/test_source_selection.py)、
+[公开项目真实MCP](../tests/e2e/test_fast_test_public_resources.py)。
+公开WAR用例通过`JOLINK_TEST_WAR_PETCLINIC`指定本地checkout；不把第三方源码放入仓库。
+
+本轮额外发现，先记录、不扩改：
+
+1. **显式Reactor子模块入口遗漏上游**：从聚合根选择测试能够导出上游，但直接把
+   `project_path`指到子模块时，Maven session可能只有该子模块；未安装到本地仓库的
+   sibling依赖随即解析失败。保留真实MCP预期失败用例，仅对已确认的缺少上游依赖
+   错误标记xfail，其他错误仍失败。后续应分开“聚合build root”和“目标module”，
+   不是要求用户先`mvn install`，也不是WAR编译器问题。另用`eec9429`原代码/Probe24
+   的jar Reactor复现同样现象：根入口通过，子模块入口缺少`example:lib:jar:1`；确认
+   不是本轮移除jar限制引入的回归。
+2. **启动/Test共享资源准备的mtime**：冷启动重新准备资源后，已缓存的Fast Test可能
+   因处理后资源时间戳变化而再次Probe。实测预热到同一资源状态后，仅改排除Java文件
+   不再Probe/编译。此为已有资源缓存协调问题，不把它归因于源码过滤。
+
+后续m2e对齐仍待讨论：测试运行配置（环境变量、工作目录、assertions、延迟argLine等）、
+生命周期准备策略（与U4/U6相交）、Toolchains/自动JDK选择、JPMS/preview/multi-release及
+多个compile execution、插件增量输入，以及独立工程之间的依赖与显式刷新。没有将这些
+项目作为本轮新增拦截，也不把m2e的IDE功能列表全部当成joLink必须实现的待办。
+
+### 0.1.0a8基线（2026-09-29）
 
 此前 `main` 的 `4dc7a70` 已包含U11与U10，且已推送。本轮提交补齐
 启动/Fast Test的执行环境选择及原生资源准备，已完成review，详见下节。

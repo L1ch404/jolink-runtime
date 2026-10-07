@@ -419,7 +419,7 @@ class ProjectLaunchPipeline:
             method_parameters=target["method_parameters"],
             worker_min_heap_mb=max(m["worker_min_heap_mb"] for m in modules),
             worker_max_heap_mb=max(m["worker_max_heap_mb"] for m in modules),
-            modules=modules if len(modules) > 1 else ())
+            modules=modules if len(modules) > 1 or target.get("source_patterns") else ())
         runtime_jdk = self._select_runtime_java(
             context, intent, preferences, plan, build_jdk, log,
         )

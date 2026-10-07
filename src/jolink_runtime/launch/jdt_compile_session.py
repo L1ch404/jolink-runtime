@@ -1202,6 +1202,9 @@ class PersistentJdtCompileSession:
             index_changed = False
             for raw in source_files:
                 source = raw.expanduser().resolve(strict=False)
+                roots = [root for root in self.workspace_source_roots() if source.is_relative_to(root)]
+                if roots and not any(self._source_included(source, root) for root in roots):
+                    continue
                 content = source.read_bytes() if source.is_file() else None
                 previous = self._source_map.get(source)
                 if (
@@ -1289,7 +1292,7 @@ class PersistentJdtCompileSession:
     ) -> Path | None:
         matches: list[Path] = []
         for root, _baseline, destination, encoding in self._source_locations():
-            if source.is_relative_to(root):
+            if source.is_relative_to(root) and self._source_included(source, root):
                 relative = (
                     source_relative_path(content, source.name, encoding)
                     if content is not None else None
@@ -1341,6 +1344,8 @@ class PersistentJdtCompileSession:
         changed: set[Path] = set()
         for root in self.workspace_source_roots():
             for path in root.rglob("*.java"):
+                if not self._source_included(path, root):
+                    continue
                 source = path.resolve(strict=False)
                 observed.add(source)
                 if self._source_stamp(source) != self._source_stamps.get(source):
@@ -1360,6 +1365,9 @@ class PersistentJdtCompileSession:
 
     def workspace_source_roots(self) -> tuple[Path, ...]:
         return (*self.source_roots, *self.test_source_roots)
+
+    def _source_included(self, source: Path, root: Path) -> bool:
+        return True
 
     def mark_published(self) -> None:
         with self._state_lock:
@@ -1533,7 +1541,7 @@ class PersistentJdtCompileSession:
                 relatives = {
                     path.relative_to(source_root)
                     for path in source_root.rglob("*.java")
-                    if path.is_file()
+                    if path.is_file() and self._source_included(path, source_root)
                 }
                 relatives.update(
                     path.relative_to(destination_root)
@@ -1541,6 +1549,8 @@ class PersistentJdtCompileSession:
                     if path.is_file()
                 )
                 for relative in relatives:
+                    if not self._source_included(source_root / relative, source_root):
+                        continue
                     self._source_map[
                         (source_root / relative).resolve(strict=False)
                     ] = destination_root / relative
@@ -1562,6 +1572,8 @@ class PersistentJdtCompileSession:
         sources_by_key: dict[str, list[Path]] = {}
         for source_root, baseline_root in zip(source_roots, baseline_roots):
             for baseline_source in sorted(baseline_root.rglob("*.java")):
+                if not self._source_included(source_root / baseline_source.relative_to(baseline_root), source_root):
+                    continue
                 if baseline_source.is_symlink():
                     raise JdtCompileError(
                         "SOURCE_LINK_UNSUPPORTED",
@@ -1632,6 +1644,8 @@ class PersistentJdtCompileSession:
             source_roots, baseline_roots
         ):
             for baseline_source in sorted(baseline_root.rglob("*.java")):
+                if not self._source_included(source_root / baseline_source.relative_to(baseline_root), source_root):
+                    continue
                 if baseline_source.is_symlink():
                     raise JdtCompileError(
                         "SOURCE_LINK_UNSUPPORTED",

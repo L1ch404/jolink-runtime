@@ -73,3 +73,30 @@ def compiler_parameters(project: ET.Element) -> bool:
         == "true"
         or maven._compiler_argument_profile(configurations).method_parameters
     )
+
+
+def compiler_source_patterns(project: ET.Element, *, test: bool = False) -> dict:
+    """Read the scoped effective model; testCompile uses testIncludes/testExcludes.
+
+    Main includes/excludes may be inherited into the test execution's XML, but
+    Maven's TestCompilerMojo does not use those fields to select test sources.
+    """
+    plugin = MavenBuildSystemAdapter._find_build_plugin(project, "maven-compiler-plugin")
+    if plugin is None:
+        return {}
+    configuration = plugin.find("{*}configuration")
+    if configuration is None:
+        return {}
+    patterns = {}
+    for key in ("includes", "excludes"):
+        name = "test" + key.capitalize() if test else key
+        node = configuration.find("{*}" + name)
+        if node is None:
+            continue
+        values = [(child.text or "").strip() for child in node]
+        if not values and node.text:
+            values = [value.strip() for value in node.text.split(",")]
+        values = list(dict.fromkeys(value for value in values if value))
+        if values:
+            patterns[key] = values
+    return patterns

@@ -950,7 +950,7 @@ class FastTestManager:
                 if selection.is_file():
                     code, *candidates = selection.read_text(encoding="utf-8").splitlines()
                     raise FastTestManagerError(code,
-                        "Select test classes from one Maven jar module, or specify its project_path.",
+                        "Select test classes from one Maven module, or specify its project_path.",
                         context={"candidate_modules": candidates})
                 raise FastTestManagerError(
                     "FAST_TEST_BOOTSTRAP_FAILED",
@@ -1205,6 +1205,9 @@ class FastTestManager:
                 "testCompile.useIncrementalCompilation",
                 "testRelease", "testSource", "testTarget", "testEncoding",
                 "testCompile.release", "testCompile.source", "testCompile.target", "testCompile.encoding",
+                "testIncludes", "testExcludes", "testCompile.testIncludes", "testCompile.testExcludes",
+                # TestCompilerMojo uses testIncludes/testExcludes, not these inherited main fields.
+                "testCompile.includes", "testCompile.excludes",
             }
         ]
         unsupported_test_compiler = self._unshared_test_compiler_configuration(
