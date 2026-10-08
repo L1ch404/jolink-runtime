@@ -1,6 +1,9 @@
 package io.jolink.maven;
 
 import java.io.File;
+import java.io.DataInputStream;
+import java.io.EOFException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
@@ -15,7 +18,7 @@ import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 
 /** Let Maven filter/copy resources; keep their outputs separate from old javac classes. */
-final class ResourcePreparation {
+final class ResourcePreparation implements AutoCloseable {
     static final String MAIN = "jolink.resources.main";
     static final String TEST = "jolink.resources.test";
     private final Map<Path, Output> outputs = new LinkedHashMap<>();
@@ -48,7 +51,7 @@ final class ResourcePreparation {
             prepared = new Output(destination, root.resolve(key.toString()));
             outputs.put(destination, prepared);
         }
-        output.setValue(prepared.directory.toString());
+        output.setValue(prepared.staging.toString());
         try {
             execution.setConfiguration(configured);
             plugins.executeMojo(session, execution);
@@ -81,8 +84,17 @@ final class ResourcePreparation {
         }
     }
 
+    @Override
+    public void close() throws Exception {
+        for (Output output : outputs.values()) {
+            try (Stream<Path> paths = Files.walk(output.staging)) {
+                for (Path path : paths.sorted(Comparator.reverseOrder()).collect(Collectors.toList())) Files.delete(path);
+            }
+        }
+    }
+
     private static final class Output {
-        final Path nativeDirectory, directory, ownership;
+        final Path nativeDirectory, directory, ownership, staging;
         final Set<Path> previous;
         Output(Path destination, Path directory) throws Exception {
             this.nativeDirectory = destination;
@@ -91,23 +103,40 @@ final class ResourcePreparation {
             previous = new LinkedHashSet<>();
             if (Files.isRegularFile(ownership))
                 for (String name : Files.readAllLines(ownership, StandardCharsets.UTF_8)) previous.add(Paths.get(name));
-            if (Files.exists(directory)) {
-                try (Stream<Path> paths = Files.walk(directory)) {
-                    for (Path path : paths.sorted(Comparator.reverseOrder()).collect(Collectors.toList())) Files.delete(path);
-                }
-            }
             Files.createDirectories(directory);
+            // Give Maven a fresh output set without deleting resources already
+            // used by another cached launch/Test model.
+            staging = Files.createTempDirectory(directory.getParent(), "resources-");
         }
         void publish(boolean removeObsolete) throws Exception {
-            Set<Path> current = files(directory);
+            Set<Path> current = files(staging);
             for (Path relative : current) {
-                Path destination = nativeDirectory.resolve(relative);
-                Files.createDirectories(destination.getParent());
-                Files.copy(directory.resolve(relative), destination, StandardCopyOption.REPLACE_EXISTING);
+                copyChanged(staging.resolve(relative), directory.resolve(relative));
+                copyChanged(staging.resolve(relative), nativeDirectory.resolve(relative));
             }
             if (removeObsolete) {
+                for (Path relative : files(directory)) if (!current.contains(relative)) Files.delete(directory.resolve(relative));
                 for (Path relative : previous) if (!current.contains(relative)) Files.deleteIfExists(nativeDirectory.resolve(relative));
                 Files.write(ownership, current.stream().map(Path::toString).collect(Collectors.toList()), StandardCharsets.UTF_8);
+            }
+        }
+        private static void copyChanged(Path source, Path destination) throws Exception {
+            if (sameContent(source, destination)) return;
+            Files.createDirectories(destination.getParent());
+            Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING);
+        }
+        private static boolean sameContent(Path source, Path destination) throws Exception {
+            if (!Files.isRegularFile(destination) || Files.size(source) != Files.size(destination)) return false;
+            try (InputStream left = Files.newInputStream(source);
+                    DataInputStream right = new DataInputStream(Files.newInputStream(destination))) {
+                byte[] a = new byte[8192], b = new byte[8192];
+                for (int count; (count = left.read(a)) != -1;) {
+                    right.readFully(b, 0, count);
+                    for (int i = 0; i < count; i++) if (a[i] != b[i]) return false;
+                }
+                return right.read() == -1;
+            } catch (EOFException shortened) {
+                return false;
             }
         }
     }

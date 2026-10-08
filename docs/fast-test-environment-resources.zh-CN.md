@@ -81,7 +81,7 @@ JDK命中编译缓存，换构建JDK重新Probe，原生过滤资源与HTTP中�
 插件版本、过滤变量、filter文件、includes/excludes、编码、targetPath及输出目录
 交给项目自己的Resources Plugin处理，不在Python里重写这些规则。
 
-Resources Plugin输出到按模块/目标目录标识的持久资源目录，然后同步资源到原生
+Resources Plugin输出到本轮临时资源目录，再同步到按模块/目标目录标识的持久资源目录和原生
 输出位置，满足`new File("target/test-classes/...")`。Runner读取这份仅含资源的
 处理结果，不把混有旧javac class的整个target/classes作为补充代码入口。
 确实作为资源复制的`.class`测试数据仍保留；不是按扩展名一律删掉。
@@ -89,6 +89,12 @@ Resources Plugin输出到按模块/目标目录标识的持久资源目录，然
 资源输出清单是一个本地文件。资源删除后只删除此前由这条资源准备路径生成的文件，
 不clean整个target，也不删除原生输出目录中的无关class。失败不更新已成功输出清单，
 下次恢复仍能清理已删除资源。没有复制JDT class树或创建新的产物发布机制。
+
+2026-10-08：同步时仅覆盖内容变化的文件，相同资源保留mtime，避免冷launch使已有
+Fast Test模型无端失效。比较只在实际Maven准备时发生，使用Java8流式读取，不增加
+普通测试请求的哈希扫描。临时资源目录在成功/异常结束时清理。
+多个goal先后覆盖同一文件时，仍可能因中间覆盖而改变mtime；此窄边界已实际复现并
+保留跟进，详见[资源复用记录](java-compatibility-followup-2026-09.md)。
 
 main/test资源保持独立；测试资源先于main资源。上游模块的资源随已有模块依赖映射使用。
 

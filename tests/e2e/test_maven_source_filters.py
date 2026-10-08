@@ -129,9 +129,9 @@ def test_maven_source_patterns_full_incremental_and_reopen(tmp_path, placement, 
                         assert (await run())["compiled_source_count"] == 0
                         await launch()
                         assert response(port) == "A|" + expected.read_text()
-                        # A cold launch also prepares shared native resources;
-                        # establish the Test baseline after that preparation.
-                        await run()
+                        # Launch must not dirty an unchanged Test resource model.
+                        reused = await run()
+                        assert "bootstrap_ms" not in reused, json.dumps(reused)
                         if not cycle:
                             hidden.write_bytes(b"\xff even invalid encoding is excluded")
                             skipped_test.write_text("still invalid")

@@ -38,8 +38,7 @@ final class SourcePreparation {
         Set<String> inputs = new LinkedHashSet<>();
         Set<String> registrations = new LinkedHashSet<>();
         List<String> executions = new ArrayList<>();
-        ResourcePreparation resources = new ResourcePreparation();
-        try {
+        try (ResourcePreparation resources = new ResourcePreparation()) {
             session.setCurrentProject(project);
             List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-resources" : "process-resources"));
             for (MojoExecution execution : plans.calculateExecutionPlan(session, project, tasks, false).getMojoExecutions()) {

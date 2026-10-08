@@ -116,6 +116,9 @@ public class ReadyTest {
  }
 }'''.replace("ORACLE", json.dumps(oracle.as_posix())).replace("NATIVE", json.dumps(native.as_posix())))
     env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache"), "MAVEN_ARGS": "--offline", "GRADLE_ARGS": "--offline", "JOLINK_LOG_LEVEL": "INFO"}
+    prepared_resources = tmp_path / "prepared resources"
+    if system == "maven":
+        env["JAVA_TOOL_OPTIONS"] = f'-Djolink.probe.resourceCache="{prepared_resources.as_posix()}"'
 
     def full_builds():
         return sum("jdt.build.finished" in line and "actual=FULL" in line
@@ -141,12 +144,17 @@ public class ReadyTest {
                 removable.unlink()
                 broken = await finished(session, root, expect_pass=False)
                 assert broken["ok"] is False and broken["error_code"] == "FAST_TEST_BOOTSTRAP_FAILED", broken
+                if system == "maven":
+                    assert not list(prepared_resources.glob("resources-*"))
+                    assert native.joinpath("filtered.txt").read_text() == "A"
+                    assert native.joinpath("gone.txt").is_file()
                 filter_file.write_text("label=B\n")
                 changed = await finished(session, root)
                 assert changed["compiled_source_count"] == 0, changed
                 assert full_builds() == initial_full, "resource edits must not force JDT FULL"
                 if system == "maven":
                     assert (native / "stale.class").read_bytes() == b"old class"
+                    assert not list(prepared_resources.glob("resources-*"))
                 source.write_text(source.read_text().replace("public class App", "/* Java-only edit */ public class App"))
                 java_only = await finished(session, root)
                 assert "bootstrap_ms" not in java_only, java_only
