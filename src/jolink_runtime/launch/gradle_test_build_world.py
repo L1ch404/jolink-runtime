@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .jdt_compile_session import SUPPORTED_JAVA_LEVELS
+from .compiler_profile import classify_compiler_arguments, skipped_compiler_checks
 from .test_build_world import JavaTestBuildWorld
 
 
@@ -178,7 +179,7 @@ def create_gradle_test_build_world(
     for task in (main_compile, test_compile):
         _require(
             task["release"] is None
-            and not task["compilerArgsPrivate"]
+            and not classify_compiler_arguments(task["compilerArgsPrivate"]).arguments_without_checks
             and not task["fork"]
             and not task["compilerArgumentProvidersUnmodeled"]
             and task["debug"]
@@ -358,6 +359,10 @@ def create_gradle_test_build_world(
             "test_framework": runtime["framework"],
         },
         native_resource_oracle_required=bool(main_processors),
+        skipped_compiler_checks=tuple(sorted(set(
+            name for task in (main_compile, test_compile)
+            for name in classify_compiler_arguments(task["compilerArgsPrivate"]).skipped_checks
+        ))),
     )
 
 
@@ -446,6 +451,7 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         ),
         test_jvm_arguments=tuple(args),
         modules=modules,
+        skipped_compiler_checks=skipped_compiler_checks(modules, include_tests=True),
         runner_support_provenance={
             "build_system": "gradle",
             "gradle_version": model["gradleVersion"],

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .build_world_identity import build_world_fingerprint
+from .compiler_profile import classify_compiler_arguments, skipped_compiler_checks
 from .jdt_compile_session import SUPPORTED_JAVA_LEVELS, JdtBuildWorldPlan, resource_tree_fingerprint, select_target_system_home
 
 
@@ -250,7 +251,8 @@ def create_gradle_runtime_build_world(
         "GRADLE_COMPILE_ENCODING_UNMODELED",
         "Gradle compileJava must declare its source encoding.",
     )
-    compiler_args = tuple(compile_task["compilerArgsPrivate"])
+    compiler_profile = classify_compiler_arguments(compile_task["compilerArgsPrivate"])
+    compiler_args = compiler_profile.arguments_without_checks
     _require(
         set(compiler_args).issubset({"-parameters"})
         and compile_task["release"] is None
@@ -385,6 +387,7 @@ def create_gradle_runtime_build_world(
             ),
             javac_executable=java_compiler,
             method_parameters="-parameters" in compiler_args,
+            skipped_compiler_checks=compiler_profile.skipped_checks,
             freshness_entries=freshness_entries,
             resource_roots=(resource_root,),
             resource_fingerprint=resource_tree_fingerprint(
@@ -430,6 +433,7 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
         method_parameters=target["method_parameters"],
         resource_roots=resources,
         modules=modules,
+        skipped_compiler_checks=skipped_compiler_checks(modules),
     )
     return GradleRuntimeBuildWorld(
         project_root=project_root,

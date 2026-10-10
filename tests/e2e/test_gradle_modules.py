@@ -47,7 +47,7 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
     )
     kotlin = dsl == "kotlin"
     (project / ("settings.gradle.kts" if kotlin else "settings.gradle")).write_text(
-        'rootProject.name = "modules"\ninclude("base", "core", "app", "runtime", "unused")\n'
+        'rootProject.name = "modules"\ninclude("base", "core", "app", "runtime", "unused", "testkit")\n'
     )
     suffix = ".gradle.kts" if kotlin else ".gradle"
     (project / ("build" + suffix)).write_text(
@@ -55,7 +55,7 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
         if kotlin
         else "subprojects { apply plugin: 'java-library'; java { sourceCompatibility = '8'; targetCompatibility = '8' } }\n"
     )
-    for name in ("base", "core", "app", "runtime", "unused"):
+    for name in ("base", "core", "app", "runtime", "unused", "testkit"):
         (project / name / "src/main/java/example").mkdir(parents=True)
         (project / name / ("build" + suffix)).write_text("")
     (project / "core" / ("build" + suffix)).write_text(
@@ -65,9 +65,9 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
     )
     app_build = project / "app" / ("build" + suffix)
     app_build.write_text(
-        f'dependencies {{ "implementation"(project(":core")); "runtimeOnly"(project(":runtime")); "testImplementation"(files("{junit.as_posix()}", "{hamcrest.as_posix()}")) }}\n'
+        f'dependencies {{ "implementation"(project(":core")); "runtimeOnly"(project(":runtime")); "testImplementation"(project(":testkit")); "testImplementation"(files("{junit.as_posix()}", "{hamcrest.as_posix()}")) }}\n'
         if kotlin
-        else f"dependencies {{ implementation project(':core'); runtimeOnly project(':runtime'); testImplementation files('{junit.as_posix()}', '{hamcrest.as_posix()}') }}\n"
+        else f"dependencies {{ implementation project(':core'); runtimeOnly project(':runtime'); testImplementation project(':testkit'); testImplementation files('{junit.as_posix()}', '{hamcrest.as_posix()}') }}\n"
     )
     base = project / "base/src/main/java/example/Base.java"
     # An unselected retry task must neither block the default test task nor run.
@@ -106,6 +106,9 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
     (project / "runtime/src/main/java/example/RuntimeOnly.java").write_text(
         "package example; public class RuntimeOnly {}"
     )
+    (project / "testkit/src/main/java/example/TestHelper.java").write_text(
+        "package example; public class TestHelper { public static int expected(){return 42;} }"
+    )
     app = project / "app/src/main/java/example/App.java"
     app.write_text("""package example; public class App {
 public static void main(String[] args) throws Exception {
@@ -121,7 +124,7 @@ public static void main(String[] args) throws Exception {
     test.parent.mkdir(parents=True)
     test.write_text("""package example; public class AppTest {
 @org.junit.Test public void value() throws Exception {
- org.junit.Assert.assertEquals(42,Core.value());
+ org.junit.Assert.assertEquals(TestHelper.expected(),Core.value());
  org.junit.Assert.assertNotNull(Class.forName("example.RuntimeOnly"));
  org.junit.Assert.assertNotNull(AppTest.class.getResourceAsStream("/base.txt"));
  org.junit.Assert.assertEquals("from-gradle", System.getProperty("fixture.property"));

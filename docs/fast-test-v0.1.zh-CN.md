@@ -218,8 +218,11 @@ JDT Worker、Probe模型及编译缓存；工具改名不改变缓存身份。�
   包括main8/test17和main11/test21。目标系统库、Runner JDK仍按项目配置选择。
   Worker默认使用joLink管理的Temurin21，旧Lombok1.18.20问题暂不处理。
   详见[升级与实际结果](jdt-346-upgrade.zh-CN.md)，不将编译器支持范围等同于所有项目通过；
-- Error Prone 等 javac 专属插件不在本轮接入。后续方向是快速流程不执行这些质量
-  检查、正式构建/CI保留；本轮只记录，尚未删除对应参数拒绝，也不静默忽略未知参数。
+- 标准 Error Prone 检查模式不在JDT中执行：Fast Test继续编译和运行测试，结果显式
+  返回`skipped_compiler_checks: ["Error Prone"]`，这些检查仍需原生构建/CI执行。
+  真正的APT、Processor选择和`-A`参数保持原样；不是删除整个Processor Path。
+  自动改源码的patch模式、argfile和未知javac插件没有因此获得支持。详见
+  [U4接线与实测](java-compatibility-followup-2026-09.md)。
 - Runner支持显式Class或Class#method选择；
 - `-Xpkginfo:always` 已映射为 JDT 默认输出行为：空包说明、SOURCE/RUNTIME 注解均有
   package-info.class，并验证了增量修改、删除、恢复；没有统一忽略其他 javac 参数；

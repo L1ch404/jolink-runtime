@@ -25,9 +25,16 @@ def module_name(directory: str | Path) -> str:
 
 def compilation_modules(modules):
     """Preparation bookkeeping is not a change to JDT's compiler configuration."""
-    metadata = {"preparation_inputs", "preparation_roots", "preparation_executions", "resource_roots", "test_resource_roots"}
+    metadata = {
+        "preparation_inputs", "preparation_roots", "preparation_executions",
+        "resource_roots", "test_resource_roots", "skipped_compiler_checks",
+    }
     return tuple(
-        {key: value for key, value in module.items() if key not in metadata}
+        {
+            key: {k: v for k, v in value.items() if k not in metadata}
+            if key == "test_compiler" else value
+            for key, value in module.items() if key not in metadata
+        }
         for module in modules
     )
 

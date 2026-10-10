@@ -126,6 +126,18 @@ def _candidate(tmp_path: Path) -> JdtCandidate:
     )
 
 
+def test_unbuilt_test_dependency_is_kept_for_workspace_resolution(tmp_path):
+    output = tmp_path / "upstream/build/classes/java/main"
+    session = PersistentJdtCompileSession(
+        root=tmp_path / "session", candidate=_candidate(tmp_path),
+        worker_java_home=tmp_path / "jdk", source_roots=(),
+        classpath_entries=(), test_classpath_entries=(output,),
+        source_encoding="UTF-8",
+    )
+    assert session.test_classpath_entries == (output.resolve(),)
+    assert not output.exists()
+
+
 def test_portable_product_candidate_accepts_verified_minimum_worker_jdk(
     tmp_path: Path,
     monkeypatch,

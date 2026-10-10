@@ -4,10 +4,61 @@
 
 `eec9429`的0.1.0a8已经发布。源码过滤/WAR入口`1d3c772`与Reactor子模块入口
 `9dead95`均已推送main。资源复用修复已提交为`59360e4`，尚未推送；未发布新PyPI版本。
-本轮测试进程环境、工作目录和断言配置已完成用户review，并纳入本次提交；尚未推送。
+测试进程环境、工作目录和断言配置已提交为`d7fd335`，尚未推送。
+本轮U4的检查跳过接线及真实项目回归已完成用户review，纳入本次提交，尚未推送。
 同文件多goal覆盖的资源复用边界及其他已暂缓事项没有一并改动。
 
-### 测试运行配置：复用同一个Build World与Runner（本轮）
+### U4：检查与编译分开，共用参数映射（2026-10-10，已review）
+
+Maven/Gradle继续由原生Probe求值配置，共用`compiler_profile.py`分类，不按项目名称、
+目录或Gradle Provider实现类分支。标准`-Xplugin:ErrorProne`检查模式及其检查选项、
+javac执行策略参数不交给ECJ；`-processor`、Processor Path、`-A`和`-parameters`保留。
+不能删除整条annotationProcessorPath：同一加载路径上可以同时存在真正的代码生成器。
+本轮没有扩成任意javac插件执行器，也没有修改Worker、Java Probe或`jdwp_adapter.py`。
+
+- Fast Test完成结果和精简摘要返回`skipped_compiler_checks: ["Error Prone"]`，提示正式
+  构建/CI仍需执行检查；launch的warnings返回同一说明。没有使用这类检查时不增加字段。
+- 信息写入现有Build World缓存，重开MCP仍可见；仅改变检查严重级别不会改写JDT class。
+  启动模型缓存从v5升为v6，让旧的静默跳过模型重新Probe一次，不删除已有JDT产物。
+- `-XepPatch...`自动改源码模式、`@argfile`、未知插件/未知选项不认作“仅检查”。它们
+  仍留在公共分类器的unresolved结果中；Fast Test与Gradle入口沿用原有拒绝逻辑。
+  Maven Runtime原有路径对部分未映射参数并没有统一拒绝，本轮未另加通用拦截层，
+  因此不能把本项写成“所有入口已验证任意编译插件语义”。
+- TestNG真实冷启动同时暴露一个简单共用bug：test-only上游工程尚未输出class，
+  Python先`resolve(strict=True)`而报FileNotFoundError。改为保留路径，交给既有JDT
+  工程依赖解析，不建立假目录、不吞掉真正的缺失库诊断。补充仅测试依赖上游的
+  Groovy/Kotlin DSL多模块MCP回归。
+
+实测依据：原生javac运行Error Prone因`DeadException`失败；同一fixture经joLink可
+完成Maven/Gradle测试和HTTP启动，并明确说明检查未执行。共存的真实APT、生成代码、
+`-A`、反射可见参数名、增量更新、无变化复用、配置重导出和跨MCP缓存重开均通过。
+patch模式仍被Fast Test拒绝，源码未被改写。常规回归990 passed；最终新增Maven/Gradle
+用例与补强后的Gradle模块回归共5组通过；前一轮含既有Maven模块共9组通过。
+独立安装wheel后新增的Maven/Gradle两组再次通过；wheel/sdist、compileall及diff检查通过。
+回归入口：[检查跳过MCP](../tests/e2e/test_skipped_compiler_checks.py)、
+[Gradle模块MCP](../tests/e2e/test_gradle_modules.py)、
+[参数分类](../tests/unit/test_compiler_profile.py)、
+[缓存恢复](../tests/unit/test_build_configuration.py)。
+
+原始开源项目复测（JDK17、业务源码与依赖版本未修改）：
+
+| 项目与版本 | 修复前真实MCP | 本轮真实MCP |
+|---|---|---|
+| TestNG `9665805`，asserts | `GRADLE_COMPILE_CONFIGURATION_UNMODELED` | 所选70项，69通过、1跳过；跨MCP恢复也通过。原生Gradle同为69通过、1跳过 |
+| TestNG `9665805`，core | 同上 | 干净副本已进入JDT FULL，6条诊断指向未生成的Kotlin/Groovy输出；原生Gradle所选16项通过。见U14 |
+| Mockito `7834859`，core | 同上 | 干净副本JDT FULL有2条build path诊断，根因是未生成`build/generated/resources/inline`。原生生成资源后再跑MCP，所选23项21通过、2跳过，与原生一致；不计为干净项目完整支持。见U13补充 |
+
+测试使用独立副本，离线缓存缺失的依赖先按原坐标补齐。仅调整测试副本的仓库地址，
+让Gradle读取本机依赖，禁止Build Scan上传；不改变Processor/Java版本/业务代码以求通过。
+Mockito副本缺少Git tag，原生构建派生版本为`0.0.1-SNAPSHOT`，源码仍为上述固定SHA。
+修复前对照使用`d7fd335`源码，不能把此前依赖下载失败算作产品拒绝证据。
+
+语义依据：[Error Prone flags](https://errorprone.info/docs/flags)、
+[安装方式](https://errorprone.info/docs/installation)、
+[patching模式](https://errorprone.info/docs/patching)。支持的是通用的参数语义接线；
+目前已确认并实测的javac检查后端是Error Prone，不声称未知插件一概可跳过。
+
+### 测试运行配置：复用同一个Build World与Runner（已提交d7fd335）
 
 修复前真实MCP拒绝Maven的这组Surefire配置。代码链路还存在两个共用问题：Runner
 在调用者JVM参数后强行加`-ea`，覆盖关闭断言的意图；Gradle的环境删除在转换时丢失，
@@ -240,18 +291,25 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | 编号 | 当前状态 / 问题 | 已有证据与边界 | 后续落点 |
 |---|---|---|---|
 | U2 | 待定位：Guava 泛型错误 | JDT3.46在原选择器上仍有14条诊断（旧版本13条）；未拆清源码兼容差异与编译输入问题。这不是14个独立根因 | 沿固定Guava样本缩小表达式，先对齐原生构建与JDT输入，再决定修输入映射还是处理编译器差异 |
-| U4 | 待接线：Error Prone等javac专属检查 | 已决定快速流程可以不执行这类检查，但“说明未执行、继续编译”的接线尚未完成，Mockito/TestNG项目仍可能受阻。TestNG框架本身能运行 | 通用地区分质量检查与影响产物的编译扩展，明确跳过前者，再回归原项目；不是给插件名字加白名单 |
+| U4 | 已接线、已review：Error Prone检查跳过 | Maven/Gradle共用参数分类，保留真正APT，启动/测试明确说明检查未执行；TestNG asserts的70项所选测试通过。Mockito/TestNG core已越过参数拦截，后续问题见U13/U14 | 不执行javac检查本身；正式构建/CI继续负责。其他未知插件未一概忽略 |
 | U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |
 | U6 | 待讨论：MyBatis准备步骤 | 默认format profile的OpenRewrite fork被拒；关闭format后license处理等待。在副本中关闭两者后，main8/test17及87项所选测试通过 | 区分必要生成步骤与格式化/license检查，接入合理的快速准备流程后，用原配置验证；不能把关闭profile的结果算成原样通过 |
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
 | U9 | 功能已有替代路径，优化暂缓：未加载类的HotSwap | `05a8bf0`后公开restart会增量编译，并在`CLASS_NOT_LOADED`时使用本轮产物自动重启；尚不支持已加载类热更、未加载类留待正常加载 | 待讨论的是减少不必要重启，不再记成“restart无法应用变更”。见[restart流程](project-restart.zh-CN.md) |
 | U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
+| U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 
-U11、U10均已提交，不再作为待实现项。
-后续可讨论U4/U6/U13的构建步骤、U2的编译兼容性。
+U11、U10均已提交，不再作为待实现项。U4已完成review并纳入本次提交。
+后续可讨论U6/U13的构建步骤、U14的语言任务、U2的编译兼容性。
 必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
 事项继续保留，不因这次更新文档就自动开展实现。
+
+U13本轮补充：Mockito的`copyMockMethodDispatcher`依赖`compileJava`，把编译后的
+`MockMethodDispatcher.class`复制/重命名为`.raw`，写入额外SourceSet输出目录。
+当前Probe准备`processResources`，不会执行这条编译后资源链；新副本因此缺少目录，
+JDT test工程报告build path错误。不能简单把所有额外输出当普通资源忽略；这个文件是
+Mockito inline mock的实际运行输入。本轮只定位记录，不扩展编译后任务调度。
 
 ### U10：本地Gradle引用脚本跟踪（2026-09-28，已修复）
 

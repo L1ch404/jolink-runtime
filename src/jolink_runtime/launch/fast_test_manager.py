@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .contracts import BuildOperationSpec
-from .compiler_profile import parse_maven_memory_megabytes
+from .compiler_profile import (
+    compiler_check_warnings,
+    parse_maven_memory_megabytes,
+    skipped_compiler_checks,
+)
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
 from .configuration_inputs import maven_configuration_files, maven_environment_references
@@ -125,6 +129,7 @@ class _FastTestProject:
     session_root: Path
     workspace_lease: Any
     configuration_snapshot: dict[str, Any] = field(default_factory=dict)
+    skipped_compiler_checks: tuple[str, ...] = ()
     test_run_order: str = ""
     test_attempts: list[tuple[Path, bool]] = field(default_factory=list)
 
@@ -209,6 +214,7 @@ class TestAttempt:
                     "framework", "tests", "passed_count", "failed_count",
                     "failed_test_count", "failed_container_count", "skipped_count",
                     "test_ms", "source_changes_pending", "build_world_changes_pending",
+                    "skipped_compiler_checks",
                 }
             })
             if payload.get("passed") is not True:
@@ -540,6 +546,10 @@ class FastTestManager:
                 provenance = getattr(
                     project, "runner_support_provenance", {}
                 )
+                checks = getattr(project, "skipped_compiler_checks", ())
+                if checks:
+                    attempt.result["skipped_compiler_checks"] = list(checks)
+                    attempt.result["suggested_next_step"] += " " + compiler_check_warnings(checks)[0]
                 if provenance:
                     attempt.result["test_runtime_support"] = dict(
                         provenance
@@ -1311,6 +1321,9 @@ class FastTestManager:
             worker_max_heap_mb=worker_max_heap_mb,
             runner_support_provenance=runner_support_provenance,
             modules=tuple(snapshot.get("moduleWorlds", ())),
+            skipped_compiler_checks=skipped_compiler_checks(
+                snapshot.get("moduleWorlds", ()), include_tests=True
+            ),
         )
         if world.modules:
             own_outputs = {str(main_output), str(test_output)}
@@ -1496,6 +1509,7 @@ class FastTestManager:
             runner_environment={**JavaToolchainResolver.maven_environment(build_jdk), **world.runner_environment},
             runner_jvm_arguments=world.test_jvm_arguments,
             test_run_order=world.test_run_order,
+            skipped_compiler_checks=world.skipped_compiler_checks,
             compiler=compiler,
             runtime_classpath=(
                 *(path for path in world.resource_roots if path.is_dir()),

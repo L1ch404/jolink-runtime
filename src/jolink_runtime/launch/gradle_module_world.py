@@ -37,6 +37,7 @@ def _compiler_settings(task: dict) -> dict:
         if not is_lombok or profile.processor_names:
             processors.append(path)
     return {
+        "skipped_compiler_checks": list(profile.skipped_checks),
         "source_level": level,
         "source_encoding": task["encoding"],
         "target_java_home": str(

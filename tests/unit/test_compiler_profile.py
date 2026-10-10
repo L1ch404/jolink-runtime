@@ -1,3 +1,5 @@
+import pytest
+
 from jolink_runtime.launch.compiler_profile import (
     classify_compiler_arguments,
     parse_maven_memory_megabytes,
@@ -95,4 +97,88 @@ def test_package_info_always_is_native_jdt_behavior_not_all_javac_options():
         ["-Xpkginfo:always", "-Xpkginfo:nonempty", "-Xplugin:ErrorProne"]
     )
     assert profile.decisions[0].category == "package_info_always_generated"
-    assert profile.unresolved_arguments == ("-Xpkginfo:nonempty", "-Xplugin:ErrorProne")
+    assert profile.unresolved_arguments == ("-Xpkginfo:nonempty",)
+    assert profile.skipped_checks == ("Error Prone",)
+
+
+@pytest.mark.parametrize(
+    "plugin",
+    [
+        "-Xplugin:ErrorProne",
+        "-Xplugin:ErrorProne -XepDisableAllChecks -Xep:DeadException:ERROR",
+        "-Xplugin:ErrorProne\n-XepDisableWarningsInGeneratedCode -XepCompilingTestOnlyCode",
+        r"-Xplugin:ErrorProne -XepExcludedPaths:C:\work\generated\.* -XepOpt:Checker:Value=data",
+    ],
+)
+def test_skip_javac_checks_keeps_parameters_processor_selection_and_values(plugin):
+    args = [
+        "-XDcompilePolicy=simple",
+        "--should-stop=ifError=FLOW",
+        plugin,
+        "-J--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+        "-parameters",
+        "-processor",
+        "example.Factory",
+        "-Amessage= spaces 中文 = preserved ",
+    ]
+    profile = classify_compiler_arguments(args)
+    assert profile.unresolved_arguments == ()
+    assert profile.skipped_checks == ("Error Prone",)
+    assert profile.method_parameters
+    assert profile.processor_names == ("example.Factory",)
+    assert profile.processor_options == {"message": " spaces 中文 = preserved "}
+    assert profile.arguments_without_checks[:3] == (
+        "-parameters",
+        "-processor",
+        "example.Factory",
+    )
+
+
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        "-Xplugin:ErrorProne -XepPatchChecks:DeadException -XepPatchLocation:IN_PLACE",
+        "-Xplugin:ErrorProne @checks.cfg",
+        "-Xplugin:ErrorProne -XepFutureUnknownMode",
+        "-Xplugin:OtherCompilerExtension",
+        "-Xplugin:ErrorProneCustom",
+    ],
+)
+def test_unknown_extensions_and_rewriting_are_not_treated_as_skipped_checks(invocation):
+    profile = classify_compiler_arguments([invocation, "-XDcompilePolicy=simple"])
+    assert profile.skipped_checks == ()
+    assert profile.unresolved_arguments == (invocation, "-XDcompilePolicy=simple")
+
+
+def test_separate_error_prone_options_and_unrelated_jvm_exports():
+    unrelated = "-J--add-opens=java.base/java.lang=ALL-UNNAMED"
+    profile = classify_compiler_arguments(
+        ["-Xplugin:ErrorProne", "-XepCompilingTestOnlyCode", unrelated]
+    )
+    assert profile.skipped_checks == ("Error Prone",)
+    assert profile.unresolved_arguments == (unrelated,)
+    assert classify_compiler_arguments(["-Xep:DeadException:OFF"]).unresolved_arguments
+    patched = classify_compiler_arguments(
+        ["-Xplugin:ErrorProne", "-XepPatchLocation:IN_PLACE"]
+    )
+    assert patched.skipped_checks == ()
+    assert len(patched.unresolved_arguments) == 2
+
+
+def test_check_metadata_does_not_change_main_or_test_compilation_identity():
+    from jolink_runtime.launch.jdt_modules import compilation_modules
+
+    before = ({"source_level": 8, "test_compiler": {"source_level": 11}},)
+    after = (
+        {
+            **before[0],
+            "skipped_compiler_checks": ["Error Prone"],
+            "test_compiler": {
+                "source_level": 11,
+                "skipped_compiler_checks": ["Error Prone"],
+            },
+        },
+    )
+    assert compilation_modules(before) == compilation_modules(after)
+    after[0]["test_compiler"]["source_level"] = 17
+    assert compilation_modules(before) != compilation_modules(after)

@@ -738,6 +738,7 @@ class JdtBuildWorldPlan:
     worker_java_major: int | None = None
     system_entries: tuple[Path, ...] = ()
     modules: tuple[dict[str, Any], ...] = ()
+    skipped_compiler_checks: tuple[str, ...] = ()
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = field(default_factory=dict)
     preparation_inputs: tuple[Path, ...] = ()
@@ -969,7 +970,8 @@ class PersistentJdtCompileSession:
                 "The frozen test source snapshot does not match test roots.",
             )
         self.test_classpath_entries = tuple(
-            path.expanduser().resolve(strict=True)
+            # A workspace dependency may not have any output before JDT's first build.
+            path.expanduser().resolve(strict=False)
             for path in test_classpath_entries
         )
         self.baseline_main_output = (
