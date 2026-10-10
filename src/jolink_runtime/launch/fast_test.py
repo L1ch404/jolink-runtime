@@ -298,7 +298,7 @@ class FastTestRunner:
         timeout_seconds: float,
         owner: AttemptToken,
         framework: str | None = None,
-        environment: dict[str, str] | None = None,
+        environment: dict[str, str | None] | None = None,
         jvm_arguments: Sequence[str] = (),
         run_order: str = "",
     ) -> FastTestResult:
@@ -324,6 +324,11 @@ class FastTestRunner:
                     "A Fast Test selector must be Class or Class#method.",
                 )
         assets = FastTestAssets.load()
+        try:
+            working_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise FastTestError("TEST_WORKING_DIRECTORY_UNAVAILABLE", "Cannot create the configured test working directory.",
+                                context={"working_directory": str(working_directory)}) from error
         if len(jvm_arguments) > 64 or any(
             not value
             or "\n" in value
@@ -435,8 +440,8 @@ class FastTestRunner:
         listener.start()
         command = (
             str(java_executable),
-            *tuple(jvm_arguments),
             "-ea",
+            *tuple(jvm_arguments),
             "-jar",
             str(pathing_jar),
             "--host",

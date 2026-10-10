@@ -22,6 +22,7 @@ from .contracts import BuildOperationSpec
 from .compiler_profile import parse_maven_memory_megabytes
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
+from .configuration_inputs import maven_configuration_files, maven_environment_references
 from .jdt_modules import ModuleCompileSession, compilation_modules
 from .maven_reactor import maven_build_root
 from .maven_module_world import load_module_worlds, combine_effective_poms
@@ -115,7 +116,7 @@ class _FastTestProject:
     test_java_executable: Path
     test_framework: str | None
     test_working_directory: Path
-    runner_environment: dict[str, str]
+    runner_environment: dict[str, str | None]
     runner_jvm_arguments: tuple[str, ...]
     compiler: PersistentJdtCompileSession
     runtime_classpath: tuple[Path, ...]
@@ -1140,7 +1141,7 @@ class FastTestManager:
         unsupported_surefire = [
             value
             for value in unsupported_surefire
-            if value not in {"skip", "skipTests"}
+            if value not in {"skip", "skipTests", "workingDirectory", "environmentVariables", "excludedEnvironmentVariables", "enableAssertions"}
         ]
         test_java = build_jdk.java_executable
         surefire = self._maven._find_build_plugin(effective_project, "maven-surefire-plugin")
@@ -1270,6 +1271,9 @@ class FastTestManager:
             *((maven_home / "conf/settings.xml",) if maven_home is not None else ()),
             *(workspace.build_root / ".mvn" / name for name in ("maven.config", "jvm.config", "extensions.xml")),
         )))
+        working_directory = test_runtime.get("workingDirectory", str(module.directory))
+        if working_directory is None:
+            raise FastTestManagerError("TEST_WORKING_DIRECTORY_UNAVAILABLE", "Maven could not resolve the configured test working directory.")
         world = JavaTestBuildWorld(
             build_system="maven",
             build_preferences=preferences.cache_values(),
@@ -1293,14 +1297,15 @@ class FastTestManager:
             extra_worker_jvm_arguments=(),
             test_java_executable=test_java,
             test_framework=None,
-            test_working_directory=module.directory,
+            test_working_directory=Path(working_directory),
             test_classes_directories=(test_output,),
-            runner_environment={},
-            test_jvm_arguments=test_jvm_arguments,
+            runner_environment=dict(test_runtime.get("environmentOverridesPrivate", {})),
+            test_jvm_arguments=("-ea" if test_runtime.get("enableAssertions", True) else "-da", *test_jvm_arguments),
             test_run_order=self._maven._config_text(surefire_configuration, "runOrder") if surefire_configuration is not None else "",
             javac_executable=build_jdk.javac_executable,
             configuration_inputs=configuration_inputs,
-            configuration_environment_names=(),
+            configuration_environment_names=maven_environment_references(
+                maven_configuration_files(workspace.project_root, configuration_inputs)),
             upstream_source_roots=upstream_source_roots,
             worker_min_heap_mb=worker_min_heap_mb,
             worker_max_heap_mb=worker_max_heap_mb,
@@ -1488,7 +1493,7 @@ class FastTestManager:
             test_java_executable=world.test_java_executable,
             test_framework=world.test_framework,
             test_working_directory=world.test_working_directory,
-            runner_environment=dict(world.runner_environment),
+            runner_environment={**JavaToolchainResolver.maven_environment(build_jdk), **world.runner_environment},
             runner_jvm_arguments=world.test_jvm_arguments,
             test_run_order=world.test_run_order,
             compiler=compiler,

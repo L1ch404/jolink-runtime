@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -10,7 +11,6 @@ import psutil
 import pytest
 
 from jolink_runtime import launch as launch_module
-from jolink_runtime.launch import process_tree as process_tree_module
 from jolink_runtime.launch import (
     AttemptToken,
     BuildOperationSpec,
@@ -18,6 +18,29 @@ from jolink_runtime.launch import (
     ProcessTreeTerminator,
     TerminationReport,
 )
+from jolink_runtime.launch import process_tree as process_tree_module
+
+
+def test_process_environment_overlay_can_remove_and_clear_without_changing_parent(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOLINK_REMOVE", "parent")
+    monkeypatch.setenv("JOLINK_REPLACE", "parent")
+    monkeypatch.setenv("JOLINK_INHERITED", "first")
+    log = tmp_path / "environment.json"
+    supervisor = ProcessSupervisor()
+    script = "import os,json; print(json.dumps({k:os.getenv(k) for k in ['JOLINK_REMOVE','JOLINK_REPLACE','JOLINK_EMPTY','JOLINK_INHERITED']}))"
+    try:
+        for inherited in ("first", "second"):
+            monkeypatch.setenv("JOLINK_INHERITED", inherited)
+            result = supervisor.run(BuildOperationSpec(
+                argv=(sys.executable, "-c", script), cwd=tmp_path, output_capture=log,
+                environment={"JOLINK_REMOVE": None, "JOLINK_EMPTY": "", "JOLINK_REPLACE": "configured"},
+            ), owner=AttemptToken("test_environment", 1))
+            assert result.succeeded
+            actual = json.loads(log.read_text().splitlines()[-1])
+            assert actual == {"JOLINK_REMOVE": None, "JOLINK_REPLACE": "configured", "JOLINK_EMPTY": "", "JOLINK_INHERITED": inherited}
+            assert os.environ["JOLINK_REMOVE"] == os.environ["JOLINK_REPLACE"] == "parent"
+    finally:
+        supervisor.close(deadline=time.monotonic() + 2)
 
 
 def _wait_for_file(path: Path, timeout: float = 5.0) -> None:

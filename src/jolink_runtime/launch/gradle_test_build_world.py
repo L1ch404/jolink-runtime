@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
-from .test_build_world import JavaTestBuildWorld
 from .jdt_compile_session import SUPPORTED_JAVA_LEVELS
+from .test_build_world import JavaTestBuildWorld
 
 
 class GradleBuildWorldError(RuntimeError):
@@ -265,8 +266,7 @@ def create_gradle_test_build_world(
         "Gradle Test uses an unsupported framework.",
     )
     _require(
-        runtime["enableAssertions"] is True
-        and runtime["debug"] is False
+        runtime["debug"] is False
         and runtime["failFast"] is False
         and runtime["dryRun"] is False
         and runtime["scanForTestClasses"] is True
@@ -275,7 +275,6 @@ def create_gradle_test_build_world(
         and not runtime["jvmArgsPrivate"]
         and not runtime["jvmArgumentProvidersUnmodeled"]
         and not runtime["systemPropertiesPrivate"]
-        and not runtime["environmentOverridesPrivate"]
         and not runtime["bootstrapClasspath"]
         and runtime["maxParallelForks"] == 1
         and runtime["forkEvery"] == 0
@@ -303,11 +302,6 @@ def create_gradle_test_build_world(
         strict=False
     )
     _require(
-        test_working_directory.is_dir(),
-        "GRADLE_TEST_WORKING_DIRECTORY_UNAVAILABLE",
-        "Gradle Test working directory is unavailable.",
-    )
-    _require(
         runtime_paths.count(test_output) == 1
         and runtime_paths.count(main_output) == 1,
         "GRADLE_TEST_RUNTIME_OUTPUT_UNMODELED",
@@ -323,11 +317,11 @@ def create_gradle_test_build_world(
         field="test.classpath",
     )
 
-    source_roots = (standard_main, standard_test)
     resource_roots = (standard_main_resources, standard_test_resources)
     configuration = tuple(
         path.resolve(strict=False) for path in configuration_inputs
     )
+    arguments, overrides = _runtime_options(runtime)
     return JavaTestBuildWorld(
         build_system="gradle",
         project_root=project,
@@ -351,11 +345,12 @@ def create_gradle_test_build_world(
         test_framework="junit5",
         test_working_directory=test_working_directory,
         test_classes_directories=(test_output,),
-        runner_environment=dict(runner_environment),
+        runner_environment=overrides,
+        test_jvm_arguments=arguments,
         javac_executable=javac_executable(main_home),
         configuration_inputs=configuration,
         configuration_environment_names=tuple(
-            sorted(set(configuration_environment_names))
+            sorted({*configuration_environment_names, *overrides})
         ),
         runner_support_provenance={
             "build_system": "gradle",
@@ -364,6 +359,16 @@ def create_gradle_test_build_world(
         },
         native_resource_oracle_required=bool(main_processors),
     )
+
+
+def _runtime_options(runtime):
+    args = ["-ea" if runtime["enableAssertions"] else "-da", *runtime["jvmArgsPrivate"]]
+    if runtime["minHeapSize"]:
+        args.append("-Xms" + runtime["minHeapSize"])
+    if runtime["maxHeapSize"]:
+        args.append("-Xmx" + runtime["maxHeapSize"])
+    args.extend("-D" + key + "=" + str(value) for key, value in runtime["systemPropertiesPrivate"].items())
+    return tuple(args), dict(runtime["environmentOverridesPrivate"])
 
 
 def _module_test_world(model, project_root, inputs, environment, environment_names):
@@ -392,23 +397,7 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         "GRADLE_TEST_FILTER_UNMODELED",
         "Gradle test filters are not mapped to the standalone Runner.",
     )
-    args = list(runtime["jvmArgsPrivate"])
-    if runtime["enableAssertions"]:
-        args.append("-ea")
-    if runtime["minHeapSize"]:
-        args.append("-Xms" + runtime["minHeapSize"])
-    if runtime["maxHeapSize"]:
-        args.append("-Xmx" + runtime["maxHeapSize"])
-    args.extend(
-        "-D" + key + "=" + str(value)
-        for key, value in runtime["systemPropertiesPrivate"].items()
-    )
-    runner_environment = dict(environment)
-    for key, value in runtime["environmentOverridesPrivate"].items():
-        if value is None:
-            runner_environment.pop(key, None)
-        else:
-            runner_environment[key] = value
+    args, runner_environment = _runtime_options(runtime)
     home = Path(target["target_java_home"])
     outputs = {Path(target["output_directory"]), Path(target["test_output_directory"])}
     configuration = tuple(
@@ -453,7 +442,7 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         javac_executable=javac_executable(home),
         configuration_inputs=configuration,
         configuration_environment_names=tuple(
-            dict.fromkeys((*environment_names, *runtime["environmentOverrideNames"]))
+            dict.fromkeys((*environment_names, *runner_environment))
         ),
         test_jvm_arguments=tuple(args),
         modules=modules,

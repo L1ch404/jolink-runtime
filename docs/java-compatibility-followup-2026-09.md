@@ -1,11 +1,61 @@
 # joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-10-08，优先于下方历史记录）
+## 最新汇总（2026-10-10，优先于下方历史记录）
 
 `eec9429`的0.1.0a8已经发布。源码过滤/WAR入口`1d3c772`与Reactor子模块入口
-`9dead95`均已提交并推送main，尚未发布新的PyPI版本。本轮资源准备引发的重复Probe
-修复已完成用户review并纳入本次提交；同文件多goal覆盖的剩余边界继续保留。
-其他兼容项没有一并改动。
+`9dead95`均已推送main。资源复用修复已提交为`59360e4`，尚未推送；未发布新PyPI版本。
+本轮测试进程环境、工作目录和断言配置已完成用户review，并纳入本次提交；尚未推送。
+同文件多goal覆盖的资源复用边界及其他已暂缓事项没有一并改动。
+
+### 测试运行配置：复用同一个Build World与Runner（本轮）
+
+修复前真实MCP拒绝Maven的这组Surefire配置。代码链路还存在两个共用问题：Runner
+在调用者JVM参数后强行加`-ea`，覆盖关闭断言的意图；Gradle的环境删除在转换时丢失，
+随后启动进程又继承父环境。不是JUnit/TestNG本身无法使用这些配置。
+
+本轮没有新增tool/action/参数，没有修改`jdwp_adapter.py`：
+
+- Maven Probe导出`workingDirectory`、`enableAssertions`和私有环境覆盖字典，使用
+  Maven自身的goal配置合并及表达式求值。Gradle复用原有Test任务导出，两边都接入
+  现有`JavaTestBuildWorld`、缓存和公共Runner。
+- 环境覆盖字典用null表示删除，用空字符串表示设置为空。公共ProcessSupervisor
+  执行这种差量合并，不修改joLink自身环境，不把null转换为字符串`None`。
+- 缓存只保存明确覆盖，不保存整个宿主环境；构建JDK的基础PATH/JAVA_HOME在恢复
+  Runner配置时重建。Maven配置文件中的环境引用记录名称及摘要；只改普通继承变量
+  不会因此重新Probe。Gradle已有输入跟踪边界未扩成任意脚本依赖分析。
+- 断言默认在前、项目JVM参数在后，`enableAssertions=false`映射到`-da`；保留JVM
+  原生的类/包级断言参数顺序，不为框架新增分支。
+- 缺失工作目录由Runner创建；已有普通文件/不可创建目录返回结构化错误。还对照
+  原生Surefire确认：显式目录表达式无法解析时应报配置错误，不能偷偷选择默认目录。
+  仅测试配置无效不影响应用的main启动。
+
+运行字段不加入编译身份；配置修改和跨MCP恢复时，回归直接比较JDT class文件mtime，
+确认没有重新编译。Test模型缓存升为v9补齐这份运行配置；Probe内部坐标升为fasttest27，
+仍为Java8字节码。JDT Worker与Java Test Runner JAR本身未改。
+
+本机验收：常规973 passed；运行配置矩阵6组（Maven单模块/Reactor、Gradle、JUnit4/5/
+TestNG、直接/execution/Profile配置）先通过原生构建，再通过MCP。独立安装最终wheel后
+7组通过，含目录配置错误及应用启动不受影响的回归。Maven3.3.9+JDK8的5组正向配置和
+目录错误用例通过；测试依赖/原生测试provider先准备到对应本地仓库，之后执行离线回归。
+既有Maven/Spring/Processor回归16组、main/test与Runner排序12组、Gradle模块/资源/
+JDK共享流程12组通过。公开java-diff-utils的核心子模块41项、jgit子模块3项也通过真实
+MCP的冷启动、复用与重开。本轮为macOS证据，不替代Windows实际运行。
+
+通用验收包含：覆盖/删除/空值、同名排除与显式赋值、普通继承、环境表达式引用变化、
+中文/空格与相对工作目录、false→true断言、argLine的显式`-da`、配置错误后恢复、
+运行配置改变但class不变、跨MCP缓存重开。先用原生Maven/Gradle执行同一批独立断言，
+再用真实stdio MCP。Gradle原生Test要求目录已存在，原生对照先建目录；MCP侧将其删除，
+另验证Runner创建目录的行为。没有用仅检查JSON字段来代替实际测试结果。
+
+回归入口：[运行配置真实MCP](../tests/e2e/test_test_runtime_configuration.py)、
+[缓存单测](../tests/unit/test_build_configuration.py)、
+[真实子进程环境单测](../tests/unit/test_process_supervisor.py)、
+[Gradle模型单测](../tests/unit/test_gradle_test_build_world.py)。
+原生语义依据：[Surefire参数](https://maven.apache.org/surefire/maven-surefire-plugin/test-mojo.html)、
+[Surefire3.2.5进程配置源码](https://github.com/apache/maven-surefire/blob/surefire-3.2.5/maven-surefire-common/src/main/java/org/apache/maven/plugin/surefire/booterclient/DefaultForkConfiguration.java)。
+
+迟绑定argLine、多个Surefire/Failsafe执行项的完整调度、并行/重试/多fork不在本轮；
+不能将本轮三个运行字段的接通表述成“完整复刻Surefire”。U4/U6等后续顺序不变。
 
 ### 资源准备：不改写相同输出（本轮修复，仍有一个窄边界）
 
@@ -150,7 +200,8 @@ m2e给JDT source entry配置main/test各自的inclusion/exclusion；joLink因为
    因处理后资源时间戳变化而再次Probe。实测预热到同一资源状态后，仅改排除Java文件
    不再Probe/编译。此为已有资源缓存协调问题，不把它归因于源码过滤。
 
-后续m2e对齐仍待讨论：测试运行配置（环境变量、工作目录、assertions、延迟argLine等）、
+测试运行配置中的环境变量、工作目录和assertions已在2026-10-09接入。后续m2e对齐
+仍待讨论：延迟argLine及更多测试运行策略、
 生命周期准备策略（与U4/U6相交）、Toolchains/自动JDK选择、JPMS/preview/multi-release及
 多个compile execution、插件增量输入，以及独立工程之间的依赖与显式刷新。没有将这些
 项目作为本轮新增拦截，也不把m2e的IDE功能列表全部当成joLink必须实现的待办。

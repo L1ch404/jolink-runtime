@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import zipfile
 from pathlib import Path
 
@@ -10,14 +9,14 @@ from jolink_runtime.launch.fast_test_manager import (
     FastTestManager,
     FastTestManagerError,
 )
+from jolink_runtime.launch.gradle_runtime_build_world import (
+    GradleRuntimeBuildWorldError,
+    create_gradle_runtime_build_world,
+)
 from jolink_runtime.launch.gradle_test_build_world import (
     GradleBuildWorldError,
     create_gradle_test_build_world,
     javac_executable,
-)
-from jolink_runtime.launch.gradle_runtime_build_world import (
-    GradleRuntimeBuildWorldError,
-    create_gradle_runtime_build_world,
 )
 
 
@@ -166,12 +165,25 @@ def test_product_gradle_authority_preserves_test_runtime(tmp_path: Path) -> None
     assert world.test_framework == "junit5"
     assert world.test_working_directory == working.resolve()
     assert world.test_classes_directories == (world.test_output,)
-    assert world.runner_environment["JAVA_HOME"] == str(project / "jdk")
+    assert world.runner_environment == {}  # Build-JDK defaults are applied at Runner startup.
     assert world.test_runtime_classpath[-1].name == "runtime"
     assert world.configuration_inputs == (
         (project / "build.gradle").resolve(strict=False),
     )
     assert world.configuration_environment_names == ("GRADLE_USER_HOME",)
+
+
+def test_gradle_runtime_configuration_keeps_removals_and_allows_new_working_directory(tmp_path):
+    project, model = _model(tmp_path)
+    runtime = model["testRuntime"]
+    runtime["workingDirectory"] = str(project / "not-yet-created")
+    runtime["enableAssertions"] = False
+    runtime["environmentOverridesPrivate"] = {"REMOVE": None, "EMPTY": "", "VALUE": "literal"}
+    world = _convert(tmp_path, model)
+    assert world.test_working_directory == project / "not-yet-created"
+    assert not world.test_working_directory.exists()
+    assert world.runner_environment == runtime["environmentOverridesPrivate"]
+    assert world.test_jvm_arguments == ("-da",)
 
 
 @pytest.mark.parametrize(
@@ -198,7 +210,7 @@ def test_product_gradle_authority_preserves_test_runtime(tmp_path: Path) -> None
         (
             "GRADLE_TEST_CONFIGURATION_UNMODELED",
             lambda model, root: model["testRuntime"].__setitem__(
-                "enableAssertions", False
+                "debug", True
             ),
         ),
         (

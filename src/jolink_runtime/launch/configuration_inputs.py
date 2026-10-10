@@ -1,10 +1,21 @@
 """Shared file/directory inputs for the existing Build World caches."""
 
 import hashlib
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .maven_reactor import maven_build_root
+
+
+def maven_environment_references(paths):
+    """Capture Maven env expressions from small configuration inputs, not all OS env."""
+    names = set()
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            names.update(re.findall(r"\$\{env\.([^}]+)\}", path.read_text(encoding="utf-8", errors="replace")))
+    return tuple(sorted(names))
 
 
 def maven_configuration_files(project, additional=()):

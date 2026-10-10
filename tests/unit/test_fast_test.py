@@ -327,6 +327,21 @@ def test_fast_test_manager_starts_idle_and_closes() -> None:
     assert manager.close() is True
 
 
+def test_runner_reports_an_unusable_working_directory_without_starting_java(tmp_path):
+    directory = tmp_path / "not-a-directory"
+    directory.write_text("existing file")
+    class Supervisor:
+        def run(self, *args, **kwargs):
+            pytest.fail("must not launch a process with invalid cwd")
+    runner = FastTestRunner(Supervisor())
+    with pytest.raises(FastTestError) as error:
+        runner.run(java_executable=Path("java"), classpath=(), selectors=("example.Test",),
+                   working_directory=directory, attempt_directory=tmp_path / "attempt",
+                   timeout_seconds=5, owner=AttemptToken("bad_working_directory", 1))
+    assert error.value.error_code == "TEST_WORKING_DIRECTORY_UNAVAILABLE"
+    assert error.value.context["working_directory"] == str(directory)
+
+
 def test_fast_test_manager_rejects_unknown_build_system(tmp_path: Path) -> None:
     manager = FastTestManager()
     try:
@@ -645,7 +660,7 @@ def test_runner_rejects_an_unsettled_process_tree_and_uses_classpath_file(
             timeout_seconds=5,
             owner=AttemptToken("test_tree", 1),
             environment={"JOLINK_TEST_ENV": "preserved"},
-            jvm_arguments=("-Dexample.mode=test", "-Xmx256m"),
+            jvm_arguments=("-Dexample.mode=test", "-Xmx256m", "-da", "-ea:example.selected..."),
         )
 
     assert captured.value.error_code == "TEST_PROCESS_TREE_NOT_SETTLED"
@@ -654,6 +669,8 @@ def test_runner_rejects_an_unsettled_process_tree_and_uses_classpath_file(
     assert "--classpath-file" in supervisor.observed_argv
     assert "-Dexample.mode=test" in supervisor.observed_argv
     assert "-Xmx256m" in supervisor.observed_argv
+    assert supervisor.observed_argv.index("-ea") < supervisor.observed_argv.index("-da")
+    assert supervisor.observed_argv.index("-da") < supervisor.observed_argv.index("-ea:example.selected...")
     assert supervisor.observed_argv.index("-Xmx256m") < (
         supervisor.observed_argv.index("-jar")
     )

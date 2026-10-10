@@ -52,7 +52,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest26";
+    private static final String PROBE_VERSION = "0.1.0-fasttest27";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -374,6 +374,16 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             runnerSupport.classpathElements,
             false
         );
+        TestRuntimeConfiguration runtime = TestRuntimeConfiguration.read(project, session, surefirePlugin());
+        field(out, "workingDirectory", runtime.workingDirectory, true);
+        booleanField(out, "enableAssertions", runtime.enableAssertions, true);
+        out.append(",\"environmentOverridesPrivate\":{");
+        boolean firstVariable = true;
+        for (java.util.Map.Entry<String, String> entry : runtime.environment.entrySet()) {
+            field(out, entry.getKey(), entry.getValue(), !firstVariable);
+            firstVariable = false;
+        }
+        out.append('}');
         field(
             out,
             "runnerSupportSelectedVersion",

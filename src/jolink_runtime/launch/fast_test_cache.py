@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v8"
+_SCHEMA = "jolink.fast-test-world.v9"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -120,7 +120,7 @@ class FastTestCache:
                     runner_environment=dict(world["runner_environment"]),
                     javac_executable=Path(world["javac_executable"]),
                     configuration_inputs=_paths(raw.get("configuration_files", ())),
-                    configuration_environment_names=tuple(dict.fromkeys((*raw.get("environment_inputs", ()), *world["runner_environment"]))),
+                    configuration_environment_names=tuple(raw.get("environment_inputs", ())),
                     upstream_source_roots=_paths(world.get("upstream_source_roots", ())),
                     worker_min_heap_mb=int(world["worker_min_heap_mb"]),
                     worker_max_heap_mb=int(world["worker_max_heap_mb"]),
@@ -169,11 +169,7 @@ class FastTestCache:
                 "test_framework": world.test_framework,
                 "test_working_directory": str(world.test_working_directory),
                 "test_classes_directories": values(world.test_classes_directories),
-                "runner_environment": {
-                    name: world.runner_environment[name]
-                    for name in world.configuration_environment_names
-                    if name in world.runner_environment
-                },
+                "runner_environment": dict(world.runner_environment),
                 "javac_executable": str(world.javac_executable),
                 "upstream_source_roots": values(world.upstream_source_roots),
                 "worker_min_heap_mb": world.worker_min_heap_mb,
@@ -205,7 +201,7 @@ class FastTestCache:
             "build_preferences": dict(world.build_preferences),
             "configuration_files": [str(p) for p in _world_configuration_files(world)],
             "inputs": dict(world.configuration_stamps) if world.configuration_stamps is not None else FastTestCache.input_snapshot(world),
-            "environment_inputs": _environment_inputs(world.configuration_environment_names) if world.build_system == "gradle" else {},
+            "environment_inputs": _environment_inputs(world.configuration_environment_names),
             "preparation_inputs": inputs,
             "preparation_roots": roots,
             "preparation_stamps": preparation_stamps(inputs, roots),
@@ -225,7 +221,7 @@ class FastTestCache:
             )
             if snapshot.get("preparation_stamps") != prepared:
                 return False
-            if build_system == "gradle" and snapshot.get("environment_inputs") != _environment_inputs(
+            if snapshot.get("environment_inputs") != _environment_inputs(
                 snapshot.get("environment_inputs", ())
             ):
                 return False

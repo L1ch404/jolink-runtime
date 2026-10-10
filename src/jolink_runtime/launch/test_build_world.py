@@ -32,7 +32,7 @@ class JavaTestBuildWorld:
     test_framework: str | None
     test_working_directory: Path
     test_classes_directories: tuple[Path, ...]
-    runner_environment: dict[str, str]
+    runner_environment: dict[str, str | None]  # Explicit overrides; None removes an inherited name.
     javac_executable: Path
     configuration_inputs: tuple[Path, ...]  # Persistent originals, not effective POMs or resources.
     configuration_environment_names: tuple[str, ...]

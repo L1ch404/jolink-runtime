@@ -3,6 +3,32 @@
 Fast Test不是`mvn test`或`gradle test`的包装。构建系统只负责通过Probe导出测试
 Build World；main/test编译由持久JDT workspace完成，测试由独立Runner JVM执行。
 
+## 测试进程的运行配置
+
+不需要新增MCP参数，直接沿用项目自己的配置：
+
+- Maven Surefire的`environmentVariables`、`excludedEnvironmentVariables`、
+  `workingDirectory`、`enableAssertions`由Probe读取Maven合并后的goal配置，并通过
+  Maven表达式求值器解析。父POM、Profile、execution配置使用同一条路径。
+- Gradle直接使用Probe已经导出的Test任务环境、工作目录和断言开关；不解析DSL文本，
+  不按项目名或JUnit/TestNG类型分支。
+- Runner继承当前进程环境，再应用配置的覆盖/删除；空字符串与删除是两回事。
+  Maven同名变量同时出现在排除列表和显式配置中时，显式配置优先。
+- 工作目录不存在时Runner会创建；路径是普通文件或无法创建时，返回
+  `TEST_WORKING_DIRECTORY_UNAVAILABLE`。Maven无法解析配置中的目录表达式时同样报告
+  配置错误，不创建名为`null`的目录，也不因此阻止不使用该测试配置的应用启动。
+- 默认启用Java断言；显式关闭和已有JVM断言参数可以生效，不再被Runner末尾的`-ea`
+  覆盖。这只影响Java的`assert`，不禁用JUnit/TestNG的断言方法。
+
+只持久化明确的环境覆盖与删除，不缓存整个宿主环境。重开MCP后，普通继承变量来自
+新进程；Maven已知POM/父POM/settings等配置中的`${env.NAME}`引用纳入现有缓存输入。
+运行配置变化会刷新模型，但不加入JDT编译身份；编译配置和源码未变则复用class。
+旧Test模型升为v9后首次重新Probe，不删除JDT workspace。
+
+Gradle仍沿用已有配置输入追踪；任意脚本隐式读取其他环境变量/外部文件的完整失效追踪
+未因此解决。本轮也未增加多execution/Failsafe调度、延迟`argLine`求值、并行或多fork。
+实际验收见[兼容性跟进](java-compatibility-followup-2026-09.md)。
+
 ## 状态摘要与结果详情
 
 `java_fast_test` 支持 `run`（默认）、`cancel` 和 `result`。

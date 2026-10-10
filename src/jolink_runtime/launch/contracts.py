@@ -221,11 +221,12 @@ class BuildOperationSpec:
 
     Arguments and environment values are deliberately excluded from repr so
     exception logging cannot accidentally expose imported credentials.
+    Environment values of None remove inherited variables; empty strings remain set.
     """
 
     argv: tuple[str, ...] = field(repr=False)
     cwd: Path
-    environment: Mapping[str, str] = field(
+    environment: Mapping[str, str | None] = field(
         default_factory=dict,
         repr=False,
     )

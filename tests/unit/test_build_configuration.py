@@ -13,6 +13,7 @@ from jolink_runtime.core.models import RuntimeAction
 from jolink_runtime.launch.configuration_inputs import (
     build_configuration_stamps,
     maven_configuration_files,
+    maven_environment_references,
 )
 from jolink_runtime.launch.contracts import JvmLaunchPlan, LaunchIntent
 from jolink_runtime.launch.fast_test_cache import FastTestCache
@@ -253,6 +254,36 @@ def test_new_maven_configuration_is_detected(model, kind, name):
     path.parent.mkdir()
     path.write_text("new configuration")
     assert model.load(kind) is None
+
+
+@pytest.mark.parametrize("system", ["maven", "gradle"])
+def test_test_cache_keeps_explicit_environment_not_inherited_process_state(model, monkeypatch, system):
+    monkeypatch.setenv("JOLINK_TEST_INPUT", "first")
+    monkeypatch.setenv("JOLINK_UNRELATED", "inherited-private-value")
+    overrides = {"VALUE": "configured", "REMOVE": None, "EMPTY": ""}
+    model.world = replace(model.world, build_system=system, runner_environment=overrides,
+                          configuration_environment_names=("JOLINK_TEST_INPUT",))
+    model.save("test")
+    world, _ = model.load("test")
+    assert world.runner_environment == overrides
+    assert world.configuration_environment_names == ("JOLINK_TEST_INPUT",)
+    cached = (model.fast._directory(model.root, system) / "build-world.json").read_text()
+    assert "inherited-private-value" not in cached
+    monkeypatch.setenv("JOLINK_UNRELATED", "second-parent")
+    assert model.load("test") is not None
+    monkeypatch.setenv("JOLINK_TEST_INPUT", "second")
+    assert model.load("test") is None
+
+
+def test_maven_environment_references_include_parent_and_settings_but_not_sources(model):
+    parent = model.root.parent / "pom.xml"
+    parent.write_text("<project><properties><value>${env.FROM_PARENT}</value></properties></project>")
+    model.pom.write_text("<project><parent/><properties><cwd>${env.WORK_DIR}</cwd></properties></project>")
+    settings = model.root / "settings.xml"
+    settings.write_text("<settings><value>${env.FROM_SETTINGS}</value></settings>")
+    (model.root / "src/main/java/App.java").write_text("// ${env.NOT_CONFIG}")
+    paths = maven_configuration_files(model.root, (settings,))
+    assert set(maven_environment_references(paths)) == {"FROM_PARENT", "WORK_DIR", "FROM_SETTINGS"}
 
 
 @pytest.mark.parametrize("kind", ["launch", "test"])

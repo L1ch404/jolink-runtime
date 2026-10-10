@@ -106,12 +106,11 @@ class ProcessSupervisor:
                 spec.output_capture.parent.mkdir(parents=True, exist_ok=True)
                 output_file = spec.output_capture.open("ab")
             environment = os.environ.copy()
-            environment.update(
-                {
-                    str(key): str(value)
-                    for key, value in spec.environment.items()
-                }
-            )
+            for key, value in spec.environment.items():
+                if value is None:
+                    environment.pop(str(key), None)
+                else:
+                    environment[str(key)] = str(value)
             popen_kwargs: dict[str, Any] = {
                 "cwd": str(spec.cwd),
                 "env": environment,
