@@ -1,12 +1,68 @@
 # joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-10-11，优先于下方历史记录）
+## 最新汇总（2026-10-12，优先于下方历史记录）
 
 `eec9429`的0.1.0a8已经发布。源码过滤/WAR入口`1d3c772`与Reactor子模块入口
-`9dead95`均已推送main。资源复用修复已提交为`59360e4`，尚未推送；未发布新PyPI版本。
-测试进程环境、工作目录和断言配置已提交为`d7fd335`，尚未推送。
-U4已提交为`edc8963`，U6为`885739e`，均尚未推送。测试执行配置统一已完成用户review，纳入本次提交，尚未推送。
+`9dead95`均已推送main。资源复用修复已提交为`59360e4`；未发布新PyPI版本。
+测试进程环境、工作目录和断言配置已提交为`d7fd335`。
+U4已提交为`edc8963`，U6为`885739e`，测试执行配置统一为`4c9e006`。
 同文件多goal覆盖的资源复用边界及其他已暂缓事项没有一并改动。
+
+### U2：Guava泛型错误已定位，用户决定暂缓修复（2026-10-12更新）
+
+本轮以`4c9e006`重新验证Guava31.1固定SHA
+`0a17f4a429323589396c38d8ce75ca058faa6c64`，使用两份没有target的独立副本：
+
+- 原生Maven3.9.11＋Zulu JDK8编译成功；`StringsTest`、`ImmutableListTest`
+  合计4274项通过。`-DfailIfNoTests=false`仅用于让没有所选测试的上游模块继续；
+  没有改POM/Java源码、关闭项目profile或跳过目标测试。
+- 当前源码启动的真实stdio MCP仍返回`JDT_TEST_FULL_COMPILE_FAILED`，14条错误，
+  不是runOrder、Failsafe配置、源码目录或Processor配置的旧拦截。
+- 同一批原源码直接交给产品同版本独立ECJ3.46，不经过joLink Worker/Maven Probe：
+  Guava main报3条；`TypeTokenSubtypeTest`单文件使用原生Maven编译的依赖后报11条。
+  文件、行号、错误类型与MCP全部对应，消除了“上游失败导致test误报”的猜测。
+
+| 错误位置 | 条数 | 已隔离的形态 | 独立编译结果 |
+|---|---:|---|---|
+| TypeTokenSubtypeTest | 11 | 隐式/显式泛型上界，含递归Enum、嵌套和交叉上界 | 原文件ECJ3.25/3.46/3.46.100均报11条；代表性最小样例javac8/17通过 |
+| ImmutableClassToInstanceMap | 1 | 捕获通配符的Map向泛型子类型强转 | 不依赖Guava的最小样例javac8/17通过，ECJ3.25/3.46/3.46.100拒绝 |
+| MutableClassToInstanceMap | 1 | Class通配符捕获参与泛型方法推断 | 同上；不是缺依赖或Processor没有执行 |
+| ClosingFuture | 1 | 多层泛型继承、Iterable/varargs重载和条件表达式共同参与推断 | 原文件及无第三方依赖样例：javac8/17、ECJ3.25通过，ECJ3.46/3.46.100拒绝 |
+
+最小样例只依赖JDK，无APT、Lombok或项目注解处理器。ClosingFuture对应样例也
+不需要任何注解，因此不能归因于Nullable/空值分析。另有较简单的重载调用正例，
+所有被测编译器均通过，不能泛化成“ECJ不支持泛型或条件表达式”。
+
+ECJ以Java8 source/target和JDK8系统库运行；javac17使用`--release 8`。
+3.46.100只下载到本地诊断目录测试，没有替换产品JAR、升级Worker或修改锁文件。
+旧版本仍有13条、新版本14条；小版本替换也没有消除本轮复现。
+关闭warning（`-warn:none`）仍报硬类型错误，不能靠关闭诊断来修复。
+
+**结论：这组已观察到的错误已定位为javac/ECJ编译行为差异，而非joLink输入映射缺口。**
+这不宣称所有源码一定符合JLS，也不代表Guava已经受支持。真正修通要进一步处理
+ECJ的捕获转换、上界/类型推断；不是加一个配置字段。尚未定位到可以直接采用、
+覆盖上述四类的上游补丁；不能把检索到的其他泛型issue当作本问题已经修复。
+本轮不屏蔽错误、不改用户源码、不选择性排除失败文件、不恢复direct-javac回退。
+用户本轮决定先保留记录和回归，暂不进入ECJ修复/维护。
+其中13条在旧ECJ3.25就存在，另1条是已复现的新旧版本兼容性退化；
+未逐项判定哪一方符合JLS，不能把全部14条都断言为ECJ违反规范。
+根因不在joLink接线，并不意味着用户不受影响：它仍是joLink的产品兼容性缺口。
+
+证据资产：
+
+- [四个最小复现及一个正例](../tests/fixtures/compiler_compatibility/)。
+- [编译器对照与真实MCP回归](../tests/e2e/test_guava_compiler_compatibility.py)。
+  使用`JOLINK_RUN_MCP_JAVA_E2E=1`与`JOLINK_TEST_JAVA8_HOME`运行最小样例；
+  设置`JOLINK_TEST_GUAVA`为上述固定checkout后，运行原生Maven对照及冷MCP。
+  镜像可通过已有`JOLINK_TEST_MAVEN_SETTINGS`指定。
+- 已知差异用strict XFAIL跟踪，正常支持断言仍要求编译/测试通过；未来编译器修好
+  会产生XPASS提示移除标记。其他异常、原生Maven失败、非本轮诊断不会被标成预期失败。
+  XFAIL不是PASS，也不计为Guava兼容性通过。
+
+本机实际运行：新增用例1 passed、5 xfailed（四个最小差异＋真实Guava MCP）；
+已有class兼容比较单测3 passed；定向lint、compileall和diff检查通过。
+原始checkout及两份运行副本的受版本控制文件均未修改。本轮仅新增证据和测试，
+产品代码、Worker/JDK资产没有变化；本轮记录和回归已经用户review批准提交。
 
 ### 测试执行配置统一：jsoup的Failsafe误拦截（2026-10-11，已review）
 
@@ -395,7 +451,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 
 | 编号 | 当前状态 / 问题 | 已有证据与边界 | 后续落点 |
 |---|---|---|---|
-| U2 | 待定位：Guava 泛型错误 | JDT3.46在原选择器上仍有14条诊断（旧版本13条）；未拆清源码兼容差异与编译输入问题。这不是14个独立根因 | 沿固定Guava样本缩小表达式，先对齐原生构建与JDT输入，再决定修输入映射还是处理编译器差异 |
+| U2 | 已定位、用户暂缓：Guava泛型兼容 | 原生Maven4274项通过；独立ECJ复现与MCP相同的14条诊断，分四类并有不依赖Guava的最小样例。ECJ3.25仍报13条，3.46.100仍报14条 | 不是Probe/源码映射接线；需处理ECJ类型推断/捕获转换。先保存最小复现及strict XFAIL，不改产品或引入javac回退 |
 | U4 | 已接线、已review：Error Prone检查跳过 | Maven/Gradle共用参数分类，保留真正APT，启动/测试明确说明检查未执行；TestNG asserts的70项所选测试通过。Mockito/TestNG core已越过参数拦截，后续问题见U13/U14 | 不执行javac检查本身；正式构建/CI继续负责。其他未知插件未一概忽略 |
 | U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |
 | U6 | 已修复、已review：MyBatis准备阶段阻塞 | 默认配置下依执行映射跳过检查/重写步骤，main8/test17、1316源码FULL及87项所选测试通过，增量/错误恢复/重开通过；没有关闭profile | whitespace明确execute仍会使Java变化额外Probe；仅保留为准备开销优化，不把它混成原阻塞未解决 |
@@ -406,7 +462,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。
-后续可讨论U13的构建步骤、U14的语言任务、U2的编译兼容性。
+后续可讨论U13的构建步骤、U14的语言任务，以及已缩小复现的U2编译器修复范围。
 必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
 事项继续保留，不因这次更新文档就自动开展实现。
 
