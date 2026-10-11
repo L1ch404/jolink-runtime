@@ -223,6 +223,9 @@ JDT Worker、Probe模型及编译缓存；工具改名不改变缓存身份。�
   真正的APT、Processor选择和`-A`参数保持原样；不是删除整个Processor Path。
   自动改源码的patch模式、argfile和未知javac插件没有因此获得支持。详见
   [U4接线与实测](java-compatibility-followup-2026-09.md)。
+- Maven准备阶段支持有效POM/插件JAR的m2e执行映射，被忽略的步骤返回
+  `skipped_build_steps`；必要生成器和资源处理保留。MyBatis默认profile的87项所选
+  测试已通过，未要求关闭format/license；见[执行映射与准备边界](maven-source-preparation.zh-CN.md)。
 - Runner支持显式Class或Class#method选择；
 - `-Xpkginfo:always` 已映射为 JDT 默认输出行为：空包说明、SOURCE/RUNTIME 注解均有
   package-info.class，并验证了增量修改、删除、恢复；没有统一忽略其他 javac 参数；

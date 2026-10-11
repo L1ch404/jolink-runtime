@@ -3,6 +3,10 @@
 2026-09-29更新：默认main/test资源处理已纳入准备阶段，见
 [执行环境与资源准备](fast-test-environment-resources.zh-CN.md)。下方生成器实测为历史记录。
 
+2026-10-10更新：准备阶段读取有效POM及插件JAR自带的m2e执行映射，明确ignore的
+步骤不运行；未匹配的生成步骤保持原流程。MyBatis默认配置已通过，详见
+[U6与实际边界](java-compatibility-followup-2026-09.md)。
+
 ## 流程
 
 ```text
@@ -23,16 +27,23 @@
 从 Maven 自己计算的执行计划取得 phase、goal、execution 配置，保持 Maven 顺序。
 使用 Maven 保留的 POM 声明位置识别执行项（包含继承/合并后的信息），而不是把
 执行计划里自动注入的 packaging 默认绑定当成用户声明。现在除默认资源处理外，
-继续只执行目标及所需上游模块**显式声明**在这些阶段的执行项：
+继续选择目标及所需上游模块**显式声明**在这些阶段的执行项，再应用执行映射：
 
 - main：generate-sources、process-sources、generate-resources、process-resources；
 - test：另加 generate-test-sources、process-test-sources、generate-test-resources、process-test-resources。
 
 默认resources/testResources已经启用，compile、test、package、verify等阶段仍不执行。
 这样既能运行生成器/资源处理，也能取得 build-helper 等目录注册的真实结果。
-需要 fork 生命周期的 goal 当前明确报告失败，不偷偷执行或忽略其前置链路。
+声明ignore的goal记录为`skipped_build_steps`，不执行其fork链路；仍需执行且要求
+fork生命周期的goal继续明确报告失败，不把所有fork或未知生成器一律跳过。
 
-生成文件写到插件本来配置的目录（通常为项目 target 下），不是去改用户源码。
+映射优先级是有效POM中的m2e配置、插件JAR中的m2e元数据、joLink默认映射。
+支持插件坐标、版本范围、goal和参数匹配；明确execute可以覆盖ignore。当前默认映射
+只补充OpenRewrite的重写/检查goal，其余使用已有声明或原执行流程。不激活额外profile，
+不运行Eclipse configurator，不宣称已复刻m2e的全部映射来源。
+
+生成器按项目配置输出文件，通常位于target下；实际写入范围仍由执行的插件决定，
+明确execute的源码整理插件仍可能修改源码，并非所有插件都被限制在target内。
 最终 Java 编译仍由 JDT 完成。生成产物如何清理由原插件负责，本轮不额外增加
 文件删除、回滚或发布机制。
 
@@ -49,7 +60,8 @@
   父目录只作为上下文，不递归扫描。生成器若仅用整个项目根隐式寻找输入，目前还
   不能保证自动检测完整，需要单独补充输入表达，不能将其计为已完整支持。
 
-Maven Probe 为 `0.1.0-fasttest23`。模型缓存更新一次，以导入旧缓存没有的准备信息；
+当前Maven Probe为`0.1.0-fasttest28`，Test模型v10、启动模型v7。旧模型更新一次，
+以应用执行映射并保存跳过说明；
 编译配置未变化时仍可复用现有 JDT workspace。没有新增 MCP action 或独立缓存服务。
 Gradle 生成任务不在本轮接入范围。
 

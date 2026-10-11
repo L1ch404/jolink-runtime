@@ -739,6 +739,7 @@ class JdtBuildWorldPlan:
     system_entries: tuple[Path, ...] = ()
     modules: tuple[dict[str, Any], ...] = ()
     skipped_compiler_checks: tuple[str, ...] = ()
+    skipped_build_steps: tuple[str, ...] = ()
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = field(default_factory=dict)
     preparation_inputs: tuple[Path, ...] = ()

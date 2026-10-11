@@ -367,6 +367,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "testResourceDirectories", resourceDirectories(true), true);
         stringList(out, "preparedResourceDirectories", contextPaths(ResourcePreparation.MAIN), true);
         stringList(out, "preparedTestResourceDirectories", contextPaths(ResourcePreparation.TEST), true);
+        stringList(out, "skippedPreparationExecutions", contextPaths(SourcePreparation.SKIPPED), true);
         out.append(",\"testRuntime\":{");
         stringList(
             out,

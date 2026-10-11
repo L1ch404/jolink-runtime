@@ -173,6 +173,7 @@ def test_check_metadata_does_not_change_main_or_test_compilation_identity():
         {
             **before[0],
             "skipped_compiler_checks": ["Error Prone"],
+            "skipped_build_steps": ["example:plugin:check@quality"],
             "test_compiler": {
                 "source_level": 11,
                 "skipped_compiler_checks": ["Error Prone"],

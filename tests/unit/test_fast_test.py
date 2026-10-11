@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import zipfile
+import io
 import hashlib
 import threading
 import time
@@ -61,6 +62,13 @@ def test_fast_test_assets_are_locked_java8_bytecode() -> None:
     assert majors == {52}
     assert assets.java_minimum == 8
     assert assets.runner_main_class.endswith(".TestRunner")
+
+
+def test_probe_packages_its_development_preparation_mapping():
+    resource = "META-INF/jolink/preparation-mapping.xml"
+    source = Path(__file__).resolve().parents[2] / "java/maven-probe/src/main/resources" / resource
+    with zipfile.ZipFile(io.BytesIO(ProductMavenProbe.load().jar)) as archive:
+        assert archive.read(resource).replace(b"\r\n", b"\n") == source.read_bytes().replace(b"\r\n", b"\n")
 
 
 def test_product_probe_creates_private_mirror_safe_settings(

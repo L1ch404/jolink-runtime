@@ -22,7 +22,7 @@ from .configuration_inputs import build_configuration_stamps
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v6"
+_SCHEMA = "jolink.project-launch-cache.v7"
 
 
 def _path(value: Any) -> Path:
@@ -208,6 +208,7 @@ class ProjectLaunchCache:
                 javac_executable=_path(plan_raw["javac_executable"]),
                 method_parameters=bool(plan_raw["method_parameters"]),
                 skipped_compiler_checks=tuple(plan_raw.get("skipped_compiler_checks", ())),
+                skipped_build_steps=tuple(plan_raw.get("skipped_build_steps", ())),
                 freshness_entries=_paths(plan_raw["freshness_entries"]),
                 resource_roots=resource_roots,
                 resource_fingerprint=str(plan_raw.get("resource_fingerprint", "")),
@@ -329,6 +330,7 @@ class ProjectLaunchCache:
                 "javac_executable": str(jdt_plan.javac_executable),
                 "method_parameters": jdt_plan.method_parameters,
                 "skipped_compiler_checks": jdt_plan.skipped_compiler_checks,
+                "skipped_build_steps": jdt_plan.skipped_build_steps,
                 "freshness_entries": [
                     str(path) for path in jdt_plan.freshness_entries
                 ],

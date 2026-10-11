@@ -20,6 +20,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 final class SourcePreparation {
     static final String INPUTS = "jolink.preparation.inputs";
     static final String EXECUTIONS = "jolink.preparation.executions";
+    static final String SKIPPED = "jolink.preparation.skipped";
     static final String ROOTS = "jolink.preparation.roots";
     private static final Set<String> MAIN = new HashSet<>(Arrays.asList(
         "generate-sources", "process-sources", "generate-resources", "process-resources"));
@@ -38,7 +39,9 @@ final class SourcePreparation {
         Set<String> inputs = new LinkedHashSet<>();
         Set<String> registrations = new LinkedHashSet<>();
         List<String> executions = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
         try (ResourcePreparation resources = new ResourcePreparation()) {
+            PreparationMapping mapping = new PreparationMapping();
             session.setCurrentProject(project);
             List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-resources" : "process-resources"));
             for (MojoExecution execution : plans.calculateExecutionPlan(session, project, tasks, false).getMojoExecutions()) {
@@ -46,6 +49,13 @@ final class SourcePreparation {
                 boolean resource = ResourcePreparation.handles(execution);
                 if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase))) || !(resource || isDeclared(project, execution))) continue;
                 plans.setupMojoExecution(session, project, execution);
+                String identity = execution.getGroupId() + ":" + execution.getArtifactId() + ":" + execution.getGoal() + "@" + execution.getExecutionId();
+                String skipReason = mapping.skipReason(session, project, execution);
+                if (skipReason != null) {
+                    skipped.add(identity);
+                    log.info("joLink skipped preparation: " + identity + " (" + skipReason + ")");
+                    continue;
+                }
                 // A fork may re-enter compile/test. Do not silently run or omit
                 // it while promising that business compilation stays in JDT.
                 if (!execution.getForkedExecutions().isEmpty())
@@ -53,7 +63,6 @@ final class SourcePreparation {
                 Set<String> paths = new LinkedHashSet<>();
                 Set<String> rootsBefore = sourceRoots(project);
                 collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths);
-                String identity = execution.getGroupId() + ":" + execution.getArtifactId() + ":" + execution.getGoal() + "@" + execution.getExecutionId();
                 log.info("joLink source preparation: " + identity + " (" + phase + ")");
                 if (resource) resources.execute(session, project, execution, plugins);
                 else plugins.executeMojo(session, execution);
@@ -84,6 +93,7 @@ final class SourcePreparation {
             Collections.sort(rootPaths);
             project.setContextValue(INPUTS, inputPaths);
             project.setContextValue(EXECUTIONS, executions);
+            project.setContextValue(SKIPPED, skipped);
             project.setContextValue(ROOTS, rootPaths);
         } catch (MojoExecutionException error) {
             throw error;

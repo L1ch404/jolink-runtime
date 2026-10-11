@@ -52,7 +52,7 @@ from .jdt_compile_session import JdtBuildWorldPlan
 from .jdt_modules import compilation_modules
 from .compiler_profile import skipped_compiler_checks, compiler_check_warnings
 from .maven_probe import ProductMavenProbe
-from .maven_module_world import load_module_worlds
+from .maven_module_world import load_module_worlds, skipped_preparation_steps, preparation_warnings
 from .maven_reactor import maven_build_root
 from .project_launch_cache import (
     ProjectLaunchCache,
@@ -292,6 +292,7 @@ class ProjectLaunchPipeline:
                     "Reused the persisted Probe Build World; the build tool "
                     "was not invoked.",
                     *compiler_check_warnings(cached.jdt_plan.skipped_compiler_checks),
+                    *preparation_warnings(cached.jdt_plan.skipped_build_steps),
                 ),
                 attempt_directory=attempt_directory,
                 jdt_build_world_plan=cached.jdt_plan,
@@ -426,6 +427,7 @@ class ProjectLaunchPipeline:
             worker_min_heap_mb=max(m["worker_min_heap_mb"] for m in modules),
             worker_max_heap_mb=max(m["worker_max_heap_mb"] for m in modules),
             skipped_compiler_checks=skipped_compiler_checks(modules),
+            skipped_build_steps=skipped_preparation_steps(modules),
             modules=modules if len(modules) > 1 or target.get("source_patterns") else ())
         runtime_jdk = self._select_runtime_java(
             context, intent, preferences, plan, build_jdk, log,
@@ -442,7 +444,8 @@ class ProjectLaunchPipeline:
             generation_input_roots=(Path(target["output_directory"]),), generation_input_manifest={},
             resource_source_roots=resources, resource_input_manifest={},
             build_world_inputs=plan.configuration_inputs, jvm_plan=jvm, command=materialized,
-            warnings=compiler_check_warnings(plan.skipped_compiler_checks), attempt_directory=directory, jdt_build_world_plan=plan, launch_intent=intent)
+            warnings=(*compiler_check_warnings(plan.skipped_compiler_checks), *preparation_warnings(plan.skipped_build_steps)),
+            attempt_directory=directory, jdt_build_world_plan=plan, launch_intent=intent)
 
     @staticmethod
     def _stabilize(prepared: PreparedProjectLaunch) -> PreparedProjectLaunch:

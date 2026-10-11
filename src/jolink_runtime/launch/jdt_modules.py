@@ -27,7 +27,7 @@ def compilation_modules(modules):
     """Preparation bookkeeping is not a change to JDT's compiler configuration."""
     metadata = {
         "preparation_inputs", "preparation_roots", "preparation_executions",
-        "resource_roots", "test_resource_roots", "skipped_compiler_checks",
+        "resource_roots", "test_resource_roots", "skipped_compiler_checks", "skipped_build_steps",
     }
     return tuple(
         {

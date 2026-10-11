@@ -50,6 +50,7 @@ class JavaTestBuildWorld:
     configuration_stamps: dict[str, str] | None = None
     build_preferences: dict[str, object] = field(default_factory=dict)
     skipped_compiler_checks: tuple[str, ...] = ()
+    skipped_build_steps: tuple[str, ...] = ()
 
 
 class TestBuildWorldBootstrap(Protocol):

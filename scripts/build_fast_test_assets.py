@@ -118,6 +118,7 @@ def build_probe(java_home: Path, maven: Path) -> tuple[bytes, bytes, str]:
     subprocess.run(
         [
             *base,
+            "org.apache.maven.plugins:maven-resources-plugin:3.3.1:resources",
             "org.apache.maven.plugins:maven-compiler-plugin:3.11.0:compile",
             "org.apache.maven.plugins:maven-plugin-plugin:3.11.0:descriptor",
         ],
@@ -135,7 +136,7 @@ def build_probe(java_home: Path, maven: Path) -> tuple[bytes, bytes, str]:
         env=environment,
         check=True,
     )
-    jar = target / "jolink-maven-probe-0.1.0-fasttest27.jar"
+    jar = target / "jolink-maven-probe-0.1.0-fasttest28.jar"
     jar_bytes = jar.read_bytes()
     if class_majors(jar_bytes) != {52}:
         raise RuntimeError("Maven Probe is not pure Java 8 bytecode")
@@ -180,7 +181,7 @@ def main() -> int:
             "schema": "jolink.maven-build-world-probe.v2",
             "group_id": "io.jolink",
             "artifact_id": "jolink-maven-probe",
-            "version": "0.1.0-fasttest27",
+            "version": "0.1.0-fasttest28",
             "sha256": sha256(probe),
             "pom_sha256": sha256(probe_pom),
             "implementation_id": implementation_id,

@@ -16,6 +16,17 @@ from .maven_compile_scope import (
 from .processor_path import jdt_processor_paths, processor_path, processor_settings
 
 
+def skipped_preparation_steps(modules) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(step for module in modules for step in module.get("skipped_build_steps", ())))
+
+
+def preparation_warnings(steps) -> tuple[str, ...]:
+    if not steps:
+        return ()
+    return ("Development preparation skipped build steps: " + ", ".join(steps)
+            + ". Run the native build for these steps.",)
+
+
 def load_module_worlds(
     output: Path, target: Path, build_jdk, *, tests: bool
 ) -> tuple[dict, ...]:
@@ -112,6 +123,7 @@ def load_module_worlds(
                 "preparation_inputs": snapshot.get("preparationInputs", []),
                 "preparation_roots": snapshot.get("preparationRoots", []),
                 "preparation_executions": snapshot.get("preparationExecutions", []),
+                "skipped_build_steps": snapshot.get("skippedPreparationExecutions", []),
                 **processor_settings(processing),
             }
         )

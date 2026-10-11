@@ -210,13 +210,14 @@ def test_no_change_reopens_and_application_files_never_invalidate_or_get_scanned
 
 @pytest.mark.parametrize("kind", ["launch", "test"])
 @pytest.mark.parametrize("checks", [(), ("Error Prone",)])
-def test_compiler_check_notice_survives_cache_reopen(model, kind, checks):
-    model.plan = replace(model.plan, skipped_compiler_checks=checks)
-    model.world = replace(model.world, skipped_compiler_checks=checks)
+@pytest.mark.parametrize("field", ["skipped_compiler_checks", "skipped_build_steps"])
+def test_compiler_check_notice_survives_cache_reopen(model, kind, checks, field):
+    model.plan = replace(model.plan, **{field: checks})
+    model.world = replace(model.world, **{field: checks})
     model.save(kind)
     restored = model.load(kind)
     world = restored[0] if kind == "test" else restored.jdt_plan
-    assert world.skipped_compiler_checks == checks
+    assert getattr(world, field) == checks
 
 
 def test_pre_notice_launch_cache_refreshes_model_without_removing_outputs(model):

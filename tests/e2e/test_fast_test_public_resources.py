@@ -14,6 +14,11 @@ from java_support import open_mcp_session, require_real_mcp_java_e2e, temporary_
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("project_key,module,selectors,count,java_key", [
+    ("JOLINK_TEST_MYBATIS", ".", [
+        "org.apache.ibatis.reflection.MetaObjectTest",
+        "org.apache.ibatis.session.SqlSessionTest",
+        "org.apache.ibatis.submitted.record_type.RecordTypeTest",
+    ], 87, "JOLINK_TEST_JAVA17_HOME"),
     ("JOLINK_TEST_DIFF_UTILS", "java-diff-utils", ["com.github.difflib.text.DiffRowGeneratorTest"], 41, "JOLINK_TEST_JAVA8_HOME"),
     ("JOLINK_TEST_DIFF_UTILS", "java-diff-utils-jgit", [
         "com.github.difflib.algorithm.jgit.HistogramDiffTest",
@@ -49,22 +54,49 @@ def test_cold_public_project_explicit_environment(tmp_path, project_key, module,
     for key in ("maven_home", "maven_settings"):
         if value := os.environ.get("JOLINK_TEST_" + key.upper()):
             options[key] = value
-    env = {**os.environ, "JAVA_HOME": os.environ["JOLINK_TEST_JAVA8_HOME"], "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    env = {**os.environ, "JAVA_HOME": os.environ["JOLINK_TEST_JAVA8_HOME"], "XDG_CACHE_HOME": str(tmp_path / "cache"), "JOLINK_LOG_LEVEL": "INFO"}
 
     async def scenario():
-        for _ in range(2):
+        for cycle in range(2):
             with temporary_stderr() as log:
                 async with open_mcp_session(log, environment=env) as session:
-                    for iteration in range(2):
+                    async def run_selected():
                         result = dict((await session.call_tool("java_fast_test", options)).structuredContent)
                         with anyio.fail_after(300):
                             while result.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
                                 await anyio.sleep(.5)
                                 result = dict((await session.call_tool("java_fast_test", {"action": "result", "test_run_id": result["test_run_id"]})).structuredContent)
                         details = dict((await session.call_tool("java_fast_test", {"action": "result", "test_run_id": result["test_run_id"]})).structuredContent)
+                        return result, details
+
+                    for iteration in range(2):
+                        result, details = await run_selected()
                         assert details.get("passed") is True and details["tests"] == count, details
+                        if project_key == "JOLINK_TEST_MYBATIS":
+                            assert any(":rewrite-maven-plugin:run@" in step for step in details.get("skipped_build_steps", ())), details
                         if iteration:
                             assert "bootstrap_ms" not in result and result["compiled_source_count"] == 0, result
+                    if project_key == "JOLINK_TEST_MYBATIS" and not cycle:
+                        test = project / "src/test/java/org/apache/ibatis/submitted/record_type/RecordTypeTest.java"
+                        original = test.read_text()
+
+                        try:
+                            test.write_text(original.replace('assertEquals("Val1!",', 'assertEquals("wrong-value",', 1))
+                            _, failed = await run_selected()
+                            assert failed.get("failed_test_count") == 1
+                            test.write_text(original + "\ninvalid java source\n")
+                            _, failed = await run_selected()
+                            assert failed.get("error_count", 0) > 0 and not failed.get("passed"), failed
+                        finally:
+                            test.write_text(original)
+                        _, recovered = await run_selected()
+                        assert recovered.get("passed") is True and recovered["tests"] == count, recovered
+                        build_lines = [line for path in (tmp_path / "cache").rglob("mcp.log")
+                                       for line in path.read_text().splitlines() if "jdt.build.finished" in line]
+                        assert "actual=FULL" in build_lines[0]
+                        assert len(build_lines[1:]) == 3
+                        assert all("actual=INCREMENTAL" in line and "compiled_sources=1 " in line
+                                   for line in build_lines[1:]), build_lines
         if module == "java-diff-utils":
             assert (project / "target/test-classes/mocks/issue15_1.txt").is_file()
     anyio.run(scenario)

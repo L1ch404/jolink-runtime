@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- joLink defaults for development preparation. Project/plugin m2e declarations win.
+     Compile the current workspace; do not apply OpenRewrite recipes automatically.
+     https://docs.openrewrite.org/reference/rewrite-maven-plugin -->
+<lifecycleMappingMetadata>
+  <pluginExecutions>
+    <pluginExecution>
+      <pluginExecutionFilter>
+        <groupId>org.openrewrite.maven</groupId>
+        <artifactId>rewrite-maven-plugin</artifactId>
+        <versionRange>[0,)</versionRange>
+        <goals>
+          <goal>run</goal>
+          <goal>runNoFork</goal>
+          <goal>dryRun</goal>
+          <goal>dryRunNoFork</goal>
+        </goals>
+      </pluginExecutionFilter>
+      <action><ignore/></action>
+    </pluginExecution>
+  </pluginExecutions>
+</lifecycleMappingMetadata>

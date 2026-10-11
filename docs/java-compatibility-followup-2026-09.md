@@ -1,12 +1,67 @@
 # joLink 产品边界与兼容性跟进
 
-## 最新汇总（2026-10-10，优先于下方历史记录）
+## 最新汇总（2026-10-11，优先于下方历史记录）
 
 `eec9429`的0.1.0a8已经发布。源码过滤/WAR入口`1d3c772`与Reactor子模块入口
 `9dead95`均已推送main。资源复用修复已提交为`59360e4`，尚未推送；未发布新PyPI版本。
 测试进程环境、工作目录和断言配置已提交为`d7fd335`，尚未推送。
-本轮U4的检查跳过接线及真实项目回归已完成用户review，纳入本次提交，尚未推送。
+U4已提交为`edc8963`，尚未推送。U6准备步骤映射已完成用户review，纳入本次提交，尚未推送。
 同文件多goal覆盖的资源复用边界及其他已暂缓事项没有一并改动。
+
+### U6：读取已有执行映射，保留必要生成步骤（2026-10-10实测，2026-10-11已review）
+
+已用`edc8963`原入口再次复现：MyBatis3.5.19固定SHA`ee0d4f4`默认配置在准备阶段
+先执行格式化/排序，再因OpenRewrite的fork生命周期失败。没有把首次离线仓库ID不匹配
+的依赖错误当作该复现；临时settings使用已缓存仓库ID后取得实际插件失败。
+
+当前实现按执行项读取映射，顺序是：有效POM中的m2e pluginManagement配置 →
+实际插件JAR内的`META-INF/m2e/lifecycle-mapping-metadata.xml` → joLink默认映射。
+匹配group/artifact/version range/goal及参数条件，不按项目名、execution名或`format`
+等goal名称猜用途。父POM/Profile由Maven合并；不设置`m2e.version`激活额外Eclipse
+profile，不修改用户POM、插件版本或source/target。
+
+- 明确`ignore`才跳过；项目的`execute`可覆盖插件默认`ignore`，未匹配的生成步骤
+  保持现有执行。默认resources/testResources与必要生成器仍运行。
+- formatter、impsort、license使用它们自己发布的ignore声明。旧OpenRewrite5.47.1
+  没有该声明，因此增加一份joLink默认XML映射，仅覆盖run/runNoFork/dryRun/dryRunNoFork；
+  这是明确的产品默认规则，不宣称是自动识别任意Mojo用途或Eclipse自带的规则。
+- whitespace插件实际声明execute，仍执行。不能把这轮描述成“所有格式化任务都不跑”。
+- Fast Test结果和摘要返回`skipped_build_steps`；launch warnings说明跳过的步骤，
+  完整原因记在Maven准备日志。信息随现有缓存持久化，不新增action、用户参数或环境开关。
+- Probe升级fasttest28，仍为Java8字节码、无新增运行依赖。Fast Test模型v10、启动模型
+  v7让旧模型重新Probe一次以应用新策略；不删除JDT缓存，说明字段不参与编译身份。
+  普通缓存命中不再读取插件JAR，跳过项的源码目录也不新加入准备输入扫描。
+
+实际结果（本机macOS）：
+
+- MyBatis原POM/默认profile/原依赖：JDT FULL编译1316份源码、0 errors，所选87项
+  全部通过。未使用`-P!format,!license`或`-Dlicense.skip=true`，原始checkout保持clean。
+- 无改动热复用、跨MCP重开通过；临时修改一个测试断言产生预期1项失败，插入语法错误
+  返回编译诊断，恢复后87项再次通过。三次JDT实际均INCREMENTAL、1个编译单元，
+  Worker编译约0.5秒；这些不是整次测试耗时，也不是公司项目性能保证。
+- 通用自定义插件：同一个goal既用于生成也用于检查，参数条件只跳过检查；未知生成
+  goal继续执行。项目/Profile/父POM三组真实MCP验证版本/坐标/goal不匹配、execute覆盖、
+  fork跳过与未跳过、输入变化、错误恢复、缓存重开及HTTP启动，均通过。
+- Maven3.3.9＋JDK8同样三组通过；Maven3.9.11＋JDK17通过。独立安装wheel后，上述
+  三组和MyBatis冷/热/重开四组通过；MyBatis增量/错误恢复也用安装包重新验证通过。
+- 常规995 passed。已有ANTLR单模块/Reactor、模板生成3组通过；资源复用4组通过，
+  已记录的同文件多goal覆盖仍为1个xfail。Maven模块及main/test配置回归13组通过，
+  另3组Gradle scope回归通过。wheel/sdist、定向lint、compileall、diff检查通过。
+
+**保留的性能点**：MyBatis的whitespace execute把整个`src`声明为准备输入，实际
+改Java时会再Probe一次，然后复用JDT状态增量编译；无改动不会反复Probe。本轮保留插件
+明确的execute语义，不把它悄悄改成ignore。这是后续准备开销优化，不再是U6原来的阻塞。
+
+本轮仅接入上述XML执行映射，不复制完整m2e：外部映射包、POM处理指令、Eclipse
+configurator代码/工作区设置等未接入；非ignore动作继续原生准备路径，不等于执行了
+对应Eclipse configurator。仍需要fork且未声明忽略的生成链继续报原错误，没有一概跳过。
+
+回归：[通用执行映射MCP](../tests/e2e/test_maven_preparation_mapping.py)、
+[MyBatis公开项目MCP](../tests/e2e/test_fast_test_public_resources.py)、
+[既有生成器](../tests/e2e/test_maven_source_preparation.py)。
+参考：[m2e映射说明](https://eclipse.dev/m2e/documentation/m2e-execution-not-covered.html)、
+[已核对的m2e源码](https://github.com/eclipse-m2e/m2e-core/blob/8407b31375c90431e17cafefc84efcf53c5c25a8/org.eclipse.m2e.core/src/org/eclipse/m2e/core/internal/lifecyclemapping/LifecycleMappingFactory.java)、
+[OpenRewrite goal语义](https://docs.openrewrite.org/reference/rewrite-maven-plugin)。
 
 ### U4：检查与编译分开，共用参数映射（2026-10-10，已review）
 
@@ -293,15 +348,15 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U2 | 待定位：Guava 泛型错误 | JDT3.46在原选择器上仍有14条诊断（旧版本13条）；未拆清源码兼容差异与编译输入问题。这不是14个独立根因 | 沿固定Guava样本缩小表达式，先对齐原生构建与JDT输入，再决定修输入映射还是处理编译器差异 |
 | U4 | 已接线、已review：Error Prone检查跳过 | Maven/Gradle共用参数分类，保留真正APT，启动/测试明确说明检查未执行；TestNG asserts的70项所选测试通过。Mockito/TestNG core已越过参数拦截，后续问题见U13/U14 | 不执行javac检查本身；正式构建/CI继续负责。其他未知插件未一概忽略 |
 | U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |
-| U6 | 待讨论：MyBatis准备步骤 | 默认format profile的OpenRewrite fork被拒；关闭format后license处理等待。在副本中关闭两者后，main8/test17及87项所选测试通过 | 区分必要生成步骤与格式化/license检查，接入合理的快速准备流程后，用原配置验证；不能把关闭profile的结果算成原样通过 |
+| U6 | 已修复、已review：MyBatis准备阶段阻塞 | 默认配置下依执行映射跳过检查/重写步骤，main8/test17、1316源码FULL及87项所选测试通过，增量/错误恢复/重开通过；没有关闭profile | whitespace明确execute仍会使Java变化额外Probe；仅保留为准备开销优化，不把它混成原阻塞未解决 |
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
 | U9 | 功能已有替代路径，优化暂缓：未加载类的HotSwap | `05a8bf0`后公开restart会增量编译，并在`CLASS_NOT_LOADED`时使用本轮产物自动重启；尚不支持已加载类热更、未加载类留待正常加载 | 待讨论的是减少不必要重启，不再记成“restart无法应用变更”。见[restart流程](project-restart.zh-CN.md) |
 | U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 
-U11、U10均已提交，不再作为待实现项。U4已完成review并纳入本次提交。
-后续可讨论U6/U13的构建步骤、U14的语言任务、U2的编译兼容性。
+U11、U10、U4均已提交，不再作为待实现项。U6已完成review并纳入本次提交。
+后续可讨论U13的构建步骤、U14的语言任务、U2的编译兼容性。
 必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
 事项继续保留，不因这次更新文档就自动开展实现。
 
