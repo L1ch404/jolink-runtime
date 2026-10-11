@@ -1062,120 +1062,12 @@ def test_fast_test_maps_standard_compiler_process_and_diagnostic_options() -> No
         manager.close()
 
 
-def test_single_method_maps_surefire_runtime_profile_to_runner_jvm() -> None:
-    project = ET.fromstring(
-        """
-<project><build><plugins><plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <executions><execution><goals><goal>test</goal></goals><configuration>
-    <includes><include>**/Test*.java</include></includes>
-    <excludes><exclude>**/*IT.java</exclude></excludes>
-    <forkCount>4</forkCount><reuseForks>false</reuseForks>
-    <skipAfterFailureCount>1</skipAfterFailureCount>
-    <runOrder>random</runOrder><parallel>methods</parallel><threadCount>2</threadCount>
-    <forkMode>once</forkMode><useSystemClassLoader>true</useSystemClassLoader>
-    <argLine>${argLine} -Dfile.encoding=UTF-8 -Xms2g -Xmx2g ${jacocoArgLine}</argLine>
-    <systemProperties><legacy>true</legacy></systemProperties>
-    <systemPropertyVariables><user.timezone>UTC</user.timezone>
-    </systemPropertyVariables>
-  </configuration></execution></executions>
-</plugin></plugins></build></project>
-"""
-    )
-    attempt = SimpleNamespace(tests=("example.Test#works",))
-    manager = FastTestManager()
-    try:
-        remaining, arguments = manager._surefire_runtime_compatibility(
-            project,
-            [
-                "argLine",
-                "excludes",
-                "forkMode",
-                "forkCount",
-                "includes",
-                "parallel",
-                "runOrder",
-                "reuseForks",
-                "skipAfterFailureCount",
-                "systemProperties",
-                "systemPropertyVariables",
-                "threadCount",
-                "useSystemClassLoader",
-            ],
-            attempt=attempt,
-        )
-        assert remaining == []
-        assert arguments == (
-            "-Dfile.encoding=UTF-8",
-            "-Xms2g",
-            "-Xmx2g",
-            "-Dlegacy=true",
-            "-Duser.timezone=UTC",
-        )
-    finally:
-        manager.close()
 
 
-def test_multiple_selectors_keep_surefire_order_and_parallel_boundaries() -> None:
-    project = ET.fromstring(
-        """
-<project><build><plugins><plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <configuration><parallel>methods</parallel><threadCount>2</threadCount>
-  </configuration>
-</plugin></plugins></build></project>
-"""
-    )
-    manager = FastTestManager()
-    try:
-        remaining, arguments = manager._surefire_runtime_compatibility(
-            project,
-            ["parallel", "threadCount"],
-            attempt=SimpleNamespace(tests=("example.One", "example.Two")),
-        )
-        assert remaining == ["parallel", "threadCount"]
-        assert arguments == ()
-    finally:
-        manager.close()
 
 
-def test_explicit_classes_override_surefire_discovery_not_execution_order() -> None:
-    project = ET.fromstring("""<project><build><plugins><plugin>
-<artifactId>maven-surefire-plugin</artifactId><configuration>
-<includes><include>**/Other.java</include></includes>
-<excludes><exclude>**/One.java</exclude></excludes>
-<additionalClasspathElements><additionalClasspathElement>fixtures</additionalClasspathElement></additionalClasspathElements>
-<runOrder>random</runOrder></configuration></plugin></plugins></build></project>""")
-    manager = FastTestManager()
-    try:
-        remaining, arguments = manager._surefire_runtime_compatibility(
-            project, ["includes", "excludes", "additionalClasspathElements", "runOrder"],
-            attempt=SimpleNamespace(tests=("example.One", "example.Two")),
-        )
-        assert remaining == ["runOrder"]
-        assert arguments == ()
-    finally:
-        manager.close()
 
 
-def test_surefire_execution_retains_unoverridden_plugin_fields() -> None:
-    project = ET.fromstring("""<project><build><plugins><plugin>
-<artifactId>maven-surefire-plugin</artifactId><configuration>
-<argLine>-Dfixture=plugin</argLine>
-<additionalClasspathElements><additionalClasspathElement>fixtures</additionalClasspathElement></additionalClasspathElements>
-</configuration><executions>
-<execution><id>unused</id><configuration><argLine>-Dfixture=unused</argLine></configuration></execution>
-<execution><goals><goal>test</goal></goals><configuration><argLine>-Dfixture=execution</argLine></configuration></execution>
-</executions></plugin></plugins></build></project>""")
-    manager = FastTestManager()
-    try:
-        configuration = manager._surefire_configuration(project)
-        assert configuration.findtext("argLine") == "-Dfixture=execution"
-        assert configuration.findtext("additionalClasspathElements/additionalClasspathElement") == "fixtures"
-    finally:
-        manager.close()
 
 
 def test_gradle_module_failure_preserves_error_code(tmp_path, monkeypatch) -> None:
@@ -1195,26 +1087,6 @@ def test_gradle_module_failure_preserves_error_code(tmp_path, monkeypatch) -> No
         manager.close()
 
 
-def test_jacoco_only_argline_is_omitted_from_fast_test_runner() -> None:
-    project = ET.fromstring(
-        """
-<project><build><plugins><plugin>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <configuration><argLine>${jacocoArgLine}</argLine></configuration>
-</plugin></plugins></build></project>
-"""
-    )
-    manager = FastTestManager()
-    try:
-        remaining, arguments = manager._surefire_runtime_compatibility(
-            project,
-            ["argLine"],
-            attempt=SimpleNamespace(tests=("example.Test#works",)),
-        )
-        assert remaining == []
-        assert arguments == ()
-    finally:
-        manager.close()
 
 
 def test_fast_test_keeps_unknown_compiler_argument_as_compatibility_gap() -> None:

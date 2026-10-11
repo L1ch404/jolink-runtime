@@ -30,6 +30,7 @@ from .configuration_inputs import maven_configuration_files, maven_environment_r
 from .jdt_modules import ModuleCompileSession, compilation_modules
 from .maven_reactor import maven_build_root
 from .maven_module_world import load_module_worlds, combine_effective_poms, skipped_preparation_steps
+from .test_execution import run_test_executions
 from .maven_compile_scope import compiler_scope, compiler_parameters
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
@@ -67,7 +68,6 @@ from .test_build_world import (
 
 
 _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 900.0
-_TEST_DISCOVERY_FILTERS = frozenset({"includes", "excludes"})
 _BUILD_LOG_SECRET = re.compile(
     r"(?i)(password|passwd|token|secret|authorization|cookie|credential|"
     r"api[_-]?key|access[_-]?key|private[_-]?key)"
@@ -131,6 +131,8 @@ class _FastTestProject:
     configuration_snapshot: dict[str, Any] = field(default_factory=dict)
     skipped_compiler_checks: tuple[str, ...] = ()
     skipped_build_steps: tuple[str, ...] = ()
+    test_executions: tuple[dict[str, Any], ...] = ()
+    framework_options: dict[str, str] = field(default_factory=dict)
     test_run_order: str = ""
     test_attempts: list[tuple[Path, bool]] = field(default_factory=list)
 
@@ -216,6 +218,7 @@ class TestAttempt:
                     "failed_test_count", "failed_container_count", "skipped_count",
                     "test_ms", "source_changes_pending", "build_world_changes_pending",
                     "skipped_compiler_checks", "skipped_build_steps",
+                    "test_execution_ids", "not_applied_test_settings",
                 }
             })
             if payload.get("passed") is not True:
@@ -490,23 +493,8 @@ class FastTestManager:
                 )
                 runner_started = time.monotonic()
                 try:
-                    result = self._runner.run(
-                        java_executable=project.test_java_executable,
-                        framework=project.test_framework,
-                        classpath=(
-                            project.compiler.test_output_directory,
-                            project.compiler.output_directory,
-                            *project.runtime_classpath,
-                        ),
-                        selectors=attempt.tests,
-                        run_order=project.test_run_order,
-                        working_directory=project.test_working_directory,
-                        environment=project.runner_environment,
-                        jvm_arguments=project.runner_jvm_arguments,
-                        attempt_directory=test_attempt,
-                        timeout_seconds=attempt.timeout_seconds,
-                        owner=attempt.owner,
-                    )
+                    result, execution_ids, adjustments = run_test_executions(
+                        self._runner, project, attempt, test_attempt)
                 except Exception:
                     if test_attempt.exists():
                         self._retain_test_attempt(
@@ -547,6 +535,12 @@ class FastTestManager:
                 provenance = getattr(
                     project, "runner_support_provenance", {}
                 )
+                if execution_ids:
+                    attempt.result["test_execution_ids"] = execution_ids
+                if adjustments:
+                    attempt.result["not_applied_test_settings"] = adjustments
+                    attempt.result["suggested_next_step"] += (
+                        " Tests used development Runner scheduling; native parallel/fork/retry policies were not reproduced.")
                 checks = getattr(project, "skipped_compiler_checks", ())
                 if checks:
                     attempt.result["skipped_compiler_checks"] = list(checks)
@@ -1101,17 +1095,6 @@ class FastTestManager:
         effective_project = self._maven._select_effective_project(
             effective_root, module
         )
-        surefire_configuration = self._surefire_configuration(effective_project)
-        additional_classpath: tuple[Path, ...] = ()
-        if surefire_configuration is not None:
-            for entry in surefire_configuration.findall(
-                "./{*}additionalClasspathElements/{*}additionalClasspathElement"
-            ):
-                value = (entry.text or "").strip()
-                if value:
-                    path = Path(value)
-                    additional_classpath += ((module.directory / path).resolve(strict=False),)
-        runtime_classpath = (*runtime_classpath, *additional_classpath)
         compiler_model = self._maven._compiler_model(
             compiler_scope(effective_project),
             build_jdk=build_jdk,
@@ -1150,64 +1133,6 @@ class FastTestManager:
                     f"Fast Test cannot reproduce the {label} Processor discovery mode.",
                     context={"scope": label, "discovery_mode": processing.get("discoveryMode")},
                 )
-        unsupported_surefire = test_runtime.get(
-            "unsupportedSurefireConfigurationNames", []
-        )
-        unsupported_surefire = [
-            value
-            for value in unsupported_surefire
-            if value not in {"skip", "skipTests", "workingDirectory", "environmentVariables", "excludedEnvironmentVariables", "enableAssertions"}
-        ]
-        test_java = build_jdk.java_executable
-        surefire = self._maven._find_build_plugin(effective_project, "maven-surefire-plugin")
-        if surefire is not None:
-            configured_java = surefire.findtext("./{*}configuration/{*}jvm")
-            if configured_java:
-                # Maven's optional <jvm>${property}</jvm> defaults to its
-                # current Java when that property is not set.
-                property_match = re.fullmatch(r"\$\{([^}]+)\}", configured_java.strip())
-                if property_match:
-                    configured_java = effective_project.findtext("./{*}properties/{*}" + property_match[1]) or ""
-            if configured_java is not None and "${" not in configured_java:
-                if configured_java.strip(): test_java = Path(configured_java.strip())
-                unsupported_surefire = [name for name in unsupported_surefire if name != "jvm"]
-        (
-            unsupported_surefire,
-            test_jvm_arguments,
-        ) = self._surefire_runtime_compatibility(
-            effective_project,
-            unsupported_surefire,
-            attempt=attempt,
-        )
-        if unsupported_surefire:
-            raise FastTestManagerError(
-                "FAST_TEST_SUREFIRE_CONFIGURATION_UNSUPPORTED",
-                "Fast Test cannot reproduce this Surefire runtime configuration.",
-                context={
-                    "unsupported_configuration_names": list(
-                        unsupported_surefire
-                    )[:16]
-                },
-            )
-        unsupported_failsafe = test_runtime.get(
-            "unsupportedFailsafeConfigurationNames", []
-        )
-        unsupported_failsafe = [
-            value
-            for value in unsupported_failsafe
-            # Fast Test selects explicit tests, not Failsafe's IT discovery.
-            if value not in {"skip", "skipTests"} | _TEST_DISCOVERY_FILTERS
-        ]
-        if unsupported_failsafe:
-            raise FastTestManagerError(
-                "FAST_TEST_FAILSAFE_CONFIGURATION_UNSUPPORTED",
-                "Fast Test cannot reproduce this Failsafe runtime configuration.",
-                context={
-                    "unsupported_configuration_names": list(
-                        unsupported_failsafe
-                    )[:16]
-                },
-            )
         unsupported_test_compiler = test_runtime.get(
             "unsupportedTestCompilerConfigurationNames", []
         )
@@ -1286,9 +1211,8 @@ class FastTestManager:
             *((maven_home / "conf/settings.xml",) if maven_home is not None else ()),
             *(workspace.build_root / ".mvn" / name for name in ("maven.config", "jvm.config", "extensions.xml")),
         )))
-        working_directory = test_runtime.get("workingDirectory", str(module.directory))
-        if working_directory is None:
-            raise FastTestManagerError("TEST_WORKING_DIRECTORY_UNAVAILABLE", "Maven could not resolve the configured test working directory.")
+        executions = tuple(test_runtime.get("executions", ()))
+        configuration_inputs += tuple(Path(path) for execution in executions for path in execution.get("configurationFiles", ()))
         world = JavaTestBuildWorld(
             build_system="maven",
             build_preferences=preferences.cache_values(),
@@ -1310,13 +1234,12 @@ class FastTestManager:
             **processor_settings(main_processing),
             java_agents=tuple(f"{path}=ECJ" for path in lombok),
             extra_worker_jvm_arguments=(),
-            test_java_executable=test_java,
+            test_java_executable=build_jdk.java_executable,
             test_framework=None,
-            test_working_directory=Path(working_directory),
+            test_working_directory=module.directory,
             test_classes_directories=(test_output,),
-            runner_environment=dict(test_runtime.get("environmentOverridesPrivate", {})),
-            test_jvm_arguments=("-ea" if test_runtime.get("enableAssertions", True) else "-da", *test_jvm_arguments),
-            test_run_order=self._maven._config_text(surefire_configuration, "runOrder") if surefire_configuration is not None else "",
+            runner_environment={},
+            test_executions=executions,
             javac_executable=build_jdk.javac_executable,
             configuration_inputs=configuration_inputs,
             configuration_environment_names=maven_environment_references(
@@ -1337,7 +1260,7 @@ class FastTestManager:
                 main_source_roots=tuple(Path(p) for m in world.modules for p in m["source_roots"]),
                 java_agents=tuple(dict.fromkeys(f"{p}=ECJ" for m in world.modules
                     for p in (*m["lombok_entries"], *m.get("test_compiler", {}).get("lombok_entries", ())))),
-                test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support + additional_classpath,
+                test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support,
                 resource_roots=tuple(resource_roots),
             )
         result = self._start_build_world(
@@ -1517,6 +1440,8 @@ class FastTestManager:
             test_run_order=world.test_run_order,
             skipped_compiler_checks=world.skipped_compiler_checks,
             skipped_build_steps=world.skipped_build_steps,
+            test_executions=world.test_executions,
+            framework_options=world.framework_options,
             compiler=compiler,
             runtime_classpath=(
                 *(path for path in world.resource_roots if path.is_dir()),
@@ -1731,130 +1656,6 @@ class FastTestManager:
 
         return [name for name in names if not shared(str(name))]
 
-    def _surefire_configuration(self, project: ET.Element) -> ET.Element | None:
-        plugin = self._maven._find_build_plugin(project, "maven-surefire-plugin")
-        if plugin is None:
-            return None
-        configuration = plugin.find("./{*}configuration")
-        for execution in plugin.findall("./{*}executions/{*}execution"):
-            goals = {
-                (goal.text or "").strip()
-                for goal in execution.findall("./{*}goals/{*}goal")
-            }
-            candidate = execution.find("./{*}configuration")
-            if "test" in goals and candidate is not None:
-                # The effective execution overrides matching plugin fields;
-                # absent execution fields still inherit the plugin defaults.
-                merged = ET.Element("configuration")
-                overrides = {self._maven._local_name(item.tag) for item in candidate}
-                if configuration is not None:
-                    merged.extend(item for item in configuration
-                                  if self._maven._local_name(item.tag) not in overrides)
-                merged.extend(candidate)
-                configuration = merged
-        return configuration
-
-    def _surefire_runtime_compatibility(
-        self,
-        project: ET.Element,
-        unsupported: Sequence[str],
-        *,
-        attempt: TestAttempt,
-    ) -> tuple[list[str], tuple[str, ...]]:
-        if not unsupported:
-            return [], ()
-        configuration = self._surefire_configuration(project)
-        if configuration is None:
-            return list(unsupported), ()
-
-        # Fast Test always receives explicit selectors, like -Dtest: these
-        # override Surefire's discovery includes/excludes for classes too.
-        modeled = set(_TEST_DISCOVERY_FILTERS) | {"additionalClasspathElements"}
-        if self._maven._config_text(configuration, "runOrder") in {"alphabetical", "reversealphabetical"}:
-            modeled.add("runOrder")
-        arguments: list[str] = []
-        single_method = (
-            len(attempt.tests) == 1 and "#" in attempt.tests[0]
-        )
-        if single_method:
-            modeled.update(
-                {
-                    "includes",
-                    "excludes",
-                    "forkCount",
-                    "runOrder",
-                    "parallel",
-                    "reuseForks",
-                    "skipAfterFailureCount",
-                    "threadCount",
-                }
-            )
-
-        fork_mode = self._maven._config_text(configuration, "forkMode")
-        if single_method and fork_mode and fork_mode.casefold() == "once":
-            modeled.add("forkMode")
-        use_system_loader = self._maven._config_text(
-            configuration, "useSystemClassLoader"
-        )
-        if (
-            use_system_loader
-            and use_system_loader.casefold() == "true"
-        ):
-            modeled.add("useSystemClassLoader")
-
-        arg_line = self._maven._config_text(configuration, "argLine")
-        if arg_line:
-            arg_line = arg_line.replace("${jacocoArgLine}", "").replace(
-                "@{jacocoArgLine}", ""
-            )
-            try:
-                parsed = tuple(shlex.split(arg_line, posix=True))
-            except ValueError:
-                parsed = None
-            if parsed is not None and not any(
-                token.startswith("@{") or (
-                    "${" in token and token != "${argLine}"
-                )
-                for token in parsed
-            ):
-                arguments.extend(
-                    token for token in parsed if token != "${argLine}"
-                )
-                modeled.add("argLine")
-
-        for field in ("systemProperties", "systemPropertyVariables"):
-            container = configuration.find(f"./{{*}}{field}")
-            if container is None:
-                continue
-            properties: list[tuple[str, str]] = []
-            valid = True
-            for item in container:
-                name = self._maven._local_name(item.tag)
-                if name == "property":
-                    key = self._maven._config_text(item, "name")
-                    value = self._maven._config_text(item, "value")
-                else:
-                    key = name
-                    value = (item.text or "").strip()
-                if (
-                    not re.fullmatch(r"[A-Za-z0-9_.-]+", key)
-                    or "\n" in value
-                    or "\r" in value
-                    or "\x00" in value
-                ):
-                    valid = False
-                    break
-                properties.append((key, value))
-            if valid:
-                arguments.extend(
-                    f"-D{key}={value}" for key, value in properties
-                )
-                modeled.add(field)
-
-        return (
-            [value for value in unsupported if value not in modeled],
-            tuple(dict.fromkeys(arguments)),
-        )
 
     def _compiler_argument_compatibility(
         self,
@@ -2169,6 +1970,8 @@ class FastTestManager:
             )
         if code == "TEST_FRAMEWORK_UNAVAILABLE":
             return "Use the project's formal test command or add its matching JUnit runtime launcher."
+        if code.startswith("TEST_EXECUTION_CONFIGURATION"):
+            return "Inspect test_execution_id and the reported runtime settings for this selection; unrelated test executions remain usable."
         if "UNSUPPORTED" in code or "UNAVAILABLE" in code:
             return "Use the project's formal test workflow for this unsupported Build World."
         return "Inspect the structured error, correct the project/test input, and retry."

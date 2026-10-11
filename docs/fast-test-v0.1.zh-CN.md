@@ -7,7 +7,7 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 
 不需要新增MCP参数，直接沿用项目自己的配置：
 
-- Maven Surefire的`environmentVariables`、`excludedEnvironmentVariables`、
+- Maven Surefire/Failsafe的`environmentVariables`、`excludedEnvironmentVariables`、
   `workingDirectory`、`enableAssertions`由Probe读取Maven合并后的goal配置，并通过
   Maven表达式求值器解析。父POM、Profile、execution配置使用同一条路径。
 - Gradle直接使用Probe已经导出的Test任务环境、工作目录和断言开关；不解析DSL文本，
@@ -23,11 +23,36 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 只持久化明确的环境覆盖与删除，不缓存整个宿主环境。重开MCP后，普通继承变量来自
 新进程；Maven已知POM/父POM/settings等配置中的`${env.NAME}`引用纳入现有缓存输入。
 运行配置变化会刷新模型，但不加入JDT编译身份；编译配置和源码未变则复用class。
-旧Test模型升为v9后首次重新Probe，不删除JDT workspace。
+旧Test模型升为v11后首次重新Probe，不删除JDT workspace。
 
 Gradle仍沿用已有配置输入追踪；任意脚本隐式读取其他环境变量/外部文件的完整失效追踪
-未因此解决。本轮也未增加多execution/Failsafe调度、延迟`argLine`求值、并行或多fork。
+未因此解决。当前测试执行配置与开发调度策略如下，不等同于完整Maven CI生命周期。
 实际验收见[兼容性跟进](java-compatibility-followup-2026-09.md)。
+
+### 按所选测试使用对应运行环境
+
+Probe保存Surefire `test`、Failsafe `integration-test`执行项的有效配置，不把两者
+所有字段合在一起作为项目拒绝条件。选择器按导出的include/exclude规则匹配首个执行项；
+没有匹配时使用首个配置作为显式开发测试的默认环境，不因此丢弃调用者点名的测试。
+目前支持常见Ant、类/方法模式和普通`%regex`，不是完整移植Surefire/Java正则引擎。
+
+同一次请求中需要不同执行配置的测试按组顺序启动Runner，计数/失败结果合并；所有组
+共用一次JDT编译和现有执行时间预算。换测试选择不重建编译模型，跨MCP仍可从缓存恢复。
+结果的`test_execution_ids`说明使用了哪些配置，不返回完整环境或JVM参数。
+
+支持常见`argLine`与`@{...}`迟绑定、系统属性（含properties文件）、额外运行classpath、
+测试JVM和已有运行字段；properties/include/exclude文件纳入配置输入。JUnit4 category、
+JUnit5 tag/engine/configurationParameters及TestNG group通过框架API执行；过滤后完全
+没有匹配测试仍报告失败。Gradle已导出的JUnit Platform tags/engines复用同一Runner接线。
+
+Maven层的parallel/threadCount/fork/retry等不再阻断显式测试。每个配置组使用一个临时
+Runner，未复现的策略返回`not_applied_test_settings`；这不代表并发/重试行为已经验证。
+不关闭测试框架自身的配置或注解行为，例如JUnit5配置参数仍可启用框架并行。
+报告格式使用joLink自己的输出。不同测试数量不再触发“单方法放行、多类拒绝”的分支。
+
+没有执行Maven pre/post-integration-test服务编排，也没有遍历同一个测试的全部CI执行
+矩阵。复杂suite XML、自定义provider/classloader、未映射运行字段仍按所选执行项报告，
+不会因另一份无关Failsafe配置有问题而拒绝所有普通单测。
 
 ## 状态摘要与结果详情
 

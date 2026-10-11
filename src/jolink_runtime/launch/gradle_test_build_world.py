@@ -387,21 +387,6 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         "GRADLE_TEST_FRAMEWORK_UNSUPPORTED",
         "Unsupported Gradle test framework.",
     )
-    _require(
-        not any(
-            runtime[key]
-            for key in (
-                "includePatterns",
-                "excludePatterns",
-                "includeEngines",
-                "excludeEngines",
-                "includeTags",
-                "excludeTags",
-            )
-        ),
-        "GRADLE_TEST_FILTER_UNMODELED",
-        "Gradle test filters are not mapped to the standalone Runner.",
-    )
     args, runner_environment = _runtime_options(runtime)
     home = Path(target["target_java_home"])
     outputs = {Path(target["output_directory"]), Path(target["test_output_directory"])}
@@ -452,6 +437,10 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         test_jvm_arguments=tuple(args),
         modules=modules,
         skipped_compiler_checks=skipped_compiler_checks(modules, include_tests=True),
+        framework_options={target: ",".join(runtime.get(source, ())) for source, target in (
+            ("includeTags", "groups"), ("excludeTags", "excluded_groups"),
+            ("includeEngines", "include_engines"), ("excludeEngines", "exclude_engines"))
+            if runtime.get(source)},
         runner_support_provenance={
             "build_system": "gradle",
             "gradle_version": model["gradleVersion"],

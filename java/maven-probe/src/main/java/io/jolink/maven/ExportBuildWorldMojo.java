@@ -375,16 +375,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             runnerSupport.classpathElements,
             false
         );
-        TestRuntimeConfiguration runtime = TestRuntimeConfiguration.read(project, session, surefirePlugin());
-        field(out, "workingDirectory", runtime.workingDirectory, true);
-        booleanField(out, "enableAssertions", runtime.enableAssertions, true);
-        out.append(",\"environmentOverridesPrivate\":{");
-        boolean firstVariable = true;
-        for (java.util.Map.Entry<String, String> entry : runtime.environment.entrySet()) {
-            field(out, entry.getKey(), entry.getValue(), !firstVariable);
-            firstVariable = false;
-        }
-        out.append('}');
+        out.append(",\"executions\":");
+        TestRuntimeConfiguration.appendExecutions(out, project, session);
         field(
             out,
             "runnerSupportSelectedVersion",
@@ -407,18 +399,6 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             out,
             "runnerSupportFallbackReason",
             runnerSupport.fallbackReason,
-            true
-        );
-        stringList(
-            out,
-            "unsupportedSurefireConfigurationNames",
-            unsupportedSurefireConfigurationNames(),
-            true
-        );
-        stringList(
-            out,
-            "unsupportedFailsafeConfigurationNames",
-            unsupportedFailsafeConfigurationNames(),
             true
         );
         stringList(
@@ -855,87 +835,6 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         return null;
     }
 
-    private Plugin surefirePlugin() {
-        return testPlugin("maven-surefire-plugin");
-    }
-
-    private Plugin failsafePlugin() {
-        return testPlugin("maven-failsafe-plugin");
-    }
-
-    private Plugin testPlugin(String artifactId) {
-        List<Plugin> plugins = project.getBuildPlugins();
-        if (plugins == null) {
-            return null;
-        }
-        for (Plugin plugin : plugins) {
-            if (artifactId.equals(plugin.getArtifactId())
-                && (plugin.getGroupId() == null
-                    || "org.apache.maven.plugins".equals(plugin.getGroupId()))) {
-                return plugin;
-            }
-        }
-        return null;
-    }
-
-    private List<String> unsupportedSurefireConfigurationNames() {
-        return unsupportedTestPluginConfigurationNames(surefirePlugin());
-    }
-
-    private List<String> unsupportedFailsafeConfigurationNames() {
-        return unsupportedTestPluginConfigurationNames(failsafePlugin());
-    }
-
-    private List<String> unsupportedTestPluginConfigurationNames(Plugin plugin) {
-        if (plugin == null) {
-            return Collections.emptyList();
-        }
-        Set<String> unsupported = new LinkedHashSet<String>();
-        if (plugin.getDependencies() != null
-                && !plugin.getDependencies().isEmpty()) {
-            unsupported.add("pluginDependencies");
-        }
-        Set<String> reportingOnly = new LinkedHashSet<String>(Arrays.asList(
-            "disableXmlReport",
-            "printSummary",
-            "redirectTestOutputToFile",
-            "reportFormat",
-            "skip",
-            "skipTests",
-            "trimStackTrace",
-            "useFile"
-        ));
-        List<Xpp3Dom> configurations = new ArrayList<Xpp3Dom>();
-        Xpp3Dom direct = pluginConfiguration(plugin);
-        if (direct != null) {
-            configurations.add(direct);
-        }
-        if (plugin.getExecutions() != null) {
-            for (PluginExecution execution : plugin.getExecutions()) {
-                // A named configuration without goals is not executed by
-                // Maven (e.g. an unused Surefire "plain" configuration).
-                if (execution.getGoals().isEmpty()) {
-                    continue;
-                }
-                Object raw = execution.getConfiguration();
-                if (raw instanceof Xpp3Dom) {
-                    configurations.add((Xpp3Dom) raw);
-                }
-            }
-        }
-        for (Xpp3Dom configuration : configurations) {
-            for (Xpp3Dom item : configuration.getChildren()) {
-                if (!reportingOnly.contains(item.getName())
-                        && (!value(item).isEmpty() || item.getChildCount() > 0)) {
-                    unsupported.add(item.getName());
-                }
-            }
-        }
-        List<String> result = new ArrayList<String>(unsupported);
-        Collections.sort(result);
-        return result;
-    }
-
     private List<String> unsupportedTestCompilerConfigurationNames() {
         Plugin plugin = compilerPlugin();
         if (plugin == null) {
@@ -1282,7 +1181,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         }
     }
 
-    private static void field(
+    static void field(
         StringBuilder out, String name, String value, boolean comma
     ) {
         if (comma) {
@@ -1297,7 +1196,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         }
     }
 
-    private static void stringList(
+    static void stringList(
         StringBuilder out, String name, List<String> values, boolean comma
     ) {
         if (comma) {
@@ -1318,7 +1217,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         out.append(']');
     }
 
-    private static void booleanField(
+    static void booleanField(
         StringBuilder out, String name, boolean value, boolean comma
     ) {
         if (comma) {

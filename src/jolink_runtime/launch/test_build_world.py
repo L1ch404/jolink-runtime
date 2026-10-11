@@ -51,6 +51,8 @@ class JavaTestBuildWorld:
     build_preferences: dict[str, object] = field(default_factory=dict)
     skipped_compiler_checks: tuple[str, ...] = ()
     skipped_build_steps: tuple[str, ...] = ()
+    test_executions: tuple[dict[str, Any], ...] = ()
+    framework_options: dict[str, str] = field(default_factory=dict)
 
 
 class TestBuildWorldBootstrap(Protocol):

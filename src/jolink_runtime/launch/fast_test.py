@@ -301,6 +301,7 @@ class FastTestRunner:
         environment: dict[str, str | None] | None = None,
         jvm_arguments: Sequence[str] = (),
         run_order: str = "",
+        framework_options: dict[str, str] | None = None,
     ) -> FastTestResult:
         if not selectors or len(selectors) > 64:
             raise FastTestError(
@@ -342,6 +343,9 @@ class FastTestRunner:
             )
         normalized = complete_test_runtime_classpath(classpath)
         detected_framework = detect_test_framework(normalized)
+        if framework is None and any((framework_options or {}).get(key)
+                                     for key in ("include_engines", "exclude_engines", "configuration_parameters")):
+            framework = "junit5"
         if framework is None:
             framework = detected_framework
         elif framework not in {"junit4", "junit5", "testng"}:
@@ -355,6 +359,8 @@ class FastTestRunner:
                 "The selected test framework is unavailable on the runtime classpath.",
             )
         attempt_directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+        from .java_properties import write_properties
+        options_file = write_properties(attempt_directory / "framework.private.properties", framework_options or {})
         selectors_file = attempt_directory / "selectors.private.txt"
         selectors_file.write_text(
             "".join(f"{selector}\n" for selector in selectors),
@@ -456,6 +462,8 @@ class FastTestRunner:
             framework,
             "--run-order",
             run_order,
+            "--options-file",
+            str(options_file),
             "--selectors-file",
             str(selectors_file),
             "--classpath-file",

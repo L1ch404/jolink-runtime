@@ -8,6 +8,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -25,11 +26,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.LinkedHashSet;
+import java.util.Properties;
 
 /** Isolated Java 8 runner for explicit JUnit 4/5 class and method selectors. */
 public final class TestRunner {
     private static final int MAX_FAILURES = 8;
     private static final int MAX_TEXT = 8 * 1024;
+    private static final Properties TEST_OPTIONS = new Properties();
+
+    private static String[] optionValues(String name) {
+        String value = TEST_OPTIONS.getProperty(name, "").trim();
+        return value.isEmpty() ? new String[0] : value.split("\\s*,\\s*");
+    }
 
     private TestRunner() {
     }
@@ -56,6 +64,11 @@ public final class TestRunner {
                              socket.getOutputStream(), StandardCharsets.UTF_8))) {
             emit(protocol, hello(token, runId));
             List<String> selectors = readSelectors(Paths.get(selectorsFile));
+            if (options.containsKey("options-file")) {
+                try (BufferedReader reader = Files.newBufferedReader(Paths.get(options.get("options-file")), StandardCharsets.UTF_8)) {
+                    TEST_OPTIONS.load(reader);
+                }
+            }
             configureProjectClasspath(Paths.get(classpathFile));
             ClassLoader loader = ClassLoader.getSystemClassLoader();
             Thread.currentThread().setContextClassLoader(loader);
@@ -144,6 +157,17 @@ public final class TestRunner {
             Object request = parsed.methodName == null
                     ? classRequest.invoke(null, testClass)
                     : methodRequest.invoke(null, testClass, parsed.methodName);
+            for (String option : new String[] {"groups", "excluded_groups"}) {
+                String[] names = optionValues(option);
+                if (names.length == 0) continue;
+                Class<?>[] categories = new Class<?>[names.length];
+                for (int i = 0; i < names.length; i++) categories[i] = Class.forName(names[i], true, loader);
+                Class<?> categoryFilter = Class.forName("org.junit.experimental.categories.Categories$CategoryFilter", true, loader);
+                Object filter = categoryFilter.getMethod("groups".equals(option) ? "include" : "exclude", Class[].class)
+                    .invoke(null, (Object) categories);
+                request = requestType.getMethod("filterWith", Class.forName("org.junit.runner.manipulation.Filter", true, loader))
+                    .invoke(request, filter);
+            }
             Object result = run.invoke(core, request);
             long runCount = number(result, "getRunCount");
             long failureCount = number(result, "getFailureCount");
@@ -194,6 +218,26 @@ public final class TestRunner {
         }
         builderType.getMethod("selectors", selectorArray.getClass())
                 .invoke(builder, selectorArray);
+        Properties configuration = new Properties();
+        configuration.load(new StringReader(TEST_OPTIONS.getProperty("configuration_parameters", "")));
+        if (!configuration.isEmpty()) {
+            Map<String, String> parameters = new LinkedHashMap<>();
+            for (String key : configuration.stringPropertyNames()) parameters.put(key, configuration.getProperty(key));
+            builderType.getMethod("configurationParameters", Map.class).invoke(builder, parameters);
+        }
+        List<Object> filters = new ArrayList<>();
+        for (String[] option : new String[][] {
+                {"groups", "TagFilter", "includeTags"}, {"excluded_groups", "TagFilter", "excludeTags"},
+                {"include_engines", "EngineFilter", "includeEngines"}, {"exclude_engines", "EngineFilter", "excludeEngines"}}) {
+            String[] values = optionValues(option[0]);
+            if (values.length > 0) filters.add(Class.forName("org.junit.platform.launcher." + option[1], true, loader)
+                .getMethod(option[2], String[].class).invoke(null, (Object) values));
+        }
+        if (!filters.isEmpty()) {
+            Object array = Array.newInstance(Class.forName("org.junit.platform.engine.Filter", true, loader), filters.size());
+            for (int i = 0; i < filters.size(); i++) Array.set(array, i, filters.get(i));
+            builderType.getMethod("filters", array.getClass()).invoke(builder, array);
+        }
         Object request = builderType.getMethod("build").invoke(builder);
 
         Class<?> listenerType = Class.forName(
@@ -389,6 +433,10 @@ public final class TestRunner {
                 "org.testng.TestListenerAdapter", true, loader)
                 .getConstructor().newInstance();
         Object testng = testngType.getConstructor().newInstance();
+        if (TEST_OPTIONS.containsKey("groups")) testngType.getMethod("setGroups", String.class)
+            .invoke(testng, TEST_OPTIONS.getProperty("groups"));
+        if (TEST_OPTIONS.containsKey("excluded_groups")) testngType.getMethod("setExcludedGroups", String.class)
+            .invoke(testng, TEST_OPTIONS.getProperty("excluded_groups"));
         try {
             testngType.getMethod("setUseDefaultListeners", boolean.class)
                     .invoke(testng, false);

@@ -211,7 +211,7 @@ def test_real_testng_fast_test_loop() -> None:
     assert payload["framework"] == "testng"
     assert payload["method_selector_passed"] is True
     assert payload["class_selector_failure_observed"] is True
-    assert payload["failsafe_unmodeled_configuration_rejected"] is True
+    assert payload["unrelated_failsafe_configuration_ignored"] is True
 
 
 @pytest.mark.fast_test_e2e

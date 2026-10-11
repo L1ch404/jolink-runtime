@@ -144,11 +144,9 @@ def main() -> int:
                 ),
                 encoding="utf-8",
             )
-            rejected = run(manager, project, method)
-            if rejected.get("error_code") != (
-                "FAST_TEST_FAILSAFE_CONFIGURATION_UNSUPPORTED"
-            ):
-                raise AssertionError(rejected)
+            unrelated = run(manager, project, method)
+            if not unrelated.get("passed"):
+                raise AssertionError(unrelated)
             print(
                 json.dumps(
                     {
@@ -156,7 +154,7 @@ def main() -> int:
                         "framework": recovered["framework"],
                         "method_selector_passed": True,
                         "class_selector_failure_observed": True,
-                        "failsafe_unmodeled_configuration_rejected": True,
+                        "unrelated_failsafe_configuration_ignored": True,
                         "incremental_failure_compile_ms": failed["compile_ms"],
                         "incremental_recovery_compile_ms": recovered[
                             "compile_ms"

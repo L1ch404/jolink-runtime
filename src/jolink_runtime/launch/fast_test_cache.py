@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v10"
+_SCHEMA = "jolink.fast-test-world.v11"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -95,6 +95,8 @@ class FastTestCache:
                     test_run_order=world.get("test_run_order", ""),
                     skipped_compiler_checks=tuple(world.get("skipped_compiler_checks", ())),
                     skipped_build_steps=tuple(world.get("skipped_build_steps", ())),
+                    test_executions=tuple(world.get("test_executions", ())),
+                    framework_options=dict(world.get("framework_options", {})),
                     processor_names=tuple(world.get("processor_names", ())),
                     processor_options=dict(world.get("processor_options", {})),
                     build_system=build_system,
@@ -182,6 +184,8 @@ class FastTestCache:
                 "test_run_order": world.test_run_order,
                 "skipped_compiler_checks": world.skipped_compiler_checks,
                 "skipped_build_steps": world.skipped_build_steps,
+                "test_executions": world.test_executions,
+                "framework_options": world.framework_options,
                 "processor_names": world.processor_names,
                 "processor_options": world.processor_options,
             },

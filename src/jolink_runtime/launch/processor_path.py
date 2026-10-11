@@ -46,26 +46,8 @@ def processor_settings(processing: dict) -> dict:
 
 def write_processor_settings(path: Path, names, options) -> Path:
     """UTF-8 Java Properties in the existing private workspace; flags stay null."""
-
-    def escape(value):
-        return (
-            str(value)
-            .replace("\\", "\\\\")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-            .replace(" ", "\\ ")
-            .replace("=", "\\=")
-            .replace(":", "\\:")
-        )
-
-    lines = ["names=" + escape(",".join(names))]
-    lines.extend(
-        ("flag." if value is None else "option.")
-        + escape(key)
-        + "="
-        + ("" if value is None else escape(value))
-        for key, value in options.items()
-    )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    from .java_properties import write_properties
+    values = {"names": ",".join(names)}
+    values.update({("flag." if value is None else "option.") + key:
+                   "" if value is None else value for key, value in options.items()})
+    return write_properties(path, values)

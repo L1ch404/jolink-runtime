@@ -14,6 +14,8 @@ from java_support import open_mcp_session, require_real_mcp_java_e2e, temporary_
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("project_key,module,selectors,count,java_key", [
+    ("JOLINK_TEST_JSOUP", ".", ["org.jsoup.nodes.FormElementTest", "org.jsoup.internal.StringUtilTest",
+        "org.jsoup.nodes.EntitiesTest", "org.jsoup.nodes.NodeTest"], 73, "JOLINK_TEST_JAVA17_HOME"),
     ("JOLINK_TEST_MYBATIS", ".", [
         "org.apache.ibatis.reflection.MetaObjectTest",
         "org.apache.ibatis.session.SqlSessionTest",
@@ -74,6 +76,9 @@ def test_cold_public_project_explicit_environment(tmp_path, project_key, module,
                         assert details.get("passed") is True and details["tests"] == count, details
                         if project_key == "JOLINK_TEST_MYBATIS":
                             assert any(":rewrite-maven-plugin:run@" in step for step in details.get("skipped_build_steps", ())), details
+                        if project_key == "JOLINK_TEST_JSOUP":
+                            assert details["test_execution_ids"] == ["maven-surefire-plugin:default-test"]
+                            assert "not_applied_test_settings" not in details
                         if iteration:
                             assert "bootstrap_ms" not in result and result["compiled_source_count"] == 0, result
                     if project_key == "JOLINK_TEST_MYBATIS" and not cycle:

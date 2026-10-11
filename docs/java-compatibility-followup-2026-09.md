@@ -5,8 +5,58 @@
 `eec9429`的0.1.0a8已经发布。源码过滤/WAR入口`1d3c772`与Reactor子模块入口
 `9dead95`均已推送main。资源复用修复已提交为`59360e4`，尚未推送；未发布新PyPI版本。
 测试进程环境、工作目录和断言配置已提交为`d7fd335`，尚未推送。
-U4已提交为`edc8963`，尚未推送。U6准备步骤映射已完成用户review，纳入本次提交，尚未推送。
+U4已提交为`edc8963`，U6为`885739e`，均尚未推送。测试执行配置统一已完成用户review，纳入本次提交，尚未推送。
 同文件多goal覆盖的资源复用边界及其他已暂缓事项没有一并改动。
+
+### 测试执行配置统一：jsoup的Failsafe误拦截（2026-10-11，已review）
+
+在`885739e`用上游jsoup1.16.1（`062ebdb`）原POM和四个普通测试类复现：
+原生Maven运行73项全部通过，真实MCP在JDT之前返回
+`FAST_TEST_FAILSAFE_CONFIGURATION_UNSUPPORTED: parallel, threadCount`。
+这里是项目里无关的Failsafe配置阻断普通Surefire测试，不是编译器/测试本身失败。
+
+本轮删除Probe的两张全项目unsupported测试配置名单，以及Python里单方法特判的
+Surefire兼容函数。Probe通过Maven合并/求值各test/integration-test执行配置，保存
+同一Build World；独立的`test_execution.py`选择本次运行环境并顺序分组。未增加MCP
+参数或action，未改变JDT Worker/编译流程，也未修改`jdwp_adapter.py`。
+
+- Surefire/Failsafe共用环境、断言、工作目录、JVM、argLine、系统属性和额外运行
+  classpath接线。properties文件及include/exclude文件进入现有配置快照；选择变化不
+  重新Probe/编译。运行条件不同的组使用不同进程，保留总的Runner执行时限与取消机制。
+- 迟绑定`@{...}`取准备阶段之后的Maven属性；系统属性合并保持legacy → file →
+  variables顺序，保留原支持的两种property XML写法。Windows路径的反斜杠不当作
+  POSIX shell转义。没有把任意Maven CLI用户属性传播宣称为完整实现。
+- JUnit4 category、JUnit5 tag/engine/配置参数、TestNG groups用实际框架API运行。
+  Gradle已有的JUnit Platform tags/engines也接入相同Runner；不声称全部Gradle TestNG
+  选项已经由Probe导出。共享UTF-8 Properties写入函数用于Runner与已有Processor设置。
+- 开发流程每个配置组一个Runner；Maven并行、多fork、重试等不再一律拒绝，偏离
+  已配置策略时返回`not_applied_test_settings`，使用的配置返回`test_execution_ids`。
+  不是声称测试已按8线程运行，也不强制关闭JUnit自身配置的并行。
+- 明确点名的类/方法不被Maven发现过滤直接丢掉；这些规则用于选择环境。沿用IDE式
+  首个相关执行项/默认配置，不运行同一测试的全部CI矩阵。匹配使用导出的规则与共用Ant
+  匹配器，支持普通%regex；并非直接打包Maven TestListResolver，Java特有正则仍有边界。
+- 自定义provider/classloader、复杂suite XML、其他未映射的实际运行字段仍在选中后
+  报告；无关执行项的配置不再作为全局门槛。没有新增集成测试的外部服务生命周期编排。
+
+Probe/Runner资产已重建，Probe fasttest29、两者仍为Java8字节码；Test模型v11首次
+重新Probe导入执行配置，不清空JDT编译产物。启动模型及Worker产物没有因此升级。
+
+真实证据：jsoup同四类73项通过；MyBatis默认配置87项、增量/错误恢复/重开继续通过。
+混合Surefire/Failsafe测试在各自进程实际断言环境/目录/JVM参数，配置组PID隔离，切换
+选择和配置文件更新没有改变class的mtime；无关坏工作目录不阻断单测。JUnit4/5/TestNG
+过滤测试包含必须被排除的失败方法，JUnit5扩展实际读取了中文configurationParameters。
+四组用例先运行原生Maven对照，再删除原生产物走真实MCP。已有运行配置6组、
+Maven/Gradle模块与编译scope16组通过；独立安装wheel的上述四组及两个公开项目通过。
+额外Gradle tags/engines用例先原生Gradle再MCP、重开通过。以上是本机macOS证据。
+最终常规1008 passed；Maven3.3.9＋JDK8的四组新增执行配置用例通过，独立安装最终
+wheel后Maven/Gradle五组通过；wheel/sdist、compileall、定向lint和diff检查通过。
+
+回归：[执行配置MCP](../tests/e2e/test_test_execution_config.py)、
+[公开项目](../tests/e2e/test_fast_test_public_resources.py)、
+[路由/合并/取消单测](../tests/unit/test_test_execution.py)。旧测试中要求“多类并行字段必须
+拒绝”“无关Failsafe必须拒绝”的断言已改为实际运行语义，而不是删掉断言来冒充通过。
+参考：[m2e启动配置源码](https://github.com/eclipse-m2e/m2e-core/blob/8407b31375c90431e17cafefc84efcf53c5c25a8/org.eclipse.m2e.jdt/src/org/eclipse/m2e/jdt/internal/UnitTestSupport.java)、
+[Surefire系统属性顺序](https://maven.apache.org/surefire/maven-surefire-plugin/examples/system-properties.html)。
 
 ### U6：读取已有执行映射，保留必要生成步骤（2026-10-10实测，2026-10-11已review）
 
@@ -355,7 +405,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 
-U11、U10、U4均已提交，不再作为待实现项。U6已完成review并纳入本次提交。
+U11、U10、U4、U6均已提交，不再作为待实现项。
 后续可讨论U13的构建步骤、U14的语言任务、U2的编译兼容性。
 必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
 事项继续保留，不因这次更新文档就自动开展实现。
@@ -686,7 +736,7 @@ socket超时，不让后续普通命令继承30秒。真正超时/失联仍保�
 |---|---|---|
 | 生成任务 | Gradle生成任务、依赖其他生命周期/fork的Maven生成链、具体protobuf/OpenAPI项目验收 | Maven显式准备阶段及ANTLR/模板生成已支持，不应再统称“生成源码不支持”；APT生成也已经支持 |
 | 生成输入缓存 | 远端、插件隐含输入、仅以整个项目根寻找输入等情况 | 现有本地配置路径跟踪不能保证覆盖这些变化，存在缓存过时风险；需补输入表达，不能当作已完整支持 |
-| 测试运行配置 | 部分tags/engines/groups过滤、并行、重试、多fork及其他排序策略 | 字母正序/倒序、明确类/方法选择、已有运行参数已支持；剩余选项按实际项目补，不重造完整Surefire |
+| 测试运行配置 | 自定义provider/classloader、suite XML、完整CI矩阵和服务编排仍未完成 | tags/engines/groups与执行项环境已接通；Maven调度策略改为开发Runner并明确说明，不再因parallel/threadCount拒绝所有测试。不是复现完整并发/重试语义 |
 | 其他编译/模块配置 | 未映射编译参数、processor-module-path等未覆盖组合 | 名称选择、-A参数和-Xpkginfo:always已解决，不再混在此项；其他组合需实际验证 |
 | 平台与JDK矩阵 | 新版Windows/Linux、更多JDK/Processor组合、完整JPMS | 已实测Java8/11/17/21；不能把Worker运行于21等同于所有目标版本已测，macOS证据不替代其他平台 |
 | 进程保活 | Worker跨MCP常驻、Test Runner保活 | 尚未实现，属于后续能力；已有磁盘缓存和Worker重开恢复不是跨MCP常驻 |
