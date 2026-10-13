@@ -61,6 +61,7 @@ def test_execution_groups_stop_on_cancellation(project):
 
     attempt = SimpleNamespace(
         tests=("x.FooTest", "x.FooIT"),
+        output_logs=(),
         timeout_seconds=30,
         owner=object(),
         require_not_cancelled=check,
@@ -217,6 +218,7 @@ def test_groups_share_timeout_and_aggregate_failures(project, monkeypatch):
     )
     attempt = SimpleNamespace(
         tests=("x.FirstTest", "x.SecondIT"),
+        output_logs=(),
         timeout_seconds=30,
         owner=object(),
         require_not_cancelled=lambda: None,

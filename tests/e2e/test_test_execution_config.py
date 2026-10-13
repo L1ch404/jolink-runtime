@@ -311,7 +311,7 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
         )
     source = "package example; public class FilterTest {public interface Fast{} public interface Slow{} public interface Blocked{}\n"
     source += (
-        annotations[0] + " public void good(){org.junit.Assert.assertTrue(true);}\n"
+        annotations[0] + ' public void good(){System.out.println("selected-framework-output");org.junit.Assert.assertTrue(true);}\n'
     )
     source += (
         annotations[1]
@@ -344,6 +344,7 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
                     assert (
                         result.get("passed") is True and result["passed_count"] == 1
                     ), result
+                    assert "selected-framework-output" in result["output"], result
 
     anyio.run(scenario)
 
@@ -363,7 +364,7 @@ test { useJUnitPlatform { includeTags 'fast'; excludeTags 'blocked'; includeEngi
     )
     (root / "src/test/java/example/PlatformTest.java").write_text("""package example;
 public class PlatformTest {
- @org.junit.jupiter.api.Test @org.junit.jupiter.api.Tag("fast") void good() {}
+ @org.junit.jupiter.api.Test @org.junit.jupiter.api.Tag("fast") void good() {System.out.println("gradle-platform-output");}
  @org.junit.jupiter.api.Test @org.junit.jupiter.api.Tag("slow") void slow() {throw new AssertionError("must exclude slow");}
  @org.junit.jupiter.api.Test @org.junit.jupiter.api.Tag("fast") @org.junit.jupiter.api.Tag("blocked") void blocked() {throw new AssertionError("must exclude blocked");}
 }""")
@@ -392,5 +393,6 @@ public class PlatformTest {
                 async with open_mcp_session(log, environment=env) as session:
                     result = await run(session, root, ["example.PlatformTest"])
                     assert result.get("passed") and result["tests"] == 1, result
+                    assert "gradle-platform-output" in result["output"], result
 
     anyio.run(scenario)

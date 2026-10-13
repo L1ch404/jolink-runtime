@@ -517,7 +517,7 @@ JAVA_FAST_TEST_INPUT_SCHEMA["required"] = []
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["default"] = "run"
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["action"]["description"] = (
     "Omit or use run to execute tests; use result with test_run_id to read diagnostics "
-    "and failure details without rerunning; use cancel to stop that test run."
+    "and failure details plus captured test output without rerunning; use cancel to stop that test run."
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
     "Maven project or Gradle Wrapper project directory containing the selected tests. "
@@ -632,7 +632,9 @@ JAVA_FAST_TEST_DESCRIPTION = (
     "or cancel it here using action='cancel' and the same test_run_id. "
     "If compilation fails before run returns, it includes compiler diagnostics directly. "
     "java_status stays compact; use action='result' with test_run_id for background "
-    "error diagnostics and failed-test details without rerunning tests. "
+    "error diagnostics, failed-test details, and captured test stdout/stderr without rerunning tests. "
+    "Result includes the last 50 lines of combined test output (up to 16 KiB), output_truncated, "
+    "and local log_files paths. Read those files directly when more output is needed. "
     "This is not the complete Maven/Gradle verification or packaging lifecycle."
 )
 JAVA_STATUS_DESCRIPTION = (

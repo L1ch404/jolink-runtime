@@ -37,6 +37,9 @@ def test_test_tool_is_discoverable_and_its_schema_is_focused():
         "test_run_id",
     }
     assert properties["action"]["default"] == "run"
+    assert "tail" not in properties
+    assert "log_files" in testing.description
+    assert "tail" in tools["java_status"].inputSchema["properties"]
     for name in ("java_application", "java_debugger"):
         assert "tests" not in tools[name].inputSchema["properties"]
         assert "test_run_id" not in tools[name].inputSchema["properties"]

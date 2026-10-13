@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .fast_test import FastTestError
 from .source_selection import ant_pattern
+from .test_output import TestOutputLog
 
 # Maven owns batch scheduling/reporting; explicit development runs use one disposable Runner.
 _SCHEDULING = {
@@ -311,6 +312,9 @@ def run_test_executions(runner, project, attempt, directory):
                 "The test execution groups exceeded their shared execution timeout.",
             )
         extra = options.pop("additional_classpath", ())
+        group_directory = directory if len(groups) == 1 else directory / str(index)
+        output_log = TestOutputLog(group_directory / "test.log", (execution or {}).get("id", ""))
+        attempt.output_logs += (output_log,)
         result = runner.run(
             **{
                 "java_executable": project.test_java_executable,
@@ -329,7 +333,8 @@ def run_test_executions(runner, project, attempt, directory):
                 *extra,
             ),
             selectors=selectors,
-            attempt_directory=directory if len(groups) == 1 else directory / str(index),
+            attempt_directory=group_directory,
+            output_log=output_log,
             timeout_seconds=remaining,
             owner=attempt.owner,
         )

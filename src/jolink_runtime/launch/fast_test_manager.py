@@ -31,6 +31,7 @@ from .jdt_modules import ModuleCompileSession, compilation_modules
 from .maven_reactor import maven_build_root
 from .maven_module_world import load_module_worlds, combine_effective_poms, skipped_preparation_steps
 from .test_execution import run_test_executions
+from .test_output import TestOutputLog, read_test_output
 from .maven_compile_scope import compiler_scope, compiler_parameters
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
@@ -170,6 +171,7 @@ class TestAttempt:
     compiled_source_count: int = 0
     compiled_source_units: tuple[str, ...] = ()
     result: dict[str, Any] | None = None
+    output_logs: tuple[TestOutputLog, ...] = ()
     cancel_requested: bool = False
     thread: threading.Thread | None = None
     done: threading.Event = field(default_factory=threading.Event)
@@ -361,12 +363,17 @@ class FastTestManager:
         with self._lock:
             for attempt in (self._active, self._last):
                 if attempt is not None and attempt.test_run_id == test_run_id:
-                    return attempt.snapshot()
-        raise FastTestManagerError(
-            "TEST_RUN_NOT_FOUND",
-            "The requested Fast Test result is not retained in this MCP session.",
-            context={"test_run_id": test_run_id},
-        )
+                    payload = attempt.snapshot()
+                    logs = attempt.output_logs
+                    break
+            else:
+                raise FastTestManagerError(
+                    "TEST_RUN_NOT_FOUND",
+                    "The requested Fast Test result is not retained in this MCP session.",
+                    context={"test_run_id": test_run_id},
+                )
+        payload.update(read_test_output(logs))
+        return payload
 
     def cancel(self, test_run_id: str) -> dict[str, Any]:
         with self._lock:

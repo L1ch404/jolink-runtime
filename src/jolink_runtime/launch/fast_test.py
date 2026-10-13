@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import json
 import os
@@ -19,6 +20,7 @@ from typing import Any, Sequence
 
 from .contracts import BuildOperationSpec
 from .process_supervisor import AttemptToken, ProcessSupervisor
+from .test_output import TestOutputLog
 
 
 class FastTestError(RuntimeError):
@@ -302,6 +304,7 @@ class FastTestRunner:
         jvm_arguments: Sequence[str] = (),
         run_order: str = "",
         framework_options: dict[str, str] | None = None,
+        output_log: TestOutputLog | None = None,
     ) -> FastTestResult:
         if not selectors or len(selectors) > 64:
             raise FastTestError(
@@ -424,6 +427,13 @@ class FastTestRunner:
                                     "A Test Runner frame has invalid identity.",
                                 )
                             frames.append(frame)
+                            if output_log is not None and frame.get("event") == "runner_ready":
+                                encoding = frame.get("output_encoding")
+                                if isinstance(encoding, str):
+                                    try:
+                                        output_log.encoding = codecs.lookup(encoding).name
+                                    except LookupError:
+                                        pass  # Keep the platform fallback for an unknown JVM charset.
                             if frame.get("event") in {
                                 "run_finished",
                                 "infrastructure_failed",

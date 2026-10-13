@@ -16,6 +16,7 @@ import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -744,7 +745,17 @@ public final class TestRunner {
 
     private static String hello(String token, String runId) {
         return "{\"event\":\"runner_ready\",\"token\":" + json(token)
-                + ",\"test_run_id\":" + json(runId) + "}";
+                + ",\"test_run_id\":" + json(runId)
+                + ",\"output_encoding\":" + json(outputEncoding()) + "}";
+    }
+
+    private static String outputEncoding() {
+        try {
+            // Newer JDKs expose the actual PrintStream encoding; keep Java 8 bytecode.
+            return ((Charset) java.io.PrintStream.class.getMethod("charset").invoke(System.out)).name();
+        } catch (ReflectiveOperationException unavailableOnOlderJdk) {
+            return System.getProperty("sun.stdout.encoding", Charset.defaultCharset().name());
+        }
     }
 
     private static String resultJson(
