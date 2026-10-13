@@ -18,6 +18,23 @@ is frozen separately in
 
 ## Exposed tools
 
+### Unknown request arguments
+
+The MCP boundary ignores unknown **top-level** arguments using the called tool's
+existing property definitions. It then validates and executes the remaining
+arguments normally. If any were removed, the response includes
+`ignored_arguments: ["field_name", ...]` (names only); otherwise that field is
+absent. The annotation applies to this call only, including error/early-return
+responses, and does not alter a retained test result or debugger event.
+
+Missing required arguments, invalid types/ranges and unknown actions remain
+errors. Misspellings are not guessed or aliased. Nested configuration validation
+is unchanged; HTTP headers and JSON request bodies are not filtered. The exposed
+schema and tool descriptions are unchanged: client-side validation, if a client
+performs it before sending a request, is outside this server-side tolerance.
+
+### Tool surface
+
 - `java_application`: `launch`, `attach`, `restart`, `stop`, `detach`
 - `java_fast_test`: optional `action=run` (default), `action=cancel`, `action=result`
 - `java_status`: `processes`, `status`, `logs`

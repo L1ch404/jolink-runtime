@@ -542,6 +542,26 @@ class RuntimeMCPBoundary:
         *,
         request_id: str | None = None,
     ) -> types.CallToolResult:
+        """Ignore unknown top-level fields and annotate this call's response only."""
+        args = dict(arguments or {})
+        schema = _TOOL_INPUT_SCHEMAS.get(name)
+        ignored = sorted(set(args) - schema["properties"].keys()) if schema else []
+        for key in ignored:
+            args.pop(key)
+        result = await self._call_tool(name, args, request_id=request_id)
+        if not ignored:
+            return result
+        payload = dict(result.structuredContent or {})
+        payload["ignored_arguments"] = ignored
+        return _call_tool_result(payload)
+
+    async def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None,
+        *,
+        request_id: str | None = None,
+    ) -> types.CallToolResult:
         call_started = time.monotonic()
         application_wait = None
         with self._state_lock:

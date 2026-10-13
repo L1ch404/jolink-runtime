@@ -116,15 +116,10 @@ def test_default_and_explicit_run_and_cancel_use_same_manager(
             {"action": "test", "project_path": "/fixture", "tests": ["example.Test"]},
         ),
         (
-            "java_fast_test",
-            {"project_path": "/fixture", "tests": ["example.Test"], "ready_port": 8080},
-        ),
-        (
             "java_application",
             {"action": "test", "project_path": "/fixture", "tests": ["example.Test"]},
         ),
         ("java_application", {"action": "cancel_test", "test_run_id": "test_same"}),
-        ("java_debugger", {"action": "threads", "tests": ["example.Test"]}),
     ],
 )
 def test_invalid_or_old_public_calls_do_not_allocate_runtime(tool, args):
@@ -138,3 +133,49 @@ def test_invalid_or_old_public_calls_do_not_allocate_runtime(tool, args):
         assert dispatcher.sessions.session_keys == ()
 
     anyio.run(scenario)
+
+
+def test_unrelated_launch_parameter_does_not_block_fast_test(tmp_path, monkeypatch):
+    dispatcher = Dispatcher()
+    manager = dispatcher.sessions.get_runtime()._fast_tests
+    calls = []
+
+    def start(**arguments):
+        calls.append(arguments)
+        return {"ok": True, "status": "completed", "passed": True}
+
+    monkeypatch.setattr(manager, "start", start)
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario():
+        result = await boundary.call_tool("java_fast_test", {
+            "project_path": str(tmp_path), "tests": ["example.Test"], "ready_port": 8080,
+        })
+        assert not result.isError and result.structuredContent["passed"]
+        assert result.structuredContent["ignored_arguments"] == ["ready_port"]
+        assert len(calls) == 1 and calls[0]["project_path"] == tmp_path
+        assert "ready_port" not in calls[0]
+
+    try:
+        anyio.run(scenario)
+    finally:
+        dispatcher.close_all_sessions()
+
+
+def test_unrelated_test_selector_preserves_debugger_business_error():
+    dispatcher = Dispatcher()
+    boundary = RuntimeMCPBoundary(dispatcher)
+
+    async def scenario():
+        result = await boundary.call_tool("java_debugger", {"action": "threads", "tests": ["example.Test"]})
+        assert result.isError
+        assert result.structuredContent["error_code"] == "NO_ACTIVE_SUSPENSION"
+        assert result.structuredContent["ignored_arguments"] == ["tests"]
+        plain = await boundary.call_tool("java_debugger", {"action": "threads"})
+        assert plain.structuredContent == {key: value for key, value in result.structuredContent.items()
+                                           if key != "ignored_arguments"}
+
+    try:
+        anyio.run(scenario)
+    finally:
+        dispatcher.close_all_sessions()

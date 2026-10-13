@@ -82,7 +82,7 @@ def test_focused_schemas_expose_only_their_public_actions() -> None:
     assert source_files["uniqueItems"] is True
 
 
-def test_product_schemas_reject_unknown_fields_and_remote_hosts() -> None:
+def test_product_schemas_advertise_known_fields_and_local_hosts() -> None:
     application, fast_test, status, debugger = get_mcp_tools()
     host = application.inputSchema["properties"]["host"]
 

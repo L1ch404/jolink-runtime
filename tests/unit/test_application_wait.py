@@ -189,14 +189,19 @@ def test_wait_does_not_block_status_or_cancellation(action, cancel):
     anyio.run(scenario)
 
 
-def test_removed_startup_parameter_is_not_accepted():
-    boundary = RuntimeMCPBoundary(Dispatcher("launch"))
+def test_removed_startup_parameter_is_ignored_not_used_as_timeout_alias():
+    dispatcher = Dispatcher("launch")
+    boundary = RuntimeMCPBoundary(dispatcher)
 
     async def scenario():
         result = await boundary.call_tool(
-            "java_application", {"action": "launch", "startup_wait_timeout_seconds": 1}
+            "java_application", {"action": "launch", "timeout": 0, "startup_wait_timeout_seconds": 1}
         )
-        assert result.isError is True
+        assert result.isError is False
+        assert result.structuredContent["status"] == "starting"
+        assert result.structuredContent["ignored_arguments"] == ["startup_wait_timeout_seconds"]
+        assert dispatcher.calls[0][1]["timeout"] == 0
+        assert "startup_wait_timeout_seconds" not in dispatcher.calls[0][1]
 
     anyio.run(scenario)
 
