@@ -81,7 +81,8 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "java_home": {
             "type": "string",
             "description": (
-                "Application JDK home directory for project_path launch."
+                "Application JDK home directory for project, classpath or JAR launch. "
+                "Restart inherits the previous selection; supplying a different JDK replaces the JVM instead of HotSwap."
             ),
         },
         "jar_path": {

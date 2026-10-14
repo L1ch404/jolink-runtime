@@ -19,6 +19,7 @@ import struct
 import threading
 import time
 import uuid
+from copy import copy
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,8 @@ from ...launch.jdt_reload_service import JdtReloadService
 from ...launch.jdt_launch_service import JdtLaunchService
 from ...launch.runtime_observation import read_build_log, runtime_logs
 from ...launch.startup_timing import StartupTimings
+from ...launch.direct_launch import direct_restart_action
+from ...launch.toolchain import java_executable_path
 from ..base import Runtime
 from .jdwp_client import (
     Cmd,
@@ -1498,6 +1501,7 @@ class JavaRuntime(Runtime):
                 app_args=action.app_args,
                 jdwp_port=action.jdwp_port,
                 vm_args=action.vm_args,
+                java_executable=(java_executable_path(action.java_home) if getattr(action, "java_home", None) else "java"),
                 log_file=log_file,
                 ready_port=action.ready_port,
                 startup_wait_timeout_seconds=(
@@ -1600,7 +1604,7 @@ class JavaRuntime(Runtime):
             )
             if closing is not None:
                 return closing
-            self._last_direct_action = replace(action)
+            self._last_direct_action = copy(action)
             self._last_project_request = None
             return result
         except Exception as e:
@@ -1752,25 +1756,7 @@ class JavaRuntime(Runtime):
             and self._last_project_request is not None
         ):
             return self.restart_current_project(action)
-        if (
-            not action.jar_path
-            and not action.main_class
-            and self._last_direct_action is not None
-        ):
-            replacement = replace(self._last_direct_action)
-            replacement.action = "restart"
-            if action.ready_port > 0:
-                replacement.configure_startup_readiness(
-                    ready_port=action.ready_port,
-                    wait_timeout_seconds=(
-                        action.startup_wait_timeout_seconds
-                    ),
-                    wait_timeout_provided=(
-                        action.startup_wait_timeout_provided
-                    ),
-                    config_source="explicit",
-                )
-            action = replacement
+        action = direct_restart_action(action, self._last_direct_action, self._proc.current)
         if (
             not action.jar_path
             and not action.main_class
@@ -1788,37 +1774,6 @@ class JavaRuntime(Runtime):
                     ),
                 },
             )
-        previous = self._proc.current
-        if (
-            action.ready_port <= 0
-            and previous is not None
-            and previous.ready_port > 0
-        ):
-            replacement = replace(action)
-            replacement.configure_startup_readiness(
-                ready_port=previous.ready_port,
-                wait_timeout_seconds=(
-                    action.startup_wait_timeout_seconds
-                    if action.startup_wait_timeout_provided
-                    else previous.startup_wait_timeout_seconds
-                ),
-                wait_timeout_provided=(
-                    action.startup_wait_timeout_provided
-                ),
-                config_source="previous_run",
-            )
-            action = replacement
-        elif action.ready_port > 0 and not action.readiness_config_source:
-            replacement = replace(action)
-            replacement.configure_startup_readiness(
-                ready_port=action.ready_port,
-                wait_timeout_seconds=action.startup_wait_timeout_seconds,
-                wait_timeout_provided=(
-                    action.startup_wait_timeout_provided
-                ),
-                config_source="explicit",
-            )
-            action = replacement
         logger.info(
             "java_runtime.jvm.restart.request launch_mode=%s target=%s "
             "ready_port=%s readiness_source=%s",

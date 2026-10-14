@@ -43,6 +43,18 @@ For an IDEA-independent launch, supply `project_path` and `main_class`:
 
 `app_args` and `vm_args` are optional argument arrays. `java_home` optionally
 selects the **application** JDK, without changing the build-tool or Worker JDK.
+This also applies to direct `main_class` + `classpath` and executable-JAR
+launches: `java_home/bin/java` (`java.exe` on Windows) is passed to the existing
+process launcher. Direct launches without it retain the PATH-based default and
+do not import an IDEA/Maven/Gradle model. Explicit invalid choices are not
+replaced by another JDK.
+
+`restart` inherits the previous application JDK; an explicit `java_home` can
+replace it. A different Java executable requires a real JVM restart, while
+the same executable leaves the existing HotSwap/restart decision unchanged.
+Changing only the application JDK reuses compilation state and does not change
+source/target levels. See [restart](project-restart.zh-CN.md).
+
 `build_java_home` independently selects the JDK used to prepare the Maven/Gradle
 project. Optional `maven_home` and `maven_settings` select an installed Maven and
 an existing user settings file. Explicit Maven selection does not fall back to a
@@ -55,7 +67,7 @@ tracked configuration participate in the existing cache checks. A new `launch`
 is a new request: repeat non-default choices rather than relying on hidden sticky
 settings. See [build environment and resources](fast-test-environment-resources.zh-CN.md).
 
-The application JDK order is: explicit `java_home`, IDEA launch JRE, IDEA project
+For project launches, the application JDK order is: explicit `java_home`, IDEA launch JRE, IDEA project
 SDK, then the resolved Build World's target-platform JDK. Thus an unconfigured
 Java 8 application uses the discovered Java 8 platform even when Maven runs on
 Java 17. An explicitly selected newer runtime is still allowed.

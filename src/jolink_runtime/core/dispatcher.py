@@ -79,6 +79,8 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
         action.source_files = arguments.get("source_files")
     if "hotswap" in arguments:
         action.hotswap = _bool_arg(arguments, "hotswap", True)
+    if "java_home" in arguments:
+        action.java_home = arguments["java_home"]
     if action.action == "restart":
         action._launch_overrides = tuple(
             name for name in ("app_args", "vm_args", "jdwp_port", "ready_port") if name in arguments
@@ -90,7 +92,7 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
     if action.action == "test" and "build_system" in arguments:
         action.build_system = arguments.get("build_system")
     if action.action == "test":
-        for name in ("java_home", "maven_home", "maven_settings"):
+        for name in ("maven_home", "maven_settings"):
             if name in arguments:
                 setattr(action, name, arguments[name])
     if "test_run_id" in arguments:
@@ -132,8 +134,13 @@ def parse_project_launch_request(
     """Parse project launch settings independently of the direct JAR/classpath path."""
     has_project_path = "project_path" in arguments
     has_launch_name = "launch_name" in arguments
+    if "java_home" in arguments:
+        if str(arguments.get("action", "status")) not in {"run", "restart", "test"}:
+            raise ProjectLaunchArgumentError(argument="java_home", message="java_home is only valid for launch, restart or test.")
+        if not isinstance(arguments["java_home"], str) or not arguments["java_home"].strip():
+            raise ProjectLaunchArgumentError(argument="java_home", message="java_home must be a non-empty string.")
     if not has_project_path:
-        launch_settings = [name for name in ("launch_name", "java_home", "build_java_home", "maven_home", "maven_settings") if name in arguments]
+        launch_settings = [name for name in ("launch_name", "build_java_home", "maven_home", "maven_settings") if name in arguments]
         if launch_settings:
             name = launch_settings[0]
             raise ProjectLaunchArgumentError(
@@ -215,7 +222,7 @@ def parse_project_launch_request(
     build_system = str(arguments.get("build_system", ""))
     if build_system not in {"", "maven", "gradle"}:
         raise ProjectLaunchArgumentError(argument="build_system", message="build_system must be maven or gradle.")
-    for name in ("main_class", "java_home", "build_java_home", "maven_home", "maven_settings"):
+    for name in ("main_class", "build_java_home", "maven_home", "maven_settings"):
         if name in arguments and (not isinstance(arguments[name], str) or not arguments[name].strip()):
             raise ProjectLaunchArgumentError(argument=name, message=f"{name} must be a non-empty string.")
     for name in ("app_args", "vm_args"):

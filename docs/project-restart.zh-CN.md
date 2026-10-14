@@ -27,6 +27,7 @@
 |---|---|
 | 有 class 差异且 JVM 接受 | HotSwap，PID 不变 |
 | `hotswap=false` 或明确传入 JVM/程序/端口参数 | 编译后真实重启 |
+| `java_home` 选择了不同的应用 JDK | 编译实际源码变化后，以新 JDK 真正重启；无源码变化不额外编译 |
 | 没有待应用 class 差异 | 不编译，真实重启 |
 | 删除 class、生成资源变化、类未加载或加载器不唯一 | 使用刚编好的产物重启 |
 | JVM 明确拒绝 RedefineClasses | 使用刚编好的产物重启，不再编译一次 |
@@ -54,13 +55,23 @@ applying_hotswap、restarting。终态明确返回：
 
 - restart继承原launch的`build_java_home`、`maven_home`和`maven_settings`；构建配置
   改变需要重新Probe时也保留这些选择，不退回环境默认值。应用`java_home`仍独立。
-  要换一套启动选择，使用stop后新的launch；不是给restart重新填写构建参数。
+  要换构建工具选择，使用stop后新的launch；不是给restart重新填写构建参数。
+- `java_home`可直接用于restart。不传时继承原选择；传入不同JDK时更新应用Java路径，
+  返回`apply_method=restart`，活跃项目路径的原因是`APPLICATION_JDK_CHANGED`。
+  同一Java可执行文件（含解析后相同的符号链接路径）不因此禁用HotSwap，仍按原策略
+  处理代码变化。选择会保留到后续restart，包括stop后再restart及需要刷新项目模型时。
+  只切换应用JDK不改项目source/target，不清空编译缓存，也不更换编译Worker。
 - 没有可用的旧 JDT 会话（例如已 stop）时，复用现有项目 launch 流程，读取持久缓存。
 - POM/Gradle 配置已改变时，也走现有重新 launch 路径，刷新 Probe 模型和对应 JDT
   workspace；不拿旧编译配置去编译新项目。**这条模型重建路径沿用先停止旧 JVM 的
   启动流程，不提供旧进程保留、Candidate 或 rollback。**
 - 显式提供新 `project_path`/启动选择时，沿用指定项目的完整重新启动。
 - 直接 JAR/classpath 启动没有源码 Build World，只重启该产物，不承诺源码编译。
+  两种方式的launch同样支持`java_home`，直接restart也继承/覆盖该选择与已有启动参数。
+  一个新的launch若省略`java_home`，仍走原有PATH默认行为，不继承前一次显式JDK。
+
+显式JDK路径无效或不能运行已有字节码时，返回实际启动错误，不自动改用其他JDK。
+真正重启仍采用已有的先停后启流程；本轮没有新增Candidate、自动降级或失败回滚。
 
 HotSwap 不重新执行构造器、静态初始化或 Spring 启动流程。修改初始化逻辑、框架
 配置、资源且需要重新加载时，明确使用 `hotswap=false`。不能因为 JVM 接受字节码，

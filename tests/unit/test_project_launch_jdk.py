@@ -188,7 +188,7 @@ def test_headless_intent_and_explicit_empty_overrides(tmp_path):
 
 
 @pytest.mark.parametrize("arguments,argument", [
-    ({"java_home": "jdk"}, "java_home"),
+    ({"java_home": ""}, "java_home"),
     ({"project_path": "/project", "main_class": ""}, "main_class"),
     ({"project_path": "/project", "java_home": ""}, "java_home"),
     ({"project_path": "/project", "app_args": "--profile=dev"}, "app_args"),

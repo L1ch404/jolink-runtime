@@ -16,6 +16,13 @@ from .idea_environment import IdeaBuildPreferences
 _IS_WINDOWS = os.name == "nt"
 
 
+def java_executable_path(java_home: str | Path) -> Path:
+    """Resolve an explicit application JDK without scanning or probing other JDKs."""
+    return Path(java_home).expanduser().resolve(strict=False) / "bin" / (
+        "java.exe" if _IS_WINDOWS else "java"
+    )
+
+
 @dataclass(frozen=True)
 class JavaToolchainCandidate:
     home: Path
@@ -236,9 +243,7 @@ class JavaToolchainResolver:
             candidates.append(
                 JavaToolchainCandidate(
                     home=normalized,
-                    java_executable=(
-                        normalized / "bin" / f"java{executable_suffix}"
-                    ),
+                    java_executable=java_executable_path(normalized),
                     javac_executable=(
                         normalized / "bin" / f"javac{executable_suffix}"
                     ),

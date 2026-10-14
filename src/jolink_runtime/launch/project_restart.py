@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from ..core.models import RuntimeResult
@@ -16,6 +17,7 @@ from .jdt_compile_session import JdtCompileError, PersistentJdtCompileSession
 from .jdt_launch_service import JdtLaunchService
 from .project_session import JavaProjectSession, ProjectSessionError
 from .startup_timing import StartupTimings
+from .toolchain import java_executable_path
 
 
 def start_project_restart(runtime, action):
@@ -24,11 +26,17 @@ def start_project_restart(runtime, action):
     with runtime._project_state_lock:
         prepared = runtime._project_update_plans.get(attempt_id)
         session = runtime._project_sessions.get(attempt_id)
+    request = runtime._last_project_request
+    home = getattr(action, "java_home", None)
+    if home is not None:
+        request = replace(request, java_home=Path(home).expanduser().resolve(strict=False))
+        if prepared is not None:
+            prepared = replace(prepared, request=replace(prepared.request, java_home=request.java_home))
     # A stopped/unavailable session or changed build model uses the existing
     # launch path, including its Probe cache refresh and persistent workspace.
     if (prepared is None or session is None or not session.refresh_compile_ready()
             or JdtLaunchService.configuration_rejection(prepared) is not None):
-        result = runtime.restart_project(action, runtime._last_project_request)
+        result = runtime.restart_project(action, request)
         result.data["apply_method"] = "restart"
         return result
     return runtime._jdt_reload_service.start(
@@ -36,6 +44,15 @@ def start_project_restart(runtime, action):
         generation=snapshot["generation"], prepared=prepared,
         project_session=session, restart=True,
     )
+
+
+def application_jdk_changed(prepared):
+    home = getattr(prepared.request, "java_home", None)
+    if home is None:
+        return False
+    selected = java_executable_path(home).resolve(strict=False)
+    current = Path(prepared.jvm_plan.java_executable).resolve(strict=False)
+    return os.path.normcase(str(selected)) != os.path.normcase(str(current))
 
 
 def restart_compiled(runtime, action, *, attempt_id, prepared, session):
@@ -47,6 +64,8 @@ def restart_compiled(runtime, action, *, attempt_id, prepared, session):
     if "jdwp_port" in getattr(action, "_launch_overrides", ()):
         request = replace(request, jdwp_port=action.jdwp_port)
     plan = prepared.jvm_plan
+    if request.java_home is not None:
+        plan = replace(plan, java_executable=java_executable_path(request.java_home))
     if action.app_args is not None:
         plan = replace(plan, program_args=tuple(action.app_args))
     if action.vm_args is not None:

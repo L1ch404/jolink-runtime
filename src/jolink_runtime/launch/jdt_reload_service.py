@@ -173,6 +173,10 @@ class JdtReloadService:
                 "persistence": "jdt_workspace", "restart_loses_update": False,
             })
 
+        if restart:
+            from .project_restart import application_jdk_changed
+            if application_jdk_changed(prepared):
+                return replace_process("APPLICATION_JDK_CHANGED")
         if restart and (
             not getattr(action, "hotswap", True)
             or getattr(action, "_launch_overrides", ())
@@ -233,6 +237,10 @@ class JdtReloadService:
         runtime._runtime_overlay_sources.update(source_names)
         runtime._code_revision += 1
         compiler.mark_published()
+        if restart and getattr(action, "java_home", None) is not None:
+            with runtime._project_state_lock:
+                runtime._last_project_request = prepared.request
+                runtime._project_update_plans[attempt_id] = prepared
         breakpoints = runtime._refresh_updated_breakpoints(jdwp, signatures)
         return RuntimeResult(ok=True, data={
             **timing, "apply_ms": apply_ms, "status": "reloaded", "applied": True,

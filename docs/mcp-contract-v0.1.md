@@ -172,8 +172,11 @@ They support two launch forms:
   imported IDEA configuration selected by optional exact `launch_name`.
 
 IDEA launch configuration is optional when `main_class` is supplied. `java_home`
-selects the application JDK, not the build-tool/Worker JDK. Explicit launch
-parameters override imported values; see [project launch](project-launch-contract-v0.1.md)
+selects the application JDK, not the build-tool/Worker JDK. This selection also
+works for direct classpath and JAR launches. `restart` inherits
+the previous selection; a different explicit `java_home` forces a real JVM
+replacement rather than HotSwap, without clearing compiled outputs.
+Explicit launch parameters override imported values; see [project launch](project-launch-contract-v0.1.md)
 for JDK selection and cached-setting refresh. Maven or Gradle exports the Build World but does not compile
 application classes. JDT is initialized before the JVM: a cold workspace uses
 FULL build, while a reusable workspace calls `workspace_source_changes()` and
