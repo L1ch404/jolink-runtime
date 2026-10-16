@@ -2508,6 +2508,7 @@ class JavaRuntime(Runtime):
                 source_files=source_files,
                 tests=tests,
                 java_home=getattr(action, "java_home", ""),
+                build_java_home=getattr(action, "build_java_home", ""),
                 maven_home=getattr(action, "maven_home", ""),
                 maven_settings=getattr(action, "maven_settings", ""),
                 build_system=str(

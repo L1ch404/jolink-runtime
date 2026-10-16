@@ -134,9 +134,15 @@ resolved source roots, build logic, resources and supported APT configurations.
 It is not a promise to execute every custom Test task, SourceSet or javac-only
 compiler extension. Current unresolved cases and advanced test configuration
 boundaries are tracked in [the compatibility follow-up](java-compatibility-followup-2026-09.md).
-Target system libraries and the Test executable come from
+Target system libraries and the default Test executable come from
 Gradle's resolved Compiler Toolchain and Test JavaLauncher rather than the
-Gradle Daemon JDK.
+Gradle Daemon JDK. Fast Test's optional `build_java_home` selects the Maven/Gradle
+preparation JDK; optional `java_home` overrides the test JVM for this run, for
+both Maven and Gradle. Without `build_java_home`, preparation also uses
+`java_home` when supplied, otherwise project/environment defaults. With a fixed
+build JDK, switching only the test JVM reuses the compiler model and outputs.
+Omitting `java_home` restores the project's test JVM; the per-run override is
+not persisted into that model. Neither choice rewrites compiler source/target.
 
 `wait_breakpoint` remains an internal Runtime-lineage compatibility alias. It
 is not advertised or accepted as a public MCP action.

@@ -11,6 +11,7 @@ from pathlib import Path
 from .fast_test import FastTestError
 from .source_selection import ant_pattern
 from .test_output import TestOutputLog
+from .toolchain import java_executable_path
 
 # Maven owns batch scheduling/reporting; explicit development runs use one disposable Runner.
 _SCHEDULING = {
@@ -302,6 +303,10 @@ def run_test_executions(runner, project, attempt, directory):
     for index, (execution, selectors) in enumerate(groups):
         attempt.require_not_cancelled()
         options, changes = runtime_options(execution, project)
+        # Per-run choice, not compiler state: applies equally to Maven and Gradle
+        # without replacing the cached project's native test JVM configuration.
+        if getattr(attempt, "java_home", ""):
+            options["java_executable"] = java_executable_path(attempt.java_home)
         notices.update(changes)
         if execution:
             ids.append(execution["id"])

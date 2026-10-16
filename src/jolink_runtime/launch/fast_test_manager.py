@@ -154,6 +154,7 @@ class TestAttempt:
     timeout_seconds: float
     build_system: str = ""
     java_home: str = ""
+    build_java_home: str = ""
     maven_home: str = ""
     maven_settings: str = ""
     bootstrap_timeout_seconds: float = _DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
@@ -280,6 +281,7 @@ class FastTestManager:
         timeout_seconds: float = 300.0,
         build_system: str = "",
         java_home: str = "",
+        build_java_home: str = "",
         maven_home: str = "",
         maven_settings: str = "",
         bootstrap_timeout_seconds: float = (
@@ -323,6 +325,7 @@ class FastTestManager:
                 tests=tuple(str(value) for value in tests),
                 build_system=authority,
                 java_home=java_home,
+                build_java_home=build_java_home,
                 maven_home=maven_home,
                 maven_settings=maven_settings,
                 timeout_seconds=timeout,
@@ -1553,7 +1556,7 @@ class FastTestManager:
     def _preferences(self, attempt, project):
         return apply_build_preferences(
             self._idea.import_preferences(project),
-            build_java_home=attempt.java_home, maven_home=attempt.maven_home,
+            build_java_home=attempt.build_java_home or attempt.java_home, maven_home=attempt.maven_home,
             maven_settings=attempt.maven_settings,
         )
 

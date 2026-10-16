@@ -206,9 +206,17 @@ Worker 请求一次 GC，再启动 Runner。正常返回编译错误也请求，
 `source_files`可以省略。joLink会用持久源码mtime/size索引自动发现main/test变化，
 调用方显式提供的文件与实际变化文件合并后一次增量编译。
 
-可选`java_home`指定本次项目准备和默认测试JDK；`maven_home`指定Maven安装，
+可选`build_java_home`指定运行Maven/Gradle、Probe和必要准备步骤的JDK；
+`java_home`指定本次运行测试的JDK，显式传入时优先于项目测试JVM配置，
+不传则遵循项目配置。省略`build_java_home`时，准备阶段沿用`java_home`，
+两者都不传则沿用项目/环境设置。`maven_home`指定Maven安装，
 `maven_settings`指定用户settings文件。无需修改全局环境或重连MCP。
-项目明确配置的测试JVM仍按项目配置，编译source/target不会因此被改写。
+这些参数不会改写编译source/target。
+
+例如构建工具需要JDK17、测试需要JDK8时，同时传入两个对应目录即可。
+固定`build_java_home`后，只切换`java_home`会复用原编译模型和产物，不触发重新Probe或FULL；
+改变构建JDK仍按现有构建配置变更流程刷新模型。测试JDK选择仅作用于本次调用，
+不会覆盖缓存中项目原本的测试JVM设置，下次省略便恢复项目选择。
 
 `timeout`现在与启动统一表示本次工具调用的同步等待时间，默认30秒；大于30按30秒等，
 不报错；0表示提交后立即返回。该时间包含下载、准备和编译，不是每阶段各等一次。

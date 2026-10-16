@@ -40,10 +40,10 @@ def test_explicit_test_choices_do_not_mutate_project_preferences(tmp_path):
 
 def test_public_test_arguments_reach_action(tmp_path):
     args = {"action": "test", "project_path": str(tmp_path), "tests": ["T"],
-            "java_home": str(tmp_path), "maven_home": str(tmp_path), "maven_settings": "settings.xml"}
+            "java_home": str(tmp_path), "build_java_home": str(tmp_path), "maven_home": str(tmp_path), "maven_settings": "settings.xml"}
     assert parse_project_launch_request(args) is None
     action = parse_runtime_action(args)
-    for name in ("java_home", "maven_home", "maven_settings"):
+    for name in ("java_home", "build_java_home", "maven_home", "maven_settings"):
         assert getattr(action, name) == args[name]
 
 

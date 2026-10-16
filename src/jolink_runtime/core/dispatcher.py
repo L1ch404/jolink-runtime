@@ -92,7 +92,7 @@ def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
     if action.action == "test" and "build_system" in arguments:
         action.build_system = arguments.get("build_system")
     if action.action == "test":
-        for name in ("maven_home", "maven_settings"):
+        for name in ("build_java_home", "maven_home", "maven_settings"):
             if name in arguments:
                 setattr(action, name, arguments[name])
     if "test_run_id" in arguments:

@@ -12,15 +12,17 @@
 
 ## 执行环境
 
-`java_fast_test(action="run")`新增三个可选参数：
+`java_fast_test(action="run")`接受以下可选执行环境参数：
 
-- `java_home`：构建准备使用的JDK，以及未另设测试JVM时的默认测试JDK；不修改项目的source/target。
+- `build_java_home`：构建准备使用的JDK。省略时使用`java_home`，两者都不传则用项目/环境默认值。
+- `java_home`：运行测试的JDK；显式传入时优先于项目测试JVM，不修改项目的source/target。
 - `maven_home`：已有Maven安装目录，显式指定时不回退到Wrapper/PATH中的另一版本。
 - `maven_settings`：已有用户settings.xml，沿用镜像、代理、认证等配置；不修改原文件。
 
 Fast Test参数只作用于本次调用，不改机器环境，不要求重启MCP，也不黏附成下一次请求的隐含参数。
-同样的选择进入现有活跃模型/磁盘缓存比较；换选择重新准备，不换继续复用。
-项目已有明确的Surefire `jvm`或Gradle测试JavaLauncher仍使用其配置。
+构建选择进入现有活跃模型/磁盘缓存比较；换构建选择重新准备，不换继续复用。
+固定`build_java_home`后，只切换`java_home`不使编译缓存失效。
+省略`java_home`时仍使用项目的Surefire `jvm`或Gradle测试JavaLauncher。
 这不是完整补齐Maven `jdkToolchain`或所有CLI参数的支持。
 
 本地仓库选择保留IDEA明确配置；否则读所选用户settings、已知Maven安装的全局settings，

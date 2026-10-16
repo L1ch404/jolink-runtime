@@ -511,7 +511,8 @@ JAVA_FAST_TEST_INPUT_SCHEMA = _schema_for_actions(
     ("project_path", "tests", "source_files", "build_system", "java_home", "timeout", "test_run_id"),
 )
 JAVA_FAST_TEST_INPUT_SCHEMA["properties"].update({
-    "java_home": {"type": "string", "description": "JDK home for project preparation and the default test JVM. Explicit project test JVM settings still apply."},
+    "java_home": {"type": "string", "description": "JDK home for running tests; overrides the project's test JVM. Omit to follow project settings. Also used for project preparation when build_java_home is omitted."},
+    "build_java_home": {"type": "string", "minLength": 1, "description": "JDK home for Maven or Gradle project preparation. Omit to use java_home or project/environment settings."},
     **deepcopy(_MAVEN_ENVIRONMENT_PROPERTIES),
 })
 JAVA_FAST_TEST_INPUT_SCHEMA["required"] = []
