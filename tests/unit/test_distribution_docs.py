@@ -3,7 +3,6 @@
 import json
 import re
 import shlex
-import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -19,93 +18,77 @@ RULE = ROOT / "rules/jolink-java-verification.md"
 
 
 def blocks(path, language):
-    return re.findall(r"^```" + language + r"\n(.*?)^```", path.read_text(encoding="utf-8"),
-                      re.MULTILINE | re.DOTALL)
+    return re.findall(
+        r"^```" + language + r"\n(.*?)^```",
+        path.read_text(encoding="utf-8"),
+        re.MULTILINE | re.DOTALL,
+    )
 
 
-def templates(path):
-    return [json.loads(value) for value in blocks(path, "json")] + [
-        tomllib.loads(value) for value in blocks(path, "toml")
-    ]
-
-
-def test_install_translations_use_identical_commands():
-    for language in ("sh", "powershell", "text"):
-        assert blocks(INSTALL[0], language) == blocks(INSTALL[1], language)
-    # Every client entry must select the same package release.
-    for path in INSTALL:
-        text = path.read_text(encoding="utf-8")
-        versions = re.findall(r"jolink-runtime(?:==|@)([\w.]+)", text)
-        assert versions and len(set(versions)) == 1
-
-
-@pytest.mark.parametrize("path", INSTALL, ids=lambda p: p.name)
-def test_native_mcp_templates_describe_the_same_uvx_command(path):
-    launch = next(value for value in blocks(path, "text") if value.startswith("uvx ")).strip().split()
-    assert len(launch) == 2 and launch[0] == "uvx"
-    assert launch[1] == "jolink-runtime@latest"
-    for config in templates(path):
-        key = next(iter(config))
-        entry = config[key]["jolink-runtime"]
-        if key == "mcp":
-            assert entry["type"] == "local" and entry["enabled"] is True
-            argv = entry["command"]
-        else:
-            assert key in {"mcpServers", "servers", "mcp_servers"}
-            assert entry.get("type", "stdio") == "stdio"
-            argv = [entry["command"], *entry["args"]]
-        assert argv == launch
-
-
-def server_entry(config):
-    key = next(iter(config))
-    return key, config[key]["jolink-runtime"]
+def snippet(path, marker):
+    return next(
+        value
+        for value in blocks(path, "python")
+        if value.startswith("# jolink: " + marker + "\n")
+    )
 
 
 def expected_environment(path):
     return {
-        "JOLINK_DOWNLOAD_MIRROR": "cn" if path.name.endswith("zh-CN.md") else "official",
+        "JOLINK_DOWNLOAD_MIRROR": "cn"
+        if path.name.endswith("zh-CN.md")
+        else "official",
         "JOLINK_JDT_GC_AFTER_BUILD": "1",
     }
 
 
-@pytest.mark.parametrize("path", INSTALL, ids=lambda p: p.name)
-def test_all_client_formats_pass_mirror_and_gc_to_server(path):
-    for config in templates(path):
-        key, entry = server_entry(config)
-        field = "environment" if key == "mcp" else "env"
-        assert entry[field] == expected_environment(path)
-        assert ("env" if field == "environment" else "environment") not in entry
-
-
-def test_install_translations_differ_only_in_download_mirror():
-    english, chinese = templates(INSTALL[0]), templates(INSTALL[1])
-    assert len(english) == len(chinese)
-    for original, translated in zip(english, chinese, strict=True):
-        key, entry = server_entry(translated)
-        field = "environment" if key == "mcp" else "env"
-        entry[field]["JOLINK_DOWNLOAD_MIRROR"] = "official"
-        assert original == translated
+def test_install_translations_use_identical_commands():
+    for language in ("sh", "powershell", "text", "console", "python"):
+        normalize = lambda values: [
+            re.sub(r"\bcn\b", "official", value) for value in values
+        ]
+        assert normalize(blocks(INSTALL[0], language)) == normalize(
+            blocks(INSTALL[1], language)
+        )
+    for path in INSTALL:
+        versions = re.findall(
+            r"jolink-runtime(?:==|@)([\w.]+)", path.read_text(encoding="utf-8")
+        )
+        assert versions and set(versions) == {"latest"}
 
 
 @pytest.mark.parametrize("path", INSTALL, ids=lambda p: p.name)
-def test_native_registration_commands_include_the_template_environment(path):
-    commands = re.findall(r"`([^`]*mcp add[^`]*)`", path.read_text(encoding="utf-8"))
+def test_native_registration_commands_include_environment_and_user_scope(path):
+    commands = [
+        line
+        for block in blocks(path, "console")
+        for line in block.splitlines()
+        if " mcp add " in line
+    ]
     assert commands
     for command in commands:
         args = shlex.split(command)
-        # The Gemini table mentions mcp add without providing a command example.
-        if "--" not in args:
-            continue
-        assert args[args.index("--") + 1:] == ["uvx", "jolink-runtime@latest"]
-        env = dict(args[i + 1].split("=", 1) for i, value in enumerate(args) if value == "--env")
+        assert args[args.index("--") + 1 :] == ["uvx", "jolink-runtime@latest"]
+        env = dict(
+            args[i + 1].split("=", 1)
+            for i, value in enumerate(args)
+            if value == "--env"
+        )
         assert env == expected_environment(path)
+        if args[0] == "claude":
+            assert args[args.index("--scope") + 1] == "user"
+    assert (
+        next(v for v in blocks(path, "text") if v.startswith("uvx ")).strip()
+        == "uvx jolink-runtime@latest"
+    )
 
 
 def test_skill_examples_validate_against_current_mcp_schemas():
     schemas = {tool.name: tool.inputSchema for tool in get_mcp_tools()}
     examples = re.findall(
-        r"Example .*?tool `([^`]+)`.*?```json\n(.*?)```", SKILL.read_text(encoding="utf-8"), re.DOTALL
+        r"Example .*?tool `([^`]+)`.*?```json\n(.*?)```",
+        SKILL.read_text(encoding="utf-8"),
+        re.DOTALL,
     )
     assert examples
     for name, arguments in examples:
@@ -127,9 +110,19 @@ def test_translated_readme_examples_validate_against_current_mcp_schemas():
         Draft202012Validator(schemas[tool]).validate(arguments)
 
 
-@pytest.mark.parametrize("path", [ROOT / "README.md", ROOT / "README.zh-CN.md", *INSTALL, SKILL, RULE,
-                                  ROOT / "THIRD_PARTY_NOTICES.md", ROOT / "licenses/README.md"],
-                         ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "path",
+    [
+        ROOT / "README.md",
+        ROOT / "README.zh-CN.md",
+        *INSTALL,
+        SKILL,
+        RULE,
+        ROOT / "THIRD_PARTY_NOTICES.md",
+        ROOT / "licenses/README.md",
+    ],
+    ids=lambda p: p.name,
+)
 def test_distribution_relative_links_resolve(path):
     for destination in re.findall(r"\]\(([^)\s]+)\)", path.read_text(encoding="utf-8")):
         parsed = urlsplit(destination)
@@ -156,14 +149,21 @@ def test_language_entrypoints_link_to_matching_installation_guide():
     # Both installation guides point to the same deployable English Skill.
     for path in INSTALL:
         assert "](skills/jolink-java/SKILL.md)" in path.read_text(encoding="utf-8")
-        assert "](rules/jolink-java-verification.md)" in path.read_text(encoding="utf-8")
+        assert "](rules/jolink-java-verification.md)" in path.read_text(
+            encoding="utf-8"
+        )
 
 
-@pytest.mark.parametrize("suffix,stop,reload,no_reinstall", [
-    ("", "stop", "reload", "without reinstalling"),
-    (".zh-CN", "停止", "重新加载", "不要重新安装"),
-])
-def test_installation_handoff_is_part_of_the_copied_prompts(suffix, stop, reload, no_reinstall):
+@pytest.mark.parametrize(
+    "suffix,stop,reload,no_reinstall",
+    [
+        ("", "stop", "reload", "without reinstalling"),
+        (".zh-CN", "停止", "重新加载", "不要重新安装"),
+    ],
+)
+def test_installation_handoff_is_part_of_the_copied_prompts(
+    suffix, stop, reload, no_reinstall
+):
     readme = ROOT / f"README{suffix}.md"
     url = f"https://github.com/L1ch404/jolink-runtime/blob/main/INSTALL{suffix}.md"
     prompts = blocks(readme, "text")
@@ -199,29 +199,19 @@ def test_rule_markers_and_tool_references_are_deployable():
     for path in INSTALL:
         guide = path.read_text(encoding="utf-8")
         assert begin in guide and end in guide
-        assert "raw.githubusercontent.com/L1ch404/jolink-runtime/main/" + RULE.relative_to(ROOT).as_posix() in guide
+        assert "raw.githubusercontent.com/L1ch404/jolink-runtime" in guide
+        assert RULE.relative_to(ROOT).as_posix() in guide
 
 
 def rule_section(path):
     return path.read_text(encoding="utf-8").split("## 5.", 1)[1].split("## 6.", 1)[0]
 
 
-def test_global_rule_translations_use_same_destinations_and_native_headers():
+def test_global_rule_translations_use_same_destinations_and_commands():
     english, chinese = (rule_section(path) for path in INSTALL)
-    paths = lambda text: sorted(re.findall(r"`(~[^`]+)`", text))
+    paths = lambda text: set(re.findall(r"`(~[^`]+)`", text))
     assert paths(english) and paths(english) == paths(chinese)
-    headers = blocks(INSTALL[0], "yaml")
-    assert headers == blocks(INSTALL[1], "yaml")
-    parsed = []
-    for header in headers:
-        lines = header.strip().splitlines()
-        assert lines[0] == lines[-1] == "---"
-        # Native wrappers use only simple scalar fields; no extra YAML dependency.
-        fields = dict(line.split(":", 1) for line in lines[1:-1])
-        parsed.append({key: value.strip() for key, value in fields.items()})
-    assert {"applyTo": '"**"'} in parsed
-    assert {"enabled": "true", "alwaysApply": "true"} in parsed
-    assert {"inclusion": "always"} in parsed
+    assert snippet(INSTALL[0], "install-text") == snippet(INSTALL[1], "install-text")
 
 
 @pytest.mark.parametrize("path", INSTALL, ids=lambda p: p.name)

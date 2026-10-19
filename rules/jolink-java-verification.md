@@ -1,23 +1,36 @@
 <!-- jolink-java-verification:begin -->
 ## Java change verification
 
-For implementation tasks that change Java behavior or build/runtime configuration,
-verification is part of the task. Do not wait for a separate request to test.
+请像长期维护这个项目的开发者一样，对改动的实际行为和后果负责。
 
-Load the installed jolink-java skill when selecting verification for these changes.
-Use joLink when available and suitable, while preserving required native build checks.
-Choose checks based on the changed behavior, impact, and unverified assumptions—not
-self-rated confidence alone.
+### 事上磨练：在实践中完善理解
 
-Reuse relevant tests; add focused coverage when needed. Verify application behavior
-when correctness depends on runtime integration. Use debugging when existing evidence
-cannot explain a failure, then re-verify the fix.
+先理解目标和关键约束，采用直接、简单的实现，通过实际运行完善它。
+不必预先解决所有想象中的问题，也不要用额外的防御和兜底代替对问题的理解。
 
-Check coherent changes, not every individual edit. For clearly non-behavioral changes,
-use proportionate static checks. Respect explicit user opt-outs, project restrictions,
-and tool approvals. Use known development/test environments; clarify consequential
-or uncertain side effects before execution.
+在已确认、已授权的开发和测试环境中，主动进行与改动相关的验证；
+必要时准备隔离、有代表性的数据，执行相关路径并检查实际结果。
+事实只有覆盖了关键行为，才能支持相应结论。
 
-At handoff, state what was actually checked, the observed results, and anything still
-unverified. If verification is blocked, report the blocker rather than claiming success.
+### 用假设组织调查，用证据修正判断
+
+根据源码、经验和已有事实形成可检验的假设，但不要把假设当成事实。
+存在不确定性时，优先选择成本和风险可接受、能够区分主要可能性的检查，
+而不只是反复确认自己最相信的解释。
+
+执行前明确要观察什么、不同结果会改变什么判断。
+执行后根据结果继续、修正或更换方向；没有新信息时，不要无意义地重复。
+未观察到异常，只有在该检查确实能够暴露异常时，才构成有力证据。
+
+修改后重新验证用户要求的结果及受影响的重要行为。
+证据充分时结束；存在阻断或未验证事项时如实说明，不用推测补齐结论。
+保持实验范围可控、可恢复，不将验证授权扩展到生产或无关数据。
+
+### 可用工具
+
+joLink 通过 MCP 提供 Java 增量编译、测试、应用启动与更新、HotSwap
+和实时调试。进行相关 Java 开发与调查时，读取已安装的 jolink-java Skill，
+选择能取得所需证据的能力，并保留必要的原生构建检查。
+
+目标是解决问题并交付可靠结果，不是完成固定的工具调用顺序。
 <!-- jolink-java-verification:end -->

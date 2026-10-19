@@ -1,6 +1,6 @@
 """joLink Runtime."""
 
-__version__ = "0.1.0a8"
+__version__ = "0.1.0a9"
 RUNTIME_LINEAGE = "2.4.0"
 
 __all__ = ["RUNTIME_LINEAGE", "__version__"]
