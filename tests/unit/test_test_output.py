@@ -47,7 +47,7 @@ def test_only_result_reads_output(tmp_path):
         assert full["output"] == "one\n中文 stderr\nlast\n"
         assert full["output_truncated"] is False
         assert manager.result(attempt.test_run_id) == full
-        with log.path.open("a", encoding="utf-8") as stream:
+        with log.path.open("a", encoding="utf-8", newline="") as stream:
             stream.write("later\n")
         assert manager.result(attempt.test_run_id)["output"].endswith("later\n")
     finally:
@@ -75,30 +75,34 @@ def test_log_file_paths_are_absolute(tmp_path, monkeypatch):
     assert Path(result["log_files"][0]).read_text() == "text\n"
 
 
-def test_multiple_groups_keep_order_and_share_tail(tmp_path):
-    first = output_log(tmp_path, "unit", "unit1\nunit2\n")
-    last = output_log(tmp_path, "integration", "it1\nit2\n")
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_multiple_groups_keep_order_and_share_tail(tmp_path, newline):
+    def lines(prefix, start, stop):
+        return "".join(f"{prefix}{i}{newline}" for i in range(start, stop))
+
+    first = output_log(tmp_path, "unit", lines("unit", 1, 3))
+    last = output_log(tmp_path, "integration", lines("it", 1, 3))
     full = read_test_output((first, last))
     assert full == {
-        "output": "[unit]\nunit1\nunit2\n[integration]\nit1\nit2\n",
+        "output": "[unit]\n" + lines("unit", 1, 3) + "[integration]\n" + lines("it", 1, 3),
         "output_truncated": False,
         "log_files": [str(first.path), str(last.path)],
     }
-    first.path.write_text("".join(f"unit-{i}\n" for i in range(20)))
-    last.path.write_text("".join(f"it-{i}\n" for i in range(40)))
+    first.path.write_bytes(lines("unit-", 0, 20).encode("utf-8"))
+    last.path.write_bytes(lines("it-", 0, 40).encode("utf-8"))
     short = read_test_output((first, last))
     assert short == {
         "output": "[unit]\n"
-        + "".join(f"unit-{i}\n" for i in range(10, 20))
+        + lines("unit-", 10, 20)
         + "[integration]\n"
-        + "".join(f"it-{i}\n" for i in range(40)),
+        + lines("it-", 0, 40),
         "output_truncated": True,
         "log_files": [str(first.path), str(last.path)],
     }
-    last.path.write_text("".join(f"it-{i}\n" for i in range(60)))
+    last.path.write_bytes(lines("it-", 0, 60).encode("utf-8"))
     newest = read_test_output((first, last))
     assert newest == {
-        "output": "[integration]\n" + "".join(f"it-{i}\n" for i in range(10, 60)),
+        "output": "[integration]\n" + lines("it-", 10, 60),
         "output_truncated": True,
         "log_files": [str(first.path), str(last.path)],
     }
@@ -192,7 +196,7 @@ def test_execution_registers_log_before_runner_failure(tmp_path):
         assert attempt.output_logs == (options["output_log"],)
         assert attempt.output_logs[0].path == options["attempt_directory"] / "test.log"
         attempt.output_logs[0].path.parent.mkdir()
-        attempt.output_logs[0].path.write_text("before crash\n")
+        attempt.output_logs[0].path.write_bytes(b"before crash\n")
         raise RuntimeError("crash")
 
     with pytest.raises(RuntimeError, match="crash"):

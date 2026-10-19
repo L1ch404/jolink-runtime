@@ -119,7 +119,6 @@ def test_runner_jdk_changes_reuse_live_and_disk_models(model, monkeypatch):
     monkeypatch.setattr(
         manager._idea, "import_preferences", lambda _: IdeaBuildPreferences()
     )
-    model.toolchain.home.mkdir()
     preferences = IdeaBuildPreferences(
         maven_runner_jdk_name=str(model.toolchain.home)
     ).cache_values()

@@ -51,6 +51,9 @@ def _model(tmp_path: Path) -> tuple[Path, dict]:
         path.mkdir(parents=True)
     for name in ("java", "javac", "java.exe", "javac.exe"):
         (java_home / "bin" / name).write_bytes(b"")
+    (java_home / "release").write_text('JAVA_VERSION="11.0.27"\n', encoding="utf-8")
+    (java_home / "lib").mkdir()
+    (java_home / "lib/jrt-fs.jar").write_bytes(b"fixture system image")
 
     def source_set(name: str, output: Path) -> dict:
         return {
@@ -400,6 +403,7 @@ def test_product_gradle_runtime_world_creates_reload_authority(
     assert world.runtime_classpath[0] == world.module_output
     assert world.jdt_plan.source_level == 11
     assert world.jdt_plan.target_level == 11
+    assert world.jdt_plan.target_java_home == (project / "jdk").resolve()
     assert world.jdt_plan.source_encoding == "UTF-8"
     assert world.jdt_plan.configuration_environment_names == (
         "GRADLE_USER_HOME",

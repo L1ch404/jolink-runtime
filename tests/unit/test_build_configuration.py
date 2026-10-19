@@ -43,8 +43,14 @@ def model(tmp_path):
     pom = root / "pom.xml"
     pom.write_text("<project/>")
     jdk = tmp_path / "jdk"
+    suffix = ".exe" if os.name == "nt" else ""
+    (jdk / "bin").mkdir(parents=True)
+    java, javac = (jdk / "bin" / f"{name}{suffix}" for name in ("java", "javac"))
+    java.write_bytes(b"fixture java")
+    javac.write_bytes(b"fixture javac")
+    (jdk / "release").write_text('JAVA_VERSION="1.8.0_451"\n', encoding="utf-8")
     toolchain = JavaToolchainCandidate(
-        jdk, jdk / "bin/java", jdk / "bin/javac", "test", 8, 8
+        jdk, java, javac, "test", 8, 8
     )
     sources = (root / "src/main/java",)
     resource = root / "src/main/resources"
