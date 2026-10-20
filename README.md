@@ -37,6 +37,11 @@ Check the saved configuration, Skill and rule. If a client UI action or reload i
 stop and tell me what to do; leave connection and rule-loading verification to a chat after reloading.
 ```
 
+> [!WARNING]
+> Following the prompt above adds a global Java verification rule to your current agent, applying across projects.
+> This encourages the agent to perform additional tests and runtime checks, which may increase token usage and task completion time.
+> If you do not want this global rule, remove the line that enables it before sending the prompt.
+
 3. If the agent reports that a reload is needed, reconnect MCP or restart the client
    as instructed, then open a new chat. Configuration complete but not yet loaded
    is not an installation failure. In the loaded chat, you can send:
