@@ -122,6 +122,7 @@ def load_module_worlds(
                 "lombok_entries": [str(path) for path in lombok],
                 "preparation_inputs": snapshot.get("preparationInputs", []),
                 "preparation_roots": snapshot.get("preparationRoots", []),
+                "preparation_resource_sets": snapshot.get("preparationResourceSets", []),
                 "preparation_executions": snapshot.get("preparationExecutions", []),
                 "skipped_build_steps": snapshot.get("skippedPreparationExecutions", []),
                 **processor_settings(processing),

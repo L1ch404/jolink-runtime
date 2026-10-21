@@ -52,7 +52,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest27";
+    private static final String PROBE_VERSION = "0.1.0-fasttest32";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -328,6 +328,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "testClasspathElements", testClasspath, true);
         stringList(out, "preparationInputs", contextPaths(SourcePreparation.INPUTS), true);
         stringList(out, "preparationRoots", contextPaths(SourcePreparation.ROOTS), true);
+        resourceInputs(out);
         stringList(out, "preparationExecutions", contextPaths(SourcePreparation.EXECUTIONS), true);
         out.append(",\"testAnnotationProcessing\":{");
         field(out, "processingMode", testProcessors.processingMode, false);
@@ -812,6 +813,26 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             for (String path : classpath) if (new File(path).exists()) facts.processorPath.add(path);
         }
         return facts;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void resourceInputs(StringBuilder out) {
+        out.append(",\"preparationResourceSets\":[");
+        Object value = project.getContextValue(ResourcePreparation.INPUTS);
+        List<org.apache.maven.model.Resource> inputs = value == null
+            ? Collections.<org.apache.maven.model.Resource>emptyList()
+            : (List<org.apache.maven.model.Resource>) value;
+        boolean comma = false;
+        for (org.apache.maven.model.Resource input : inputs) {
+            if (comma) out.append(',');
+            out.append('{');
+            field(out, "directory", input.getDirectory(), false);
+            stringList(out, "includes", input.getIncludes(), true);
+            stringList(out, "excludes", input.getExcludes(), true);
+            out.append('}');
+            comma = true;
+        }
+        out.append(']');
     }
 
     @SuppressWarnings("unchecked")

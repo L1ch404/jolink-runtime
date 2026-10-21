@@ -22,7 +22,7 @@ from .configuration_inputs import build_configuration_stamps
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v7"
+_SCHEMA = "jolink.project-launch-cache.v8"
 
 
 def _path(value: Any) -> Path:
@@ -175,7 +175,7 @@ class ProjectLaunchCache:
             ):
                 return None
             from .configuration_inputs import preparation_stamps
-            if raw.get("preparation_stamps", {}) != preparation_stamps(plan_raw.get("preparation_inputs", ()), plan_raw.get("preparation_roots", ())):
+            if raw.get("preparation_stamps", {}) != preparation_stamps(plan_raw.get("preparation_inputs", ()), plan_raw.get("preparation_roots", ()), plan_raw.get("preparation_resource_sets", ())):
                 return None
             if build_system == "gradle" and plan_raw.get("modules"):
                 if raw.get("gradle_environment") != _environment_inputs(raw.get("gradle_environment", ())):
@@ -192,6 +192,7 @@ class ProjectLaunchCache:
                 processor_options=dict(plan_raw.get("processor_options", {})),
                 preparation_inputs=_paths(plan_raw.get("preparation_inputs", ())),
                 preparation_roots=_paths(plan_raw.get("preparation_roots", ())),
+                preparation_resource_sets=tuple(plan_raw.get("preparation_resource_sets", ())),
                 lombok_entries=_paths(plan_raw["lombok_entries"]),
                 target_java_home=_path(plan_raw["target_java_home"]),
                 source_encoding=str(plan_raw["source_encoding"]),
@@ -275,7 +276,7 @@ class ProjectLaunchCache:
         from .configuration_inputs import preparation_stamps
         value = {
             "schema": _SCHEMA,
-            "preparation_stamps": preparation_stamps(jdt_plan.preparation_inputs, jdt_plan.preparation_roots),
+            "preparation_stamps": preparation_stamps(jdt_plan.preparation_inputs, jdt_plan.preparation_roots, jdt_plan.preparation_resource_sets),
             "configuration_stamps": jdt_plan.configuration_stamps if jdt_plan.configuration_stamps is not None
                 else build_configuration_stamps(project_root, build_system, jdt_plan.configuration_inputs),
             "gradle_environment": _environment_inputs(jdt_plan.configuration_environment_names)
@@ -349,6 +350,7 @@ class ProjectLaunchCache:
                 "processor_options": jdt_plan.processor_options,
                 "preparation_inputs": [str(p) for p in jdt_plan.preparation_inputs],
                 "preparation_roots": [str(p) for p in jdt_plan.preparation_roots],
+                "preparation_resource_sets": jdt_plan.preparation_resource_sets,
                 "resource_fingerprint": jdt_plan.resource_fingerprint,
             },
         }

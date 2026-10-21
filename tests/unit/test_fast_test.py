@@ -1135,7 +1135,8 @@ def test_initializing_compiler_is_closed_until_project_ownership_transfers(
 
         @staticmethod
         def start():
-            return SimpleNamespace(compile_ok=True)
+            return SimpleNamespace(compile_ok=True, actual_build_kind="FULL",
+                                   compiled_source_units=("src/Example.java",), elapsed_ms=10.0)
 
         def close(self):
             self.closed = True
@@ -1180,7 +1181,8 @@ def test_successful_compiler_initialization_transfers_ownership(
 
         @staticmethod
         def start():
-            return SimpleNamespace(compile_ok=True)
+            return SimpleNamespace(compile_ok=True, actual_build_kind="FULL",
+                                   compiled_source_units=("src/Example.java",), elapsed_ms=10.0)
 
         def close(self):
             self.closed = True

@@ -62,13 +62,13 @@ final class SourcePreparation {
                     throw new MojoExecutionException("Source preparation requires a forked lifecycle: " + execution.getGoal());
                 Set<String> paths = new LinkedHashSet<>();
                 Set<String> rootsBefore = sourceRoots(project);
-                collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths);
+                collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths, resource);
                 log.info("joLink source preparation: " + identity + " (" + phase + ")");
                 if (resource) resources.execute(session, project, execution, plugins);
                 else plugins.executeMojo(session, execution);
                 // Include newly created output/source roots in the same small
                 // file-input snapshot, so deleting generated outputs refreshes it.
-                collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths);
+                collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths, resource);
                 if (resource) {
                     // Native output may also contain javac classes. Track only
                     // resource inputs and the individual outputs we produced.
@@ -129,14 +129,17 @@ final class SourcePreparation {
     }
 
     private static void collectPaths(Xpp3Dom configuration, PluginParameterExpressionEvaluator evaluator,
-            MavenProject project, Set<String> paths) throws Exception {
+            MavenProject project, Set<String> paths, boolean resourceExecution) throws Exception {
         if (configuration == null) return;
         for (Xpp3Dom child : configuration.getChildren()) {
+            // ResourcePreparation exports these with their selection patterns;
+            // flattening them to directories also tracks excluded Java/temp files.
+            if (resourceExecution && "resources".equals(child.getName())) continue;
             for (String attribute : child.getAttributeNames()) {
                 if (!"implementation".equals(attribute) && !"default-value".equals(attribute))
                     collectPath(child.getAttribute(attribute), false, evaluator, project, paths);
             }
-            if (child.getChildCount() > 0) { collectPaths(child, evaluator, project, paths); continue; }
+            if (child.getChildCount() > 0) { collectPaths(child, evaluator, project, paths, false); continue; }
             String value = child.getValue();
             if (value == null) value = child.getAttribute("default-value");
             collectPath(value, "java.io.File".equals(child.getAttribute("implementation")), evaluator, project, paths);

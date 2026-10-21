@@ -255,11 +255,20 @@ JDT Worker、Probe模型及编译缓存；工具改名不改变缓存身份。�
 
 每次测试仍启动独立Runner JVM，避免测试之间共享静态状态。当前时间字段：
 
-- `bootstrap_ms`：缓存读取/Probe、Worker启动以及首次FULL；
+- `bootstrap_ms`：缓存读取/Probe、Worker 启动，以及初始化或恢复工作区时发生的编译；
 - `source_scan_ms`：通过mtime/size查找变化源码；
-- `compile_ms`：JDT增量编译；
+- `compile_ms`：本次所有 JDT 编译耗时之和，包含 bootstrap 内的 FULL/增量编译；
 - `runner_ms`：Runner JVM启动和测试执行；
 - `total_ms`：完整调用。
+
+`compile_ms` 中发生在初始化阶段的部分也包含在 `bootstrap_ms` 内，不能将这些字段
+直接相加作为总耗时。`compiled_source_count` 汇总本次各阶段实际编译的源码，按编译单元
+去重；初始化之后的无改动扫描或显式文件提示不会把已有计数覆盖成 0。
+`source_file_count` 仍表示调用者传入的 `source_files` 数量，不代表自动检测到的变化数量。
+
+Maven 资源缓存按 Probe 导出的目录、includes/excludes 跟踪匹配文件。源码目录只声明
+`**/*.xml` 为资源时，Java 或无关临时文件变化不会使资源准备失效；匹配资源的增删改
+仍会刷新准备结果。旧版缓存会重新导出一次模型以取得筛选条件，不主动清除 JDT 输出。
 
 ## 已验证
 

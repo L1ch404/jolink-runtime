@@ -177,6 +177,16 @@ class TestAttempt:
     thread: threading.Thread | None = None
     done: threading.Event = field(default_factory=threading.Event)
 
+    def record_compilation(self, result) -> None:
+        """Count all builds in this attempt, including workspace initialization."""
+        if result.actual_build_kind is None:
+            return
+        self.compile_ms = round((self.compile_ms or 0.0) + result.elapsed_ms, 1)
+        self.compiled_source_units = tuple(dict.fromkeys((
+            *self.compiled_source_units, *result.compiled_source_units,
+        )))
+        self.compiled_source_count = len(self.compiled_source_units)
+
     def require_not_cancelled(self) -> None:
         if self.cancel_requested:
             raise FastTestManagerError(
@@ -446,13 +456,7 @@ class FastTestManager:
                     attempt.require_not_cancelled()
                     compiled = project.compiler.compile(selected_sources)
                     attempt.require_not_cancelled()
-                    attempt.compile_ms = compiled.elapsed_ms
-                    attempt.compiled_source_count = (
-                        compiled.compiled_source_count
-                    )
-                    attempt.compiled_source_units = tuple(
-                        compiled.compiled_source_units
-                    )
+                    attempt.record_compilation(compiled)
                     if not compiled.main_compile_ok or not compiled.test_compile_ok:
                         attempt.state = "compile_failed"
                         attempt.result = {
@@ -1388,10 +1392,12 @@ class FastTestManager:
                 if reuse_workspace
                 else compiler.start()
             )
+            attempt.record_compilation(full)
             if reuse_workspace:
                 changed = compiler.workspace_source_changes()
                 if changed:
                     full = compiler.compile(changed)
+                    attempt.record_compilation(full)
             project = finish(full)
             with self._lock:
                 attempt.require_not_cancelled()

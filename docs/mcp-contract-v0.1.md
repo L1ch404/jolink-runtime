@@ -87,6 +87,10 @@ preparation error details also remain available through `result`.
 Failure summaries include `next_action = {tool: "java_fast_test", arguments: {action:
 "result", test_run_id: ...}}`. Reading details neither reruns nor consumes a test.
 `compiled_source_count` is retained; bulk `compiled_source_units` is not returned.
+The count covers distinct compiled units across bootstrap and subsequent incremental
+builds in this attempt; a later no-op does not reset it. `compile_ms` includes the
+bootstrap's compilation time, so it overlaps `bootstrap_ms` rather than adding to it.
+`source_file_count` counts explicit input hints, not automatically detected changes.
 `result` addresses the active or most recently finished attempt by ID in the
 current MCP process; unknown, superseded or pre-reconnection IDs return
 `TEST_RUN_NOT_FOUND`, never a different test's result. An active attempt may still

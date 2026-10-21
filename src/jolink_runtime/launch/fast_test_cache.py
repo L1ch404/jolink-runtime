@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v11"
+_SCHEMA = "jolink.fast-test-world.v12"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -205,6 +205,7 @@ class FastTestCache:
         """The same captured inputs accompany both the live model and its disk copy."""
         inputs = [str(p) for m in world.modules for p in m.get("preparation_inputs", ())]
         roots = [str(p) for m in world.modules for p in m.get("preparation_roots", ())]
+        resources = [r for m in world.modules for r in m.get("preparation_resource_sets", ())]
         return {
             "build_preferences": dict(world.build_preferences),
             "configuration_files": [str(p) for p in _world_configuration_files(world)],
@@ -212,7 +213,8 @@ class FastTestCache:
             "environment_inputs": _environment_inputs(world.configuration_environment_names),
             "preparation_inputs": inputs,
             "preparation_roots": roots,
-            "preparation_stamps": preparation_stamps(inputs, roots),
+            "preparation_resource_sets": resources,
+            "preparation_stamps": preparation_stamps(inputs, roots, resources),
         }
 
     @staticmethod
@@ -226,6 +228,7 @@ class FastTestCache:
             prepared = preparation_stamps(
                 snapshot.get("preparation_inputs", ()),
                 snapshot.get("preparation_roots", ()),
+                snapshot.get("preparation_resource_sets", ()),
             )
             if snapshot.get("preparation_stamps") != prepared:
                 return False

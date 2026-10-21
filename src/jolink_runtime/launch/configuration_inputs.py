@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .maven_reactor import maven_build_root
+from .source_selection import SourceSelection
 
 
 def maven_environment_references(paths):
@@ -87,8 +88,8 @@ def configuration_file_stamps(paths):
     }
 
 
-def preparation_stamps(paths, roots=()):
-    """Generator-declared files/directories: stat only, no repeated content hashes."""
+def preparation_stamps(paths, roots=(), resource_sets=()):
+    """Stat generator inputs and selected resources without reading file contents."""
     result = {}
     for path in expand_configuration_inputs(dict.fromkeys(paths)):
         try:
@@ -99,4 +100,11 @@ def preparation_stamps(paths, roots=()):
         except FileNotFoundError:
             result[str(path)] = "missing"
     result.update({"root:" + str(path): Path(path).is_dir() for path in roots})
+    for resource in resource_sets:
+        root = Path(resource["directory"])
+        selection = SourceSelection(resource)
+        for path in root.rglob("*"):
+            if selection.accepts(path.relative_to(root).as_posix()) and path.is_file():
+                stat = path.stat()
+                result[str(path)] = [stat.st_mtime_ns, stat.st_size]
     return result

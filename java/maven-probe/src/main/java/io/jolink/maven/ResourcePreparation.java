@@ -14,6 +14,7 @@ import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.BuildPluginManager;
 import org.apache.maven.plugin.MojoExecution;
 import org.apache.maven.plugin.PluginParameterExpressionEvaluator;
+import org.apache.maven.model.Resource;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 
@@ -21,7 +22,9 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 final class ResourcePreparation implements AutoCloseable {
     static final String MAIN = "jolink.resources.main";
     static final String TEST = "jolink.resources.test";
+    static final String INPUTS = "jolink.resources.inputs";
     private final Map<Path, Output> outputs = new LinkedHashMap<>();
+    private final List<Resource> resourceSets = new ArrayList<>();
 
     static boolean handles(MojoExecution execution) {
         return "org.apache.maven.plugins".equals(execution.getGroupId())
@@ -55,6 +58,7 @@ final class ResourcePreparation implements AutoCloseable {
         try {
             execution.setConfiguration(configured);
             plugins.executeMojo(session, execution);
+            collectInputs(original, evaluator, execution);
             // A later preparation goal may read the normal Maven output path.
             prepared.publish(false);
         } finally {
@@ -70,6 +74,54 @@ final class ResourcePreparation implements AutoCloseable {
         }
         project.setContextValue(MAIN, directories(project.getBuild().getOutputDirectory()));
         project.setContextValue(TEST, directories(project.getBuild().getTestOutputDirectory()));
+        project.setContextValue(INPUTS, resourceSets);
+    }
+
+    private void collectInputs(Xpp3Dom configuration, PluginParameterExpressionEvaluator evaluator,
+            MojoExecution execution) throws Exception {
+        if (Boolean.parseBoolean(String.valueOf(value(configuration.getChild("skip"), evaluator)))) return;
+        Xpp3Dom configured = configuration.getChild("resources");
+        if (configured == null) return;
+        List<Resource> resources = new ArrayList<>();
+        if (configured.getChildCount() == 0) {
+            Object resolved = value(configured, evaluator);
+            if (resolved instanceof Collection<?>)
+                for (Object item : (Collection<?>) resolved) resources.add((Resource) item);
+        } else {
+            for (Xpp3Dom child : configured.getChildren()) {
+                Resource resource = new Resource();
+                resource.setDirectory(String.valueOf(value(child.getChild("directory"), evaluator)));
+                resource.setIncludes(patterns(child.getChild("includes"), evaluator));
+                resource.setExcludes(patterns(child.getChild("excludes"), evaluator));
+                resources.add(resource);
+            }
+        }
+        boolean defaults = !"false".equalsIgnoreCase(String.valueOf(value(configuration.getChild("addDefaultExcludes"), evaluator)));
+        // Read the resource plugin's scanner defaults, not a different Plexus
+        // version from the Probe's compile-time dependencies/Maven API realm.
+        String[] defaultExcludes = defaults ? (String[]) execution.getMojoDescriptor().getPluginDescriptor()
+            .getClassRealm().loadClass("org.codehaus.plexus.util.AbstractScanner")
+            .getField("DEFAULTEXCLUDES").get(null) : new String[0];
+        for (Resource resource : resources) {
+            Resource input = new Resource();
+            input.setDirectory(evaluator.alignToBaseDirectory(new File(resource.getDirectory())).getCanonicalPath());
+            input.setIncludes(new ArrayList<>(resource.getIncludes()));
+            input.setExcludes(new ArrayList<>(resource.getExcludes()));
+            for (String pattern : defaultExcludes) input.addExclude(pattern);
+            resourceSets.add(input);
+        }
+    }
+
+    private static Object value(Xpp3Dom node, PluginParameterExpressionEvaluator evaluator) throws Exception {
+        if (node == null) return null;
+        String value = node.getValue() == null ? node.getAttribute("default-value") : node.getValue();
+        return value == null ? null : evaluator.evaluate(value);
+    }
+
+    private static List<String> patterns(Xpp3Dom node, PluginParameterExpressionEvaluator evaluator) throws Exception {
+        List<String> result = new ArrayList<>();
+        if (node != null) for (Xpp3Dom child : node.getChildren()) result.add(String.valueOf(value(child, evaluator)));
+        return result;
     }
 
     private List<String> directories(String nativePath) throws Exception {

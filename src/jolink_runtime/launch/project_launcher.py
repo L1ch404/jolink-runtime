@@ -409,6 +409,7 @@ class ProjectLaunchPipeline:
             processor_options=target.get("processor_options", {}),
             preparation_inputs=tuple(Path(p) for m in modules for p in m.get("preparation_inputs", ())),
             preparation_roots=tuple(Path(p) for m in modules for p in m.get("preparation_roots", ())),
+            preparation_resource_sets=tuple(r for m in modules for r in m.get("preparation_resource_sets", ())),
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
             source_level=target["source_level"], target_level=target["source_level"],
