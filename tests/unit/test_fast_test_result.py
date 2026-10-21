@@ -139,6 +139,79 @@ def test_result_keeps_outcome_semantics_without_starting_work(
     anyio.run(scenario)
 
 
+@pytest.mark.parametrize("surface", ["mcp", "dispatcher", "legacy"])
+def test_result_ignores_run_arguments_without_launch_parsing_or_execution(tmp_path, product, monkeypatch, surface):
+    boundary, manager = product
+    saved = attempt(tmp_path, state="completed", result={"ok": True, "passed": True, "tests": 3})
+    saved.done.set()
+    manager._last = saved
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("result must not launch, compile, rerun or cancel anything")
+
+    for name in ("start", "cancel", "_ensure_project"):
+        monkeypatch.setattr(manager, name, unexpected)
+    runtime = boundary.dispatcher.sessions.get_runtime()
+    monkeypatch.setattr(runtime, "run", unexpected)
+    monkeypatch.setattr(runtime, "run_project", unexpected)
+    extra = {"project_path": "c:/unrelated/project", "tests": ["WrongTest"],
+             "timeout": "unused", "java_home": [], "build_java_home": False}
+
+    async def scenario():
+        if surface == "mcp":
+            response = await boundary.call_tool("java_fast_test", {
+                "action": "result", "test_run_id": saved.test_run_id, **extra,
+            })
+            payload = dict(response.structuredContent)
+            assert payload.pop("ignored_arguments") == sorted(extra)
+        else:
+            payload = boundary.dispatcher.dispatch(
+                "java_runtime" if surface == "legacy" else "java_fast_test", {
+                    "action": "test_result" if surface == "legacy" else "result",
+                    "test_run_id": saved.test_run_id, **extra,
+                })
+        assert payload == manager.result(saved.test_run_id)
+        assert manager._last is saved and manager._active is None
+    anyio.run(scenario)
+
+
+def test_cancel_uses_only_the_explicit_run_id(tmp_path, product, monkeypatch):
+    boundary, manager = product
+    current = attempt(tmp_path, "active", state="running")
+    manager._active = current
+    monkeypatch.setattr(manager, "start", lambda **kw: pytest.fail("cancel must not start work"))
+    extra = {"project_path": "c:/unrelated", "tests": ["WrongTest"], "timeout": {}, "build_system": "not-used"}
+
+    async def scenario():
+        wrong = await boundary.call_tool("java_fast_test", {"action": "cancel", "test_run_id": "other", **extra})
+        assert wrong.structuredContent["error_code"] == "TEST_RUN_NOT_FOUND"
+        assert wrong.structuredContent["ignored_arguments"] == sorted(extra)
+        assert not current.cancel_requested
+        right = await boundary.call_tool("java_fast_test", {"action": "cancel", "test_run_id": "active", **extra})
+        assert not right.isError and right.structuredContent["status"] == "cancel_requested"
+        assert right.structuredContent["test_run_id"] == "active"
+        assert right.structuredContent["ignored_arguments"] == sorted(extra)
+        assert current.cancel_requested and manager._active is current
+    try:
+        anyio.run(scenario)
+    finally:
+        current.done.set()
+
+
+def test_invalid_run_arguments_do_not_name_an_unrelated_tool(tmp_path, product, monkeypatch):
+    boundary, manager = product
+    monkeypatch.setattr(manager, "start", lambda **kw: pytest.fail("invalid run must not execute"))
+
+    async def scenario():
+        result = await boundary.call_tool("java_fast_test", {
+            "project_path": str(tmp_path), "tests": ["Test"], "java_home": "", "extra": True,
+        })
+        assert result.isError and result.structuredContent["argument"] == "java_home"
+        assert "java_application" not in result.structuredContent["suggested_next_step"]
+        assert result.structuredContent["ignored_arguments"] == ["extra"]
+    anyio.run(scenario)
+
+
 def test_active_and_last_results_are_addressed_by_id_not_silently_replaced(tmp_path, product):
     boundary, manager = product
     previous = attempt(tmp_path, "test_previous", state="completed", result={"ok": True, "passed": True})

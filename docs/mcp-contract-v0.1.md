@@ -27,8 +27,13 @@ arguments normally. If any were removed, the response includes
 absent. The annotation applies to this call only, including error/early-return
 responses, and does not alter a retained test result or debugger event.
 
-Missing required arguments, invalid types/ranges and unknown actions remain
-errors. Misspellings are not guessed or aliased. Nested configuration validation
+For `java_fast_test` actions `result` and `cancel`, only `action` and `test_run_id`
+are consumed. Leftover run arguments such as `project_path`, `tests`, JDK settings
+and `timeout` are removed before validation and listed in the same annotation.
+They cannot select a different project/test, start a new run, or bypass ID lookup.
+
+Missing required arguments, invalid types/ranges in the remaining arguments and
+unknown actions remain errors. Misspellings are not guessed or aliased. Nested configuration validation
 is unchanged; HTTP headers and JSON request bodies are not filtered. The exposed
 schema and tool descriptions are unchanged: client-side validation, if a client
 performs it before sending a request, is outside this server-side tolerance.

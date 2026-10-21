@@ -542,10 +542,13 @@ class RuntimeMCPBoundary:
         *,
         request_id: str | None = None,
     ) -> types.CallToolResult:
-        """Ignore unknown top-level fields and annotate this call's response only."""
+        """Ignore unused top-level fields and annotate this call's response only."""
         args = dict(arguments or {})
         schema = _TOOL_INPUT_SCHEMAS.get(name)
-        ignored = sorted(set(args) - schema["properties"].keys()) if schema else []
+        accepted = schema["properties"].keys() if schema else args.keys()
+        if name == "java_fast_test" and args.get("action") in ("result", "cancel"):
+            accepted = {"action", "test_run_id"}
+        ignored = sorted(set(args) - accepted)
         for key in ignored:
             args.pop(key)
         result = await self._call_tool(name, args, request_id=request_id)

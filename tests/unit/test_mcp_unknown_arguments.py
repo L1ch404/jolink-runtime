@@ -7,6 +7,7 @@ import anyio
 import pytest
 
 from jolink_runtime.server.mcp_server import RuntimeMCPBoundary, _call_tool_result
+from jolink_runtime.server.tool_schema import get_mcp_tools, JAVA_FAST_TEST_INPUT_SCHEMA
 
 
 class Dispatcher:
@@ -49,6 +50,7 @@ def test_unknown_fields_are_removed_for_each_tool_without_mutating_input(
         "extra": {"private": ["not-for-response"]},
         "_product_status": False,
         "_mcp_background_launch": True,
+        "session_key": "should-not-route",
     }
     before = deepcopy(request)
     response = call(boundary, tool, request)
@@ -57,8 +59,10 @@ def test_unknown_fields_are_removed_for_each_tool_without_mutating_input(
         "_mcp_background_launch",
         "_product_status",
         "extra",
+        "session_key",
     ]
     assert dispatcher.calls[0][1] == arguments
+    assert dispatcher.calls[0][2]["session_key"] == "default"
     assert request == before
     assert "not-for-response" not in response.content[0].text
 
@@ -203,3 +207,101 @@ def test_early_returns_include_ignored_fields(closing):
 def test_unknown_tool_name_is_not_guessed():
     with pytest.raises(ValueError, match="Unknown tool"):
         call(RuntimeMCPBoundary(Dispatcher()), "java_typo", {"action": "status"})
+
+
+@pytest.mark.parametrize("action", ["result", "cancel"])
+@pytest.mark.parametrize("field", sorted(set(JAVA_FAST_TEST_INPUT_SCHEMA["properties"]) - {"action", "test_run_id"}))
+def test_control_actions_ignore_every_run_only_field_before_type_validation(action, field):
+    dispatcher = Dispatcher()
+    request = {"action": action, "test_run_id": "kept", field: {"private": "do-not-echo"}}
+    original = deepcopy(request)
+    response = call(RuntimeMCPBoundary(dispatcher), "java_fast_test", request)
+    assert not response.isError, response
+    assert response.structuredContent["ignored_arguments"] == [field]
+    assert dispatcher.calls[0][1] == {"action": action, "test_run_id": "kept"}
+    assert request == original and "do-not-echo" not in response.content[0].text
+
+
+@pytest.mark.parametrize("action", ["result", "cancel"])
+@pytest.mark.parametrize("identifier", [{}, {"test_run_id": None}, {"test_run_id": 42}, {"test_run_id": []}])
+def test_control_actions_still_require_a_valid_identifier(action, identifier):
+    dispatcher = Dispatcher()
+    response = call(RuntimeMCPBoundary(dispatcher), "java_fast_test", {
+        "action": action, **identifier, "project_path": 42, "tests": False, "extra": None,
+    })
+    assert response.isError and response.structuredContent["argument"] == "test_run_id"
+    assert response.structuredContent["ignored_arguments"] == ["extra", "project_path", "tests"]
+    assert not dispatcher.calls
+
+
+@pytest.mark.parametrize("action", [None, [], {}, True, 42, "RESULT"])
+def test_invalid_action_is_not_coerced_or_treated_as_control(action):
+    dispatcher = Dispatcher()
+    response = call(RuntimeMCPBoundary(dispatcher), "java_fast_test", {
+        "action": action, "project_path": "/project", "tests": ["Test"], "extra": 1,
+    })
+    assert response.isError and response.structuredContent["argument"] == "action"
+    assert response.structuredContent["ignored_arguments"] == ["extra"]
+    assert not dispatcher.calls
+
+
+@pytest.mark.parametrize("tool,action", [
+    (tool.name, action) for tool in get_mcp_tools()
+    for action in tool.inputSchema["properties"]["action"]["enum"]
+])
+def test_unknown_fields_preserve_every_public_action_result(tool, action):
+    arguments = {"action": action}
+    if tool == "java_fast_test":
+        arguments.update({"project_path": "/project", "tests": ["Test"]} if action == "run"
+                         else {"test_run_id": "kept"})
+    if action == "wait_event":
+        arguments.update(wait_mode="await", wait_handle="not-created")
+    baseline = call(RuntimeMCPBoundary(Dispatcher()), tool, arguments)
+    dispatcher = Dispatcher()
+    response = call(RuntimeMCPBoundary(dispatcher), tool, {
+        **arguments, "unknown_中文": {"private": [1, None, False]},
+        "ignored_arguments": ["spoofed"], "verbose": None,
+    })
+    assert response.isError is baseline.isError
+    assert response.structuredContent == {
+        **baseline.structuredContent,
+        "ignored_arguments": ["ignored_arguments", "unknown_中文", "verbose"],
+    }
+    assert all("unknown_中文" not in args and "ignored_arguments" not in args
+               for _, args, _ in dispatcher.calls)
+
+
+def test_concurrent_annotations_are_local_to_each_call():
+    original = {"ok": True, "tests": 1}
+    dispatcher = Dispatcher(original)
+    boundary = RuntimeMCPBoundary(dispatcher)
+    results = {}
+
+    async def scenario():
+        async def invoke(label, extra):
+            results[label] = await boundary.call_tool("java_fast_test", {
+                "action": "result", "test_run_id": "same", **extra,
+            })
+        async with anyio.create_task_group() as group:
+            group.start_soon(invoke, "first", {"project_path": "/ignored", "extra": 1})
+            group.start_soon(invoke, "second", {"tests": []})
+            group.start_soon(invoke, "clean", {})
+    anyio.run(scenario)
+    assert results["first"].structuredContent == {**original, "ignored_arguments": ["extra", "project_path"]}
+    assert results["second"].structuredContent == {**original, "ignored_arguments": ["tests"]}
+    assert results["clean"].structuredContent == original == dispatcher.result
+
+
+@pytest.mark.parametrize("exception", [ValueError("invalid argument"), RuntimeError("execution failed")])
+def test_dispatch_exceptions_keep_annotation_without_exposing_ignored_values(exception):
+    class BrokenDispatcher:
+        def dispatch(self, name, arguments, **kwargs):
+            assert "unknown" not in arguments
+            raise exception
+    clean = call(RuntimeMCPBoundary(BrokenDispatcher()), "java_status", {"action": "status"})
+    annotated = call(RuntimeMCPBoundary(BrokenDispatcher()), "java_status", {
+        "action": "status", "unknown": "private-value-not-for-response",
+    })
+    assert annotated.isError and clean.isError
+    assert annotated.structuredContent == {**clean.structuredContent, "ignored_arguments": ["unknown"]}
+    assert "private-value-not-for-response" not in annotated.content[0].text

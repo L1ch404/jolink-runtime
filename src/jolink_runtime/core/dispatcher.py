@@ -39,6 +39,8 @@ def _bool_arg(arguments: dict[str, Any], name: str, default: bool = False) -> bo
 
 def parse_runtime_action(arguments: dict[str, Any]) -> RuntimeAction:
     """Parse arguments with the same defaults and coercions as the old handler."""
+    if arguments.get("action") in ("test_result", "cancel_test"):
+        arguments = {key: arguments[key] for key in ("action", "test_run_id") if key in arguments}
     action = RuntimeAction(
         action=arguments.get("action", "status"),
         classpath=arguments.get("classpath", "."),
@@ -123,7 +125,7 @@ class ProjectLaunchArgumentError(ValueError):
             "argument": argument,
             "retryable": True,
             "suggested_next_step": (
-                "Correct the java_application arguments and retry the action."
+                "Correct the arguments for this action and retry."
             ),
         }
 
@@ -132,6 +134,9 @@ def parse_project_launch_request(
     arguments: dict[str, Any],
 ) -> ProjectLaunchRequest | None:
     """Parse project launch settings independently of the direct JAR/classpath path."""
+    action = str(arguments.get("action", "status"))
+    if action in {"test_result", "cancel_test"}:
+        return None
     has_project_path = "project_path" in arguments
     has_launch_name = "launch_name" in arguments
     if "java_home" in arguments:
@@ -149,17 +154,11 @@ def parse_project_launch_request(
             )
         return None
 
-    action = str(arguments.get("action", "status"))
-    if action in {"test", "cancel_test"}:
+    if action == "test":
         if has_launch_name:
             raise ProjectLaunchArgumentError(
                 argument="launch_name",
                 message="launch_name is not valid for Fast Test.",
-            )
-        if action == "cancel_test" and has_project_path:
-            raise ProjectLaunchArgumentError(
-                argument="project_path",
-                message="cancel_test uses test_run_id and does not accept project_path.",
             )
         direct_fields = tuple(
             field
