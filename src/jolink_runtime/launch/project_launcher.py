@@ -28,7 +28,6 @@ from .contracts import (
 from .idea_environment import (
     IdeaBuildPreferences,
     IdeaEnvironmentImporter,
-    build_preferences_key,
 )
 from .idea_importer import (
     ImportedIdeaLaunch,
@@ -466,15 +465,9 @@ class ProjectLaunchPipeline:
             plan,
             attempt_directory=prepared.attempt_directory,
         )
-        # Profile/tool selection can change compiler options while all POM and
-        # dependency files stay identical. The JDT workspace must follow it too.
-        fingerprint = hashlib.sha256(json.dumps({
-            "configuration": stable.fingerprint,
-            "build_preferences": build_preferences_key(
-                prepared.build_preferences_identity, prepared.build_system
-            ),
-        }, sort_keys=True).encode()).hexdigest()
-        stable = replace(stable, fingerprint=fingerprint, configuration_stamps=build_configuration_stamps(
+        # Build choices and raw configuration invalidate Probe; only its actual
+        # JDT inputs decide whether the compiled workspace needs rebuilding.
+        stable = replace(stable, configuration_stamps=build_configuration_stamps(
             stable.project_root, prepared.build_system, stable.configuration_inputs
         ))
         return replace(

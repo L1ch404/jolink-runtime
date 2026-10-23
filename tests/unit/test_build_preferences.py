@@ -126,7 +126,7 @@ def test_live_test_model_cannot_borrow_new_disk_preferences(model, monkeypatch):
     assert live.configuration_snapshot["build_preferences"] == old
 
 
-def test_workspace_identity_follows_build_choice_not_runtime_sdk(cached_launch):
+def test_workspace_identity_follows_resolved_configuration_not_build_choice(cached_launch):
     f = cached_launch
     prepared = f.pipeline.prepare(Context(), f.request, attempt_directory=f.attempt)
     preferences = baseline()
@@ -135,7 +135,12 @@ def test_workspace_identity_follows_build_choice_not_runtime_sdk(cached_launch):
     assert f.pipeline._stabilize(prepared).jdt_build_world_plan.fingerprint == first
     changed = {**preferences, "active_profiles": ["B"]}
     second = f.pipeline._stabilize(replace(prepared, build_preferences_identity=changed))
-    assert second.jdt_build_world_plan.fingerprint != first
+    # A profile selection requires re-Probe, but identical exported compiler
+    # settings must not discard the incremental workspace.
+    assert second.jdt_build_world_plan.fingerprint == first
+    changed_plan = replace(prepared.jdt_build_world_plan, source_level=17, target_level=17)
+    changed_compiler = f.pipeline._stabilize(replace(prepared, jdt_build_world_plan=changed_plan))
+    assert changed_compiler.jdt_build_world_plan.fingerprint != first
     runtime_only = {**preferences, "project_jdk_name": "different-runtime"}
     same = f.pipeline._stabilize(replace(prepared, build_preferences_identity=runtime_only))
     assert same.jdt_build_world_plan.fingerprint == first

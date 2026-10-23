@@ -8,12 +8,12 @@ from jolink_runtime.launch.jdt_compile_session import (
     JdtBuildWorldPlan,
     resource_tree_fingerprint,
 )
-from jolink_runtime.launch.project_launch_cache import ProjectLaunchCache
+from jolink_runtime.launch.project_launch_cache import ProjectLaunchCache, stabilize_jdt_plan
 from jolink_runtime.launch.toolchain import JavaToolchainCandidate
 
 
 def test_cache_reuses_outputs_but_invalidates_changed_pom(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     project = tmp_path / "project"
     source = project / "src/main/java/example/App.java"
@@ -59,6 +59,7 @@ def test_cache_reuses_outputs_but_invalidates_changed_pom(
         resource_roots=(resource.parent,),
         resource_fingerprint=resource_tree_fingerprint((resource.parent,)),
     )
+    plan = stabilize_jdt_plan(plan, attempt_directory=tmp_path / "attempt")
     toolchain = JavaToolchainCandidate(
         home=tmp_path / "jdk",
         java_executable=java,
@@ -97,17 +98,30 @@ def test_cache_reuses_outputs_but_invalidates_changed_pom(
 
     source.write_text("class App { int value; }\n", encoding="utf-8")
     resource.write_text("name: two\n", encoding="utf-8")
-    reused = cache.load(
-        project_root=project,
-        intent=intent,
-        build_system="maven",
-        ready_port=8080,
-        startup_wait_timeout_seconds=12,
-    )
+    original_read = Path.read_bytes
+
+    def read_configuration_only(path):
+        assert path.suffix not in {".java", ".class", ".jar"}, path
+        return original_read(path)
+
+    def no_recalculation(*args, **kwargs):
+        raise AssertionError("a cached launch must not recalculate compiler identity")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", read_configuration_only)
+        patch.setattr("jolink_runtime.launch.project_launch_cache._compilation_configuration", no_recalculation)
+        reused = cache.load(
+            project_root=project,
+            intent=intent,
+            build_system="maven",
+            ready_port=8080,
+            startup_wait_timeout_seconds=12,
+        )
 
     assert reused is not None
     assert reused.jvm_plan.ready_port == 8080
     assert reused.jdt_plan.resource_fingerprint == plan.resource_fingerprint
+    assert reused.jdt_plan.compilation_configuration == plan.compilation_configuration
 
     # Old cache entries may contain an unresolved alias even after callers
     # start supplying the canonical project path.

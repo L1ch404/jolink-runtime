@@ -45,6 +45,22 @@ def _fingerprint(value: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
+def _changed_fields(previous: dict, current: dict, prefix: str = "") -> list[str]:
+    """Report setting names only; do not log processor options or other values."""
+    changed = []
+    missing = object()
+    for key in sorted(set(previous) | set(current)):
+        before, after = previous.get(key, missing), current.get(key, missing)
+        if before == after:
+            continue
+        name = prefix + key
+        if isinstance(before, dict) and isinstance(after, dict):
+            changed.extend(_changed_fields(before, after, name + "."))
+        else:
+            changed.append(name)
+    return changed
+
+
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -166,16 +182,12 @@ class JdtWorkspaceStore:
         previous_fields = state.get("identity")
         if not isinstance(previous_fields, dict):
             previous_fields = {}
-        changed_fields = sorted(
-            key for key in set(previous_fields) | set(identity)
-            if previous_fields.get(key) != identity.get(key)
-        )
         log_diagnostic(
             logger, logging.INFO,
             "jdt.workspace.claim workspace=%r reusable=%s reason=%s "
             "previous_identity=%s current_identity=%s changed_identity_fields=%s",
             str(root), reusable, reason, state.get("identity_fingerprint"), identity_fingerprint,
-            lambda: json.dumps(changed_fields, ensure_ascii=True),
+            lambda: json.dumps(_changed_fields(previous_fields, identity), ensure_ascii=True),
         )
         if not reusable:
             shutil.rmtree(root, ignore_errors=True)

@@ -105,6 +105,13 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 - Maven POM/父POM链、实际 settings、`.mvn`，以及Gradle已导出的构建配置、
   Wrapper和构建逻辑变化会使模型缓存失效并重新Probe；不扫描整份依赖和输出。
   尚未跟踪的隐藏输入、远端依赖变化等边界见[兼容性跟进](java-compatibility-followup-2026-09.md)。
+- 重新Probe不等于重新FULL。启动工作区按导出的源码根、classpath、语言级别、编码、
+  Processor及模块关系复用，不再按POM/settings原文或profile名称决定是否删除编译状态。
+  注释/格式等变化且编译配置相同时，保留工作区；有源码修改则增量，没有则直接启动。
+  实际编译配置或Worker配置改变时仍重新建立工作区。
+- 编译配置明细随原有Build World JSON保存；正常缓存命中不重新计算依赖身份。
+  外部依赖的既有身份检查只在Probe刷新后执行，模块自身输出不作为外部依赖检查。
+  旧缓存没有这份配置明细，升级后的首次启动可能重新Probe并FULL一次；不迁移旧身份。
 - 已安装的Worker按分发目录复用；新的Worker版本使用新的缓存目录。
 - 正常stop/shutdown保存workspace和源码索引。
 - JVM直接读取当前JDT bin；restart使用当前编译输出，不回退到首次启动副本。
@@ -112,3 +119,14 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 - Maven Reactor和Gradle多Project支持目标及所需模块共用一个Worker，多模块流程见
   [多模块JDT流程](jdt-modules.zh-CN.md)。Gradle多Project会比较已导出的小构建配置，
   配置变化则重新Probe；不重验整份依赖或输出。
+
+### Probe刷新与工作区复用的回归入口
+
+- `tests/unit/test_launch_workspace_identity.py`：注释/临时文件不改变编译身份，实际
+  编译参数和上游模块配置改变身份；模块输出不是外部依赖；日志按需记录变化字段。
+- `tests/unit/test_project_launch_cache.py`：缓存命中直接恢复编译配置，不重新计算身份，
+  不读取源码、class或jar内容；POM变更仍使Probe缓存失效。
+- `tests/e2e/test_launch_workspace_reuse.py`：真实stdio MCP、Maven/Gradle单/多模块，
+  注释变更保留class内容与mtime、源码变更走增量、`-parameters`变更通过HTTP反射确认，
+  以及新MCP进程恢复。可设置 `JOLINK_TEST_SPRING_H2` 和 `JOLINK_TEST_JAVA11_HOME`
+  运行Spring Boot/H2项目副本的HTTP与Fast Test回归；原项目不修改。

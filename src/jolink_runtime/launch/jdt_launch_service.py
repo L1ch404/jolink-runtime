@@ -114,7 +114,7 @@ class JdtLaunchService:
                 project_root=plan.project_root, module_root=plan.module_root,
                 identity={
                     "worker": candidate.root.name,
-                    "build_world": plan.fingerprint,
+                    **plan.compilation_configuration,
                     "worker_java_home": str(plan.worker_java_home),
                 },
             )

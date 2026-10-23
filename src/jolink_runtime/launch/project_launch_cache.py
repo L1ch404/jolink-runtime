@@ -16,13 +16,14 @@ from .jdt_compile_session import (
     JdtBuildWorldPlan,
 )
 from .jdt_workspace_store import jolink_cache_root
+from .jdt_modules import module_name
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import build_configuration_stamps
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v8"
+_SCHEMA = "jolink.project-launch-cache.v9"
 
 
 def _path(value: Any) -> Path:
@@ -89,19 +90,60 @@ def stabilize_jdt_plan(
     environment_names = tuple(
         sorted(set((*plan.configuration_environment_names, "JAVA_HOME")))
     )
-    freshness = plan.freshness_entries or plan.dependency_entries
-    fingerprint = build_world_fingerprint(
-        configuration_inputs=configuration,
-        configuration_environment_names=environment_names,
-        javac_executable=plan.javac_executable,
-        compile_classpath=freshness,
-    )
+    compilation = _compilation_configuration(plan)
+    fingerprint = hashlib.sha256(json.dumps(compilation, sort_keys=True).encode()).hexdigest()
     return replace(
         plan,
         fingerprint=fingerprint,
         configuration_inputs=configuration,
         configuration_environment_names=environment_names,
+        compilation_configuration=compilation,
     )
+
+
+def _compilation_configuration(plan: JdtBuildWorldPlan) -> dict[str, Any]:
+    """Capture JDT inputs once after Probe, not the files used to configure Probe."""
+    configuration = {
+        "source_roots": [str(p) for p in plan.source_roots],
+        "classpath": [str(p) for p in plan.dependency_entries],
+        "source_encoding": plan.source_encoding,
+        "source_level": plan.source_level,
+        "target_java_home": str(plan.target_java_home),
+        "method_parameters": plan.method_parameters,
+        "processor_entries": [str(p) for p in plan.processor_entries],
+        "processor_names": list(plan.processor_names),
+        "processor_options": dict(plan.processor_options),
+        "lombok_entries": [str(p) for p in plan.lombok_entries],
+        "worker_heap_mb": [plan.worker_min_heap_mb, plan.worker_max_heap_mb],
+    }
+    module_fields = (
+        "source_roots", "test_source_roots", "source_patterns", "test_source_patterns",
+        "output_directory", "test_output_directory", "classpath", "test_classpath",
+        "source_encoding", "source_level", "target_java_home", "method_parameters",
+        "processor_entries", "processor_names", "processor_options",
+    )
+    configuration["modules"] = {
+        module_name(module["module_root"]): {
+            key: module[key] for key in module_fields if key in module
+        }
+        for module in plan.modules
+    }
+    # Keep dependency replacement detection, but do it only when Probe refreshes.
+    # Managed module outputs are incremental compiler state, not external jars.
+    outputs = {str(Path(module[key])) for module in plan.modules
+               for key in ("output_directory", "test_output_directory") if key in module}
+    binaries = dict.fromkeys((
+        *plan.dependency_entries, *plan.processor_entries, *plan.lombok_entries,
+        *(Path(p) for module in plan.modules
+          for key in ("classpath", "test_classpath", "processor_entries", "lombok_entries")
+          for p in module.get(key, ())),
+    ))
+    configuration["binary_inputs"] = build_world_fingerprint(
+        configuration_inputs=(),
+        javac_executable=plan.target_java_home / "bin" / ("javac.exe" if os.name == "nt" else "javac"),
+        compile_classpath=(p for p in binaries if str(p) not in outputs),
+    )
+    return configuration
 
 
 @dataclass(frozen=True)
@@ -199,6 +241,7 @@ class ProjectLaunchCache:
                 source_level=int(plan_raw["source_level"]),
                 target_level=int(plan_raw["target_level"]),
                 fingerprint=str(plan_raw["fingerprint"]),
+                compilation_configuration=dict(plan_raw["compilation_configuration"]),
                 configuration_inputs=inputs,
                 configuration_environment_names=tuple(
                     str(value)
@@ -322,6 +365,7 @@ class ProjectLaunchCache:
                 "source_level": jdt_plan.source_level,
                 "target_level": jdt_plan.target_level,
                 "fingerprint": jdt_plan.fingerprint,
+                "compilation_configuration": jdt_plan.compilation_configuration,
                 "configuration_inputs": [
                     str(path) for path in jdt_plan.configuration_inputs
                 ],

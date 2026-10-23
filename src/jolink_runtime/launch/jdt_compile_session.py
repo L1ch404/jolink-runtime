@@ -746,6 +746,7 @@ class JdtBuildWorldPlan:
     preparation_roots: tuple[Path, ...] = ()
     preparation_resource_sets: tuple[dict[str, Any], ...] = ()
     configuration_stamps: dict[str, str] | None = None
+    compilation_configuration: dict[str, Any] = field(default_factory=dict)
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(
