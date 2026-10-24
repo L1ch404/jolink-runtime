@@ -14,7 +14,9 @@ from jolink_runtime.launch.project_launch_cache import stabilize_jdt_plan
 
 
 @pytest.fixture
-def plan(tmp_path):
+def plan(tmp_path, monkeypatch):
+    monkeypatch.setattr("jolink_runtime.launch.jdt_compilation.discover_target_system_entries",
+                        lambda home, level: (Path(home) / "lib" / f"platform-{level}.jar",))
     project = tmp_path / "project"
     source = project / "src/main/java/example/App.java"
     source.parent.mkdir(parents=True)
@@ -143,7 +145,7 @@ def test_upstream_module_configuration_is_part_of_identity(plan, field, value, c
     with caplog.at_level(logging.INFO):
         assert not store.claim(project_root=plan.project_root, module_root=plan.module_root,
                                identity=after.compilation_configuration).reusable
-    expected = f'modules.{module_name(changed["module_root"])}.{field}'
+    expected = f'options.modules.{module_name(changed["module_root"])}.{field}'
     assert expected in caplog.text
     assert "changed_identity_fields" in caplog.text
 

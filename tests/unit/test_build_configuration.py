@@ -48,6 +48,8 @@ def model(tmp_path):
     java, javac = (jdk / "bin" / f"{name}{suffix}" for name in ("java", "javac"))
     java.write_bytes(b"fixture java")
     javac.write_bytes(b"fixture javac")
+    (jdk / "lib").mkdir()
+    (jdk / "lib/rt.jar").write_bytes(b"fixture target platform")
     (jdk / "release").write_text('JAVA_VERSION="1.8.0_451"\n', encoding="utf-8")
     toolchain = JavaToolchainCandidate(
         jdk, java, javac, "test", 8, 8
@@ -185,6 +187,44 @@ def test_actual_cache_load_rejects_changed_pom(model, kind, change):
     assert model.load(kind) is None
     if kind == "test":
         assert not model.fast.is_current(model.root, "maven")
+
+
+@pytest.mark.parametrize("kind", ["launch", "test"])
+@pytest.mark.parametrize("change", ["edit", "add", "delete"])
+def test_gradle_exported_resource_inputs_invalidate_both_preparation_caches(model, monkeypatch, kind, change):
+    from jolink_runtime.launch.gradle_runtime_build_world import create_gradle_runtime_build_world
+    build = model.root / "build.gradle"
+    build.write_text("plugins { id 'java' }")
+    resources = model.root / "src/main/resources"
+    item = resources / "value.txt"
+    item.write_text("before")
+    facts = {
+        "module_root": str(model.root), "source_roots": [str(model.root / "src/main/java")],
+        "output_directory": str(model.root / "target/classes"), "classpath": [],
+        "processor_entries": [], "lombok_entries": [], "source_encoding": "UTF-8",
+        "target_java_home": str(model.toolchain.home), "source_level": 8, "method_parameters": False,
+        "resource_roots": [str(resources)], "preparation_inputs": [str(resources)],
+    }
+    monkeypatch.setattr("jolink_runtime.launch.gradle_module_world.module_world",
+                        lambda _model: ((facts,), facts, (model.root / "target/classes",)))
+    exported = create_gradle_runtime_build_world(model={"modules": [facts]}, project_root=model.root,
+        configuration_inputs=(build,), configuration_environment_names=())
+    assert exported.jdt_plan.preparation_inputs == (resources,)
+    model.plan = exported.jdt_plan
+    model.world = replace(model.world, build_system="gradle", modules=(facts,), configuration_inputs=(build,))
+    model.save(kind)
+    assert model.load(kind) is not None
+    (model.root / "src/main/java/Changed.java").write_text("class Changed {}")
+    assert model.load(kind) is not None
+    if change == "edit":
+        item.write_text("after resource change")
+    elif change == "add":
+        (resources / "new.txt").write_text("added")
+    else:
+        item.unlink()
+    assert model.load(kind) is None
+    if kind == "test":
+        assert not model.fast.is_current(model.root, "gradle")
 
 
 @pytest.mark.parametrize("kind", ["launch", "test"])

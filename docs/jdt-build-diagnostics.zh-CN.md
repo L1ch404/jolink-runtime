@@ -71,12 +71,13 @@ jdt.workspace.saved elapsed_ms=30.0
 `touched_sources=0` 在首次 FULL 时表示没有传局部文件列表，不表示没有编译源码。
 `compiled_sources` 是实际观测到的编译单元去重数量，包括受影响的依赖方。
 
-应用启动的 `changed_identity_fields` 现在描述实际编译配置，例如 `source_level`、
-`processor_entries`、`modules.module_<id>.method_parameters` 或 `binary_inputs`。
+应用启动与Fast Test共用 `changed_identity_fields`，描述实际编译配置，例如
+`options.source_level`、`options.processor_entries`、
+`options.modules.module_<id>.test_compiler.method_parameters` 或 `binary_inputs`。
 `binary_inputs` 表示外部依赖/目标JDK文件身份变化，不等于已证明文件内容变化；
 沿用文件元数据的判定，不为日志再读取整份依赖。日志只输出变化字段名，不输出参数值。
 字段差异只在INFO/DEBUG真正输出日志时计算，普通复用不新增文件扫描。
-Fast Test仍使用原有的 `fast_test_world` 身份，本次未更换它的复用策略。
+不再把Fast Test全部配置压成无法区分字段的 `fast_test_world` 摘要。
 
 `build_states` 只读取每个工程 `state.dat` 的文件大小，不全量哈希、不参与 reusable
 判定。有文件不等于状态一定可用；没有文件时，旧 Worker 也可能仍有内存状态。

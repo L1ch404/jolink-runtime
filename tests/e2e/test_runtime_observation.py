@@ -206,11 +206,12 @@ def test_direct_launch_previous_duration_is_not_the_process_uptime(tmp_path):
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("mode", ["project", "direct"])
-def test_previous_startup_survives_new_mcp_process_without_a_final_status_call(tmp_path, mode):
+def test_previous_startup_survives_new_mcp_process_without_a_final_status_call(tmp_path, mode, monkeypatch):
     require_real_mcp_java_e2e()
     java = os.environ.get("JOLINK_TEST_JAVA8_HOME")
     if not java:
         pytest.skip("set JOLINK_TEST_JAVA8_HOME")
+    monkeypatch.setenv("PATH", str(Path(java) / "bin") + os.pathsep + os.environ["PATH"])
     port = reserve_local_port()
     if mode == "project":
         project = make_test_project(tmp_path, http_port=port)

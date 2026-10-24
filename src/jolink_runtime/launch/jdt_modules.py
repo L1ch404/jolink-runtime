@@ -24,20 +24,28 @@ def module_name(directory: str | Path) -> str:
 
 
 def compilation_modules(modules):
-    """Preparation bookkeeping is not a change to JDT's compiler configuration."""
-    metadata = {
-        "preparation_inputs", "preparation_roots", "preparation_executions",
-        "preparation_resource_sets",
-        "resource_roots", "test_resource_roots", "skipped_compiler_checks", "skipped_build_steps",
+    """Only compiler arguments; this result is passed to ModuleCompileSession."""
+    fields = {
+        "module_root", "source_roots", "test_source_roots", "source_patterns", "test_source_patterns",
+        "output_directory", "test_output_directory", "classpath", "test_classpath",
+        "source_encoding", "source_level", "target_java_home", "method_parameters",
+        "processor_entries", "processor_names", "processor_options", "lombok_entries", "test_compiler",
     }
     return tuple(
         {
-            key: {k: v for k, v in value.items() if k not in metadata}
+            key: {k: v for k, v in value.items() if k in fields}
             if key == "test_compiler" else value
-            for key, value in module.items() if key not in metadata
+            for key, value in module.items() if key in fields
         }
         for module in modules
     )
+
+
+def module_resources(modules):
+    return {str(Path(m[output])): m.get(resources, ()) for m in modules
+            for output, resources in (("output_directory", "resource_roots"),
+                                      ("test_output_directory", "test_resource_roots"))
+            if output in m}
 
 
 class ModuleCompileSession(PersistentJdtCompileSession):
@@ -47,11 +55,13 @@ class ModuleCompileSession(PersistentJdtCompileSession):
         modules: tuple[dict, ...],
         target_module: Path,
         split_tests: bool = False,
+        runtime_resources: dict | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.modules = modules
         self.split_tests = split_tests
+        self._runtime_resources = module_resources(modules) if runtime_resources is None else runtime_resources
         self.target_name = module_name(target_module)
         self.private_project = self.root / "workspace"
         self.output_directory = self.private_project / self.target_name / "bin"
@@ -143,16 +153,11 @@ class ModuleCompileSession(PersistentJdtCompileSession):
 
     def runtime_classpath(self, entries):
         result = []
-        resources = {
-            str(Path(m["output_directory"])): m.get("resource_roots", ())
-            for m in self.modules
-        }
-        resources.update({str(Path(m["test_output_directory"])): m.get("test_resource_roots", ()) for m in self.modules})
         for entry in entries:
             output = self._outputs.get(str(Path(entry)))
             result.append(output if output is not None else Path(entry))
             result.extend(
-                Path(p) for p in resources.get(str(Path(entry)), ()) if Path(p).is_dir()
+                Path(p) for p in self._runtime_resources.get(str(Path(entry)), ()) if Path(p).is_dir()
             )
         return tuple(dict.fromkeys(result))
 

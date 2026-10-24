@@ -398,7 +398,7 @@ def create_gradle_runtime_build_world(
 
 
 def _module_runtime_world(model, project_root, inputs, environment_names):
-    from .gradle_module_world import module_world, module_fingerprint
+    from .gradle_module_world import module_world
 
     project_root = project_root.expanduser().resolve(strict=False)
     modules, target, classpath = module_world(model)
@@ -419,6 +419,7 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
         processor_entries=tuple(Path(p) for p in target["processor_entries"]),
         processor_names=tuple(target.get("processor_names", ())),
         processor_options=target.get("processor_options", {}),
+        preparation_inputs=tuple(dict.fromkeys(Path(p) for m in modules for p in m.get("preparation_inputs", ()))),
         lombok_entries=tuple(
             dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])
         ),
@@ -426,7 +427,7 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
         source_encoding=target["source_encoding"],
         source_level=target["source_level"],
         target_level=target["source_level"],
-        fingerprint=module_fingerprint(modules, configuration),
+        fingerprint="",  # Finalized by the shared launch configuration capture.
         configuration_inputs=configuration,
         configuration_environment_names=tuple(environment_names),
         javac_executable=_javac(home),

@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v12"
+_SCHEMA = "jolink.fast-test-world.v13"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -90,6 +90,7 @@ class FastTestCache:
             toolchain = raw["build_jdk"]
             return (
                 JavaTestBuildWorld(
+                    compilation_configuration=dict(world["compilation_configuration"]),
                     configuration_stamps=dict(raw["inputs"]),
                     build_preferences=dict(raw["build_preferences"]),
                     test_run_order=world.get("test_run_order", ""),
@@ -156,6 +157,7 @@ class FastTestCache:
                 "compiler_major_version": build_jdk.compiler_major_version,
             },
             "world": {
+                "compilation_configuration": world.compilation_configuration,
                 "project_root": str(world.project_root), "module_root": str(world.module_root),
                 "main_source_roots": values(world.main_source_roots),
                 "test_source_roots": values(world.test_source_roots),

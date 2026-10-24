@@ -55,7 +55,8 @@ joLink 服务于开发环境。成功建立的本地 Build World 和 JDT workspa
 以发现离线修改，但不再逐个读取新旧源码内容。若外部工具刻意保持mtime和大小不变，
 启动扫描可能看不到该编辑，需要让文件的修改时间或大小发生变化后再调用 `restart`。
 
-resources 作为运行classpath中的源码资源目录直接读取，不再每次reload复制整棵资源树。
+resources 使用Probe导出的资源位置；需要原生处理时读取处理后的输出，不复制进JDT bin。
+声明的资源输入变化后，下次launch/test通过原有准备缓存刷新资源，编译配置相同则保留class。
 上次编译成功或失败的结果随源码索引一起保存；重开workspace时直接读取，
 不会把上次的编译失败包装成“没有变化，启动成功”。
 
@@ -112,6 +113,8 @@ resources 作为运行classpath中的源码资源目录直接读取，不再每�
 - 编译配置明细随原有Build World JSON保存；正常缓存命中不重新计算依赖身份。
   外部依赖的既有身份检查只在Probe刷新后执行，模块自身输出不作为外部依赖检查。
   旧缓存没有这份配置明细，升级后的首次启动可能重新Probe并FULL一次；不迁移旧身份。
+- launch与Fast Test通过同一个[编译入口](jdt-modules.zh-CN.md#共用编译配置与复用规则)
+  生成身份、创建编译器、恢复工作区和执行启动阶段增量；不是两套独立的复用算法。
 - 已安装的Worker按分发目录复用；新的Worker版本使用新的缓存目录。
 - 正常stop/shutdown保存workspace和源码索引。
 - JVM直接读取当前JDT bin；restart使用当前编译输出，不回退到首次启动副本。

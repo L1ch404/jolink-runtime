@@ -92,7 +92,7 @@ public class SlowAgent {
                 async def poll(predicate):
                     with anyio.fail_after(100):
                         while True:
-                            state = await call("java_status", {"action": "status"})
+                            state = await call("java_status", {"action": "status", "details": True})
                             assert state.get("launch_phase") != "failed", json.dumps(
                                 state
                             )

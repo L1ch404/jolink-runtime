@@ -7,7 +7,6 @@ import argparse
 import importlib.util
 import json
 import os
-import shutil
 import socket
 import sys
 import tempfile
@@ -98,7 +97,7 @@ async def _status(
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        status = await _payload(session, "java_status", {"action": "status"})
+        status = await _payload(session, "java_status", {"action": "status", "details": True})
         active = status.get("active_operation")
         reload_active = isinstance(active, dict) and active.get("operation") in {"reload", "restart"}
         if status.get("launch_phase") == "failed" and not reload_active:
@@ -111,15 +110,15 @@ async def _status(
     raise TimeoutError(status)
 
 
-async def _failed_status(
+async def _launch_outcome(
     session: ClientSession,
     *,
     timeout: float = 120,
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        status = await _payload(session, "java_status", {"action": "status"})
-        if status.get("launch_phase") == "failed":
+        status = await _payload(session, "java_status", {"action": "status", "details": True})
+        if status.get("launch_phase") == "failed" or status.get("startup_state") == "ready":
             return status
         await anyio.sleep(0.1)
     raise TimeoutError(status)
@@ -253,8 +252,9 @@ async def _run(
 
                 if project.joinpath("build/classes/java/main").exists():
                     raise RuntimeError("Gradle compileJava ran during launch")
-                if project.joinpath("build/resources/main").exists():
-                    raise RuntimeError("Gradle processResources ran during launch")
+                prepared_resource = project / "build/resources/main/message.txt"
+                if prepared_resource.read_text().strip() != "resource-v1":
+                    raise RuntimeError("Gradle resource preparation did not produce the expected data")
 
                 await _payload(session, "java_application", {"action": "stop"})
                 source.write_text(
@@ -367,16 +367,23 @@ async def _run(
 
                 resource_source = project / "src/main/resources/message.txt"
                 resource_source.write_text("resource-v2\n", encoding="utf-8")
-                # Source resources are now direct Runtime classpath entries.
-                # Reading this file afresh observes the edit without a Java build.
-                if _message(ready_port) != "structural:resource-v2":
-                    raise RuntimeError("Runtime did not read the source resource")
-
                 stopped = await _payload(
                     session, "java_application", {"action": "stop"}
                 )
                 if stopped.get("ok") is not True:
                     raise RuntimeError(stopped)
+                refreshed = await _payload(session, "java_application", {
+                    "action": "launch", "project_path": str(project), "launch_name": "GradleRuntimeApp",
+                    "jdwp_port": jdwp_port, "ready_port": ready_port, "timeout": 20,
+                })
+                if refreshed.get("ok") is not True:
+                    raise RuntimeError(refreshed)
+                refreshed = await _status(session, lambda value: value.get("startup_state") == "ready")
+                if not refreshed.get("jdt_bootstrap_reused") or refreshed.get("jdt_bootstrap_build_kind") is not None:
+                    raise RuntimeError("Resource preparation unnecessarily rebuilt Java: " + str(refreshed))
+                if _message(ready_port) != "structural:resource-v2":
+                    raise RuntimeError("Runtime did not read the prepared resource")
+                await _payload(session, "java_application", {"action": "stop"})
                 build_file = project / "build.gradle"
                 with build_file.open("a", encoding="utf-8") as stream:
                     stream.write(
@@ -387,11 +394,7 @@ compileJava.doLast {
 }
 """
                     )
-                # Model inputs are intentionally trusted after first launch.
-                # This is a new Probe validation, so clear this fixture's model.
-                shutil.rmtree(
-                    Path(environment["XDG_CACHE_HOME"]) / "jolink-runtime/project-launch"
-                )
+                # The build-file edit must invalidate the model without deleting caches.
                 rejected = await _payload(
                     session,
                     "java_application",
@@ -404,14 +407,13 @@ compileJava.doLast {
                         "timeout": 20,
                     },
                 )
-                if rejected.get("ok") is not True:
-                    raise RuntimeError(rejected)
-                failed = await _failed_status(session)
-                if (
-                    failed.get("launch_error", {}).get("error_code")
-                    != "GRADLE_BYTECODE_TRANSFORM_UNMODELED"
-                ):
-                    raise RuntimeError(failed)
+                outcome = rejected if rejected.get("ok") is False else await _launch_outcome(session)
+                transform_rejected = outcome.get("error_code", outcome.get("launch_error", {}).get("error_code")) == "GRADLE_BYTECODE_TRANSFORM_UNMODELED"
+                if not transform_rejected:
+                    # U13 is recorded in java-compatibility-followup-2026-09.md.
+                    # Keep the failure assertion, without waiting two minutes for
+                    # a rejection that the module-world path does not implement.
+                    raise RuntimeError("U13: expected compileJava.doLast rejection; observed " + str(outcome))
                 return {
                     "ok": True,
                     "build_system": "gradle",
@@ -422,10 +424,10 @@ compileJava.doLast {
                     "unchanged_startup_no_compile": True,
                     "hotswap_passed": True,
                     "structural_restart_applied": True,
-                    "source_resources_read_directly": True,
+                    "prepared_resources_refreshed_without_recompilation": True,
                     "runtime_probe_ignored_test_world": True,
                     "private_model_deleted": True,
-                    "bytecode_transform_rejected": True,
+                    "bytecode_transform_rejected": transform_rejected,
                     "final_process_state": "absent",
                 }
 
@@ -451,6 +453,8 @@ def main() -> int:
     }
     if args.offline:
         environment["GRADLE_ARGS"] = "--offline"
+    else:
+        environment.pop("GRADLE_ARGS", None)
     with tempfile.TemporaryDirectory(prefix="jolink-gradle-runtime-") as raw:
         root = Path(raw)
         environment["GRADLE_USER_HOME"] = str(root / "gradle-user-home")

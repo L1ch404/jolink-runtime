@@ -74,7 +74,7 @@ def test_real_gradle_runtime_launch_hotswap_and_relaunch_boundary(
         "unchanged_startup_no_compile": True,
         "hotswap_passed": True,
         "structural_restart_applied": True,
-        "source_resources_read_directly": True,
+        "prepared_resources_refreshed_without_recompilation": True,
         "runtime_probe_ignored_test_world": True,
         "private_model_deleted": True,
         "bytecode_transform_rejected": True,

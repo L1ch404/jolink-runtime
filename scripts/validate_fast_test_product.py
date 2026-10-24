@@ -26,7 +26,7 @@ def wait(manager: FastTestManager, timeout: float = 120.0) -> dict:
             "compiling",
             "running",
         }:
-            return status
+            return manager.result(status["test_run_id"])
         time.sleep(0.05)
     raise TimeoutError(manager.status())
 
@@ -240,9 +240,13 @@ def main() -> int:
             "assertEquals(3,new Calculator().add(1,2)); } "
             "@Test public void prints(){ System.out.println(\"{not-protocol}\"); "
             "assertEquals(3,new Calculator().add(1,2)); } "
-            "@Test public void resources(){ "
+            "@Test public void resources() throws Exception { "
             "assertNotNull(getClass().getResource(\"/fixture.txt\")); "
-            "assertNotNull(getClass().getResource(\"/main-fixture.txt\")); } "
+            "assertNotNull(getClass().getResource(\"/main-fixture.txt\")); "
+            "try(java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader("
+            "getClass().getResourceAsStream(\"/fixture.txt\"),\"UTF-8\"))) { "
+            "assertEquals(java.nio.file.Files.readAllLines(java.nio.file.Paths.get(\"src/test/resources/fixture.txt\"),"
+            "java.nio.charset.StandardCharsets.UTF_8).get(0), reader.readLine()); } } "
             "@Test public void systemLoader() throws Exception { "
             "assertNotNull(ClassLoader.getSystemClassLoader()"
             ".loadClass(\"example.Calculator\")); } "
@@ -279,9 +283,7 @@ def main() -> int:
             baseline = wait(manager)
             if not baseline.get("passed"):
                 raise AssertionError(baseline)
-            if (project / "target/classes").exists() or (
-                project / "target/test-classes"
-            ).exists():
+            if any((project / "target").rglob("*.class")):
                 raise AssertionError("Maven test-compile ran during Fast Test")
             if manager._project.compiler.max_heap_mb != 3072:
                 raise AssertionError(
@@ -396,7 +398,9 @@ def main() -> int:
             system_loader_passed = wait(manager)
             if not system_loader_passed.get("passed"):
                 raise AssertionError(system_loader_passed)
-            before_resource_project = id(manager._project)
+            before_resource_workspace = manager._project.compiler.root
+            before_resource_classes = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                                       for p in before_resource_workspace.rglob("*.class")}
             manager.start(
                 project_path=project,
                 source_files=(),
@@ -420,7 +424,10 @@ def main() -> int:
             resource_rebootstrap = wait(manager)
             if (
                 not resource_rebootstrap.get("passed")
-                or id(manager._project) != before_resource_project
+                or manager._project.compiler.root != before_resource_workspace
+                or resource_rebootstrap.get("compiled_source_count") != 0
+                or {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                    for p in before_resource_workspace.rglob("*.class")} != before_resource_classes
             ):
                 raise AssertionError(resource_rebootstrap)
 
@@ -768,7 +775,7 @@ def main() -> int:
                 )
                 surefire_rejected = wait(surefire_manager)
                 if surefire_rejected.get("error_code") != (
-                    "FAST_TEST_SUREFIRE_CONFIGURATION_UNSUPPORTED"
+                    "TEST_EXECUTION_CONFIGURATION_UNSUPPORTED"
                 ):
                     raise AssertionError(surefire_rejected)
                 surefire_rejected = surefire_manager.result(surefire_rejected["test_run_id"])
@@ -807,7 +814,7 @@ def main() -> int:
                         "stress_max_runner_ms": max(stress_runner_ms),
                         "test_resources_passed": resources_passed["passed"],
                         "system_loader_passed": system_loader_passed["passed"],
-                        "resource_change_visible_without_rebootstrap": (
+                        "resource_change_visible_without_recompilation": (
                             resource_rebootstrap["passed"]
                         ),
                         "failure_observed": failed["failed_count"] == 1,
@@ -836,7 +843,7 @@ def main() -> int:
                         "mixed_junit_passed": mixed_junit["passed"],
                         "surefire_config_rejected": (
                             surefire_rejected["error_code"]
-                            == "FAST_TEST_SUREFIRE_CONFIGURATION_UNSUPPORTED"
+                            == "TEST_EXECUTION_CONFIGURATION_UNSUPPORTED"
                         ),
                         "system_exit_isolated": (
                             exited["error_code"] == "TEST_RUNNER_FAILED"

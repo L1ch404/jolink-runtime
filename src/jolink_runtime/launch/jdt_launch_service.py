@@ -11,13 +11,9 @@ from pathlib import Path
 from ..core.models import RuntimeResult
 from .configuration_inputs import build_configuration_stamps
 from .controller import LaunchCancelled, LaunchPipelineFailure
-from .jdt_compile_session import (
-    JdtCompileError, PersistentJdtCompileSession,
-    discover_target_system_entries, lombok_worker_jvm_arguments,
-    select_target_system_home,
-)
+from .jdt_compile_session import JdtCompileError
+from .jdt_compilation import open_compile_session, initialize_compile_session, accept_compile_session
 from .project_session import JavaProjectSession
-from .jdt_modules import ModuleCompileSession
 from .runtime_preparation import prepared_runtime
 from .idea_environment import IdeaEnvironmentImporter, build_preferences_key
 from .build_environment import apply_build_preferences
@@ -89,63 +85,19 @@ class JdtLaunchService:
             candidate, selected = prepared_runtime(
                 (prepared.build_jdk.home,), check_request=context.check_cancelled
             )
-            if plan.worker_java_home is None or not plan.system_entries:
-                target_home = select_target_system_home(
-                    (
-                        plan.target_java_home,
-                        prepared.build_jdk.home,
-                        prepared.runtime_jdk.home,
-                    ),
-                    plan.target_level,
-                )
-                plan = replace(
-                    plan,
-                    target_java_home=target_home,
-                    system_entries=discover_target_system_entries(
-                        target_home, plan.target_level
-                    ),
-                )
             plan = replace(plan, worker_java_home=selected.home, worker_java_major=selected.major)
             prepared = replace(prepared, jdt_build_world_plan=plan)
             session.record_jdt_worker_runtime(
                 java_major=plan.worker_java_major, data_model=64
             )
-            workspace = runtime._jdt_workspaces.claim(
+            workspace, compiler = open_compile_session(
+                plan.compilation_configuration, store=runtime._jdt_workspaces,
                 project_root=plan.project_root, module_root=plan.module_root,
-                identity={
-                    "worker": candidate.root.name,
-                    **plan.compilation_configuration,
-                    "worker_java_home": str(plan.worker_java_home),
-                },
+                candidate=candidate, worker_java=selected, resource_modules=plan.modules,
             )
             session.attach_jdt_workspace_lease(workspace)
-            factory = ModuleCompileSession if plan.modules else PersistentJdtCompileSession
-            compiler = factory(
-                **({"modules": plan.modules, "target_module": plan.module_root} if plan.modules else {}),
-                root=workspace.root, candidate=candidate,
-                worker_java_home=plan.worker_java_home,
-                source_roots=plan.source_roots,
-                classpath_entries=(*plan.system_entries, *plan.dependency_entries),
-                source_encoding=plan.source_encoding,
-                source_level=plan.source_level,
-                method_parameters=plan.method_parameters,
-                processor_entries=plan.processor_entries,
-                processor_names=plan.processor_names,
-                processor_options=plan.processor_options,
-                java_agents=tuple(f"{path}=ECJ" for path in plan.lombok_entries),
-                extra_jvm_arguments=lombok_worker_jvm_arguments(
-                    plan.worker_java_major, lombok_enabled=bool(plan.lombok_entries)
-                ),
-                min_heap_mb=plan.worker_min_heap_mb,
-                max_heap_mb=plan.worker_max_heap_mb,
-                preserve_root_on_close=True,
-            )
             session.attach_compile_session(compiler)
-            result = compiler.start(reuse_workspace=workspace.reusable, build_on_reuse=False)
-            if workspace.reusable:
-                changed = compiler.workspace_source_changes()
-                if changed:
-                    result = compiler.compile(changed)
+            result = initialize_compile_session(compiler, reuse_workspace=workspace.reusable)
             context.check_cancelled()
             if not result.compile_ok:
                 raise JdtCompileError(
@@ -153,9 +105,7 @@ class JdtLaunchService:
                     context={"error_count": result.error_count,
                              "diagnostics": list(result.diagnostics)},
                 )
-            compiler.accept_baseline()
-            compiler.save_source_index()
-            workspace.mark_initialized()
+            accept_compile_session(compiler, workspace)
             session.refresh_compile_ready()
             session.complete_jdt_bootstrap(
                 (time.monotonic() - started) * 1000,

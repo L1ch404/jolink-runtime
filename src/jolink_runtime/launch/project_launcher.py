@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shlex
 import shutil
@@ -48,7 +47,6 @@ from .gradle_runtime_build_world import (
 )
 from .gradle_module_world import GradleModuleError
 from .jdt_compile_session import JdtBuildWorldPlan
-from .jdt_modules import compilation_modules
 from .compiler_profile import skipped_compiler_checks, compiler_check_warnings
 from .maven_probe import ProductMavenProbe
 from .maven_module_world import load_module_worlds, skipped_preparation_steps, preparation_warnings
@@ -366,7 +364,6 @@ class ProjectLaunchPipeline:
 
     def _prepare_maven_probe(self, context, request, intent, preferences, workspace,
                                module, build_jdk, maven, directory, log):
-        import json
         probe = ProductMavenProbe.load()
         settings = preferences.user_settings_file
         settings_input = settings if settings is not None else Path.home() / ".m2/settings.xml"
@@ -412,7 +409,7 @@ class ProjectLaunchPipeline:
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
             source_level=target["source_level"], target_level=target["source_level"],
-            fingerprint=hashlib.sha256(json.dumps(compilation_modules(modules), sort_keys=True).encode()).hexdigest(),
+            fingerprint="",  # Finalized from the shared compiler configuration in _stabilize.
             configuration_inputs=tuple(dict.fromkeys((
                 workspace.root_pom,
                 *(m.pom_file for m in workspace.modules),

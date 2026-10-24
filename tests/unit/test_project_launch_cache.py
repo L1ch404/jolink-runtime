@@ -34,6 +34,9 @@ def test_cache_reuses_outputs_but_invalidates_changed_pom(
     java.parent.mkdir(parents=True)
     java.write_bytes(b"java")
     javac.write_bytes(b"javac")
+    platform = tmp_path / "jdk/lib/rt.jar"
+    platform.parent.mkdir()
+    platform.write_bytes(b"target platform")
     fingerprint = build_world_fingerprint(
         configuration_inputs=(pom,),
         configuration_environment_names=(),
@@ -109,7 +112,7 @@ def test_cache_reuses_outputs_but_invalidates_changed_pom(
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "read_bytes", read_configuration_only)
-        patch.setattr("jolink_runtime.launch.project_launch_cache._compilation_configuration", no_recalculation)
+        patch.setattr("jolink_runtime.launch.jdt_compilation.capture_compilation_configuration", no_recalculation)
         reused = cache.load(
             project_root=project,
             intent=intent,

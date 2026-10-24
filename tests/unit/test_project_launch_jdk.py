@@ -39,6 +39,9 @@ def fake_jdk(home, major):
     for name in ("java", "javac"):
         (home / "bin" / (name + suffix)).write_bytes(b"")
     (home / "release").write_text(f'JAVA_VERSION="{major}.0.1"\n')
+    (home / "lib").mkdir()
+    (home / "lib/rt.jar").write_bytes(b"fake Java 8 platform")
+    (home / "lib/jrt-fs.jar").write_bytes(b"fake modular platform")
     return JavaToolchainResolver._to_candidates([(home, "JAVA_HOME")])[0]
 
 

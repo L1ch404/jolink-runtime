@@ -18,6 +18,33 @@
 正常关闭后保留workspace与源码索引，新MCP可以复用。Runtime和Fast Test仍分别拥有
 各自的编译workspace，避免测试编译与当前应用的工作输出互相影响。
 
+## 共用编译配置与复用规则
+
+`jdt_compilation.py` 是 launch 和 Fast Test 的共同入口：
+
+1. 两个薄适配函数将各自的 Probe 模型转成同一份编译器构造参数。
+2. 这些参数随各自的 Build World JSON 保存，既用于工作区身份，也原样用于创建
+   `PersistentJdtCompileSession` / `ModuleCompileSession`，不再另写身份字段名单。
+3. 同一个函数申请工作区并创建编译器；同一个初始化函数处理首次 FULL、重开后的
+   源码差异和 INCREMENTAL。编译结果交回入口，应用启动或测试 Runner 各自继续。
+
+main/test 的语言级别、classpath、Processor、参数和源码过滤仍按模块分别保留。
+运行classpath、资源目录、测试选择和Runner参数不作为编译配置；资源映射单独传入。
+Maven/Gradle配置输入变化仍会重新Probe，但导出的编译器参数相同就保留工作区。
+共享实现不等于共享工作区目录，不增加Worker常驻、输出复制、回退流程或后台校验。
+
+编译配置只在Probe刷新时捕获。缓存命中不重新发现目标平台、不重新计算依赖身份；
+恢复Worker时只结合当前Worker版本/JDK补齐已有参数。旧格式缓存首次升级需要重新
+导出并建立工作区，此后按同一规则复用。取消、任务归属和错误返回保留在原入口。
+
+Gradle启动模型也保存Probe已导出的资源准备输入，与Fast Test一致；修复只改资源后
+启动缓存未刷新的漏接。沿用既有准备缓存，不新增文件监控或另一套失效判断。
+
+回归：`test_jdt_compilation.py` 检查两入口的配置不变量及身份/实际构造参数一致性；
+`test_launch_workspace_reuse.py` 将同一组POM/Gradle注释、源码、编译参数、Runner参数
+变化同时交给真实MCP的launch和Fast Test，并验证HTTP、测试断言、class内容/mtime
+与跨MCP恢复。不同main/test平台、APT、模块依赖继续由原有真实环境测试覆盖。
+
 ## 这轮实现
 
 - `ExportReactorWorldMojo`在Maven会话中解析模块依赖。WorkspaceReader将本地

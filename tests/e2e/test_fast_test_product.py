@@ -48,7 +48,7 @@ def test_real_maven_jdt_junit_fast_test_product_loop() -> None:
         "stress_max_runner_ms": payload["stress_max_runner_ms"],
         "test_resources_passed": True,
         "system_loader_passed": True,
-        "resource_change_visible_without_rebootstrap": True,
+        "resource_change_visible_without_recompilation": True,
         "failure_observed": True,
         "test_compile_failure_observed": True,
         "stale_output_rejected": True,

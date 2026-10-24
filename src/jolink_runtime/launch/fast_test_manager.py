@@ -27,7 +27,11 @@ from .compiler_profile import (
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
 from .configuration_inputs import maven_configuration_files, maven_environment_references
-from .jdt_modules import ModuleCompileSession, compilation_modules
+from .jdt_compilation import (
+    test_compilation_configuration, open_compile_session, initialize_compile_session,
+    accept_compile_session,
+)
+from .jdt_modules import ModuleCompileSession
 from .maven_reactor import maven_build_root
 from .maven_module_world import load_module_worlds, combine_effective_poms, skipped_preparation_steps
 from .test_execution import run_test_executions
@@ -40,9 +44,6 @@ from .jdt_compile_session import (
     SUPPORTED_JAVA_LEVELS,
     JdtCompileError,
     PersistentJdtCompileSession,
-    discover_target_system_entries,
-    lombok_worker_jvm_arguments,
-    select_target_system_home,
 )
 from .maven import MavenBuildSystemAdapter, MavenModule, MavenResolutionError, MavenWorkspace
 from .maven_probe import MavenProbeError, ProductMavenProbe
@@ -1297,6 +1298,8 @@ class FastTestManager:
         attempt.require_not_cancelled()
         if world.configuration_stamps is None:
             world = replace(world, configuration_stamps=self._cache.input_snapshot(world))
+        if not world.compilation_configuration:
+            world = replace(world, compilation_configuration=test_compilation_configuration(world))
         configuration_snapshot = self._cache.model_snapshot(world)
         from .runtime_preparation import prepared_runtime
 
@@ -1304,61 +1307,11 @@ class FastTestManager:
             (build_jdk.home, world.target_java_home),
             check_request=attempt.require_not_cancelled,
         )
-        target_home = select_target_system_home(
-            (world.target_java_home, build_jdk.home), world.source_level
-        )
-        identity = hashlib.sha256(json.dumps({
-            "candidate": candidate.root.name,
-            "source_level": world.source_level,
-            "main_sources": [str(path) for path in world.main_source_roots],
-            "test_sources": [str(path) for path in world.test_source_roots],
-            "main_dependencies": [str(path) for path in world.main_dependencies],
-            "test_dependencies": [str(path) for path in world.test_dependencies],
-            "processors": [str(path) for path in world.processor_entries],
-            "processor_names": world.processor_names,
-            "processor_options": world.processor_options,
-            "modules": compilation_modules(world.modules),
-        }, sort_keys=True).encode()).hexdigest()
-        workspace = self._cache.workspace_store(
-            world.project_root, world.build_system
-        ).claim(
-            project_root=world.project_root,
-            module_root=world.module_root,
-            identity={"fast_test_world": identity},
-        )
-        lombok_enabled = bool(world.java_agents)
-        factory = ModuleCompileSession if world.modules else PersistentJdtCompileSession
-        compiler = factory(
-            **({"modules": world.modules, "target_module": world.module_root, "split_tests": True} if world.modules else {}),
-            root=workspace.root,
-            candidate=candidate,
-            worker_java_home=worker_java.home,
-            source_roots=world.main_source_roots,
-            classpath_entries=(
-                *discover_target_system_entries(
-                    target_home, world.source_level
-                ),
-                *world.main_dependencies,
-            ),
-            source_encoding=world.source_encoding,
-            source_level=world.source_level,
-            method_parameters=world.method_parameters,
-            test_source_roots=world.test_source_roots,
-            test_classpath_entries=world.test_dependencies,
-            processor_entries=world.processor_entries,
-            processor_names=world.processor_names,
-            processor_options=world.processor_options,
-            java_agents=world.java_agents,
-            extra_jvm_arguments=(
-                *world.extra_worker_jvm_arguments,
-                *lombok_worker_jvm_arguments(
-                    worker_java.major,
-                    lombok_enabled=lombok_enabled,
-                ),
-            ),
-            min_heap_mb=world.worker_min_heap_mb,
-            max_heap_mb=world.worker_max_heap_mb,
-            preserve_root_on_close=True,
+        workspace, compiler = open_compile_session(
+            world.compilation_configuration,
+            store=self._cache.workspace_store(world.project_root, world.build_system),
+            project_root=world.project_root, module_root=world.module_root,
+            candidate=candidate, worker_java=worker_java, resource_modules=world.modules,
         )
         return self._run_compiler_initialization_transaction(
             attempt=attempt,
@@ -1387,17 +1340,8 @@ class FastTestManager:
         with self._lock:
             self._initializing_compiler = compiler
         try:
-            full = (
-                compiler.start(reuse_workspace=True, build_on_reuse=False)
-                if reuse_workspace
-                else compiler.start()
-            )
+            full = initialize_compile_session(compiler, reuse_workspace=reuse_workspace)
             attempt.record_compilation(full)
-            if reuse_workspace:
-                changed = compiler.workspace_source_changes()
-                if changed:
-                    full = compiler.compile(changed)
-                    attempt.record_compilation(full)
             project = finish(full)
             with self._lock:
                 attempt.require_not_cancelled()
@@ -1438,9 +1382,7 @@ class FastTestManager:
                     "diagnostics_truncated": full.diagnostics_truncated,
                 },
             )
-        compiler.accept_baseline()
-        compiler.save_source_index()
-        workspace.mark_initialized()
+        accept_compile_session(compiler, workspace)
         self._cache.save(world, build_jdk, configuration_snapshot=configuration_snapshot)
         attempt.require_not_cancelled()
         return _FastTestProject(

@@ -3,6 +3,7 @@
 import shutil
 import http.client
 import os
+import json
 
 import anyio
 import pytest
@@ -14,7 +15,7 @@ from test_review_model_cache import response
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("system,multi", [("maven", False), ("maven", True), ("gradle", False), ("gradle", True)])
-def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp_path, system, multi):
+def test_launch_and_fast_test_share_reprobe_reuse_and_compiler_configuration(tmp_path, system, multi):
     homes, env = setup(tmp_path)
     root, app, config, source, port = project_fixture(tmp_path, system, multi)
     shutil.rmtree(root / ".idea")
@@ -30,7 +31,23 @@ def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp
         source.write_text(source.read_text().replace("public static String value() throws Exception {",
                           "public static String value() throws Exception { if(Library.VALUE!=42)throw new IllegalStateException();"))
     source.write_text(source.read_text().replace('byte[] b=value().getBytes("UTF-8")',
-        'byte[] b=(value()+"|v1|"+App.class.getDeclaredMethod("main",String[].class).getParameters()[0].isNamePresent()).getBytes("UTF-8")'))
+        'byte[] b=(value()+"|"+revision()+"|"+App.class.getDeclaredMethod("main",String[].class).getParameters()[0].isNamePresent()).getBytes("UTF-8")')
+        .replace('public static void main', 'public static String revision(){return "v1";} public static void main'))
+    actual_config = app / "build.gradle" if system == "gradle" and multi else config
+    if system == "maven":
+        config.write_text(config.read_text().replace('<properties>', '<properties><reuse.label>one</reuse.label>')
+                          .replace('<systemPropertyVariables>', '<systemPropertyVariables><reuseLabel>${reuse.label}</reuseLabel>'))
+    else:
+        actual_config.write_text(actual_config.read_text() + "\ntest { systemProperty 'reuseLabel','one' }\n")
+    oracle = root / "expected-reuse.txt"
+    oracle.write_text("v1|false|one")
+    (app / "src/test/java/example/ReadyTest.java").write_text('''package example;
+public class ReadyTest {
+ @org.junit.Test public void current() throws Exception {
+  String expected = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(ORACLE)),"UTF-8");
+  org.junit.Assert.assertEquals(expected, App.revision()+"|"+App.class.getDeclaredMethod("main",String[].class).getParameters()[0].isNamePresent()+"|"+System.getProperty("reuseLabel"));
+ }
+}'''.replace('ORACLE', json.dumps(oracle.as_posix())))
     args = dict(project_path=str(root), main_class="example.App", build_system=system,
                 java_home=homes[8], ready_port=port, jdwp_port=reserve_local_port())
     settings = root / "custom-settings.xml"
@@ -42,6 +59,11 @@ def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp
     def logs():
         return "\n".join(p.read_text() for p in log_root.rglob("mcp.log"))
 
+    def assert_full_counts(count):
+        full = [line for line in logs().splitlines() if "requested=FULL actual=FULL" in line]
+        assert sum("jdt-workspaces" in line for line in full) == count, full
+        assert sum("fast-test" in line for line in full) == count, full
+
     def classes():
         return {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in log_root.rglob("*.class")}
 
@@ -50,6 +72,20 @@ def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp
         path.write_text(path.read_text() + "\n" + text + "\n")
 
     async def scenario():
+        async def fast_test(session):
+            options = dict(project_path=str(root), tests=["example.ReadyTest"], build_system=system, java_home=homes[8])
+            if system == "maven":
+                options["maven_settings"] = str(settings)
+            value = dict((await session.call_tool("java_fast_test", options)).structuredContent)
+            with anyio.fail_after(180):
+                while value.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
+                    await anyio.sleep(.1)
+                    value = dict((await session.call_tool("java_fast_test", {
+                        "action": "result", "test_run_id": value["test_run_id"],
+                    })).structuredContent)
+            assert value.get("passed") is True, value
+            return value
+
         async def launch(session, expected):
             value = await call(session, "java_application", action="launch", **args)
             assert value.get("ok") and value.get("startup_state") == "ready", value
@@ -61,6 +97,7 @@ def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp
                 try:
                     initial = await launch(session, "A|v1|false")
                     assert initial["jdt_bootstrap_build_kind"] == "FULL"
+                    assert (await fast_test(session))["compiled_source_count"] > 0
                     await call(session, "java_application", action="stop")
                     original_classes = classes()
                     assert original_classes
@@ -69,36 +106,53 @@ def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp
                     unchanged = await launch(session, "A|v1|false")
                     assert not unchanged.get("probe_cache_reused", False), unchanged
                     assert unchanged["jdt_bootstrap_reused"] and unchanged["jdt_bootstrap_build_kind"] is None, unchanged
+                    assert (await fast_test(session))["compiled_source_count"] == 0
                     assert classes() == original_classes
                     await call(session, "java_application", action="stop")
                     if system == "maven":
                         comment(settings)
                         unchanged = await launch(session, "A|v1|false")
                         assert not unchanged.get("probe_cache_reused", False), unchanged
+                        assert (await fast_test(session))["compiled_source_count"] == 0
                         assert unchanged["jdt_bootstrap_reused"] and classes() == original_classes
                         await call(session, "java_application", action="stop")
 
                     # New Probe + real edit still uses the same workspace incrementally.
-                    source.write_text(source.read_text().replace('"|v1|"', '"|v2|"'))
+                    source.write_text(source.read_text().replace('"v1"', '"v2"'))
+                    oracle.write_text("v2|false|one")
                     comment(config)
                     changed = await launch(session, "A|v2|false")
                     assert changed["jdt_bootstrap_reused"] and changed["jdt_bootstrap_build_kind"] == "INCREMENTAL", changed
-                    assert logs().count("requested=FULL actual=FULL") == 1
+                    assert (await fast_test(session))["compiled_source_count"] == 1
+                    assert_full_counts(1)
                     await call(session, "java_application", action="stop")
 
                     # A real compiler setting must reach bytecode, not just a report.
-                    actual_config = app / "build.gradle" if system == "gradle" and multi else config
                     if system == "maven":
                         config.write_text(config.read_text().replace("<properties>",
                             "<properties><maven.compiler.parameters>true</maven.compiler.parameters>"))
                     else:
                         actual_config.write_text(actual_config.read_text() + "\ntasks.withType(JavaCompile).configureEach { options.compilerArgs += ['-parameters'] }\n")
+                    oracle.write_text("v2|true|one")
                     reconfigured = await launch(session, "A|v2|true")
                     assert not reconfigured["jdt_bootstrap_reused"] and reconfigured["jdt_bootstrap_build_kind"] == "FULL", reconfigured
-                    assert logs().count("requested=FULL actual=FULL") == 2
+                    assert (await fast_test(session))["compiled_source_count"] > 1
+                    assert_full_counts(2)
                     assert "method_parameters" in logs()
                     await call(session, "java_application", action="stop")
                     saved_classes = classes()
+
+                    # Runner-only configuration must change test behavior without compiling.
+                    actual_config.write_text(actual_config.read_text().replace(
+                        "<reuse.label>one</reuse.label>" if system == "maven" else "'reuseLabel','one'",
+                        "<reuse.label>two</reuse.label>" if system == "maven" else "'reuseLabel','two'"))
+                    oracle.write_text("v2|true|two")
+                    runtime_only = await launch(session, "A|v2|true")
+                    assert runtime_only["jdt_bootstrap_reused"] and runtime_only["jdt_bootstrap_build_kind"] is None
+                    assert (await fast_test(session))["compiled_source_count"] == 0
+                    assert classes() == saved_classes
+                    assert_full_counts(2)
+                    await call(session, "java_application", action="stop")
                 finally:
                     await call(session, "java_application", action="stop")
 
@@ -109,12 +163,15 @@ def test_reprobe_keeps_workspace_when_compilation_configuration_is_unchanged(tmp
                     reopened = await launch(session, "A|v2|true")
                     assert reopened["probe_cache_reused"] and reopened["jdt_bootstrap_reused"], reopened
                     assert reopened["jdt_bootstrap_build_kind"] is None and classes() == saved_classes
+                    assert (await fast_test(session))["compiled_source_count"] == 0
                     await call(session, "java_application", action="stop")
                     comment(config)
-                    source.write_text(source.read_text().replace('"|v2|"', '"|v3|"'))
+                    source.write_text(source.read_text().replace('"v2"', '"v3"'))
+                    oracle.write_text("v3|true|two")
                     changed = await launch(session, "A|v3|true")
                     assert changed["jdt_bootstrap_reused"] and changed["jdt_bootstrap_build_kind"] == "INCREMENTAL", changed
-                    assert logs().count("requested=FULL actual=FULL") == 2
+                    assert (await fast_test(session))["compiled_source_count"] == 1
+                    assert_full_counts(2)
                 finally:
                     await call(session, "java_application", action="stop")
 

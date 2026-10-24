@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 from .compiler_profile import classify_compiler_arguments
@@ -146,21 +144,3 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         target,
         tuple(Path(p) for p in classpath(runtime, runtime=True)),
     )
-
-
-def module_fingerprint(
-    modules: tuple[dict, ...], configuration: tuple[Path, ...]
-) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "modules": modules,
-                "configuration": {
-                    str(p): hashlib.sha256(p.read_bytes()).hexdigest()
-                    for p in configuration
-                    if p.is_file()
-                },
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
