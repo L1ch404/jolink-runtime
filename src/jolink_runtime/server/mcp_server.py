@@ -20,6 +20,7 @@ from mcp.server.lowlevel import Server
 
 from .. import __version__
 from ..core.dispatcher import Dispatcher, runtime_operation
+from ..core.json_values import json_values
 from ..core.wait_state import WaitControl
 from ..launch.application_wait import WAIT_NEXT_STEP
 from .http_trigger import (
@@ -219,6 +220,7 @@ def _argument_parsing_error_payload(_error: Exception) -> dict[str, Any]:
 
 
 def _call_tool_result(payload: dict[str, Any]) -> types.CallToolResult:
+    payload = json_values(payload)
     return types.CallToolResult(
         content=[
             types.TextContent(
@@ -226,6 +228,7 @@ def _call_tool_result(payload: dict[str, Any]) -> types.CallToolResult:
                 text=json.dumps(
                     payload,
                     ensure_ascii=False,
+                    allow_nan=False,
                     separators=(",", ":"),
                 ),
             )

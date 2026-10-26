@@ -88,6 +88,15 @@ class RuntimeAction:
     timeout: float = 30.0
     suspension_id: str = ""
 
+    @property
+    def expression(self) -> str:
+        """MCP evaluation input, separate from the frozen lineage fields."""
+        return getattr(self, "_expression", "")
+
+    @expression.setter
+    def expression(self, value: str) -> None:
+        self._expression = value
+
     def configure_startup_readiness(
         self,
         *,
@@ -137,6 +146,7 @@ class RuntimeResult:
 
     def to_json(self) -> str:
         import json
+        from .json_values import json_values
         data = {
             key: value
             for key, value in self.data.items()
@@ -144,7 +154,8 @@ class RuntimeResult:
         }
         if self.error:
             return json.dumps(
-                {**data, "ok": False, "error": self.error},
+                json_values({**data, "ok": False, "error": self.error}),
                 ensure_ascii=False,
+                allow_nan=False,
             )
-        return json.dumps({**data, "ok": self.ok}, ensure_ascii=False)
+        return json.dumps(json_values({**data, "ok": self.ok}), ensure_ascii=False, allow_nan=False)

@@ -1,5 +1,204 @@
 # joLink 产品边界与兼容性跟进
 
+## 求值接线修复：收好三项，泛型作用域暂缓（2026-10-26，首版收口）
+
+本轮按上一轮随机证据修复，不处理super、外部实例及嵌套类型简名。
+用户确认先完成下面三项；泛型上界替换候选从产品接线撤下，后续单独讨论完整方案。
+
+- **构造器误标已修。** 不再把所有`<init>`帧都传成JDT的“显式this()/super()调用”。
+  原构造器、super后首条实例语句、父构造器、this委托及内层构造器已在Java8/17/21
+  通过真实MCP，与原生结果一致。
+- **非有限数值已修。** `NaN`、正负Infinity统一为明确字符串`"NaN"`、`"Infinity"`、
+  `"-Infinity"`，原Java数值类型保留；finite值及负零不变。Runtime与MCP共用输出
+  规范化，TextContent和structuredContent一致，不再把观察到的数值写成null。
+- **未配对UTF16输出已修。** JDWP读取保留code unit；正常中文/emoji仍是普通字符串。
+  孤立代理项输出`{"_kind":"utf16_string","escaped":"\\ud83d"}`，可按JSON转义
+  无损还原，且与用户真正的六字符字符串`\ud83d`区分，不用替换字符冒充原值。
+  evaluate、variables、数组和异常消息共享同一表示，无新增tool参数。
+- **泛型上界替换暂不接入。** 候选曾从JDWP类/方法签名读取声明上界，将T/U替换为
+  Number/CharSequence等类型，使常见读取恢复；但Core生成的run没有原始类型参数
+  身份，不能把读取成功当作完整泛型支持。候选实现及原测试已在本地独立归档。
+  本轮撤下这套元数据传递、缓存和上界替换，不加泛型写入黑名单或新的拒绝策略。
+  `List<String>`等具体类型参数保持现有支持；含T/U局部变量的帧仍有类型无法解析的
+  已知缺口，按真实编译诊断返回，不能宣称已完成。
+
+撤下候选的实证原因（历史结果，不代表当前产品仍会接受该赋值）：
+
+1. `T extends Number`时，原生javac拒绝`value = 1.5`；上界替换候选会执行，下一次独立
+   evaluate确认该局部变量变为Double。测试随后恢复原Integer，再继续HTTP验证。
+2. List<T>采用`List<? extends Number>`读取视图，避免假装成可随意写入的List<Number>；
+   但原本合法的`values.set(0,value)`关联写入也可能不再可表达。
+3. 交叉上界的额外接口、显式<T>/<U>及递归泛型的完整关联仍未保留。
+
+没有为此加“禁止所有泛型赋值”等AST黑名单，也未修改ECJ。Eclipse AST求值器源码
+同样包含type-variable erasure处理，但未独立运行Eclipse的上述赋值，不把它当作
+Eclipse已验证的等价行为。后续方向是保留原类型变量身份、交叉上界及关联关系，
+不是将所有类型变量擦除成任意可赋值的父类；具体实现范围再讨论。
+
+验证资产：`test_debugger_value_encoding.py`（三JDK、原生对照、JSON一致/可逆），
+`test_debugger_evaluate_contexts.py`（构造器正向回归、完整上下文差异对照），
+`test_jdt_snippet_generics.py`（具体泛型类型正向对照、T/U未解析及不得静默扩大赋值类型）。
+完整上下文差异测试继续保留未解决的合法表达式，不以通过“拒绝测试”证明泛型支持。
+不能将候选读取通过的证据沿用为当前实现结论。
+
+撤下候选并重建Worker后重新验证（Worker SHA256
+`c78d1c507a3adf989b1ebbf63e18570aa37c4e160deb279b25ffa496298584cc`）：
+
+- 普通回归：1345 passed、2 skipped（可选tomlkit未安装），未包含真实Java E2E标记组。
+- Java8/17/21随机表达式、状态修改及特殊值：9 passed；537次随机表达式和144次
+  状态求值与原生对照一致，非有限数值及孤立UTF16代理项不再丢失。
+- 原有求值/捕获/编译器错误恢复：36 passed、7项已知strict XFAIL；后者仍是
+  named-local类、private-reference反射和static-import问题，不能算支持。
+- 构造器与原有MCP启动/调试/HotSwap/restart：16 passed，其中3项构造器矩阵
+  覆盖Java8/17/21，另13项为已有真实MCP流程回归。
+- 泛型边界及随后恢复：3 passed。验证T/U解析失败没有可执行产物，具体List<String>
+  和Number合法读写仍可编译、执行；这是错误返回/恢复测试，不是泛型支持通过。
+- 完整上下文差异测试本轮未重跑为绿色验收；其已知泛型/super/外部实例等失败目标
+  继续保留，不通过缩减正向子集掩盖。wheel/sdist构建、compileall、diff-check通过。
+- 新wheel安装到独立虚拟环境后，Java17特殊值输出及构造器真实MCP回归2 passed，
+  确认加载的是安装包而不是源码目录。
+
+## 求值随机与上下文扩测（2026-10-25，修复前基线）
+
+在`dd8b776`上的当时工作区evaluate实现运行，JDT3.46、Worker21，目标JDK8/17/21。
+只新增测试和记录，未修改产品实现。固定seed便于重复；每份表达式/状态序列先通过
+目标JDK原生javac/JVM建立oracle，再走真实stdio MCP。没有使用用户业务项目。
+
+以下只计最终批次，不含smoke、重跑及测试生成器的无效中间批次：
+
+| 测试组 | evaluate次数 | 与原生/预期一致 | 不一致 |
+|---|---:|---:|---:|
+| 随机运算/类型/字符串/集合/预期异常，seed20261025 | 537（179×3） | 510 | 27 |
+| 7类栈帧上下文、3组值及错误后恢复检查，seed20261025 | 702（234×3） | 423 | 279 |
+| 随机状态修改、重绑定、保存闭包、异常写回，seed281047 | 144（48×3） | 144 | 0 |
+| 合计 | 1383 | 1077 | 306 |
+
+“一致”包括符合原生语义的预期异常；306次不一致是相同问题在不同表达式/数值/JDK
+上重复触发，**不是306个独立bug，也不是测试通过率的产品兼容性承诺**。
+三种JDK的差异集合一致。另有78次HTTP/resume观察（纯表达式3、上下文63、状态12），
+应用均正常恢复。状态序列的旧闭包没有再次出现被清空或后续求值覆盖的问题。
+
+### 新确认的问题
+
+1. **非有限浮点数的MCP结构化结果错误。** `Double.NaN`、正负Infinity等8种表达式
+   每JDK都返回`ok=true`，但`structuredContent.result.value=null`；文本中的JSON仍
+   含`NaN/Infinity`。已额外通过真实`variables`确认同样问题：double变量ratio显示
+   `value_state=observed,value=null`，文本却为NaN。不是ECJ算错，而是输出序列化/表示
+   没统一；不能把null当作原值。该组24次差异。
+2. **未配对UTF-16代理项解码失败。** `text="ab中😀z"`，`text.substring(1,4)`
+   是合法Java字符串，保留了emoji的高代理项；每JDK的MCP都报UnicodeDecodeError。
+   普通中文/完整emoji是通过的，不应泛化成Unicode整体不支持。原生oracle按UTF-16
+   code unit编码保存，避免oracle自身UTF-8替换字符造成误判。该组3次差异。
+3. **构造器上下文标志过宽。** 已执行super()并完成字段初始化的断点中，`this.own`
+   仍报Cannot refer to this/super while explicitly invoking a constructor。
+   当前Python只因方法名为`<init>`就传`is_constructor=true`；隔离请求仅将此值设为
+   false即编译成功。需要区分“位于构造器”与“正在显式调用构造器”，不能归为JDT
+   无法调试构造器。
+4. **泛型类型参数污染整个求值上下文。** 类的`T extends Number`或方法的
+   `U extends CharSequence`局部变量进入snippet后，没有相应类型参数作用域；因此
+   连`count`和`((String)null)`都报T/U cannot be resolved to a type。
+   隔离对照：只传count成功，加TT;失败，改成Number擦除上界的对照成功。
+   这是类型上下文接线缺口，不是所有List<String>泛型都失效。
+5. **super语义未接通。** `super.base`报Code snippet support cannot find the class null；
+   `super.inherited(count)`报super cannot be used in the code snippet code。
+   普通`this.base`和继承方法调用有成功对照。
+6. **内部类的外部实例作用域缺失。** `outerBias`、`ContextFixture.this.outerBias`和
+   外部实例方法调用失败；内部类自己的this、locals及显式this的lambda可用。
+7. **嵌套类型简名缺失。** `((Parent)this).base`不能解析Parent；
+   `((ContextFixture.Parent)this).base`成功。需要补名称上下文，不能按类名写特例。
+
+上下文组的不一致都是明确编译失败，未发现错误数值假成功；静态方法和
+`frame_index=1`父帧各99/99观察一致。非有限数值则确实存在成功返回中数据丢失。
+
+### 测试与证据
+
+- `tests/e2e/test_debugger_evaluate_randomized.py`：按类型构造有界随机表达式，保留
+  每条原生结果、MCP结构化内容和原始TextContent，所有差异最后统一断言。
+- `tests/e2e/test_debugger_evaluate_contexts.py`：static、constructor、inheritance、
+  generic class/method、inner/outer、parent frame；有原生oracle和逐条恢复检查。
+- `tests/e2e/test_debugger_evaluate_state_sequences.py`：随机操作顺序和数值、每步完整
+  状态对照、两次暂停、捕获复用与异常副作用，3个目标JDK全部通过。
+
+前两组各3个pytest目前明确失败，未用XFAIL掩盖新发现；第三组3 passed。
+第一轮状态生成器曾误用多语句而非表达式，已更正为合法单表达式，旧批次不计结论。
+原始报告本地归档在`/Users/lich/jolink-evaluate-random-20261025-6grTZY/`，
+编号0/1/2分别对应Java8/17/21；`context-isolation.json`保存构造器、类型参数、
+嵌套名称的隔离对照。后续先处理自身接线/输出问题，再单独研究super与外部类作用域。
+
+## 调试求值首版新增边界（2026-10-25，未发布）
+
+新增 `java_debugger(action=evaluate)` 使用固定 JDT 3.46 的 Core snippet 编译，
+由现有 JDWP 在真实暂停栈帧执行。本轮没有修改或重新分发 patched ECJ。
+
+1. **私有方法的普通引用类型参数**：`private String decorate(String value)` 的求值
+   辅助字节码会错误查找 `decorate(Subject.class)`，而不是 `decorate(String.class)`，
+   实际抛出 `NoSuchMethodException`。独立 Java 执行已复现，非 JDWP 传参错误。
+   固定源码包 `org.eclipse.jdt.core.compiler.batch.source_3.46.0.v20260528-0407.jar`
+   中 `CodeStream.generateEmulationForMethod()` 第1883行，reference参数分支错误使用
+   `methodBinding.declaringClass.constantPoolName()`。公开引用参数方法、私有原始类型
+   参数方法、私有无参方法另有通过的正例；不能泛化为所有私有方法都不支持。
+2. **静态import的无接收者调用**：当前类上下文中的 `max(1, 2)` 编译失败，
+   `Math.max(1, 2)` 正常。固定Core源码 `CodeSnippetParser` 将此调用的receiver
+   换成 `CodeSnippetThisReference`。没有按方法名重写用户表达式。
+3. **Lambda内省略this的成员访问**：`((IntSupplier) () -> bias).getAsInt()` 在
+   Java8 target下生成class后由真实JVM报`VerifyError: Bad local variable type`；
+   Java17/21 target下触发`AssertionError: Attempt to push null on operand stack!`。
+   `CodeSnippetSingleNameReference.generateReceiver()` 在静态lambda方法里错误发出
+   `aload_0`。公开、私有字段都已复现；裸方法调用`()->twice(count)`另有未解析方法
+   诊断。显式`()->this.bias`、`()->this.twice(count)`已通过真实MCP。
+   本轮让snippet编译断言返回明确错误，保留堆栈，不再使共享Worker退出；
+   没有屏蔽诊断或宣布这些裸成员表达式受支持。
+4. **Lambda块内声明命名局部类的组合表达式**：`saved.add(((Supplier<Supplier<String>>)
+   () -> { class Local implements Supplier<String> { ... } return new Local(); }).get())`
+   原生javac正常，但Core会丢掉用户表达式，生成的run只读写临时locals，既不add也不
+   写求值结果。直接raw Core API、无joLink包装/别名/重命名时也已复现，
+   `javap`证实run无用户表达式指令；对照无命名局部类的lambda正常。
+   首版曾误将辅助基类默认void结果当成功；现执行前清空resultType，只有真正写了
+   求值结果（含正常void）才返回成功，否则报`EVALUATION_NO_RESULT`。
+   **此组合语法本身尚未修通**，不以明确报错代替兼容性完成。
+5. **裸null结果**：补测Java17真实MCP时，单独求值`null`返回
+   `EVALUATION_EXCEPTION / NoClassDefFoundError: N`（cause为`ClassNotFoundException: N`）；
+   `((String) null)`和类型已知的null局部变量正常。当前只记录这一实际观测，
+   未将其扩展成所有null表达式失败，也没有按字符串改写用户表达式。
+
+这些问题只说明本轮所用 **Core snippet求值路径** 的实际边界，不是业务JavaBuilder
+编译普遍错误，也不能断言 Eclipse IDE 默认AST求值器存在相同故障。
+
+复现保存在 `tests/e2e/test_jdt_snippet_compiler.py`：Java8/17独立目标执行，
+严格XFAIL只匹配上述确切故障；其他异常仍失败，未来修好会XPASS提醒移除标记。
+`tests/e2e/test_debugger_evaluate.py` 另验证真实MCP会返回明确目标异常且能继续调试。
+本轮先保留功能和复现，依赖升级/上游修复单独评估，不增加全局拒绝策略。
+
+### 已修：求值局部变量捕获与跨次复用
+
+初版把locals注册成JDT的静态evaluation globals，求值后清空引用。真实MCP证实
+保存的匿名Supplier当场返回成功，之后调用却NPE；不清空也会因缓存复用写入新值而
+改变旧闭包。这是joLink接线错误，不属于上述上游限制。
+
+现使用public suspended-local接口传入擦除类型的内部别名，再在片段中声明真实泛型
+Java局部变量。每次求值创建独立实例；Java编译器处理捕获和effectively-final规则，
+finally负责局部赋值写回。编译缓存只复用class，不复用调用状态。
+Lambda显式this通过JDT DOM AST绑定到真实receiver，按实际表达式边界处理，
+不替换匿名类/局部类自己的this，不用正则修改Java源码。
+
+`tests/e2e/test_debugger_evaluate_capture.py`包含Java8/17/21的原生javac/JVM对照：
+匿名类、lambda、延迟Stream、回调、保存后异常，以及嵌套lambda、匿名类返回lambda；同表达式复用、
+对象mutation与local重新绑定、退出旧栈帧后的HTTP执行均验证。额外覆盖void返回、
+匿名类内lambda的this、非法非effectively-final捕获被拒绝且不修改运行状态。
+命名局部类组合保留严格XFAIL，只有上述NO_RESULT才算已知故障；其他异常仍失败。
+同暂停中接着运行正常表达式也有回归，不能因已知编译器问题丢掉后续调试能力。
+`tests/e2e/test_jdt_snippet_error_recovery.py`验证上述上游裸字段缺陷在三种JDK下
+如实报告，同Worker后续正常求值/业务INCREMENTAL可用，业务JVM结果18→20。
+
+另外，首版将求值class加载到业务ClassLoader以保持类型与包访问身份；相同表达式
+复用编译结果，输入实例/闭包由目标JVM按引用关系回收，不再有共享静态输入槽；
+但不同表达式生成的class会随该loader存活。大量不同表达式长期使用的Metaspace增长
+及可回收加载方案尚待后续处理。执行超时不取消目标方法。
+
+上游参考：[CodeStream](https://github.com/eclipse-jdt/eclipse.jdt.core/blob/master/org.eclipse.jdt.core.compiler.batch/src/org/eclipse/jdt/internal/compiler/codegen/CodeStream.java)、
+[CodeSnippetParser](https://github.com/eclipse-jdt/eclipse.jdt.core/blob/master/org.eclipse.jdt.core/eval/org/eclipse/jdt/internal/eval/CodeSnippetParser.java)。
+行号以本机固定3.46源码包为准，不把浮动master视为已经修复。
+
 ## 最新汇总（2026-10-12，优先于下方历史记录）
 
 `eec9429`的0.1.0a8已经发布。源码过滤/WAR入口`1d3c772`与Reactor子模块入口

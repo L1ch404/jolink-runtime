@@ -263,6 +263,48 @@ def _session(tmp_path: Path, monkeypatch) -> tuple[
     return session, source, worker
 
 
+def test_snippet_request_preserves_java_text_and_does_not_build(tmp_path, monkeypatch):
+    session, _, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+    observed = []
+    expected = {"ok": False, "diagnostics": ["Unknown method"], "classes": []}
+
+    def command(value):
+        observed.append(value)
+        return expected
+
+    monkeypatch.setattr(worker, "command", command)
+    expression = '"中文\\n" + names.get(0)\n// tail = value'
+    result = session.compile_snippet(
+        expression, "example.Outer$Inner", ("I", "Ljava/util/List<Ljava/lang/String;>;"),
+        ("count", "names"), is_static=True, imports=("java.util.*",),
+    )
+    assert result is expected
+    assert session.ready
+    assert len(observed) == 1
+    kind, payload = observed[0].split("\t")
+    assert kind == "COMPILE_SNIPPET"
+    properties = dict(line.split("=", 1) for line in base64.b64decode(payload).decode().splitlines())
+    decode = lambda key: base64.b64decode(properties[key]).decode()
+    assert decode("expression") == expression
+    assert decode("declaring_type") == "example.Outer$Inner"
+    assert decode("local_type.1") == "Ljava/util/List<Ljava/lang/String;>;"
+    assert decode("local_name.1") == "names"
+    assert decode("import.0") == "java.util.*"
+    assert properties["is_static"] == "true"
+    assert properties["local_count"] == "2"
+
+
+def test_snippet_requires_an_active_session_and_paired_local_types(tmp_path, monkeypatch):
+    session, _, worker = _session(tmp_path, monkeypatch)
+    with pytest.raises(JdtCompileError, match="not active"):
+        session.compile_snippet("1", "example.App")
+    with pytest.raises(ValueError, match="equal lengths"):
+        session.compile_snippet("1", "example.App", local_names=("x",))
+    assert worker.command_count == 0
+
+
 def test_persistent_jdt_session_full_then_incremental(
     tmp_path: Path,
     monkeypatch,

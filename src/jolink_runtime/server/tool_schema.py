@@ -24,6 +24,7 @@ PUBLIC_RUNTIME_ACTIONS = (
     "threads",
     "stack",
     "variables",
+    "evaluate",
     "resume",
     "cleanup_debug_state",
     "update",
@@ -38,7 +39,7 @@ JAVA_RUNTIME_DESCRIPTION = (
     "When repeated edits fail or a fix needs verification, obtain runtime "
     "evidence before applying another patch. "
     "For deeper investigation, attach to an existing JVM, set "
-    "breakpoints or exception watches, inspect stack frames and variables, "
+    "breakpoints or exception watches, inspect stack frames and variables, evaluate Java expressions, "
     "and resume suspended threads. "
     "For an HTTP application launched by run/restart, provide ready_port; "
     "if startup_state is starting, call status until TCP readiness is observed "
@@ -219,18 +220,28 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         "thread_name": {
             "type": "string",
             "description": (
-                "Optional fallback selector for stack/variables. Omit it to use "
+                "Optional fallback selector for stack/variables/evaluate. Omit it to use "
                 "the active suspension's event-hit thread. Exact names are "
                 "preferred; otherwise a unique prefix or substring must identify "
                 "one JVM thread. The selected thread must be suspended for "
-                "stack/variables to succeed."
+                "stack/variables/evaluate to succeed."
             ),
         },
         "frame_index": {
             "type": "integer",
             "minimum": 0,
             "default": 0,
-            "description": "Frame index for variables.",
+            "description": "Frame index for variables or evaluate.",
+        },
+        "expression": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": r"\S",
+            "description": (
+                "Java expression required for evaluate, using the selected suspended "
+                "frame's locals and this. Method calls execute in the application and "
+                "may have side effects."
+            ),
         },
         "max_frames": {
             "type": "integer",
@@ -275,7 +286,11 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "minimum": 0.1,
             "maximum": 300,
             "default": 30,
-            "description": "Seconds to wait for an event.",
+            "description": (
+                "Seconds to wait for an event or expression evaluation. "
+                "An evaluation timeout does not undo side effects or guarantee "
+                "that the invoked method stopped; do not automatically retry it."
+            ),
         },
         "wait_mode": {
             "type": "string",
@@ -335,8 +350,8 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
             "type": "string",
             "description": (
                 "Active suspension id returned by wait_event/status. Pass it to "
-                "stack, variables, and resume so stale observations are rejected; "
-                "stack/variables use its event-hit thread when thread_name is omitted."
+                "stack, variables, evaluate, and resume so stale observations are rejected; "
+                "stack/variables/evaluate use its event-hit thread when thread_name is omitted."
             ),
         },
         "source_files": {
@@ -389,6 +404,10 @@ JAVA_RUNTIME_INPUT_SCHEMA = {
         },
     },
     "required": ["action"],
+    "allOf": [{
+        "if": {"properties": {"action": {"const": "evaluate"}}, "required": ["action"]},
+        "then": {"required": ["expression"]},
+    }],
 }
 
 JAVA_PROCESSES_DESCRIPTION = (
@@ -427,6 +446,7 @@ PUBLIC_DEBUGGER_ACTIONS = (
     "threads",
     "stack",
     "variables",
+    "evaluate",
     "resume",
     "cleanup_debug_state",
 )
@@ -602,6 +622,7 @@ JAVA_DEBUGGER_INPUT_SCHEMA = _schema_for_actions(
         }
     ),
 )
+JAVA_DEBUGGER_INPUT_SCHEMA["allOf"] = deepcopy(JAVA_RUNTIME_INPUT_SCHEMA["allOf"])
 
 JAVA_APPLICATION_DESCRIPTION = (
     "Launch, attach, restart, stop, or detach Java applications. "
@@ -649,7 +670,9 @@ JAVA_STATUS_DESCRIPTION = (
 )
 JAVA_DEBUGGER_DESCRIPTION = (
     "Observe executed paths and runtime state with breakpoints, exception "
-    "events, stacks, and variables. Always resume or clean up every suspension."
+    "events, stacks, and variables. Use evaluate for Java expressions in a "
+    "suspended frame; method calls may change application state. "
+    "Always resume or clean up every suspension."
 )
 
 

@@ -693,6 +693,18 @@ public final class WorkerApplication implements IApplication {
     }
 
     private boolean handle(String line) throws Exception {
+        if (line.startsWith("COMPILE_SNIPPET\t")) {
+            List<IJavaProject> projects = new ArrayList<>();
+            if (modules == null) projects.add(javaProject);
+            else for (IProject module : modules.projects) projects.add(JavaCore.create(module));
+            try {
+                emit(SnippetCompiler.compile(projects, line.substring("COMPILE_SNIPPET\t".length())));
+            } catch (Exception | AssertionError exception) {
+                exception.printStackTrace(System.err);
+                emitError("EVALUATION_COMPILE_FAILED", exception.toString());
+            }
+            return true;
+        }
         if (line.equals("METRICS")) {
             emit("{\"ok\":true,\"status\":\"metrics\",\"metrics\":"
                     + WorkerMetrics.snapshotJson(false) + "}");

@@ -76,6 +76,10 @@ class Runtime(ABC):
     def variables(self, action: RuntimeAction) -> RuntimeResult:
         ...
 
+    def evaluate(self, action: RuntimeAction) -> RuntimeResult:
+        """Evaluate a Java expression in a suspended frame."""
+        raise NotImplementedError("Expression evaluation is unavailable for this runtime.")
+
     @abstractmethod
     def resume(self, action: RuntimeAction) -> RuntimeResult:
         ...

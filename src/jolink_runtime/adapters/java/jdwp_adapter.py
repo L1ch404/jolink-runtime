@@ -63,6 +63,7 @@ from .jdwp_client import (
     Tag,
 )
 from .log_manager import LogManager
+from .jdwp_strings import decode_jdwp_string
 from .process_manager import (
     ProcessManager,
     ProcessStartCancelledError,
@@ -227,6 +228,7 @@ class JavaRuntime(Runtime):
         self._armed_exception_requests: dict[int, int] = {}
         self._exception_counter = 0
         self._jdwp: JDWPClient | None = None  # persistent debugger connection
+        self._evaluation = None
         self._active_suspension: SuspensionSnapshot | None = None
         self._suspension_generation = 0
         self._breakpoint_counter = 0
@@ -3822,6 +3824,13 @@ class JavaRuntime(Runtime):
         except (JDWPError, RuntimeError) as e:
             return RuntimeResult(ok=False, error=str(e))
 
+    def evaluate(self, action: RuntimeAction) -> RuntimeResult:
+        from .debug_evaluation import DebugEvaluation
+
+        if self._evaluation is None:
+            self._evaluation = DebugEvaluation(self)
+        return self._evaluation.evaluate(action)
+
     def resume(self, action: RuntimeAction) -> RuntimeResult:
         try:
             snapshot = self._require_suspension(action)
@@ -5951,7 +5960,7 @@ class JavaRuntime(Runtime):
             err, sv = jdwp.command(Cmd.STRING_REF, 1, ids.pack_obj(obj_id))
             if err == 0:
                 slen = struct.unpack_from(">I", sv, 0)[0]
-                return sv[4:4 + slen].decode("utf-8"), offset
+                return decode_jdwp_string(sv[4:4 + slen]), offset
             return f"<String 0x{obj_id:x}>", offset
 
         if tag == Tag.ARRAY:
@@ -6829,6 +6838,9 @@ class JavaRuntime(Runtime):
 
     def _disconnect(self) -> None:
         """Close the persistent JDWP connection."""
+        if self._evaluation is not None:
+            self._evaluation.close()
+            self._evaluation = None
         if self._jdwp is not None:
             logger.info("java_runtime.jdwp.connection.close")
             try:

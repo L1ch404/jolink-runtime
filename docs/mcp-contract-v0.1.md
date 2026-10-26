@@ -44,7 +44,75 @@ performs it before sending a request, is outside this server-side tolerance.
 - `java_fast_test`: optional `action=run` (default), `action=cancel`, `action=result`
 - `java_status`: `processes`, `status`, `logs`
 - `java_debugger`: `breakpoint`, `exception`, `wait_event`, `threads`,
-  `stack`, `variables`, `resume`, `cleanup_debug_state`
+  `stack`, `variables`, `evaluate`, `resume`, `cleanup_debug_state`
+
+### Java expression evaluation (unreleased first version)
+
+At an active breakpoint/exception suspension, use `java_debugger`:
+
+```json
+{"action":"evaluate","expression":"users.get(0).getName()","suspension_id":"<current suspension>"}
+```
+
+`frame_index` defaults to zero. Thread selection and result formatting reuse the
+existing variables parameters. The result is `status=evaluated` with
+`result={type,value}`. A repeated expression can reuse compiled code, never its
+previous result. Compile errors use `EVALUATION_COMPILE_FAILED` and diagnostics;
+target exceptions use `EVALUATION_EXCEPTION` with type/message/cause information.
+The same JSON value representation is used by evaluate and variables:
+non-finite numbers are `"NaN"`, `"Infinity"`, or `"-Infinity"` with their Java type
+retained. A string/char containing isolated UTF-16 code units uses
+`{"_kind":"utf16_string","escaped":"\\ud83d"}`; `escaped` is reversible JSON
+string content, not a replacement character. Ordinary strings and finite numbers
+are unchanged, and text/structured responses agree.
+If the snippet returns without writing an expression result, the tool reports
+`EVALUATION_NO_RESULT`, not a successful void value. Inspect application state
+before retrying because execution may have been incomplete.
+
+JDT compiles an isolated snippet; the existing JDWP connection supplies the real
+locals/this and executes it in the application. Assignments to locals are copied
+back to the suspended frame; object mutations are real. The current project's
+compiler is reused when available. Direct launch/attach initializes a binary-only
+expression project from the target VM's classpath and installed target JDK;
+it does not run Maven/Gradle or compile business sources. Runtime-only classes
+outside that classpath may still be unresolvable. Snippets never enter business
+output directories or the application compilation cache.
+
+Method calls can block, throw or have side effects. The invocation wait uses
+`timeout`; compilation/preparation is separate. `EVALUATION_OUTCOME_UNKNOWN`
+means the invocation may still be running, not that it was cancelled. Do not
+automatically retry. The old suspension is invalidated; inspect/clean up the
+debug session before proceeding. Target calls use the suspended event thread;
+methods requiring other suspended threads can block.
+
+This first version reuses generated classes within the debugger connection, but
+creates a new input/result instance for each evaluation. Concrete generic
+variables such as `List<String>` are real Java locals, so escaped anonymous
+classes/lambdas capture their values, not
+shared mutable input slots. Object mutations remain visible; rebinding a local
+or evaluating the same expression again does not change an earlier capture.
+The debugger releases its temporary pins; the target VM manages instance and
+closure lifetimes. Generated classes
+loaded in the application's ClassLoader remain until that loader/JVM is reclaimed;
+unbounded unique expressions are not a validated long-running workload. A timed
+out invocation is not cancelled or cleared while it may still be executing.
+This is not a fully isolated or read-only execution sandbox.
+
+Known JDT Core snippet differences (not blanket claims about Eclipse's separate
+AST evaluator): private method calls with ordinary reference parameters can fail
+with `NoSuchMethodException`; unqualified statically imported method calls can
+fail compilation while qualified calls work. In lambdas, use explicit `this` for
+application members: some implicit-member expressions still produce invalid
+snippet bytecode or compiler assertions. Those assertions are reported without
+terminating the shared compilation Worker. A lambda block declaring a named
+local class can also lose its expression body in Core; this combination remains
+unsupported and reports `EVALUATION_NO_RESULT`. Frames containing locals whose
+types refer to class/method type variables (`T`, `U`, etc.) lack that generic
+scope in the snippet and can fail compilation even for a simple expression.
+The upper-bound substitution candidate is deferred: replacing `T` with `Number`
+would lose its assignment constraints. This does not affect business compilation
+or concrete types such as `List<String>`. See the
+[compatibility follow-up](java-compatibility-followup-2026-09.md).
 
 `java_status(status)` returns a compact overview with readiness, process/debug
 state, current operation and recent restart/Test summaries. Internal Worker/cache

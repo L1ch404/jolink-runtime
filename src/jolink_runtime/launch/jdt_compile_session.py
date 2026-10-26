@@ -1193,6 +1193,35 @@ class PersistentJdtCompileSession:
             )
         return classpath_file, processor_file, test_classpath_file
 
+    def compile_snippet(
+        self, expression: str, declaring_type: str,
+        local_types: Iterable[str] = (), local_names: Iterable[str] = (),
+        is_static: bool = False, imports: Iterable[str] = (),
+        is_constructor: bool = False,
+    ) -> dict[str, object]:
+        """Compile a suspended-frame expression; never write business outputs."""
+        def encode(value: str) -> str:
+            return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+        names, types, imported = tuple(local_names), tuple(local_types), tuple(imports)
+        if len(names) != len(types):
+            raise ValueError("Local variable names and types must have equal lengths.")
+        properties = {
+            "expression": encode(expression), "declaring_type": encode(declaring_type),
+            "is_static": str(is_static).lower(), "is_constructor": str(is_constructor).lower(),
+            "local_count": str(len(names)), "import_count": str(len(imported)),
+        }
+        for index, (name, signature) in enumerate(zip(names, types)):
+            properties[f"local_name.{index}"] = encode(name)
+            properties[f"local_type.{index}"] = encode(signature)
+        for index, imported_type in enumerate(imported):
+            properties[f"import.{index}"] = encode(imported_type)
+        request = encode("\n".join(f"{key}={value}" for key, value in properties.items()))
+        with self._operation_lock:
+            if not self.ready:
+                raise JdtCompileError("JDT_SESSION_NOT_READY", "The JDT CompileSession is not active.")
+            return self._client.command(f"COMPILE_SNIPPET\t{request}")
+
     def compile(self, source_files: Iterable[Path]) -> JdtCompileResult:
         """Copy only requested edits and consume JavaBuilder's output delta."""
         with self._operation_lock:

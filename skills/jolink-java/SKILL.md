@@ -138,6 +138,13 @@ Example — tool `java_application` (an application already managed by joLink):
 - Use the returned `suspension_id` for inspection. Always resume or clean up a
   suspension you create. Redefined-class breakpoints can become stale; reset them
   against the current source when reported.
+- If the installed schema includes `java_debugger(action="evaluate")`, use
+  `expression` with the current `suspension_id` to inspect Java expressions in
+  that frame. Results reuse the variables display. Method calls and assignments
+  execute against real application state, not a copy; choose them deliberately.
+  Compilation errors and target exceptions are different from a value result.
+  An unknown execution outcome is not cancellation: do not automatically retry
+  a timed-out expression or reuse its invalidated suspension.
 - Cancel a Test with `java_fast_test(action="cancel", test_run_id=...)`. Stop only
   the managed application when the user's task calls for it; do not stop unrelated JVMs.
 
