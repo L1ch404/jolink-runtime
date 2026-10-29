@@ -267,6 +267,12 @@ uses INCREMENTAL only when sources changed. The managed JVM directly uses the
 persistent JDT class output; resource roots remain direct classpath entries.
 `project_path` is mutually exclusive with `classpath` and `jar_path`; it accepts
 `main_class`, `java_home`, `app_args`, and `vm_args`.
+Project launch/restart defaults `-Dspring.devtools.restart.enabled=false` so
+Spring DevTools does not independently reload partially written or failed JDT
+output. Explicitly supplied values of that JVM property are preserved, including
+when replacing `vm_args`; enabling it opts back into DevTools' automatic behavior.
+This does not remove the dependency or change direct JAR/classpath launches,
+Fast Test, build-tool or Worker JVMs.
 Before the JVM exists, `status` reports `process_state=absent` plus the
 current `launch_phase` and omits `startup_state`.
 

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 import zipfile
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from jolink_runtime.launch import (
     JavaCommandMaterializer,
     JvmLaunchPlan,
+    ProjectLaunchPipeline,
 )
 
 
@@ -56,6 +60,51 @@ def test_short_classpath_uses_direct_argv(tmp_path: Path) -> None:
     assert command.argv[command.argv.index("-cp") + 1] == str(classes)
     assert "suspend=n" in command.argv[1]
     assert command.argv[-1] == "--server.port=0"
+    assert not any("spring.devtools.restart.enabled" in arg for arg in command.argv)
+
+
+@pytest.mark.parametrize("pathing_jar", [False, True])
+@pytest.mark.parametrize("jvm_args,expected", [
+    ((), ("-Dspring.devtools.restart.enabled=false",)),
+    (("-Xmx256m",), ("-Xmx256m", "-Dspring.devtools.restart.enabled=false")),
+    (("-Dspring.devtools.restart.enabled.extra=true",),
+     ("-Dspring.devtools.restart.enabled.extra=true", "-Dspring.devtools.restart.enabled=false")),
+    (("-Dspring.devtools.restart.enabled=true",), ("-Dspring.devtools.restart.enabled=true",)),
+    (("-Dspring.devtools.restart.enabled=false",), ("-Dspring.devtools.restart.enabled=false",)),
+    (("-Dspring.devtools.restart.enabled=",), ("-Dspring.devtools.restart.enabled=",)),
+    (("-Dspring.devtools.restart.enabled",), ("-Dspring.devtools.restart.enabled",)),
+])
+def test_project_command_defaults_devtools_off_without_overriding_explicit_arguments(
+    tmp_path, pathing_jar, jvm_args, expected,
+):
+    class Commands(JavaCommandMaterializer):
+        def materialize(self, *args, **kwargs):
+            return super().materialize(*args, **kwargs, force_pathing_jar=pathing_jar)
+
+    pipeline = ProjectLaunchPipeline(command_materializer=Commands())
+    original = replace(_plan(tmp_path, (tmp_path,)), jvm_args=jvm_args)
+    plan, command = pipeline.materialize_command(
+        original, jdwp_port=5005, attempt_directory=tmp_path / "attempt",
+    )
+    assert original.jvm_args == jvm_args
+    assert plan.jvm_args == expected
+    assert command.argv[2:command.argv.index("-cp")] == expected
+    assert command.materialization == ("pathing_jar" if pathing_jar else "direct_classpath")
+
+    # Re-materializing a cached/prepared plan must not duplicate the property.
+    repeated, _ = pipeline.materialize_command(
+        plan, jdwp_port=5005, attempt_directory=tmp_path / "repeated",
+    )
+    assert repeated.jvm_args == expected
+
+    # Restart may replace the entire vm_args list, including with an empty list.
+    for replacement in ((), ("-Dfixture.label=restarted",)):
+        restarted, command = pipeline.materialize_command(
+            replace(plan, jvm_args=replacement), jdwp_port=5005,
+            attempt_directory=tmp_path / "restart",
+        )
+        assert restarted.jvm_args == (*replacement, "-Dspring.devtools.restart.enabled=false")
+        assert command.argv[2:command.argv.index("-cp")] == restarted.jvm_args
 
 
 def test_pathing_jar_is_jdk8_manifest_compatible_and_bounded(

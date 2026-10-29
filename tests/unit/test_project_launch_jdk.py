@@ -133,7 +133,8 @@ def test_cached_world_uses_current_runtime_choice_and_arguments(cached_launch, s
     assert prepared.probe_cache_reused is True
     assert prepared.runtime_jdk.home == expected.home
     assert prepared.jvm_plan.java_executable == expected.java_executable
-    assert prepared.jvm_plan.jvm_args == ("-Dnew=true",)
+    assert prepared.jvm_plan.jvm_args == ("-Dnew=true", "-Dspring.devtools.restart.enabled=false")
+    assert request.vm_args == ("-Dnew=true",)
     assert prepared.jvm_plan.program_args == ("new",)
     assert prepared.jvm_plan.environment_overrides == {}
     assert prepared.jdt_build_world_plan.fingerprint == "unchanged"

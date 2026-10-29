@@ -1,5 +1,44 @@
 # joLink 产品边界与兼容性跟进
 
+## 项目启动默认关闭DevTools自动重启（2026-10-29，已review）
+
+发版前在旧Petclinic（Boot1.5.4/JDK8）确认：应用restart编译失败时，joLink没有
+执行HotSwap或替换JVM，但JDT已可能向运行classpath里的bin写出problem class。
+Spring DevTools监视到变化后自行重启Spring，加载错误class，接口随后返回500。
+独立对照中，只运行Fast Test不影响原应用；关闭DevTools自动restart后，同样的
+应用编译错误也不再引发该自动重载。不是Fast Test输出隔离回归。
+
+最小修复放在项目命令共用的`ProjectLaunchPipeline.materialize_command()`：
+
+- Maven/Gradle项目launch及restart默认加入`-Dspring.devtools.restart.enabled=false`。
+- restart替换或清空vm_args后仍应用同一默认值；旧缓存不需要清理，不改变JDT指纹。
+- 显式提供该`-D`属性时保留调用者选择；主动开启后仍会承担自动重载的原有行为。
+- 不扫描依赖、不移除DevTools JAR、不恢复class副本，不加schema参数或新状态机。
+- 不改变Fast Test Runner、构建工具、Worker，以及直接JAR/classpath启动。
+
+本修复针对已复现的DevTools自动重载，不宣称隔离了所有第三方重载器或延迟类加载。
+对应回归资产：`test_java_command.py`、`test_project_launch_jdk.py`及真实MCP的
+`test_devtools_restart.py`。已完成的本机验证：
+
+- 普通CI：1361 passed，零跳过/失败；未把独立Java E2E排除项计入通过。
+- 新真实MCP：Boot1.5.4/JDK8、Boot2.5.8/JDK17两组通过。观察HTTP内容、初始化UUID、
+  PID和实际ClassLoader，覆盖失败后不重载、修复后HotSwap、vm_args替换/清空、显式
+  true及跨MCP缓存重开；不能仅凭PID没变化断言框架没有重启。
+- wheel/sdist各自在JDK8/17的四组真实MCP发布流程通过，安装包加载的是修复源码。
+- 既有项目启动/JDK切换、编译restart、Maven/Gradle单多模块共享缓存及真实H2
+  应用回归17 passed，确认参数默认值未破坏原有更新与复用流程。
+- 出问题的旧Petclinic隔离副本再测：复用修改前留下的JDT缓存，未FULL；未手动设置
+  vm_args也自动关闭DevTools。同样的restart编译错误后接口仍正常302，没有第二次
+  Spring初始化；恢复源码后INCREMENTAL编译1文件并HotSwap成功。测试改动已恢复。
+
+### 未来可利用DevTools，但本轮仅记录
+
+DevTools的应用重启能力可以作为未来研究方向：由joLink在编译成功后受控触发
+框架重启，评估能否减少整JVM重启的成本。它与HotSwap不同，会重建应用上下文和
+类加载器；不能仅打开此开关就宣称已接入，也不能让文件监听绕过编译完成/失败结果。
+后续先用真实Spring项目验证重载结果、耗时和就绪观察，再决定是否产品化。本轮
+只关闭非受控的默认自动重启，不实现触发协议、监控器或新的重启策略。
+
 ## 求值接线修复：收好三项，泛型作用域暂缓（2026-10-26，首版收口）
 
 本轮按上一轮随机证据修复，不处理super、外部实例及嵌套类型简名。

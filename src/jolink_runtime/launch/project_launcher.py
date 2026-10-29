@@ -764,6 +764,14 @@ class ProjectLaunchPipeline:
     ) -> tuple[JvmLaunchPlan, MaterializedJavaCommand]:
         """Materialize a resolved plan after Generation classpath rewriting."""
 
+        # JDT writes live classpath outputs, including problem classes on errors.
+        # Let joLink control updates instead of DevTools reloading midway through
+        # a build. Apply here so restart vm_args replacements get the same default.
+        devtools_restart = "-Dspring.devtools.restart.enabled"
+        if not any(arg == devtools_restart or arg.startswith(devtools_restart + "=")
+                   for arg in plan.jvm_args):
+            plan = replace(plan, jvm_args=(*plan.jvm_args, devtools_restart + "=false"))
+
         command = self._commands.materialize(
             plan,
             jdwp_port=jdwp_port,
