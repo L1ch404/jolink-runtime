@@ -104,7 +104,7 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
             for (MavenProject p : session.getProjects()) {
                 if (!required.contains(p)) continue;
                 new SourcePreparation(executionPlans, pluginManager, getLog()).execute(session, p, testsRequired.contains(p.getId()));
-                new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, output);
+                new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, executionPlans, output);
                 String key = Integer.toHexString(p.getBasedir().getCanonicalPath().hashCode());
                 try (java.io.Writer writer = java.nio.file.Files.newBufferedWriter(
                         output.toPath().resolve(key+".pom.xml"), java.nio.charset.StandardCharsets.UTF_8)) {

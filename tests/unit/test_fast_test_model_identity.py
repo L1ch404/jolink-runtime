@@ -182,6 +182,8 @@ def test_maven_producer_keeps_settings_but_not_effective_pom_or_resources(
         "testResourceDirectories": [],
         "annotationProcessing": {"discoveryMode": "DISABLED"},
         "testAnnotationProcessing": {"discoveryMode": "DISABLED"},
+        "compilerConfiguration": "<configuration/>",
+        "testCompilerConfiguration": "<configuration/>",
         "testRuntime": {},
     }
     manager = FastTestManager()

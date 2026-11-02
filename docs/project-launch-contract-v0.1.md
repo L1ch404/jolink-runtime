@@ -29,6 +29,16 @@ and Processor configuration. Necessary source preparation may execute build
 tasks; joLink does not run a blanket Maven/Gradle application compile on every
 launch. Source-only edits do not require rediscovering an unchanged build model.
 
+For Maven, the native lifecycle plan selects the active main/test compiler
+executions. Custom IDs are supported; disabled executions do not contribute
+options or Processor paths. Runtime and Fast Test consume the same selected
+configuration instead of merging every execution by XML order. Conflicting
+active configurations report `MAVEN_COMPILER_EXECUTION_AMBIGUOUS`.
+Development compilation keeps source/line/local-variable debug attributes even
+when Maven requests `debug=false` or `-g:none`, and uses the existing errors-only
+diagnostic policy. Method parameter reflection metadata still follows the
+project setting. See [Fast Test](fast-test-v0.1.zh-CN.md) for this shared policy.
+
 Each needed module has persistent JDT state; main/test use separate compiler
 settings. Upstream source changes are compiled in dependency order rather than
 automatically forcing a new formal Maven build. Runtime uses the persistent

@@ -1,5 +1,56 @@
 # joLink 产品边界与兼容性跟进
 
+## Maven标准编译配置与有效execution（2026-11-02，已review）
+
+三项原始阻塞已修：`testCompile.showDeprecation`、`testCompile.debug`、禁用默认
+编译后使用自定义execution触发的`EXECUTION_CONFIG_UNRESOLVED`。
+
+- 统一标准诊断开关的true/false处理，沿用JDT仅错误策略；开发编译显式保留
+  SourceFile/LineNumberTable/LocalVariableTable。`debug/debuglevel/-g`不移除这些
+  属性，`MethodParameters`仍按项目配置，未把所有未知参数当成可忽略。
+- Probe用Maven实际执行计划选择compile/testCompile，再用Maven合并/求值后的
+  配置导出APT和编译选项。Python只消费所选配置，移除按XML顺序合并执行项的路径。
+- 禁用默认、任意自定义名称、等价重复都可处理；真正不同的有效配置明确返回
+  `MAVEN_COMPILER_EXECUTION_AMBIGUOUS`并给出scope/执行ID，不静默last-wins。
+- Probe版本升为fasttest33，已重建Probe和Worker；Test缓存v14、启动缓存v11。
+  只刷新旧模型，不要求清空用户缓存；JDT仍按自己的实际编译配置复用。
+
+真实MCP原项目回归（保留原POM/业务代码，没有为通过删配置）：
+
+| 原项目/选择器 | 结果 | 复用观察 |
+|---|---|---|
+| JFreeChart1.5.4 `RangeTest` | 14/14；首次编译1017源文件 | 第二次0编译，14/14 |
+| Druid1.2.24 当前演示修改的 `PagerUtilsPostgresqlLimitCheckTest` | 6/6；首次编译5003源文件 | 第二次0编译，6/6 |
+| 芋道jdk17分支 `TradePriceServiceImplTest` | 原debug拦截消失，实际编译2138源文件后639条诊断，测试未运行 | 后续缺口见U15，不能宣称项目已通过 |
+
+三份原样最小复现均1/1通过。新增7项诊断/debug真实MCP回归通过，检查实际class
+调试属性、错误恢复、参数形式、配置变更与重开；执行选择4项加既有APT2项共6项
+通过，覆盖真实生成物消费、main8/test11、禁用release17/Processor不污染、等价
+执行、不同有效配置及应用启动。19项既有Maven模块/作用域/源码准备回归通过。
+最终普通回归1372项通过，未把独立E2E排除项计为通过。
+独立安装wheel后，debug策略及自定义执行/生成物两组真实MCP回归通过；无源目录
+导入。Maven3.3.3/JDK8的无APT自定义执行冷/暖测试通过；显式APT的旧依赖问题见U16。
+
+### U15：Lombok目录配置未进入私有源码镜像（新暴露，未修）
+
+芋道根`lombok.config`设置`lombok.accessors.chain=true`，但JDT私有目录没有
+这份配置。实际使用Lombok1.18.48；真实DTO产物的setter返回void，而同一原始DTO
+使用原生javac和原配置生成的setter返回DTO类型。不是旧1.18.20边界。
+
+同JDT、同Lombok最小A/B：默认Java-only镜像失败；仅诊断性复制配置到私有工程后，
+链式调用编译、运行均通过。全项目实际返回128条截断诊断，其中125条涉及void；
+未据此断言全部639条都能消失，也未人工修补全项目workspace制造绿色结果。
+后续应在共享Lombok配置传递/缓存跟踪处修复，不做芋道特判。本轮不扩展实现。
+
+### U16：Maven3.3.3显式APT解析依赖不可见（新记录，未修）
+
+补充旧Maven对照时，显式JMH Processor路径在现有ProcessorPathResolver处出现
+`NoClassDefFoundError: org/eclipse/aether/util/filter/DependencyFilterUtils`。
+独立安装本轮修改前的a10 wheel、使用标准default执行布局和同一显式路径，也报
+相同错误；不是本轮有效execution选择回归。不带显式APT的自定义布局冷/暖均通过。
+这里只确认Maven3.3.3/JDK8组合，未泛化到所有旧Maven。后续检查Probe运行依赖与
+Maven插件ClassRealm导出，不自动升级用户Maven，也不在本轮扩大修复。
+
 ## 项目启动默认关闭DevTools自动重启（2026-10-29，已review）
 
 发版前在旧Petclinic（Boot1.5.4/JDK8）确认：应用restart编译失败时，joLink没有
@@ -698,6 +749,8 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
+| U15 | 新实测：Lombok目录配置未进入JDT镜像 | 芋道chain=true配置丢失，生成void setter；同JDT/Lombok小样例补配置后通过 | 共享配置传递与缓存跟踪待修；不是旧Lombok1.18.20问题，未声称639条均已解决 |
+| U16 | 新记录：Maven3.3.3显式APT运行依赖 | ProcessorPathResolver缺DependencyFilterUtils；修改前a10独立包相同失败，无APT自定义执行通过 | 后续修Probe依赖/ClassRealm；未泛化为所有旧Maven不支持 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。
 后续可讨论U13的构建步骤、U14的语言任务，以及已缩小复现的U2编译器修复范围。

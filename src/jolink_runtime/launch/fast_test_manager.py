@@ -1110,8 +1110,9 @@ class FastTestManager:
         effective_project = self._maven._select_effective_project(
             effective_root, module
         )
+        main_scope = compiler_scope(effective_project, configuration=snapshot["compilerConfiguration"])
         compiler_model = self._maven._compiler_model(
-            compiler_scope(effective_project),
+            main_scope,
             build_jdk=build_jdk,
             runtime_jdk=build_jdk,
         )
@@ -1128,7 +1129,7 @@ class FastTestManager:
                     "target_level": compiler_model["target_level"],
                 },
             )
-        test_scope = compiler_scope(effective_project, test=True)
+        test_scope = compiler_scope(effective_project, test=True, configuration=snapshot["testCompilerConfiguration"])
         test_model = self._maven._compiler_model(test_scope, build_jdk=build_jdk, runtime_jdk=build_jdk)
         if test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in SUPPORTED_JAVA_LEVELS:
             raise FastTestManagerError("FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
@@ -1155,7 +1156,7 @@ class FastTestManager:
             value
             for value in unsupported_test_compiler
             if value not in {
-                "testCompile.parameters",
+                "testCompile.parameters", "testParameters", "testCompile.proc",
                 "testCompile.annotationProcessorPaths",
                 "testCompile.annotationProcessorPathsUseDepMgmt",
                 "testCompile.annotationProcessors",
@@ -1169,17 +1170,18 @@ class FastTestManager:
             }
         ]
         unsupported_test_compiler = self._unshared_test_compiler_configuration(
-            effective_project,
+            test_scope,
             unsupported_test_compiler,
-            compiler_model=compiler_model,
+            compiler_model=test_model,
         )
         (
             unsupported_test_compiler,
             worker_min_heap_mb,
             worker_max_heap_mb,
         ) = self._compiler_argument_compatibility(
-            effective_project,
+            main_scope,
             unsupported_test_compiler,
+            test_project=test_scope,
         )
         if unsupported_test_compiler:
             raise FastTestManagerError(
@@ -1194,7 +1196,7 @@ class FastTestManager:
         main_processor_paths = processor_path(main_processing)
         attempt.require_not_cancelled()
         processor_entries, lombok = jdt_processor_paths(main_processing, main_processor_paths)
-        method_parameters = compiler_parameters(compiler_scope(effective_project))
+        method_parameters = compiler_parameters(main_scope)
         target_level = int(compiler_model["target_level"])
         target_java_home = self._select_target_java(
             preferences,
@@ -1242,7 +1244,7 @@ class FastTestManager:
             test_runtime_classpath=runtime_classpath,
             resource_roots=tuple(resource_roots),
             target_java_home=target_java_home,
-            source_encoding=self._maven._source_encoding(effective_project),
+            source_encoding=self._maven._source_encoding(main_scope),
             source_level=target_level,
             method_parameters=method_parameters,
             processor_entries=processor_entries,
@@ -1525,35 +1527,12 @@ class FastTestManager:
         values: dict[str, list[str]] = {}
         direct = plugin.find("./{*}configuration")
         if direct is not None:
-            for field in ("testSource", "testTarget", "testEncoding"):
-                value = self._maven._config_text(direct, field)
+            for item in direct:
+                field = self._maven._local_name(item.tag)
+                value = (item.text or "").strip()
                 if value:
                     values.setdefault(field, []).append(value)
-        for execution in plugin.findall("./{*}executions/{*}execution"):
-            goals = {
-                (goal.text or "").strip()
-                for goal in execution.findall("./{*}goals/{*}goal")
-            }
-            if "testCompile" not in goals:
-                continue
-            configuration = execution.find("./{*}configuration")
-            if configuration is None:
-                continue
-            for field in (
-                "source",
-                "target",
-                "encoding",
-                "optimize",
-                "fork",
-                "maxmem",
-                "meminitial",
-                "showWarnings",
-            ):
-                value = self._maven._config_text(configuration, field)
-                if value:
-                    values.setdefault(f"testCompile.{field}", []).append(
-                        value
-                    )
+                    values.setdefault(f"testCompile.{field}", []).append(value)
 
         source_level = int(compiler_model["source_level"])
         target_level = int(compiler_model["target_level"])
@@ -1598,8 +1577,14 @@ class FastTestManager:
                 return {
                     value.casefold() for value in observed
                 } <= {"true", "false"}
-            if name in {"testShowWarnings", "testCompile.showWarnings"}:
-                return {value.casefold() for value in observed} == {"true"}
+            if name in {"showWarnings", "showDeprecation", "debug",
+                        "testShowWarnings", "testCompile.showWarnings",
+                        "testCompile.showDeprecation", "testCompile.debug"}:
+                # Development compilation collects errors only and always
+                # retains debug attributes, independently of native preferences.
+                return {value.casefold() for value in observed} <= {"true", "false"}
+            if name in {"debuglevel", "testCompile.debuglevel"}:
+                return True  # source/lines/vars are all kept for joLink debugging.
             if name in {
                 "testMaxmem",
                 "testCompile.maxmem",
@@ -1619,6 +1604,8 @@ class FastTestManager:
         self,
         project: ET.Element,
         unsupported_test_configuration: Sequence[str],
+        *,
+        test_project: ET.Element,
     ) -> tuple[list[str], int, int]:
         compiler = self._maven._find_build_plugin(
             project, "maven-compiler-plugin"
@@ -1626,9 +1613,9 @@ class FastTestManager:
         main_profile = self._maven._compiler_argument_profile(
             self._maven._compiler_configurations(compiler)
         )
-        test_profile = self._maven._compiler_argument_profile(
-            self._maven._test_compiler_configurations(compiler)
-        )
+        test_compiler = self._maven._find_build_plugin(test_project, "maven-compiler-plugin")
+        test_configurations = self._maven._compiler_configurations(test_compiler)
+        test_profile = self._maven._compiler_argument_profile(test_configurations)
         remaining = list(unsupported_test_configuration)
         argument_configuration_names = {
             "testCompile.compilerArgs",
@@ -1669,7 +1656,7 @@ class FastTestManager:
             self._maven._compiler_configurations(compiler)
         )
         test_structured = self._maven._structured_compiler_heap(
-            self._maven._test_compiler_configurations(compiler)
+            test_configurations
         )
         worker_min_heap_mb = max(
             worker_min_heap_mb,

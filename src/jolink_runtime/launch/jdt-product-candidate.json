@@ -111,7 +111,7 @@
   ],
   "worker_artifact": {
     "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar",
-    "sha256": "c78d1c507a3adf989b1ebbf63e18570aa37c4e160deb279b25ffa496298584cc"
+    "sha256": "8e95b8960fd633dd08cb3e16c5bd81c0d1e5eff5b7b437ce0fb0c522a659e147"
   },
   "equinox": {
     "launcher_filename": "org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
@@ -120,7 +120,7 @@
   "worker_java_minimum": 17,
   "worker_class_major": 61,
   "worker_build_provenance": {
-    "source_fingerprint": "fee61c0562c0abd830d0f20e9f116d9e7d25b4dc45e462add5886bfbd4d1cd55",
+    "source_fingerprint": "68a3dca657d4c379ddea092f35aa01b338659737253d25bce0e8a5ac2fa8642f",
     "java_version_output": "openjdk version \"21.0.12.1\" 2026-08-18 LTS",
     "javac_version_output": "javac 21.0.12.1",
     "java_binary_sha256": "9be1d0a740ff6502df1a762145e62860f5de4b7e17658d9cb9498da3acf9d16c",

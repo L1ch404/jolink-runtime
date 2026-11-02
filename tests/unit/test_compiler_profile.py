@@ -69,6 +69,18 @@ def test_optional_javac_diagnostics_follow_worker_errors_only_policy():
     assert profile.decisions[0].category == "optional_diagnostics_disabled"
 
 
+def test_debug_arguments_follow_development_policy_without_changing_parameters():
+    arguments = ["-g", "-g:none", "-g:lines,vars,source", "-deprecation", "-nowarn"]
+    profile = classify_compiler_arguments([*arguments, "-Xplugin:Unknown"])
+    assert profile.unresolved_arguments == ("-Xplugin:Unknown",)
+    assert profile.method_parameters is False
+    assert [item.category for item in profile.decisions[:3]] == [
+        "debug_information_always_generated"
+    ] * 3
+    assert all(item.disposition == "REDUNDANT_FOR_JDT" for item in profile.decisions[:-1])
+    assert classify_compiler_arguments(["-g:none", "-parameters"]).method_parameters is True
+
+
 def test_processor_names_and_options_are_mapped_without_losing_values():
     profile = classify_compiler_arguments(
         [

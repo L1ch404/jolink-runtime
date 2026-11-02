@@ -35,8 +35,6 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.plugins.annotations.Component;
-import org.apache.maven.model.Plugin;
-import org.apache.maven.model.PluginExecution;
 import org.apache.maven.model.Resource;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.repository.RepositorySystem;
@@ -52,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest32";
+    private static final String PROBE_VERSION = "0.1.0-fasttest33";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -65,7 +63,10 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     private RepositorySystem repositorySystem;
     @Component
     private org.eclipse.aether.RepositorySystem artifactResolver;
+    @Component
+    private org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator executionPlans;
     private org.eclipse.aether.RepositorySystemSession processorRepositorySession;
+    private CompilerExecutions compilerExecutions;
 
     private static final class ProcessorFacts {
         final String processingMode;
@@ -158,12 +159,14 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     void exportProject(MavenProject selected, MavenSession activeSession,
             RepositorySystem repositories, org.eclipse.aether.RepositorySystem resolver,
             org.eclipse.aether.RepositorySystemSession repositorySession,
+            org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator plans,
             File destination) throws MojoExecutionException {
         project = selected;
         session = activeSession;
         repositorySystem = repositories;
         artifactResolver = resolver;
         processorRepositorySession = repositorySession;
+        executionPlans = plans;
         outputDirectory = destination;
         execute();
     }
@@ -181,6 +184,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         } catch (DependencyResolutionRequiredException error) {
             throw new MojoExecutionException("Compile/test classpath is unresolved", error);
         }
+        compilerExecutions = CompilerExecutions.resolve(session, project, executionPlans);
         String json = render(
             classpath,
             testClasspath,
@@ -241,6 +245,12 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "compileSourceRoots", project.getCompileSourceRoots(), true);
         booleanField(out, "testSourcesRequired", Boolean.parseBoolean(project.getProperties().getProperty("jolink.probe.testSourcesRequired", "false")), true);
         stringList(out, "compileClasspathElements", classpath, true);
+        field(out, "compilerConfiguration", compilerExecutions.main.configuration.toString(), true);
+        field(out, "testCompilerConfiguration", compilerExecutions.test.configuration.toString(), true);
+        stringList(out, "compilerExecutionIds", compilerExecutions.main.ids, true);
+        stringList(out, "testCompilerExecutionIds", compilerExecutions.test.ids, true);
+        booleanField(out, "compilerConfigurationAmbiguous", compilerExecutions.main.ambiguous, true);
+        booleanField(out, "testCompilerConfigurationAmbiguous", compilerExecutions.test.ambiguous, true);
         try {
             stringList(out, "runtimeClasspathElements", project.getRuntimeClasspathElements(), true);
         } catch (DependencyResolutionRequiredException error) {
@@ -665,11 +675,9 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
 
     private ProcessorFacts processorFacts(List<String> classpath, String goal)
         throws MojoExecutionException {
-        Plugin plugin = compilerPlugin();
-        // Maven merges plugin defaults with each standard execution for us.
-        Xpp3Dom configuration = project.getGoalConfiguration(
-            "org.apache.maven.plugins", "maven-compiler-plugin", "default-" + goal, goal);
-        if (configuration == null) configuration = pluginConfiguration(plugin);
+        CompilerExecutions.Scope selected = "compile".equals(goal)
+            ? compilerExecutions.main : compilerExecutions.test;
+        Xpp3Dom configuration = selected.configuration;
         String proc = childValue(configuration, "proc");
         String processingMode = processingMode(proc);
         List<String> options = compilerOptions(configuration);
@@ -690,8 +698,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         int procPropertyCount = procPropertySourceCount();
         int unmodeledCompilerArgCount =
             unmodeledProcessorCompilerArgCount(configuration);
-        boolean executionConfiguration =
-            hasExecutionProcessorConfiguration(plugin, false);
+        boolean executionConfiguration = hasProcessorConfiguration(configuration);
         if (procPropertyCount > 0) {
             return new ProcessorFacts(
                 processingMode,
@@ -730,15 +737,15 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
                 unmodeledCompilerArgCount
             );
         }
-        if (hasExecutionProcessorConfiguration(plugin, true)) {
-            // Standard executions above are resolved by Maven. Keep the
-            // existing boundary for additional, separately configured runs.
+        if (selected.ambiguous) {
+            // One JDT scope cannot silently stand in for differing active
+            // compiler runs. Equivalent repetitions need no special treatment.
             return new ProcessorFacts(processingMode, "EXECUTION_CONFIG_UNRESOLVED", false,
                 Collections.<String>emptyList(), Collections.<String>emptyList(), options,
                 explicitNames, explicitPathCount, true, legacyOptionCount > 0,
                 legacyOptionCount, false, 0, false, 0);
         }
-        if ("none".equalsIgnoreCase(proc)) {
+        if (selected.ids.isEmpty() || "none".equalsIgnoreCase(proc)) {
             return new ProcessorFacts(
                 "NONE",
                 "DISABLED",
@@ -841,83 +848,17 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         return value instanceof List ? (List<String>) value : Collections.emptyList();
     }
 
-    private Plugin compilerPlugin() {
-        List<Plugin> plugins = project.getBuildPlugins();
-        if (plugins == null) {
-            return null;
-        }
-        for (Plugin plugin : plugins) {
-            if ("maven-compiler-plugin".equals(plugin.getArtifactId())
-                && (plugin.getGroupId() == null
-                    || "org.apache.maven.plugins".equals(plugin.getGroupId()))) {
-                return plugin;
-            }
-        }
-        return null;
-    }
-
     private List<String> unsupportedTestCompilerConfigurationNames() {
-        Plugin plugin = compilerPlugin();
-        if (plugin == null) {
-            return Collections.emptyList();
-        }
         Set<String> values = new LinkedHashSet<String>();
-        Xpp3Dom direct = pluginConfiguration(plugin);
-        if (direct != null) {
-            for (Xpp3Dom item : direct.getChildren()) {
-                if (item.getName().startsWith("test")
-                        && (!value(item).isEmpty() || item.getChildCount() > 0)) {
-                    values.add(item.getName());
-                }
-            }
-        }
-        if (plugin.getExecutions() != null) {
-            for (PluginExecution execution : plugin.getExecutions()) {
-                if (execution.getGoals() == null
-                        || !execution.getGoals().contains("testCompile")) {
-                    continue;
-                }
-                Object raw = execution.getConfiguration();
-                if (!(raw instanceof Xpp3Dom)) {
-                    continue;
-                }
-                for (Xpp3Dom item : ((Xpp3Dom) raw).getChildren()) {
-                    if (!value(item).isEmpty() || item.getChildCount() > 0) {
-                        values.add("testCompile." + item.getName());
-                    }
-                }
+        for (Xpp3Dom item : compilerExecutions.test.configuration.getChildren()) {
+            if (!value(item).isEmpty() || item.getChildCount() > 0) {
+                values.add(item.getName().startsWith("test")
+                    ? item.getName() : "testCompile." + item.getName());
             }
         }
         List<String> result = new ArrayList<String>(values);
         Collections.sort(result);
         return result;
-    }
-
-    private static Xpp3Dom pluginConfiguration(Plugin plugin) {
-        if (plugin == null) {
-            return null;
-        }
-        Object configuration = plugin.getConfiguration();
-        return configuration instanceof Xpp3Dom
-            ? (Xpp3Dom) configuration : null;
-    }
-
-    private static boolean hasExecutionProcessorConfiguration(Plugin plugin, boolean customOnly) {
-        if (plugin == null || plugin.getExecutions() == null) {
-            return false;
-        }
-        for (PluginExecution execution : plugin.getExecutions()) {
-            if (customOnly && ("default-compile".equals(execution.getId())
-                || "default-testCompile".equals(execution.getId())
-                || (!execution.getGoals().contains("compile")
-                    && !execution.getGoals().contains("testCompile")))) continue;
-            Object raw = execution.getConfiguration();
-            if (raw instanceof Xpp3Dom
-                && hasProcessorConfiguration((Xpp3Dom) raw)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean hasProcessorConfiguration(Xpp3Dom configuration) {

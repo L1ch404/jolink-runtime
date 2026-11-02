@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .jdt_compile_session import select_target_system_home
 from .maven import MavenBuildSystemAdapter
+from .maven_probe import MavenProbeError
 from .maven_compile_scope import (
     compiler_parameters,
     compiler_scope,
@@ -55,7 +56,17 @@ def load_module_worlds(
         root = effective[
             tuple(project[key] for key in ("groupId", "artifactId", "version"))
         ]
-        main_scope = compiler_scope(root)
+        for label, prefix in (("main", "compiler"), ("test", "testCompiler")):
+            if label == "test" and not include_tests:
+                continue
+            if snapshot.get(prefix + "ConfigurationAmbiguous", False):
+                raise MavenProbeError(
+                    "MAVEN_COMPILER_EXECUTION_AMBIGUOUS",
+                    "Multiple active Maven compiler executions have different configurations.",
+                    context={"scope": label, "module": str(directory),
+                             "execution_ids": snapshot.get(prefix + "ExecutionIds", [])},
+                )
+        main_scope = compiler_scope(root, configuration=snapshot["compilerConfiguration"])
         compiler = maven._compiler_model(
             main_scope, build_jdk=build_jdk, runtime_jdk=build_jdk
         )
@@ -132,7 +143,7 @@ def load_module_worlds(
         if main_patterns:
             modules[-1]["source_patterns"] = main_patterns
         if include_tests:
-            scoped = compiler_scope(root, test=True)
+            scoped = compiler_scope(root, test=True, configuration=snapshot["testCompilerConfiguration"])
             test_patterns = compiler_source_patterns(scoped, test=True)
             if test_patterns:
                 modules[-1]["test_source_patterns"] = test_patterns

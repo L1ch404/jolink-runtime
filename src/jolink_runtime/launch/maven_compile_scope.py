@@ -6,8 +6,10 @@ from copy import deepcopy
 from .maven import MavenBuildSystemAdapter
 
 
-def compiler_scope(project: ET.Element, *, test: bool = False) -> ET.Element:
-    """Apply execution overrides, then test-specific parameters when present.
+def compiler_scope(
+    project: ET.Element, *, test: bool = False, configuration: str | None = None,
+) -> ET.Element:
+    """Use Maven's selected execution configuration, then test-specific parameters.
 
     The input is Maven's effective POM, not the user's unexpanded POM. Keep
     the existing compiler argument/platform mapping shared by both scopes.
@@ -24,22 +26,14 @@ def compiler_scope(project: ET.Element, *, test: bool = False) -> ET.Element:
             plugins = ET.SubElement(build, "plugins")
         plugin = ET.SubElement(plugins, "plugin")
         ET.SubElement(plugin, "artifactId").text = "maven-compiler-plugin"
-    configurations = []
-    direct = plugin.find("{*}configuration")
-    if direct is not None:
-        configurations.append(direct)
-    goal = "testCompile" if test else "compile"
-    configurations.extend(
-        execution.find("{*}configuration")
-        for execution in plugin.findall("./{*}executions/{*}execution")
-        if goal in {item.text for item in execution.findall("./{*}goals/{*}goal")}
-        or execution.findtext("{*}id") == "default-" + goal
-    )
+    # Selection belongs to Maven's native execution plan. Never merge disabled
+    # or additional executions by XML order here. Unscoped callers use only the
+    # plugin-level configuration; product callers pass the Probe's selected XML.
+    selected = ET.fromstring(configuration) if configuration is not None else plugin.find("{*}configuration")
     values = {}
-    for configuration in configurations:
-        if configuration is not None:
-            for item in configuration:
-                values[maven._local_name(item.tag)] = deepcopy(item)
+    if selected is not None:
+        for item in selected:
+            values[maven._local_name(item.tag)] = deepcopy(item)
     if test:
         for field in ("release", "source", "target", "encoding", "parameters"):
             name = "test" + field[0].upper() + field[1:]

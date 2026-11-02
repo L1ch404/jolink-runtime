@@ -517,6 +517,11 @@ public final class WorkerApplication implements IApplication {
         options.put(JavaCore.COMPILER_SOURCE, compliance);
         options.put(JavaCore.COMPILER_COMPLIANCE, compliance);
         options.put(JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, compliance);
+        // Development output keeps source/line/local metadata for JDWP, even
+        // when the native build disables debug information for release classes.
+        options.put(JavaCore.COMPILER_SOURCE_FILE_ATTR, JavaCore.GENERATE);
+        options.put(JavaCore.COMPILER_LINE_NUMBER_ATTR, JavaCore.GENERATE);
+        options.put(JavaCore.COMPILER_LOCAL_VARIABLE_ATTR, JavaCore.GENERATE);
         options.put(
                 JavaCore.COMPILER_CODEGEN_METHOD_PARAMETERS_ATTR,
                 methodParameters ? JavaCore.GENERATE : JavaCore.DO_NOT_GENERATE);

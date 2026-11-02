@@ -356,7 +356,9 @@ public class Generator extends AbstractProcessor {
 
     anyio.run(scenario)
 
-    # Resolve the standard main/test execution configurations independently.
+    # Resolve main/test independently. The extra execution below really adds a
+    # second active test compile with proc=none, unlike an equivalent renamed
+    # replacement for a phase=none default (covered separately).
     pom = project / "pom.xml"
     original = pom.read_text()
     for execution, expected in (
@@ -395,4 +397,8 @@ public class Generator extends AbstractProcessor {
         assert latest["testAnnotationProcessing"]["discoveryMode"] == expected, latest[
             "testAnnotationProcessing"
         ]
+        assert latest["compilerConfigurationAmbiguous"] is False
+        assert latest["testCompilerConfigurationAmbiguous"] is (execution == "separate-test-compile")
+        if execution == "separate-test-compile":
+            assert set(latest["testCompilerExecutionIds"]) == {"default-testCompile", execution}
     pom.write_text(original)

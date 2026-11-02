@@ -3,6 +3,23 @@
 Fast Test不是`mvn test`或`gradle test`的包装。构建系统只负责通过Probe导出测试
 Build World；main/test编译由持久JDT workspace完成，测试由独立Runner JVM执行。
 
+## 开发编译配置策略
+
+- Maven main/test编译配置由Probe根据实际生命周期执行计划选择，而非固定读取
+  `default-compile/default-testCompile`或按POM顺序合并全部execution。
+  禁用项及不在当前编译阶段内的项不参与；自定义ID和配置等价的重复执行可用。
+  真正不同的有效编译配置返回`MAVEN_COMPILER_EXECUTION_AMBIGUOUS`，不静默覆盖。
+- 启动与Fast Test共用所选配置的语言级别、编码、参数、源码过滤和Processor信息。
+  这里只查询Maven模型，不运行Maven业务编译。
+- JDT开发编译固定保留源文件、行号和局部变量调试属性；Maven的`debug/debuglevel`
+  及`-g`系列参数不关闭它们。这是开发调试策略，不保证与正式Maven产物逐字节一致。
+  反射用的`MethodParameters`仍按项目的`parameters/-parameters`设置处理。
+- 沿用只收集错误的诊断策略，`showWarnings/showDeprecation`及等价诊断参数不再
+  因true/false写法被拒绝；编译错误仍返回，未知扩展和`failOnWarning`没有一概忽略。
+
+本轮Test模型升为v14、启动模型升为v11，旧模型首次重新Probe；不要求删除缓存。
+后续仍按实际编译配置复用JDT状态，诊断/debug偏好变化不单独触发Java重编。
+
 ## 测试进程的运行配置
 
 不需要新增MCP参数，直接沿用项目自己的配置：

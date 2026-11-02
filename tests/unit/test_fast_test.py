@@ -37,6 +37,7 @@ from jolink_runtime.launch.process_supervisor import (
 )
 from jolink_runtime.launch.process_tree import TerminationReport
 from jolink_runtime.launch.maven_probe import MavenProbeError, ProductMavenProbe
+from jolink_runtime.launch.maven_compile_scope import compiler_parameters, compiler_scope
 from jolink_runtime.launch.gradle_probe import (
     ProductGradleProbe,
     gradle_configuration_environment_names,
@@ -426,7 +427,8 @@ def test_fast_test_accepts_shared_test_compile_source_target_encoding() -> None:
     manager = FastTestManager()
     try:
         unsupported = manager._unshared_test_compiler_configuration(
-            project,
+            compiler_scope(project, test=True, configuration=ET.tostring(
+                project.find(".//executions/execution/configuration"), encoding="unicode")),
             (
                 "testCompile.source",
                 "testCompile.target",
@@ -439,7 +441,8 @@ def test_fast_test_accepts_shared_test_compile_source_target_encoding() -> None:
             ".//executions/execution/configuration/target"
         ).text = "11"
         unsupported = manager._unshared_test_compiler_configuration(
-            project,
+            compiler_scope(project, test=True, configuration=ET.tostring(
+                project.find(".//executions/execution/configuration"), encoding="unicode")),
             ("testCompile.target",),
             compiler_model={"source_level": 8, "target_level": 8},
         )
@@ -931,8 +934,10 @@ def test_fast_test_maps_test_compile_memory_arguments_to_worker() -> None:
     try:
         remaining, minimum, maximum = (
             manager._compiler_argument_compatibility(
-                project,
+                compiler_scope(project),
                 ["testCompile.compilerArgs"],
+                test_project=compiler_scope(project, test=True, configuration=ET.tostring(
+                    project.find(".//executions/execution/configuration"), encoding="unicode")),
             )
         )
         assert remaining == []
@@ -957,7 +962,6 @@ def test_fast_test_reads_method_parameters_from_compiler_arguments() -> None:
     )
     manager = FastTestManager()
     try:
-        from jolink_runtime.launch.maven_compile_scope import compiler_parameters, compiler_scope
         assert compiler_parameters(compiler_scope(project)) is True
     finally:
         manager.close()
@@ -986,12 +990,13 @@ def test_fast_test_accepts_legacy_compiler_arg_children() -> None:
     try:
         remaining, _minimum, _maximum = (
             manager._compiler_argument_compatibility(
-                project,
+                compiler_scope(project),
                 ["testCompile.compilerArgs"],
+                test_project=compiler_scope(project, test=True, configuration=ET.tostring(
+                    project.find(".//executions/execution/configuration"), encoding="unicode")),
             )
         )
         assert remaining == []
-        from jolink_runtime.launch.maven_compile_scope import compiler_parameters, compiler_scope
         assert compiler_parameters(compiler_scope(project)) is True
     finally:
         manager.close()
@@ -1016,7 +1021,8 @@ def test_fast_test_treats_legacy_javac_optimize_as_redundant() -> None:
     manager = FastTestManager()
     try:
         remaining = manager._unshared_test_compiler_configuration(
-            project,
+            compiler_scope(project, test=True, configuration=ET.tostring(
+                project.find(".//executions/execution/configuration"), encoding="unicode")),
             ["testCompile.optimize"],
             compiler_model={"source_level": 8, "target_level": 8},
         )
@@ -1044,7 +1050,8 @@ def test_fast_test_maps_standard_compiler_process_and_diagnostic_options() -> No
     manager = FastTestManager()
     try:
         remaining = manager._unshared_test_compiler_configuration(
-            project,
+            compiler_scope(project, test=True, configuration=ET.tostring(
+                project.find(".//executions/execution/configuration"), encoding="unicode")),
             [
                 "testCompile.fork",
                 "testCompile.maxmem",
@@ -1054,7 +1061,11 @@ def test_fast_test_maps_standard_compiler_process_and_diagnostic_options() -> No
         )
         assert remaining == []
         _remaining, minimum, maximum = (
-            manager._compiler_argument_compatibility(project, remaining)
+            manager._compiler_argument_compatibility(
+                compiler_scope(project), remaining,
+                test_project=compiler_scope(project, test=True, configuration=ET.tostring(
+                    project.find(".//executions/execution/configuration"), encoding="unicode")),
+            )
         )
         assert minimum == 64
         assert maximum == 3072
@@ -1068,6 +1079,31 @@ def test_fast_test_maps_standard_compiler_process_and_diagnostic_options() -> No
 
 
 
+
+
+@pytest.mark.parametrize("field,value", [
+    ("debug", "true"), ("debug", "false"),
+    ("showWarnings", "true"), ("showWarnings", "false"),
+    ("showDeprecation", "true"), ("showDeprecation", "false"),
+    ("debuglevel", "lines"), ("debuglevel", "source,lines,vars"),
+])
+def test_standard_test_debug_and_diagnostics_follow_development_policy(field, value):
+    project = ET.fromstring('''<project><properties>
+<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+<build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId></plugin></plugins></build></project>''')
+    scoped = compiler_scope(project, test=True, configuration=f'''<configuration>
+<{field}>{value}</{field}><failOnWarning>true</failOnWarning>
+<customCompilerSetting>true</customCompilerSetting></configuration>''')
+    manager = FastTestManager()
+    try:
+        remaining = manager._unshared_test_compiler_configuration(
+            scoped,
+            [field, "testCompile." + field, "testCompile.failOnWarning", "testCompile.customCompilerSetting"],
+            compiler_model={"source_level": 8, "target_level": 8},
+        )
+        assert remaining == ["testCompile.failOnWarning", "testCompile.customCompilerSetting"]
+    finally:
+        manager.close()
 
 
 def test_gradle_module_failure_preserves_error_code(tmp_path, monkeypatch) -> None:
@@ -1110,8 +1146,10 @@ def test_fast_test_keeps_unknown_compiler_argument_as_compatibility_gap() -> Non
     try:
         with pytest.raises(FastTestManagerError) as captured:
             manager._compiler_argument_compatibility(
-                project,
+                compiler_scope(project),
                 ["testCompile.compilerArgs"],
+                test_project=compiler_scope(project, test=True, configuration=ET.tostring(
+                    project.find(".//executions/execution/configuration"), encoding="unicode")),
             )
         assert (
             captured.value.error_code

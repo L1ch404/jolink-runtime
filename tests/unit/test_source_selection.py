@@ -55,8 +55,14 @@ def test_effective_main_and_test_patterns_do_not_leak_between_scopes(namespaced)
 <executions><execution><id>default-compile</id><configuration><excludes><exclude>legacy/**</exclude></excludes></configuration></execution>
 <execution><id>default-testCompile</id><configuration><testExcludes><testExclude>slow/**</testExclude></testExcludes></configuration></execution></executions>
 </plugin></plugins></build></project>''')
-    assert compiler_source_patterns(compiler_scope(project)) == {"includes": ["main/**/*.java"], "excludes": ["legacy/**"]}
-    assert compiler_source_patterns(compiler_scope(project, test=True), test=True) == {"includes": ["checks/**/*.java"], "excludes": ["slow/**"]}
+    main_configuration = '''<configuration><includes><include>main/**/*.java</include></includes>
+<excludes><exclude>legacy/**</exclude></excludes><testIncludes><testInclude>checks/**/*.java</testInclude></testIncludes></configuration>'''
+    test_configuration = '''<configuration><includes><include>main/**/*.java</include></includes>
+<excludes><exclude>**/MainIgnored.java</exclude></excludes>
+<testIncludes><testInclude>checks/**/*.java</testInclude></testIncludes>
+<testExcludes><testExclude>slow/**</testExclude></testExcludes></configuration>'''
+    assert compiler_source_patterns(compiler_scope(project, configuration=main_configuration)) == {"includes": ["main/**/*.java"], "excludes": ["legacy/**"]}
+    assert compiler_source_patterns(compiler_scope(project, test=True, configuration=test_configuration), test=True) == {"includes": ["checks/**/*.java"], "excludes": ["slow/**"]}
     basic = ET.fromstring('''<project><build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><configuration>
 <includes><include>main/**</include></includes></configuration></plugin></plugins></build></project>''')
     assert compiler_source_patterns(compiler_scope(basic, test=True), test=True) == {}

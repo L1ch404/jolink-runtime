@@ -26,6 +26,10 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
         "runtimeClasspathElements": [str(output)],
         "resourceDirectories": [],
         "annotationProcessing": {"processorProviderArtifactPaths": []},
+        "compilerConfiguration": """<configuration><source>8</source><target>8</target>
+<parameters>true</parameters><meminitial>128m</meminitial><maxmem>4g</maxmem>
+<compilerArgs><arg>-J-Xms96m</arg><arg>-J-Xmx3g</arg></compilerArgs></configuration>""",
+        "testCompilerConfiguration": "<configuration/>",
     }
     exports = tmp_path / "probe"
     exports.mkdir()

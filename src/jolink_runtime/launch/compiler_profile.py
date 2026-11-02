@@ -211,6 +211,12 @@ def classify_compiler_arguments(
             )
             index += 1
             continue
+        if argument == "-g" or argument.startswith("-g:"):
+            decisions.append(CompilerArgumentDecision(
+                argument, "REDUNDANT_FOR_JDT", "debug_information_always_generated",
+            ))
+            index += 1
+            continue
         if argument == "-proc:none":
             decisions.append(
                 CompilerArgumentDecision(
