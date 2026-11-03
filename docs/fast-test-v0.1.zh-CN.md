@@ -20,6 +20,14 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 本轮Test模型升为v14、启动模型升为v11，旧模型首次重新Probe；不要求删除缓存。
 后续仍按实际编译配置复用JDT状态，诊断/debug偏好变化不单独触发Java重编。
 
+### Lombok目录配置
+
+已镜像的Java源码使用原始路径交给Lombok自身配置解析器，保留父目录/子目录覆盖、
+import及main/test和模块作用域。配置输入及有效值指纹随source-index保存；仅配置
+变化也会让受影响源码重新编译，未变化则复用。没有重新运行Maven来解析Lombok配置。
+运行期间APT新生成、尚无原始路径映射的Lombok源码仍有配置来源缺口；任意Processor
+外部文件的内容变化也不自动属于本机制。见兼容性跟进U15、U17—U19。
+
 ## 测试进程的运行配置
 
 不需要新增MCP参数，直接沿用项目自己的配置：

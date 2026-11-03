@@ -1,5 +1,52 @@
 # joLink 产品边界与兼容性跟进
 
+## U15原始源码配置修复及同类风险复测（2026-11-03，已review）
+
+芋道这次已证实的Lombok配置遗漏已修，未修改业务源码或POM：`TradePriceServiceImplTest`
+真实MCP冷/暖均1/1通过；首次编译2138源文件，先前639条诊断消失，第二次0编译。
+暖运行约4.69s，source_scan约179ms；并行回归期间的观察，不是隔离性能基准。
+
+修复不是复制一份根配置，也不自己解释Lombok语法。共享CompileSession把现有
+私有源码→原始源码映射交给Worker；通过实际ECJ Parser类加载器中的Lombok配置
+解析接口，按原始路径解析继承、覆盖、import、clear及stopBubbling。
+这保留不同source root、package重排、main/test、模块之间的配置作用域。
+
+有效配置按原始目录分组，输入文件与指纹存入现有source-index.json；没有新数据库。
+暖路径只比较已知配置文件状态，未变化不重新解析/编译。配置增删改后由Lombok重新
+解析有效值，只有受影响的Java组被touch进入现有增量构建，绕过“字节相同就跳过”的
+源码快路。新Worker重开重新绑定来源并比较持久化指纹；Worker命令使用已有操作锁。
+没有Lombok的工程不发送配置命令。未修改jdwp_adapter或新增MCP参数。
+
+验证：新增6项Maven/Gradle真实MCP配置回归及既有Lombok1.18.20循环共7项通过，
+包含链式setter和equals/hashCode/toString实际语义、目录覆盖、缺失import新增/删除、
+重复/循环import的原生oracle、同package多根、物理/package重排、上游模块和重开。
+21项既有模块/布局/即时保存/GC/no-op重开回归通过；普通回归1376项通过。
+另外通过真实MCP交叉验证Maven/Gradle应用冷启动、Java修改后HotSwap、仅配置变化后
+restart、无变化重开及离线期间配置变化后的增量启动，共12个操作，均核对HTTP实际
+结果；重跑3项有效execution的应用启动回归通过。原芋道证据仍是所选测试，不代表
+完整业务服务及其数据库、中间件已全部启动验收。
+仅确认已测版本与场景，不宣称所有Lombok/JDK版本或环境变量配置均等价。
+
+### 本轮另外实测的边界，不混入已修结果
+
+- **U17：Processor外部文件未触发重编。** `-A`绝对路径传递正确，冷/暖测试通过；
+  只改辅助文件alpha→beta、Java/POM不变时，仍0编译、pending=false且用旧生成物，
+  实际JUnit失败。原生clean test及制造Java delta后均生成beta并通过。需要后续
+  处理已知辅助输入及失效，不等于普通参数读取失败。
+- **U18：Eclipse APT Filer的SOURCE_PATH读取不支持。** 原生Maven通过，真实MCP
+  返回`IllegalArgumentException: Unsupported location: SOURCE_PATH`。固定依赖的
+  IdeFilerImpl反汇编确认其读取方法只接受CLASS_OUTPUT/SOURCE_OUTPUT；不是简单
+  少复制文件，也不能泛化为所有Processor I/O失败。
+- **U19：APT运行期间新生成的Lombok Java仍缺原始配置来源。** 小Processor创建
+  `@Data generated.Bean`，原生Maven在root chain=true下1/1通过；当前MCP生成void
+  setter并报1条链式调用错误。`.apt_generated`中的新文件不在原始源码映射中，
+  解析回退到私有URI。这是生成源码上的剩余配置边界，不影响本轮芋道及已映射源文件
+  的修复，不能把“U15已修”扩大为所有生成代码均支持。
+
+三项都有原生/MCP对照和修复后的独立复测，未实现额外产品补丁。正向对照是Processor
+JAR内模板及普通应用resources冷/暖均通过；不宣称所有非Java文件都被遗漏。
+APT预生成并已列入Probe source roots的文件与运行期间新生成文件不是同一个场景。
+
 ## Maven标准编译配置与有效execution（2026-11-02，已review）
 
 三项原始阻塞已修：`testCompile.showDeprecation`、`testCompile.debug`、禁用默认
@@ -31,7 +78,7 @@
 独立安装wheel后，debug策略及自定义执行/生成物两组真实MCP回归通过；无源目录
 导入。Maven3.3.3/JDK8的无APT自定义执行冷/暖测试通过；显式APT的旧依赖问题见U16。
 
-### U15：Lombok目录配置未进入私有源码镜像（新暴露，未修）
+### U15：Lombok目录配置未进入私有源码镜像（历史复现，原始源码已修）
 
 芋道根`lombok.config`设置`lombok.accessors.chain=true`，但JDT私有目录没有
 这份配置。实际使用Lombok1.18.48；真实DTO产物的setter返回void，而同一原始DTO
@@ -40,7 +87,8 @@
 同JDT、同Lombok最小A/B：默认Java-only镜像失败；仅诊断性复制配置到私有工程后，
 链式调用编译、运行均通过。全项目实际返回128条截断诊断，其中125条涉及void；
 未据此断言全部639条都能消失，也未人工修补全项目workspace制造绿色结果。
-后续应在共享Lombok配置传递/缓存跟踪处修复，不做芋道特判。本轮不扩展实现。
+此处保留11月2日的失败证据；11月3日已在共享来源映射/配置跟踪处修复，见上方。
+运行期间新生成源码的剩余范围另列U19。
 
 ### U16：Maven3.3.3显式APT解析依赖不可见（新记录，未修）
 
@@ -749,8 +797,11 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
-| U15 | 新实测：Lombok目录配置未进入JDT镜像 | 芋道chain=true配置丢失，生成void setter；同JDT/Lombok小样例补配置后通过 | 共享配置传递与缓存跟踪待修；不是旧Lombok1.18.20问题，未声称639条均已解决 |
+| U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
 | U16 | 新记录：Maven3.3.3显式APT运行依赖 | ProcessorPathResolver缺DependencyFilterUtils；修改前a10独立包相同失败，无APT自定义执行通过 | 后续修Probe依赖/ClassRealm；未泛化为所有旧Maven不支持 |
+| U17 | 新实测：Processor外部配置变化未跟踪 | -A路径正确，文件内容变化但Java未变时继续使用旧生成物，实际测试失败；Java delta后恢复 | 后续补已知辅助输入失效，不为未知处理器猜一套通用文件系统 |
+| U18 | 新实测：Eclipse APT Filer SOURCE_PATH | 原生通过，JDT明确Unsupported location；普通JAR模板/resources对照通过 | 需单独处理APT读取API与来源路径，不是简单复制文件 |
+| U19 | 新实测：APT新生成Lombok源码的配置来源 | 新建@Data类未进source-origin映射，根chain=true未生效，原生1/1但JDT链式调用失败 | 补生成目录/来源语义后再接入；不把U15修复说成覆盖全部生成源码 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。
 后续可讨论U13的构建步骤、U14的语言任务，以及已缩小复现的U2编译器修复范围。

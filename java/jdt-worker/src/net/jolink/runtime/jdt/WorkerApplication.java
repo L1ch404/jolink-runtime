@@ -698,6 +698,17 @@ public final class WorkerApplication implements IApplication {
     }
 
     private boolean handle(String line) throws Exception {
+        if (line.startsWith("LOMBOK_CONFIG\t")) {
+            try {
+                Path mapping = Paths.get(new String(Base64.getDecoder().decode(
+                        line.substring("LOMBOK_CONFIG\t".length())), StandardCharsets.UTF_8));
+                emit(LombokConfigurationBridge.configure(mapping));
+            } catch (Exception exception) {
+                exception.printStackTrace(System.err);
+                emitError("LOMBOK_CONFIGURATION_FAILED", exception.toString());
+            }
+            return true;
+        }
         if (line.startsWith("COMPILE_SNIPPET\t")) {
             List<IJavaProject> projects = new ArrayList<>();
             if (modules == null) projects.add(javaProject);

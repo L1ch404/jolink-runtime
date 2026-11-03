@@ -786,6 +786,23 @@ def test_unchanged_source_does_not_call_worker_build(tmp_path, monkeypatch):
     assert result.runtime_changed_classes == ()
 
 
+def test_config_refresh_uses_worker_lock_and_forces_unchanged_source(tmp_path, monkeypatch):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.start()
+    session.accept_baseline()
+
+    def refresh(_client, _sources, **_options):
+        assert session._operation_lock.locked()
+        return {source}
+
+    monkeypatch.setattr(session._lombok, "refresh", refresh)
+    assert session.workspace_source_changes() == (source,)
+    result = session.compile(())
+    assert result.actual_build_kind == "INCREMENTAL"
+    assert result.compiled_source_count == 1
+    assert worker.commands[-2].startswith("BUILD\tINCREMENTAL\t")
+
+
 def test_build_saves_jdt_state_and_source_index_before_return(tmp_path, monkeypatch):
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()
