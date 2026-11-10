@@ -93,6 +93,9 @@ public class Generator extends AbstractProcessor {
 <version>1</version></path></annotationProcessorPaths>
 <annotationProcessors><annotationProcessor>processor.{scope}.Generator</annotationProcessor></annotationProcessors>
 <compilerArgs><arg>-Ascope={scope}</arg><arg>-Aoffset={offset}</arg></compilerArgs>'''
+        if layout != "default":
+            parameter = "generatedSourcesDirectory" if scope == "main" else "generatedTestSourcesDirectory"
+            configurations[scope] += f"<{parameter}>${{project.basedir}}/custom-generated/{scope}</{parameter}>"
 
     project = tmp_path / "project"
     main = project / "src/main/java/example/MainInput.java"
@@ -192,6 +195,18 @@ def test_active_compiler_executions_generate_and_run_both_scopes(tmp_path, layou
             files = [path for path in (tmp_path / "cache").rglob(filename) if path.parent.name == "example"]
             assert files, filename
             assert all(int.from_bytes(path.read_bytes()[6:8], "big") == major for path in files), files
+        worlds = list((tmp_path / "cache/jolink-runtime/fast-test").rglob("build-world.json"))
+        assert len(worlds) == 1, worlds
+        world = json.loads(worlds[0].read_text())["world"]
+        module = next(item for item in world["modules"] if item["module_root"] == str(project))
+        for scope, compiler in (("main", module), ("test", module["test_compiler"])):
+            expected = project / ("target/generated-sources/annotations" if scope == "main"
+                                  else "target/generated-test-sources/test-annotations") if layout == "default" \
+                else project / "custom-generated" / scope
+            assert compiler["generated_source_directory"] == str(expected)
+        for path in (tmp_path / "cache/jolink-runtime/project-launch").rglob("build-world.json"):
+            plan = json.loads(path.read_text())["jdt_plan"]
+            assert plan["generated_source_directory"] == module["generated_source_directory"]
 
     async def scenario():
         with (tmp_path / "mcp-stderr.log").open("w+", encoding="utf-8") as stderr:

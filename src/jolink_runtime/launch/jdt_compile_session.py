@@ -748,6 +748,7 @@ class JdtBuildWorldPlan:
     preparation_resource_sets: tuple[dict[str, Any], ...] = ()
     configuration_stamps: dict[str, str] | None = None
     compilation_configuration: dict[str, Any] = field(default_factory=dict)
+    generated_source_directory: Path | None = None
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(
@@ -938,6 +939,7 @@ class PersistentJdtCompileSession:
         processor_entries: Sequence[Path] = (),
         processor_names: Sequence[str] = (),
         processor_options: dict[str, str | None] | None = None,
+        generated_source_directory: Path | None = None,
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
         min_heap_mb: int = 64,
@@ -1001,6 +1003,10 @@ class PersistentJdtCompileSession:
         )
         self.java_agents = tuple(java_agents)
         self._lombok = LombokConfigurationInputs(self.root, enabled=bool(self.java_agents))
+        self.generated_source_directory = (
+            Path(generated_source_directory).resolve(strict=False)
+            if generated_source_directory is not None else None
+        )
         self.processor_names = tuple(processor_names)
         self.processor_options = dict(processor_options or {})
         self.extra_jvm_arguments = tuple(extra_jvm_arguments)
@@ -1121,6 +1127,7 @@ class PersistentJdtCompileSession:
                 client = self._start_worker(reuse_workspace=reuse_workspace)
                 with self._state_lock:
                     self._client = client
+                self._lombok.generated_roots = self._generated_source_origins()
                 self._lombok.refresh(client, self._source_map, force=True)
                 if reuse_workspace and not self.workspace_reopened:
                     raise JdtCompileError(
@@ -1153,7 +1160,6 @@ class PersistentJdtCompileSession:
                         touched_sources=tuple(self._source_map[source].relative_to(self.private_project).as_posix()
                                               for source in self._lombok.dirty) if reuse_workspace else (),
                     )
-                    self._lombok.built()
                 if self.test_source_roots or self.baseline_main_output is not None:
                     self._native_full_resource_manifest = (
                         self._native_resource_manifest()
@@ -1309,7 +1315,6 @@ class PersistentJdtCompileSession:
                     source_changes_pending=False,
                     touched_sources=tuple(touched),
                 )
-                self._lombok.built()
                 # Fast Test still overlays its baseline test resources. Runtime
                 # keeps resources outside bin, so its reload copies none.
                 if self.baseline_main_output is not None or self.baseline_test_output is not None:
@@ -1417,6 +1422,11 @@ class PersistentJdtCompileSession:
 
     def workspace_source_roots(self) -> tuple[Path, ...]:
         return (*self.source_roots, *self.test_source_roots)
+
+    def _generated_source_origins(self) -> dict[Path, Path]:
+        if self.generated_source_directory is None or not self.processor_entries:
+            return {}
+        return {self.private_project / ".apt_generated": self.generated_source_directory}
 
     def _source_included(self, source: Path, root: Path) -> bool:
         return True
@@ -2009,6 +2019,7 @@ class PersistentJdtCompileSession:
             self._last_compile_diagnostics = diagnostics if not compile_ok else ()
             self._last_compile_error_count = error_count if not compile_ok else 0
         try:
+            self._lombok.built(client)
             if not self._save_workspace_locked(client):
                 raise JdtCompileError(
                     "JDT_WORKSPACE_SAVE_FAILED",

@@ -409,6 +409,8 @@ class ProjectLaunchPipeline:
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
             source_level=target["source_level"], target_level=target["source_level"],
+            generated_source_directory=Path(target["generated_source_directory"])
+                if target.get("generated_source_directory") else None,
             fingerprint="",  # Finalized from the shared compiler configuration in _stabilize.
             configuration_inputs=tuple(dict.fromkeys((
                 workspace.root_pom,

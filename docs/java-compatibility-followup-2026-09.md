@@ -1,5 +1,36 @@
 # joLink 产品边界与兼容性跟进
 
+## U19：APT生成源码的Lombok配置来源（2026-11-10，已review）
+
+共享编译链路新增“私有生成目录→原生生成输出目录”的映射，保留已有逐文件映射。
+Maven Probe从有效compiler execution及插件参数默认值解析main/test生成目录；
+Gradle使用其已有的generatedSourceOutputDirectory。没有写死生成目录，也没有
+把生成文件配置等同于originating input的配置，Fast Test和应用启动消费同一模型。
+
+真实MCP暴露了原生Lombok forUri要求Java文件实际存在的问题：逻辑原目录没有生成
+文件时，返回null并丢失配置。现使用Lombok自身ConfigurationFile.forDirectory解析
+映射后的目录；不在业务项目写占位文件，不重新实现配置继承/import规则。
+
+同轮APT新文件首次被Lombok查询时记录其逻辑目录。编译结束（包括正常返回错误诊断）
+先取得配置输入及指纹，再随现有source-index保存。配置变化驱动所属JDT工程重编；
+同一会话无改动复用不重新解析配置、不重编；重开时重新绑定并比较持久化状态。
+目录映射也属于共用编译配置与workspace identity。
+Probe升为fasttest34，Test模型v15、启动模型v12；首次刷新旧模型，后续按新模型复用。
+
+专项用例同时通过Fast Test和真实HTTP启动/restart验证：main/test配置隔离、默认及
+自定义生成目录、Java增量/HotSwap、仅配置变化、失败恢复、MCP重开与配置删除。
+Gradle默认目录用例将配置放在项目根：初版fixture放在build内的配置被原生Gradle
+清理，不能拿这份原生不通过的fixture宣称joLink回归。自定义目录仍测试子目录覆盖。
+
+最终固定Worker产物回归：新增4项U19及既有6项U15真实MCP测试全部通过；11项
+Maven/Gradle多模块、旧Lombok及有效execution交叉回归通过；普通回归1381项通过。
+wheel/sdist构建成功；独立安装wheel后再跑Maven自定义生成目录完整双链路，1项通过。
+原芋道trade所选测试在最终产物上冷/暖各1/1通过，暖运行0编译；没有启动其完整业务服务。
+没有把未执行的Java E2E排除项计入普通回归通过数，也未修改用户项目源码或POM。
+
+U17任意Processor辅助输入失效、U18 SOURCE_PATH读取接口仍未修，不包含在U19内。
+本轮为隔离fixture的实际验证，不代表所有处理器、操作系统及业务应用组合已验证。
+
 ## U15原始源码配置修复及同类风险复测（2026-11-03，已review）
 
 芋道这次已证实的Lombok配置遗漏已修，未修改业务源码或POM：`TradePriceServiceImplTest`
@@ -801,7 +832,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U16 | 新记录：Maven3.3.3显式APT运行依赖 | ProcessorPathResolver缺DependencyFilterUtils；修改前a10独立包相同失败，无APT自定义执行通过 | 后续修Probe依赖/ClassRealm；未泛化为所有旧Maven不支持 |
 | U17 | 新实测：Processor外部配置变化未跟踪 | -A路径正确，文件内容变化但Java未变时继续使用旧生成物，实际测试失败；Java delta后恢复 | 后续补已知辅助输入失效，不为未知处理器猜一套通用文件系统 |
 | U18 | 新实测：Eclipse APT Filer SOURCE_PATH | 原生通过，JDT明确Unsupported location；普通JAR模板/resources对照通过 | 需单独处理APT读取API与来源路径，不是简单复制文件 |
-| U19 | 新实测：APT新生成Lombok源码的配置来源 | 新建@Data类未进source-origin映射，根chain=true未生效，原生1/1但JDT链式调用失败 | 补生成目录/来源语义后再接入；不把U15修复说成覆盖全部生成源码 |
+| U19 | 已修：APT新生成Lombok源码的配置来源 | 按原生main/test生成目录映射，使用Lombok原生目录解析并跟踪同轮新增配置作用域 | Fast Test与HTTP启动/restart交叉验证配置变化、失败恢复及重开；不包含U17/U18 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。
 后续可讨论U13的构建步骤、U14的语言任务，以及已缩小复现的U2编译器修复范围。

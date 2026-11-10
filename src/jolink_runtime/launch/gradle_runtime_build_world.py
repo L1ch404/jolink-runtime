@@ -379,6 +379,8 @@ def create_gradle_runtime_build_world(
             target_java_home=select_target_system_home((target_java_home,), source_level),
             source_encoding=encoding,
             source_level=source_level,
+            generated_source_directory=Path(compile_task["generatedSourceOutputDirectory"])
+                if compile_task.get("generatedSourceOutputDirectory") else None,
             target_level=source_level,
             fingerprint=fingerprint,
             configuration_inputs=configuration,
@@ -426,6 +428,8 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
         target_java_home=home,
         source_encoding=target["source_encoding"],
         source_level=target["source_level"],
+        generated_source_directory=Path(target["generated_source_directory"])
+            if target.get("generated_source_directory") else None,
         target_level=target["source_level"],
         fingerprint="",  # Finalized by the shared launch configuration capture.
         configuration_inputs=configuration,

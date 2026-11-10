@@ -174,6 +174,17 @@ def test_product_gradle_authority_preserves_test_runtime(tmp_path: Path) -> None
         (project / "build.gradle").resolve(strict=False),
     )
     assert world.configuration_environment_names == ("GRADLE_USER_HOME",)
+    assert world.generated_source_directory == Path(model["compileJava"]["generatedSourceOutputDirectory"])
+
+
+def test_gradle_module_compilers_keep_separate_generated_directories(tmp_path):
+    from jolink_runtime.launch.gradle_module_world import _compiler_settings
+
+    _, model = _model(tmp_path)
+    for name in ("compileJava", "compileTestJava"):
+        expected = model[name]["generatedSourceOutputDirectory"]
+        settings = _compiler_settings(model[name])
+        assert settings["generated_source_directory"] == expected
 
 
 def test_gradle_runtime_configuration_keeps_removals_and_allows_new_working_directory(tmp_path):

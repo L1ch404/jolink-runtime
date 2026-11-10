@@ -23,6 +23,8 @@ import java.util.TreeSet;
 
 /** Keep Lombok's own configuration lookup attached to original source locations. */
 final class LombokConfigurationBridge {
+    private static LombokConfigurationBridge active;
+    private static String inactiveState = response(java.util.Collections.emptyList());
     private final ClassLoader loader;
     private final Class<?> configuration;
     private final Class<?> factoryType;
@@ -34,6 +36,7 @@ final class LombokConfigurationBridge {
     private final Method description;
     private final Method resolveFile;
     private final Method forUri;
+    private final Method forDirectory;
     private final Method resolveValue;
     private final Constructor<?> resolverConstructor;
     private final Object cache;
@@ -41,9 +44,14 @@ final class LombokConfigurationBridge {
     private final Map<String, Object> files = new LinkedHashMap<>();
     private final Map<String, Set<String>> missingImports = new LinkedHashMap<>();
     private final Map<Path, Path> originals;
+    private final Map<Path, Path> generatedRoots;
+    private final Set<Path> sourceDirectories;
 
-    private LombokConfigurationBridge(Map<Path, Path> originals) throws Exception {
+    private LombokConfigurationBridge(Map<Path, Path> originals, Map<Path, Path> generatedRoots,
+            Set<Path> sourceDirectories) throws Exception {
         this.originals = originals;
+        this.generatedRoots = generatedRoots;
+        this.sourceDirectories = sourceDirectories;
         // Use the patched compiler bundle, not JDT Core or the system agent:
         // Equinox gives those loaders separate copies of Lombok's statics.
         configuration = Class.forName("lombok.core.LombokConfiguration", true,
@@ -61,6 +69,7 @@ final class LombokConfigurationBridge {
         Class<?> reporterType = loader.loadClass("lombok.core.configuration.ConfigurationProblemReporter");
         cache = cacheType.getConstructor().newInstance();
         forUri = cacheType.getMethod("forUri", URI.class);
+        forDirectory = fileType.getMethod("forDirectory", java.io.File.class);
         parsed = mapperType.getMethod("parsed", fileType);
         description = fileType.getDeclaredMethod("description");
         description.setAccessible(true);
@@ -90,40 +99,81 @@ final class LombokConfigurationBridge {
 
     static String configure(Path mapping) throws Exception {
         Map<Path, Path> originals = new LinkedHashMap<>();
+        Map<Path, Path> generatedRoots = new LinkedHashMap<>();
+        Set<Path> rememberedDirectories = new TreeSet<>();
         for (String line : Files.readAllLines(mapping, StandardCharsets.UTF_8)) {
             if (line.isEmpty()) continue;
             String[] parts = line.split("\t", -1);
-            originals.put(decodePath(parts[0]), decodePath(parts[1]));
+            if ("root".equals(parts[0])) {
+                generatedRoots.put(decodePath(parts[1]), decodePath(parts[2]));
+            } else if ("directory".equals(parts[0])) {
+                rememberedDirectories.add(decodePath(parts[1]));
+            } else {
+                originals.put(decodePath(parts[0]), decodePath(parts[1]));
+            }
         }
+        Set<Path> sourceDirectories = directories(originals);
+        rememberedDirectories.addAll(generatedRoots.values());
+        sourceDirectories.addAll(rememberedDirectories);
         if (System.getProperty("lombok.disableConfig") != null) {
             List<String> groups = new ArrayList<>();
-            for (Path directory : directories(originals).keySet()) {
+            for (Path directory : sourceDirectories) {
                 groups.add(groupJson(directory, "disabled", new TreeSet<>()));
             }
-            return response(groups);
+            active = null;
+            inactiveState = response(groups);
+            return inactiveState;
         }
-        LombokConfigurationBridge bridge = new LombokConfigurationBridge(originals);
+        LombokConfigurationBridge bridge = new LombokConfigurationBridge(originals, generatedRoots, sourceDirectories);
         List<String> groups = bridge.groups();
         Object factory = Proxy.newProxyInstance(bridge.loader, new Class<?>[]{bridge.factoryType},
                 (proxy, method, arguments) -> {
                     URI source = (URI) arguments[0];
                     Path original = null;
                     if (source != null && "file".equalsIgnoreCase(source.getScheme())) {
-                        original = bridge.originals.get(Paths.get(source).toAbsolutePath().normalize());
+                        original = bridge.originalSource(Paths.get(source).toAbsolutePath().normalize());
                     }
-                    return bridge.resolver(original == null ? source : original.toUri(), null);
+                    Object configurationFile = original == null
+                            ? invoke(bridge.forUri, bridge.cache, source)
+                            : invoke(bridge.forDirectory, null, original.getParent().toFile());
+                    return bridge.resolver(configurationFile, null);
                 });
         bridge.configuration.getMethod("overrideConfigurationResolverFactory", bridge.factoryType).invoke(null, factory);
+        active = bridge;
         return response(groups);
+    }
+
+    static String state() throws Exception {
+        return active == null ? inactiveState : response(active.groups());
+    }
+
+    private Path originalSource(Path privateSource) {
+        Path original = originals.get(privateSource);
+        if (original != null) return original;
+        Path selected = null;
+        for (Path root : generatedRoots.keySet()) {
+            if (privateSource.startsWith(root) && (selected == null || root.getNameCount() > selected.getNameCount())) {
+                selected = root;
+            }
+        }
+        if (selected == null) return null;
+        original = generatedRoots.get(selected).resolve(selected.relativize(privateSource));
+        // APT files appear during this build, after the original-source snapshot.
+        // Remember their actual logical directories for configuration invalidation.
+        sourceDirectories.add(original.getParent());
+        return original;
     }
 
     private List<String> groups() throws Exception {
         @SuppressWarnings("unchecked")
         Map<String, Object> keys = (Map<String, Object>) keyType.getMethod("registeredKeys").invoke(null);
         List<String> groups = new ArrayList<>();
-        for (Map.Entry<Path, Path> entry : directories(originals).entrySet()) {
+        for (Path directory : sourceDirectories) {
             Set<String> inputs = new TreeSet<>();
-            Object resolver = resolver(entry.getValue().toUri(), inputs);
+            // forUri requires an existing source file; logical APT output has
+            // not been written to the native build directory. Start the same
+            // native resolver at its directory without creating business files.
+            Object resolver = resolver(invoke(forDirectory, null, directory.toFile()), inputs);
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (Map.Entry<String, Object> key : new TreeMap<>(keys).entrySet()) {
                 addDigest(digest, key.getKey());
@@ -131,12 +181,12 @@ final class LombokConfigurationBridge {
             }
             StringBuilder hash = new StringBuilder();
             for (byte value : digest.digest()) hash.append(String.format("%02x", value & 0xff));
-            groups.add(groupJson(entry.getKey(), hash.toString(), inputs));
+            groups.add(groupJson(directory, hash.toString(), inputs));
         }
         return groups;
     }
 
-    private Object resolver(URI source, Set<String> inputs) throws Exception {
+    private Object resolver(Object configurationFile, Set<String> inputs) throws Exception {
         Object mapper = nativeMapper;
         if (inputs != null) mapper = Proxy.newProxyInstance(loader, new Class<?>[]{mapperType}, (proxy, method, arguments) -> {
             Object file = arguments[0];
@@ -147,7 +197,7 @@ final class LombokConfigurationBridge {
             inputs.addAll(missingImports.getOrDefault(name, java.util.Collections.emptySet()));
             return result;
         });
-        return resolverConstructor.newInstance(invoke(forUri, cache, source), mapper);
+        return resolverConstructor.newInstance(configurationFile, mapper);
     }
 
     private String physicalPath(Object file) throws Exception {
@@ -166,9 +216,9 @@ final class LombokConfigurationBridge {
         return Paths.get((String) invoke(description, file)).toAbsolutePath().normalize().toString();
     }
 
-    private static Map<Path, Path> directories(Map<Path, Path> originals) {
-        Map<Path, Path> result = new TreeMap<>();
-        for (Path source : originals.values()) result.putIfAbsent(source.getParent(), source);
+    private static Set<Path> directories(Map<Path, Path> originals) {
+        Set<Path> result = new TreeSet<>();
+        for (Path source : originals.values()) result.add(source.getParent());
         return result;
     }
 

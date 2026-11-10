@@ -25,11 +25,14 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
         "testClasspathElements": [],
         "runtimeClasspathElements": [str(output)],
         "resourceDirectories": [],
+        "generatedSourceOutputDirectory": str(project / "custom-generated-main"),
+        "generatedTestSourceOutputDirectory": str(project / "custom-generated-test"),
         "annotationProcessing": {"processorProviderArtifactPaths": []},
+        "testAnnotationProcessing": {"processorProviderArtifactPaths": []},
         "compilerConfiguration": """<configuration><source>8</source><target>8</target>
 <parameters>true</parameters><meminitial>128m</meminitial><maxmem>4g</maxmem>
 <compilerArgs><arg>-J-Xms96m</arg><arg>-J-Xmx3g</arg></compilerArgs></configuration>""",
-        "testCompilerConfiguration": "<configuration/>",
+        "testCompilerConfiguration": "<configuration><source>8</source><target>8</target></configuration>",
     }
     exports = tmp_path / "probe"
     exports.mkdir()
@@ -62,3 +65,7 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
     assert world["worker_min_heap_mb"] == 128
     assert world["worker_max_heap_mb"] == 4096
     assert world["classpath"] == []
+    assert world["generated_source_directory"] == snapshot["generatedSourceOutputDirectory"]
+    tested = load_module_worlds(exports, project, jdk, tests=True)[0]
+    assert tested["generated_source_directory"] == snapshot["generatedSourceOutputDirectory"]
+    assert tested["test_compiler"]["generated_source_directory"] == snapshot["generatedTestSourceOutputDirectory"]

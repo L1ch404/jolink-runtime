@@ -50,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest33";
+    private static final String PROBE_VERSION = "0.1.0-fasttest34";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -247,6 +247,10 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "compileClasspathElements", classpath, true);
         field(out, "compilerConfiguration", compilerExecutions.main.configuration.toString(), true);
         field(out, "testCompilerConfiguration", compilerExecutions.test.configuration.toString(), true);
+        field(out, "generatedSourceOutputDirectory", compilerExecutions.main.generatedSourceDirectory == null
+            ? null : canonical(compilerExecutions.main.generatedSourceDirectory), true);
+        field(out, "generatedTestSourceOutputDirectory", compilerExecutions.test.generatedSourceDirectory == null
+            ? null : canonical(compilerExecutions.test.generatedSourceDirectory), true);
         stringList(out, "compilerExecutionIds", compilerExecutions.main.ids, true);
         stringList(out, "testCompilerExecutionIds", compilerExecutions.test.ids, true);
         booleanField(out, "compilerConfigurationAmbiguous", compilerExecutions.main.ambiguous, true);

@@ -22,7 +22,7 @@ from .configuration_inputs import build_configuration_stamps
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v11"
+_SCHEMA = "jolink.project-launch-cache.v12"
 
 
 def _path(value: Any) -> Path:
@@ -193,6 +193,8 @@ class ProjectLaunchCache:
                 target_java_home=_path(plan_raw["target_java_home"]),
                 source_encoding=str(plan_raw["source_encoding"]),
                 source_level=int(plan_raw["source_level"]),
+                generated_source_directory=_path(plan_raw["generated_source_directory"])
+                    if plan_raw.get("generated_source_directory") else None,
                 target_level=int(plan_raw["target_level"]),
                 fingerprint=str(plan_raw["fingerprint"]),
                 compilation_configuration=dict(plan_raw["compilation_configuration"]),
@@ -317,6 +319,8 @@ class ProjectLaunchCache:
                 "target_java_home": str(jdt_plan.target_java_home),
                 "source_encoding": jdt_plan.source_encoding,
                 "source_level": jdt_plan.source_level,
+                "generated_source_directory": str(jdt_plan.generated_source_directory)
+                    if jdt_plan.generated_source_directory is not None else None,
                 "target_level": jdt_plan.target_level,
                 "fingerprint": jdt_plan.fingerprint,
                 "compilation_configuration": jdt_plan.compilation_configuration,

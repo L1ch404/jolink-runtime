@@ -17,6 +17,14 @@ from jolink_runtime.launch.idea_environment import IdeaBuildPreferences
 model = shared_model
 
 
+def test_generated_source_directory_survives_cached_test_world(model):
+    generated = model.root / "custom/generated/main"
+    world = replace(model.world, generated_source_directory=generated)
+    model.fast.save(world, model.toolchain)
+    loaded, _ = model.fast.load(model.root, "maven")
+    assert loaded.generated_source_directory == generated
+
+
 def active_project(model, manager, monkeypatch, world):
     """Publish via the real finish method so the test cannot prefill a missing baseline."""
     attempt = Attempt(

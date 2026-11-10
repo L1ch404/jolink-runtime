@@ -1106,6 +1106,26 @@ def test_standard_test_debug_and_diagnostics_follow_development_policy(field, va
         manager.close()
 
 
+def test_generated_source_directory_options_are_modeled_without_hiding_unknowns():
+    project = ET.fromstring('''<project><build><plugins><plugin>
+<artifactId>maven-compiler-plugin</artifactId><configuration>
+<encoding>UTF-8</encoding>
+<generatedSourcesDirectory>/project/generated-main</generatedSourcesDirectory>
+<generatedTestSourcesDirectory>/project/generated-test</generatedTestSourcesDirectory>
+<unknownSetting>true</unknownSetting></configuration></plugin></plugins></build></project>''')
+    manager = FastTestManager()
+    try:
+        remaining = manager._unshared_test_compiler_configuration(
+            project,
+            ["testCompile.generatedSourcesDirectory", "testCompile.generatedTestSourcesDirectory",
+             "testCompile.unknownSetting"],
+            compiler_model={"source_level": 8, "target_level": 8},
+        )
+        assert remaining == ["testCompile.unknownSetting"]
+    finally:
+        manager.close()
+
+
 def test_gradle_module_failure_preserves_error_code(tmp_path, monkeypatch) -> None:
     from jolink_runtime.launch.gradle_module_world import GradleModuleError
 

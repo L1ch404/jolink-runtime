@@ -17,10 +17,14 @@ final class CompilerExecutions {
         final List<String> ids = new ArrayList<>();
         Xpp3Dom configuration = new Xpp3Dom("configuration");
         boolean ambiguous;
+        File generatedSourceDirectory;
 
-        void add(String id, Xpp3Dom selected) {
-            if (ids.isEmpty()) configuration = selected;
-            else if (!canonical(configuration).toString().equals(canonical(selected).toString())) ambiguous = true;
+        void add(String id, Xpp3Dom selected, File generatedDirectory) {
+            if (ids.isEmpty()) {
+                configuration = selected;
+                generatedSourceDirectory = generatedDirectory;
+            } else if (!canonical(configuration).toString().equals(canonical(selected).toString())
+                    || !Objects.equals(generatedSourceDirectory, generatedDirectory)) ambiguous = true;
             ids.add(id);
         }
     }
@@ -46,7 +50,22 @@ final class CompilerExecutions {
                         execution.getArtifactId(), execution.getExecutionId(), goal);
                 selected = selected == null ? new Xpp3Dom("configuration") : new Xpp3Dom(selected);
                 evaluate(selected, new PluginParameterExpressionEvaluator(session, execution));
-                ("compile".equals(goal) ? result.main : result.test).add(execution.getExecutionId(), selected);
+                // Obtain the plugin's actual parameter defaults as well as user
+                // overrides, without executing its compiler goal.
+                plans.setupMojoExecution(session, project, execution);
+                PluginParameterExpressionEvaluator evaluator = new PluginParameterExpressionEvaluator(session, execution);
+                String parameter = "compile".equals(goal) ? "generatedSourcesDirectory" : "generatedTestSourcesDirectory";
+                Xpp3Dom node = execution.getConfiguration().getChild(parameter);
+                File generated = null;
+                if (node != null) {
+                    String expression = node.getValue() == null ? node.getAttribute("default-value") : node.getValue();
+                    if (expression != null) {
+                        Object value = evaluator.evaluate(expression);
+                        if (value != null) generated = evaluator.alignToBaseDirectory(
+                            value instanceof File ? (File) value : new File(value.toString())).getCanonicalFile();
+                    }
+                }
+                ("compile".equals(goal) ? result.main : result.test).add(execution.getExecutionId(), selected, generated);
             }
             return result;
         } catch (Exception error) {

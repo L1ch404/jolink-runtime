@@ -123,6 +123,7 @@ def load_module_worlds(
                 "resource_roots": snapshot.get("preparedResourceDirectories", snapshot["resourceDirectories"]),
                 "test_resource_roots": snapshot.get("preparedTestResourceDirectories", snapshot.get("testResourceDirectories", [])),
                 "source_level": compiler["source_level"],
+                "generated_source_directory": snapshot.get("generatedSourceOutputDirectory"),
                 "skipped_compiler_checks": list(profile.skipped_checks),
                 "source_encoding": maven._source_encoding(main_scope),
                 "worker_min_heap_mb": max(profile.worker_min_heap_mb, minimum_heap),
@@ -159,6 +160,7 @@ def load_module_worlds(
                     maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin"))
                 ).skipped_checks),
                 "source_level": test_model["source_level"],
+                "generated_source_directory": snapshot.get("generatedTestSourceOutputDirectory"),
                 "source_encoding": maven._source_encoding(scoped),
                 "target_java_home": str(
                     select_target_system_home(

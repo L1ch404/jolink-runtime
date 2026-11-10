@@ -1246,6 +1246,8 @@ class FastTestManager:
             target_java_home=target_java_home,
             source_encoding=self._maven._source_encoding(main_scope),
             source_level=target_level,
+            generated_source_directory=Path(snapshot["generatedSourceOutputDirectory"])
+                if snapshot.get("generatedSourceOutputDirectory") else None,
             method_parameters=method_parameters,
             processor_entries=processor_entries,
             **processor_settings(main_processing),
@@ -1585,6 +1587,10 @@ class FastTestManager:
                 return {value.casefold() for value in observed} <= {"true", "false"}
             if name in {"debuglevel", "testCompile.debuglevel"}:
                 return True  # source/lines/vars are all kept for joLink debugging.
+            if name in {"testCompile.generatedSourcesDirectory", "testCompile.generatedTestSourcesDirectory"}:
+                # The Probe exports each active goal's resolved generated output
+                # directory; both compilation paths use it for source origins.
+                return True
             if name in {
                 "testMaxmem",
                 "testCompile.maxmem",

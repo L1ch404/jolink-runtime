@@ -30,6 +30,7 @@ def compilation_modules(modules):
         "output_directory", "test_output_directory", "classpath", "test_classpath",
         "source_encoding", "source_level", "target_java_home", "method_parameters",
         "processor_entries", "processor_names", "processor_options", "lombok_entries", "test_compiler",
+        "generated_source_directory",
     }
     return tuple(
         {
@@ -142,6 +143,12 @@ class ModuleCompileSession(PersistentJdtCompileSession):
 
     def workspace_source_roots(self):
         return tuple(self._module_destinations)
+
+    def _generated_source_origins(self):
+        return {self.private_project / project["name"] / ".apt_generated":
+                    Path(project["generated_source_directory"]).resolve(strict=False)
+                for project in self.projects
+                if project.get("generated_source_directory") and project.get("processor_entries")}
 
     def _source_included(self, source, root):
         selection = self._module_source_patterns.get(root)

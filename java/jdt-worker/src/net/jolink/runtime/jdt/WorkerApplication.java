@@ -698,11 +698,15 @@ public final class WorkerApplication implements IApplication {
     }
 
     private boolean handle(String line) throws Exception {
-        if (line.startsWith("LOMBOK_CONFIG\t")) {
+        if (line.startsWith("LOMBOK_CONFIG\t") || line.equals("LOMBOK_CONFIG_STATE")) {
             try {
-                Path mapping = Paths.get(new String(Base64.getDecoder().decode(
-                        line.substring("LOMBOK_CONFIG\t".length())), StandardCharsets.UTF_8));
-                emit(LombokConfigurationBridge.configure(mapping));
+                if (line.equals("LOMBOK_CONFIG_STATE")) {
+                    emit(LombokConfigurationBridge.state());
+                } else {
+                    Path mapping = Paths.get(new String(Base64.getDecoder().decode(
+                            line.substring("LOMBOK_CONFIG\t".length())), StandardCharsets.UTF_8));
+                    emit(LombokConfigurationBridge.configure(mapping));
+                }
             } catch (Exception exception) {
                 exception.printStackTrace(System.err);
                 emitError("LOMBOK_CONFIGURATION_FAILED", exception.toString());

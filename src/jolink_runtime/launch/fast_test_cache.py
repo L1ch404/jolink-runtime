@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v14"
+_SCHEMA = "jolink.fast-test-world.v15"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -114,6 +114,8 @@ class FastTestCache:
                     target_java_home=Path(world["target_java_home"]),
                     source_encoding=world["source_encoding"],
                     source_level=int(world["source_level"]),
+                    generated_source_directory=Path(world["generated_source_directory"])
+                        if world.get("generated_source_directory") else None,
                     method_parameters=bool(world["method_parameters"]),
                     processor_entries=_paths(world["processor_entries"]),
                     java_agents=tuple(world["java_agents"]),
@@ -168,6 +170,8 @@ class FastTestCache:
                 "resource_roots": values(world.resource_roots),
                 "target_java_home": str(world.target_java_home),
                 "source_encoding": world.source_encoding, "source_level": world.source_level,
+                "generated_source_directory": str(world.generated_source_directory)
+                    if world.generated_source_directory is not None else None,
                 "method_parameters": world.method_parameters,
                 "processor_entries": values(world.processor_entries), "java_agents": list(world.java_agents),
                 "extra_worker_jvm_arguments": list(world.extra_worker_jvm_arguments),

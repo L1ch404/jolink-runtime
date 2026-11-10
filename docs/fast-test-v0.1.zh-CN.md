@@ -25,8 +25,10 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 已镜像的Java源码使用原始路径交给Lombok自身配置解析器，保留父目录/子目录覆盖、
 import及main/test和模块作用域。配置输入及有效值指纹随source-index保存；仅配置
 变化也会让受影响源码重新编译，未变化则复用。没有重新运行Maven来解析Lombok配置。
-运行期间APT新生成、尚无原始路径映射的Lombok源码仍有配置来源缺口；任意Processor
-外部文件的内容变化也不自动属于本机制。见兼容性跟进U15、U17—U19。
+APT运行期间新生成的Java也按生成目录映射解析Lombok配置：使用Maven/Gradle实际的
+main/test生成输出目录，而不是触发生成的手写源码目录。文件仍只写入私有workspace。
+生成子目录的配置输入同样持久化；仅配置变化会重新编译所属工程，不要求修改Java。
+任意Processor外部文件的内容变化不自动属于本机制，见兼容性跟进U17、U18。
 
 ## 测试进程的运行配置
 
