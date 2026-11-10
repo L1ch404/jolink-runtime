@@ -144,6 +144,10 @@ class ModuleCompileSession(PersistentJdtCompileSession):
     def workspace_source_roots(self):
         return tuple(self._module_destinations)
 
+    def _processor_input_scopes(self):
+        return {self.private_project / project["name"]: project.get("processor_options", {})
+                for project in self.projects if project.get("processor_entries")}
+
     def _generated_source_origins(self):
         return {self.private_project / project["name"] / ".apt_generated":
                     Path(project["generated_source_directory"]).resolve(strict=False)

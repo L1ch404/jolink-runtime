@@ -803,6 +803,55 @@ def test_config_refresh_uses_worker_lock_and_forces_unchanged_source(tmp_path, m
     assert worker.commands[-2].startswith("BUILD\tINCREMENTAL\t")
 
 
+def test_processor_input_only_change_compiles_and_saves_prebuild_snapshot(tmp_path, monkeypatch):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    auxiliary = tmp_path / "template.txt"
+    auxiliary.write_text("alpha")
+    session.processor_entries = (tmp_path / "processor.jar",)
+    session.processor_options = {"anyName": str(auxiliary)}
+    session.start()
+    session.accept_baseline()
+    assert not session.workspace_source_changes()
+    auxiliary.write_text("bravo")
+    assert session.workspace_source_changes() == (source,)
+    # Another change while APT runs must not be stamped as already compiled.
+    worker.on_build = lambda: auxiliary.write_text("changed-during-build")
+    result = session.compile(())
+    assert result.actual_build_kind == "INCREMENTAL"
+    assert result.compiled_source_count == 1
+    assert session.workspace_source_changes() == (source,)
+    worker.on_build = None
+    worker.fail_compile = True
+    assert not session.compile(()).compile_ok
+    saved = json.loads((session.root / "source-index.json").read_text())
+    assert saved["processor_file_inputs"] == session._processor_inputs.snapshot()
+    auxiliary.write_text("recover")
+    worker.fail_compile = False
+    assert session.compile(()).compile_ok
+    assert not session.workspace_source_changes()
+
+
+@pytest.mark.parametrize("restore", ["_restore_persisted_source_map", "_synchronize_persisted_sources"])
+def test_legacy_source_index_initializes_processor_inputs_once(tmp_path, monkeypatch, restore):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    auxiliary = tmp_path / "input.txt"
+    auxiliary.write_text("stable")
+    session.processor_entries = (tmp_path / "processor.jar",)
+    session.processor_options = {"custom": str(auxiliary)}
+    session.start()
+    session.accept_baseline()
+    index = session.root / "source-index.json"
+    legacy = json.loads(index.read_text())
+    legacy.pop("processor_file_inputs")
+    index.write_text(json.dumps(legacy))
+    getattr(session, restore)()
+    assert session.workspace_source_changes() == (source,)
+    result = session.compile(())
+    assert result.actual_build_kind == "INCREMENTAL"
+    assert not session.workspace_source_changes()
+    assert json.loads(index.read_text())["processor_file_inputs"]
+
+
 def test_build_saves_jdt_state_and_source_index_before_return(tmp_path, monkeypatch):
     session, source, worker = _session(tmp_path, monkeypatch)
     session.start()

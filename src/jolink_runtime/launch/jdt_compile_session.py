@@ -29,6 +29,7 @@ from ..core.diagnostic_logging import log_diagnostic
 from .build_world_identity import build_world_fingerprint
 from .java_source_layout import source_relative_path
 from .lombok_configuration import LombokConfigurationInputs
+from .processor_file_inputs import ProcessorFileInputs
 from .process_tree import ProcessTreeHandle, ProcessTreeTerminator
 from .product_assets import canonical_lf_bytes
 from .runtime_download import download_file
@@ -1003,6 +1004,7 @@ class PersistentJdtCompileSession:
         )
         self.java_agents = tuple(java_agents)
         self._lombok = LombokConfigurationInputs(self.root, enabled=bool(self.java_agents))
+        self._processor_inputs = ProcessorFileInputs()
         self.generated_source_directory = (
             Path(generated_source_directory).resolve(strict=False)
             if generated_source_directory is not None else None
@@ -1128,7 +1130,9 @@ class PersistentJdtCompileSession:
                 with self._state_lock:
                     self._client = client
                 self._lombok.generated_roots = self._generated_source_origins()
+                self._processor_inputs.configure(self._processor_input_scopes())
                 self._lombok.refresh(client, self._source_map, force=True)
+                config_changed = self._lombok.dirty | self._processor_inputs.refresh(self._source_map)
                 if reuse_workspace and not self.workspace_reopened:
                     raise JdtCompileError(
                         "JDT_WORKSPACE_NOT_REOPENED",
@@ -1158,7 +1162,7 @@ class PersistentJdtCompileSession:
                         "INCREMENTAL" if reuse_workspace else "FULL",
                         source_changes_pending=False,
                         touched_sources=tuple(self._source_map[source].relative_to(self.private_project).as_posix()
-                                              for source in self._lombok.dirty) if reuse_workspace else (),
+                                              for source in config_changed) if reuse_workspace else (),
                     )
                 if self.test_source_roots or self.baseline_main_output is not None:
                     self._native_full_resource_manifest = (
@@ -1244,7 +1248,7 @@ class PersistentJdtCompileSession:
                     "JDT_SESSION_NOT_READY", "The JDT CompileSession is not active."
                 )
             touched: list[str] = []
-            config_changed = set(self._lombok.refresh(self._client, self._source_map))
+            config_changed = self._configuration_source_changes()
             selected = {}
             index_changed = False
             for raw in dict.fromkeys((*source_files, *config_changed)):
@@ -1407,7 +1411,7 @@ class PersistentJdtCompileSession:
         changed.update(set(self._source_map) - observed)
         with self._operation_lock:
             if self._client is not None:
-                changed.update(self._lombok.refresh(self._client, self._source_map))
+                changed.update(self._configuration_source_changes())
         result = tuple(sorted(changed, key=str))
         log_diagnostic(
             logger, logging.INFO,
@@ -1422,6 +1426,13 @@ class PersistentJdtCompileSession:
 
     def workspace_source_roots(self) -> tuple[Path, ...]:
         return (*self.source_roots, *self.test_source_roots)
+
+    def _processor_input_scopes(self) -> dict[Path, dict]:
+        return {self.private_project: self.processor_options} if self.processor_entries else {}
+
+    def _configuration_source_changes(self) -> set[Path]:
+        return (set(self._lombok.refresh(self._client, self._source_map))
+                | self._processor_inputs.refresh(self._source_map))
 
     def _generated_source_origins(self) -> dict[Path, Path]:
         if self.generated_source_directory is None or not self.processor_entries:
@@ -1457,6 +1468,7 @@ class PersistentJdtCompileSession:
             "error_count": self._last_compile_error_count,
             "diagnostics": self._last_compile_diagnostics,
             "lombok_configuration": self._lombok.snapshot(),
+            "processor_file_inputs": self._processor_inputs.snapshot(),
         }), encoding="utf-8")
         temporary.replace(path)
 
@@ -1560,8 +1572,8 @@ class PersistentJdtCompileSession:
 
     def _synchronize_persisted_sources(self) -> None:
         index = self.root / "source-index.json"
-        if self._lombok.enabled and index.is_file():
-            self._lombok.restore(json.loads(index.read_text(encoding="utf-8")).get("lombok_configuration", {}))
+        if index.is_file():
+            self._restore_compile_input_state(json.loads(index.read_text(encoding="utf-8")))
         self._source_map.clear()
         self._source_stamps.clear()
         groups = {}
@@ -1575,6 +1587,10 @@ class PersistentJdtCompileSession:
                 destination_root=destination, encoding=encoding,
             )
 
+    def _restore_compile_input_state(self, saved: dict) -> None:
+        self._lombok.restore(saved.get("lombok_configuration", {}))
+        self._processor_inputs.restore(saved.get("processor_file_inputs", {}))
+
     def _restore_persisted_source_map(self) -> None:
         """Reconnect original source paths without changing the saved mirror."""
 
@@ -1583,7 +1599,7 @@ class PersistentJdtCompileSession:
         index = self.root / "source-index.json"
         if index.is_file():
             saved = json.loads(index.read_text(encoding="utf-8"))
-            self._lombok.restore(saved.get("lombok_configuration", {}))
+            self._restore_compile_input_state(saved)
             self._working_compile_state = saved.get("compile_state", "valid")
             self._last_compile_error_count = saved.get("error_count", 0)
             self._last_compile_diagnostics = tuple(saved.get("diagnostics", ()))
@@ -2020,6 +2036,7 @@ class PersistentJdtCompileSession:
             self._last_compile_error_count = error_count if not compile_ok else 0
         try:
             self._lombok.built(client)
+            self._processor_inputs.built()
             if not self._save_workspace_locked(client):
                 raise JdtCompileError(
                     "JDT_WORKSPACE_SAVE_FAILED",
