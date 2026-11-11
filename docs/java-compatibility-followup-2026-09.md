@@ -1,5 +1,33 @@
 # joLink 产品边界与兼容性跟进
 
+## U18扩展：archive/JAR/ZIP型sourcepath（2026-11-11，已review）
+
+SourcePathFiler现在按原顺序处理目录及归档：普通文件根通过ZipFile查找条目，不按
+扩展名区分，不整包解压。FileObject提供正确jar URI，目录/归档共用字符读取和编码
+逻辑。查询及时关闭ZipFile，读取流负责关闭其归档句柄，错误路径也释放资源。
+
+输入跟踪记录外层归档文件，而不是把jar!/entry当作文件系统路径。缺失条目和缺失的
+高优先级根也保留观察，替换/删除归档、新增优先条目后能增量更新；暖路径只检查已有
+输入状态，不打开压缩包或重跑Probe。仍按main/test和模块隔离。
+
+Maven原生对照确认：通过构建工具注册的归档compileSourceRoot会进入javac sourcepath。
+模型现在保留原始有序compileSourceRoots/testCompileSourceRoots给Processor读取，
+Java镜像仍只扫描目录。Gradle继续使用已导出的显式sourcePath。未放开Maven现有
+显式-sourcepath参数边界，也未实现从归档隐式编译任意Java源码；本轮解决APT资源读取。
+Test缓存v17、启动缓存v14刷新之前丢失Maven归档路径的模型；Worker已重新构建。
+
+验证：新增四项真实MCP用例通过（Maven/Gradle双链路及UTF-8/GBK），原生构建对照
+通过；覆盖混合优先级、缺失条目新增、归档替换/删除恢复、main/test隔离、零编译复用、
+MCP重开和离线期间改动，并核对实际HTTP结果。既有SOURCE_PATH/U17/Lombok共21项
+真实MCP回归通过，普通回归1401项通过。未修改业务源码/构建文件来制造增量变化。
+本机Java POC连续200次正常及错误读取未发现文件描述符增长；这不是Windows实测结论。
+wheel/sdist构建成功，隔离安装wheel后Maven完整双链路1项通过；构建依赖曾遇到PyPI
+超时，随后使用本机已有依赖离线构建及安装验证，未改产品下载源来绕过问题。
+
+初轮测试两处预期已纠正并保留日志：生成物缺失后恢复可合法选择restart，不强求
+HotSwap；原生javac拒绝的Filer relativeName不作为有效正向fixture，特殊字符仍在
+归档外层路径和合法Unicode条目中验证。JPMS仍留作独立接入，不在本轮宣称已支持。
+
 ## U18：APT的SOURCE_PATH资源读取（2026-11-11，已review）
 
 Worker在Processor初始化前为原生Eclipse ProcessingEnvironment安装委托式Filer，
@@ -22,8 +50,8 @@ source-index。新增高优先级同名文件、修改、删除、恢复均可�
 已验证目录型sourcepath、main/test隔离、多根优先级、仅模板变化、错误恢复、MCP
 重开及GBK中文读取。Fast Test与HTTP启动/restart交叉验证；显式空Gradle sourcepath
 返回找不到文件的编译诊断，不回退到旧路径；SOURCE_OUTPUT/CLASS_OUTPUT接口保留。
-本轮不宣称完整JavaFileManager实现，archive/JAR型sourcepath读取未接入；JPMS及
-任意直接文件/网络I/O不在已验证范围。U17输出型-A参数额外编译的性能边界不变。
+目录版当时未接入归档，后续archive/JAR扩展见上方；仍不宣称完整JavaFileManager实现。
+JPMS及任意直接文件/网络I/O不在已验证范围。U17输出型-A参数额外编译的性能边界不变。
 
 Worker及Gradle Probe已重建（modules3），Test缓存v16、启动缓存v13刷新旧模型；
 首次可能建立新的编译缓存，后续复用、配置删除及重开仍走共用流程。
@@ -907,7 +935,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
 | U16 | 新记录：Maven3.3.3显式APT运行依赖 | ProcessorPathResolver缺DependencyFilterUtils；修改前a10独立包相同失败，无APT自定义执行通过 | 后续修Probe依赖/ClassRealm；未泛化为所有旧Maven不支持 |
 | U17 | 已修：单个绝对文件参数变化跟踪 | 共用CompileSession按工程跟踪-A文件状态；修改/缺失/恢复/重开及参数删除已交叉验证 | 输出型参数额外编译经用户确认暂留为性能优化；未覆盖任意隐式I/O及相对路径/目录/路径列表 |
-| U18 | 已修：目录型APT SOURCE_PATH读取 | 委托式Filer读取原始sourcepath，实际读取及缺失候选进入共享增量跟踪；双链路验证 | 保留main/test、顺序、编码与显式空值；未宣称archive/JAR、JPMS和任意I/O已支持 |
+| U18 | 已修：目录及归档资源读取 | 目录/JAR/ZIP资源按原始sourcepath读取，查询路径及外层归档进入共享跟踪；双链路验证 | 保留main/test、顺序、编码及显式空值；JPMS、任意I/O及归档隐式Java编译未宣称支持 |
 | U19 | 已修：APT新生成Lombok源码的配置来源 | 按原生main/test生成目录映射，使用Lombok原生目录解析并跟踪同轮新增配置作用域 | Fast Test与HTTP启动/restart交叉验证配置变化、失败恢复及重开；不包含U17/U18 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。

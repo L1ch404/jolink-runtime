@@ -1248,6 +1248,7 @@ class FastTestManager:
             source_level=target_level,
             generated_source_directory=Path(snapshot["generatedSourceOutputDirectory"])
                 if snapshot.get("generatedSourceOutputDirectory") else None,
+            processor_source_roots=tuple(Path(p) for p in snapshot["compileSourceRoots"]),
             method_parameters=method_parameters,
             processor_entries=processor_entries,
             **processor_settings(main_processing),

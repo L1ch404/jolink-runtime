@@ -554,6 +554,7 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         "module_root": str(model.root),
         "output_directory": str(model.root / "target/classes"),
         "source_roots": [str(model.root / "src/main/java")],
+        "processor_source_roots": [str(model.root / "src/main/java")],
         "resource_roots": [],
         "classpath": [],
         "processor_entries": [],

@@ -35,12 +35,15 @@ Processor的-A参数值为单个绝对文件路径时，共用编译层会单独
 
 ### Processor源码路径资源
 
-支持通过Filer.getResource(SOURCE_PATH, package, relativeName)读取目录中的资源。
+支持通过Filer.getResource(SOURCE_PATH, package, relativeName)读取目录或JAR/ZIP中的资源。
 使用所属main/test工程的原始源码根，Gradle显式sourcepath则按实际配置及顺序读取，
 显式空列表不会回退。文件无需复制进私有workspace；字符读取使用该工程的源码编码。
 实际查询的路径（包括优先级更高但尚不存在的文件）参与现有持久化增量跟踪，模板
 增删改后能重新执行Processor。其他Filer输出接口仍由Eclipse处理。见兼容性跟进U18；
 这不是对任意处理器文件I/O或全部JavaFileManager位置的支持声明。
+归档按搜索顺序读取具体条目，不整包解压；跟踪外层文件，替换/删除或新增优先条目后
+可增量更新。Maven保留原生注册的完整source roots给Processor，Java镜像仍只扫描目录；
+本能力不等于自动编译source archive中的任意Java源码，也不改变JPMS支持范围。
 
 ## 测试进程的运行配置
 

@@ -1,11 +1,16 @@
 package net.jolink.runtime.jdt;
 
 import java.io.FileNotFoundException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.Reader;
+import java.io.Writer;
 import java.lang.reflect.Field;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -22,6 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.FilerException;
@@ -29,7 +36,6 @@ import javax.lang.model.element.Element;
 import javax.tools.FileObject;
 import javax.tools.JavaFileManager.Location;
 import javax.tools.JavaFileObject;
-import javax.tools.SimpleJavaFileObject;
 import javax.tools.StandardLocation;
 
 import org.eclipse.core.resources.IFolder;
@@ -143,9 +149,19 @@ final class SourcePathFiler implements Filer {
         if (packageName.indexOf('\\') >= 0 || packageName.startsWith(".") || packageName.endsWith(".")
                 || packageName.contains("..")) throw new IllegalArgumentException("Invalid package: " + packageName);
         Path relative = Paths.get(packageName.replace('.', '/')).resolve(name);
+        String entryName = relative.toString().replace('\\', '/');
         for (Path root : sourceRoots) {
-            Path file = root.resolve(relative).normalize();
-            if (observe(file)) return new SourceFile(file, charset);
+            // Watch the outer file even when this entry is absent. A replacement
+            // archive can introduce a higher-priority hit on the next build.
+            if (observe(root)) {
+                try (ZipFile archive = new ZipFile(root.toFile())) {
+                    ZipEntry entry = archive.getEntry(entryName);
+                    if (entry != null && !entry.isDirectory()) return new ArchiveFile(root, entryName, charset);
+                }
+            } else {
+                Path file = root.resolve(relative).normalize();
+                if (observe(file)) return new SourceFile(file, charset);
+            }
         }
         throw new FileNotFoundException("SOURCE_PATH resource not found: " + relative);
     }
@@ -172,21 +188,19 @@ final class SourcePathFiler implements Filer {
         return delegate.createResource(location, pkg, name, origins);
     }
 
-    private static final class SourceFile extends SimpleJavaFileObject {
-        private final Path file;
+    private abstract static class ReadOnlyResource implements FileObject {
         private final Charset charset;
 
-        SourceFile(Path file, Charset charset) {
-            super(file.toUri(), JavaFileObject.Kind.OTHER);
-            this.file = file;
+        ReadOnlyResource(Charset charset) {
             this.charset = charset;
         }
-        @Override public String getName() { return file.toString(); }
-        @Override public InputStream openInputStream() throws IOException { return Files.newInputStream(file); }
+        @Override public OutputStream openOutputStream() { throw new UnsupportedOperationException("Read-only resource"); }
+        @Override public Writer openWriter() { throw new UnsupportedOperationException("Read-only resource"); }
+        @Override public boolean delete() { return false; }
         @Override public Reader openReader(boolean ignoreEncodingErrors) throws IOException {
             CodingErrorAction action = ignoreEncodingErrors ? CodingErrorAction.REPLACE : CodingErrorAction.REPORT;
-            return new InputStreamReader(openInputStream(), charset.newDecoder()
-                    .onMalformedInput(action).onUnmappableCharacter(action));
+            var decoder = charset.newDecoder().onMalformedInput(action).onUnmappableCharacter(action);
+            return new InputStreamReader(openInputStream(), decoder);
         }
         @Override public CharSequence getCharContent(boolean ignoreEncodingErrors) throws IOException {
             try (Reader reader = openReader(ignoreEncodingErrors)) {
@@ -196,9 +210,64 @@ final class SourcePathFiler implements Filer {
                 return text;
             }
         }
+    }
+
+    private static final class SourceFile extends ReadOnlyResource {
+        private final Path file;
+
+        SourceFile(Path file, Charset charset) {
+            super(charset);
+            this.file = file;
+        }
+        @Override public URI toUri() { return file.toUri(); }
+        @Override public String getName() { return file.toString(); }
+        @Override public InputStream openInputStream() throws IOException { return Files.newInputStream(file); }
         @Override public long getLastModified() {
             try { return Files.getLastModifiedTime(file).toMillis(); }
             catch (IOException error) { return 0L; }
+        }
+    }
+
+    private static final class ArchiveFile extends ReadOnlyResource {
+        private final Path file;
+        private final String entryName;
+
+        ArchiveFile(Path file, String entryName, Charset charset) {
+            super(charset);
+            this.file = file;
+            this.entryName = entryName;
+        }
+        @Override public URI toUri() {
+            try {
+                String entry = new URI(null, null, "/" + entryName, null).getRawPath().substring(1);
+                return URI.create("jar:" + file.toUri().toASCIIString().replace("!", "%21") + "!/" + entry);
+            } catch (URISyntaxException invalid) {
+                throw new IllegalArgumentException("Invalid archive resource name: " + entryName, invalid);
+            }
+        }
+        @Override public String getName() { return file + "!/" + entryName; }
+        @Override public InputStream openInputStream() throws IOException {
+            ZipFile archive = new ZipFile(file.toFile());
+            try {
+                ZipEntry entry = archive.getEntry(entryName);
+                if (entry == null || entry.isDirectory()) throw new FileNotFoundException(getName());
+                return new FilterInputStream(archive.getInputStream(entry)) {
+                    @Override public void close() throws IOException {
+                        try { super.close(); }
+                        finally { archive.close(); }
+                    }
+                };
+            } catch (IOException | RuntimeException | Error failure) {
+                try { archive.close(); }
+                catch (IOException close) { failure.addSuppressed(close); }
+                throw failure;
+            }
+        }
+        @Override public long getLastModified() {
+            try (ZipFile archive = new ZipFile(file.toFile())) {
+                ZipEntry entry = archive.getEntry(entryName);
+                return entry == null || entry.getTime() < 0 ? 0L : entry.getTime();
+            } catch (IOException error) { return 0L; }
         }
     }
 }

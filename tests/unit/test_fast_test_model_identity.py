@@ -25,7 +25,8 @@ def test_generated_source_directory_survives_cached_test_world(model):
     assert loaded.generated_source_directory == generated
 
 
-@pytest.mark.parametrize("roots", [None, (), (Path("second"), Path("first"))])
+@pytest.mark.parametrize("roots", [None, (), (Path("second"), Path("first")),
+                                   (Path("resources.jar"), Path("not-created.zip"), Path("sources"))])
 def test_processor_source_roots_survive_cached_test_world(model, roots):
     world = replace(model.world, processor_source_roots=roots)
     model.fast.save(world, model.toolchain)

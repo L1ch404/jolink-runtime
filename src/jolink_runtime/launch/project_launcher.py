@@ -411,6 +411,7 @@ class ProjectLaunchPipeline:
             source_level=target["source_level"], target_level=target["source_level"],
             generated_source_directory=Path(target["generated_source_directory"])
                 if target.get("generated_source_directory") else None,
+            processor_source_roots=tuple(Path(p) for p in target["processor_source_roots"]),
             fingerprint="",  # Finalized from the shared compiler configuration in _stabilize.
             configuration_inputs=tuple(dict.fromkeys((
                 workspace.root_pom,

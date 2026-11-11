@@ -9,6 +9,13 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
     project = tmp_path / "project"
     sources = project / "custom-java"
     sources.mkdir(parents=True)
+    archive = project / "resource inputs.jar"
+    archive.write_bytes(b"archive")
+    missing_archive = project / "not-created.zip"
+    test_sources = project / "tests"
+    test_sources.mkdir()
+    test_archive = project / "test resources.zip"
+    test_archive.write_bytes(b"archive")
     output = project / "custom-output"
     snapshot = {
         "project": {
@@ -19,8 +26,8 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
         },
         "outputDirectory": str(output),
         "testOutputDirectory": str(project / "test-output"),
-        "compileSourceRoots": [str(sources)],
-        "testCompileSourceRoots": [],
+        "compileSourceRoots": [str(archive), str(sources), str(missing_archive)],
+        "testCompileSourceRoots": [str(test_sources), str(test_archive)],
         "compileClasspathElements": [str(output)],
         "testClasspathElements": [],
         "runtimeClasspathElements": [str(output)],
@@ -59,6 +66,7 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
     assert len(modules) == 1
     world = modules[0]
     assert world["source_roots"] == [str(sources)]
+    assert world["processor_source_roots"] == snapshot["compileSourceRoots"]
     assert world["output_directory"] == str(output)
     assert world["source_encoding"] == "GBK"
     assert world["method_parameters"] is True
@@ -67,5 +75,7 @@ def test_native_module_world_preserves_roots_encoding_and_heap(tmp_path, monkeyp
     assert world["classpath"] == []
     assert world["generated_source_directory"] == snapshot["generatedSourceOutputDirectory"]
     tested = load_module_worlds(exports, project, jdk, tests=True)[0]
+    assert tested["test_source_roots"] == [str(test_sources)]
+    assert tested["test_compiler"]["processor_source_roots"] == snapshot["testCompileSourceRoots"]
     assert tested["generated_source_directory"] == snapshot["generatedSourceOutputDirectory"]
     assert tested["test_compiler"]["generated_source_directory"] == snapshot["generatedTestSourceOutputDirectory"]
