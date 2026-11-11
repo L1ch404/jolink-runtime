@@ -31,6 +31,7 @@ def compilation_modules(modules):
         "source_encoding", "source_level", "target_java_home", "method_parameters",
         "processor_entries", "processor_names", "processor_options", "lombok_entries", "test_compiler",
         "generated_source_directory",
+        "processor_source_roots",
     }
     return tuple(
         {
@@ -146,6 +147,12 @@ class ModuleCompileSession(PersistentJdtCompileSession):
 
     def _processor_input_scopes(self):
         return {self.private_project / project["name"]: project.get("processor_options", {})
+                for project in self.projects if project.get("processor_entries")}
+
+    def _processor_source_scopes(self):
+        return {self.private_project / project["name"]: tuple(Path(p) for p in (
+                    project["source_roots"] if project.get("processor_source_roots") is None
+                    else project["processor_source_roots"]))
                 for project in self.projects if project.get("processor_entries")}
 
     def _generated_source_origins(self):

@@ -51,7 +51,7 @@ def main() -> int:
     )
     if completed.returncode != 0:
         raise SystemExit(completed.stdout + completed.stderr)
-    jar = PROJECT / "build/libs/jolink-gradle-probe-0.1.0-modules2.jar"
+    jar = PROJECT / "build/libs/jolink-gradle-probe-0.1.0-modules3.jar"
     raw = jar.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     with zipfile.ZipFile(jar) as archive:
@@ -64,7 +64,7 @@ def main() -> int:
         raise SystemExit(f"Unexpected Probe class majors: {sorted(majors)}")
     lock = {
         "schema": "jolink.gradle-build-world-probe.product-lock.v1",
-        "probe_version": "0.1.0-modules2",
+        "probe_version": "0.1.0-modules3",
         "sha256": digest,
         "class_major": 52,
         "supported_gradle_versions": ["7.4.2", "8.10", "8.14"],

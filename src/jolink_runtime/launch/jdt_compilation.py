@@ -25,6 +25,7 @@ def launch_compilation_configuration(plan):
         processor_entries=plan.processor_entries, processor_names=plan.processor_names,
         processor_options=plan.processor_options,
         generated_source_directory=plan.generated_source_directory,
+        processor_source_roots=plan.processor_source_roots,
         java_agents=tuple(f"{path}=ECJ" for path in plan.lombok_entries),
         min_heap_mb=plan.worker_min_heap_mb, max_heap_mb=plan.worker_max_heap_mb,
     )
@@ -41,6 +42,7 @@ def test_compilation_configuration(world):
         processor_entries=world.processor_entries, processor_names=world.processor_names,
         processor_options=world.processor_options, java_agents=world.java_agents,
         generated_source_directory=world.generated_source_directory,
+        processor_source_roots=world.processor_source_roots,
         extra_jvm_arguments=world.extra_worker_jvm_arguments,
         min_heap_mb=world.worker_min_heap_mb, max_heap_mb=world.worker_max_heap_mb,
     )

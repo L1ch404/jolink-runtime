@@ -340,6 +340,8 @@ def create_gradle_test_build_world(
         source_level=level,
         generated_source_directory=Path(main_compile["generatedSourceOutputDirectory"])
             if main_compile.get("generatedSourceOutputDirectory") else None,
+        processor_source_roots=tuple(Path(p) for p in main_compile["sourcePath"])
+            if main_compile.get("sourcePath") is not None else None,
         method_parameters=False,
         processor_entries=main_processors,
         java_agents=(),
@@ -419,6 +421,8 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         source_level=target["source_level"],
         generated_source_directory=Path(target["generated_source_directory"])
             if target.get("generated_source_directory") else None,
+        processor_source_roots=tuple(Path(p) for p in target["processor_source_roots"])
+            if target.get("processor_source_roots") is not None else None,
         method_parameters=target["method_parameters"],
         processor_entries=tuple(Path(p) for p in target["processor_entries"]),
         processor_names=tuple(target.get("processor_names", ())),

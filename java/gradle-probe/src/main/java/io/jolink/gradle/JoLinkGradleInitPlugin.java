@@ -43,7 +43,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules2";
+    private static final String VERSION = "0.1.0-modules3";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -447,6 +447,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         result.put("sourceCompatibility", task.getSourceCompatibility());
         result.put("targetCompatibility", task.getTargetCompatibility());
         result.put("sourceFiles", orderedFiles(task.getSource().getFiles()));
+        result.put("sourcePath", task.getOptions().getSourcepath() == null
+                ? null : orderedFiles(task.getOptions().getSourcepath().getFiles()));
         result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
         result.put("destinationDirectory", canonical(
                 task.getDestinationDirectory().get().getAsFile()));

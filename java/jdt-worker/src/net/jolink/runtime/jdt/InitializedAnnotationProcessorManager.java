@@ -17,6 +17,7 @@ public final class InitializedAnnotationProcessorManager extends IdeAnnotationPr
     public void configureFromPlatform(org.eclipse.jdt.internal.compiler.Compiler compiler,
             Object locator, Object project, boolean test) {
         super.configureFromPlatform(compiler, locator, project, test);
+        SourcePathFiler.install((org.eclipse.jdt.core.IJavaProject) project, _processingEnv, test);
         ProcessorConfiguration.restoreFlags((org.eclipse.jdt.core.IJavaProject) project, _processingEnv);
         ProcessorConfiguration.select((org.eclipse.jdt.core.IJavaProject) project);
     }

@@ -1,5 +1,39 @@
 # joLink 产品边界与兼容性跟进
 
+## U18：APT的SOURCE_PATH资源读取（2026-11-11，已review）
+
+Worker在Processor初始化前为原生Eclipse ProcessingEnvironment安装委托式Filer，
+仅补getResource(SOURCE_PATH, package, relativeName)。不包装每个Processor，
+不改处理器选择规则；其余读取位置及所有生成/写入接口继续委托Eclipse。
+
+资源从原始源码根目录按顺序读取，不要求复制到私有Java镜像。main/test及模块各自
+配置；Reader/getCharContent使用实际编译源码文件夹的字符集，流接口保留原始字节。
+Gradle Probe导出真实sourcePath，保留顺序并区分未设置与显式空列表；显式外部目录
+不能被Java源码目录替代。Gradle原生默认不一定启用sourcepath，原生对照明确配置它，
+不把本轮结果扩大成所有原生构建默认值均等价。Maven现有未支持的显式-sourcepath
+编译参数边界没有在本轮删除。
+
+读取/查找时记录命中文件及此前缺失的候选，用纳秒mtime/size或缺失值加入U17共享
+source-index。新增高优先级同名文件、修改、删除、恢复均可触发相关工程增量编译。
+首次观察在读取前记录；已知路径保留本轮源码选择前的快照，不用编译后文件状态覆盖。
+增量构建只访问部分源码时保留既有依赖，可能有保守的额外重编，但不会漏掉其他单元
+的输入。不扫描整棵目录，也不增加MCP参数或项目名称特判。
+
+已验证目录型sourcepath、main/test隔离、多根优先级、仅模板变化、错误恢复、MCP
+重开及GBK中文读取。Fast Test与HTTP启动/restart交叉验证；显式空Gradle sourcepath
+返回找不到文件的编译诊断，不回退到旧路径；SOURCE_OUTPUT/CLASS_OUTPUT接口保留。
+本轮不宣称完整JavaFileManager实现，archive/JAR型sourcepath读取未接入；JPMS及
+任意直接文件/网络I/O不在已验证范围。U17输出型-A参数额外编译的性能边界不变。
+
+Worker及Gradle Probe已重建（modules3），Test缓存v16、启动缓存v13刷新旧模型；
+首次可能建立新的编译缓存，后续复用、配置删除及重开仍走共用流程。
+
+验证：新增六项真实MCP用例通过，既有U17/Lombok十五项和多模块七项交叉回归通过；
+普通回归1399项通过。wheel/sdist构建成功，隔离安装wheel后的Maven完整双链路1项通过。
+初轮测试因输出API控制资源内容同时变化却强求HotSwap而失败，产品实际正确重启；
+控制资源改为固定字节后，纯class变更HotSwap断言通过，未为测试改动产品重启策略。
+测试代码保存在test_processor_source_path.py，原始用例、调用与日志已保留在本机。
+
 ## U17：绝对文件参数跟踪，输出误触发暂作性能边界（2026-11-10，已review）
 
 共享CompileSession新增文件输入跟踪：从-A单个绝对路径参数收集候选，按JDT工程
@@ -873,7 +907,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
 | U16 | 新记录：Maven3.3.3显式APT运行依赖 | ProcessorPathResolver缺DependencyFilterUtils；修改前a10独立包相同失败，无APT自定义执行通过 | 后续修Probe依赖/ClassRealm；未泛化为所有旧Maven不支持 |
 | U17 | 已修：单个绝对文件参数变化跟踪 | 共用CompileSession按工程跟踪-A文件状态；修改/缺失/恢复/重开及参数删除已交叉验证 | 输出型参数额外编译经用户确认暂留为性能优化；未覆盖任意隐式I/O及相对路径/目录/路径列表 |
-| U18 | 新实测：Eclipse APT Filer SOURCE_PATH | 原生通过，JDT明确Unsupported location；普通JAR模板/resources对照通过 | 需单独处理APT读取API与来源路径，不是简单复制文件 |
+| U18 | 已修：目录型APT SOURCE_PATH读取 | 委托式Filer读取原始sourcepath，实际读取及缺失候选进入共享增量跟踪；双链路验证 | 保留main/test、顺序、编码与显式空值；未宣称archive/JAR、JPMS和任意I/O已支持 |
 | U19 | 已修：APT新生成Lombok源码的配置来源 | 按原生main/test生成目录映射，使用Lombok原生目录解析并跟踪同轮新增配置作用域 | Fast Test与HTTP启动/restart交叉验证配置变化、失败恢复及重开；不包含U17/U18 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。

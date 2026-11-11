@@ -38,6 +38,7 @@ def _compiler_settings(task: dict) -> dict:
         "skipped_compiler_checks": list(profile.skipped_checks),
         "source_level": level,
         "generated_source_directory": task.get("generatedSourceOutputDirectory"),
+        "processor_source_roots": task.get("sourcePath"),
         "source_encoding": task["encoding"],
         "target_java_home": str(
             select_target_system_home((Path(task["compilerJavaHome"]),), level)

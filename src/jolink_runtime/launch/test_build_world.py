@@ -55,6 +55,7 @@ class JavaTestBuildWorld:
     framework_options: dict[str, str] = field(default_factory=dict)
     compilation_configuration: dict[str, Any] = field(default_factory=dict)
     generated_source_directory: Path | None = None
+    processor_source_roots: tuple[Path, ...] | None = None
 
 
 class TestBuildWorldBootstrap(Protocol):

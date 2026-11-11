@@ -750,6 +750,7 @@ class JdtBuildWorldPlan:
     configuration_stamps: dict[str, str] | None = None
     compilation_configuration: dict[str, Any] = field(default_factory=dict)
     generated_source_directory: Path | None = None
+    processor_source_roots: tuple[Path, ...] | None = None
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(
@@ -941,6 +942,7 @@ class PersistentJdtCompileSession:
         processor_names: Sequence[str] = (),
         processor_options: dict[str, str | None] | None = None,
         generated_source_directory: Path | None = None,
+        processor_source_roots: Sequence[Path] | None = None,
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
         min_heap_mb: int = 64,
@@ -1005,6 +1007,8 @@ class PersistentJdtCompileSession:
         self.java_agents = tuple(java_agents)
         self._lombok = LombokConfigurationInputs(self.root, enabled=bool(self.java_agents))
         self._processor_inputs = ProcessorFileInputs()
+        self.processor_source_roots = (tuple(Path(p) for p in processor_source_roots)
+                                       if processor_source_roots is not None else None)
         self.generated_source_directory = (
             Path(generated_source_directory).resolve(strict=False)
             if generated_source_directory is not None else None
@@ -1131,6 +1135,7 @@ class PersistentJdtCompileSession:
                     self._client = client
                 self._lombok.generated_roots = self._generated_source_origins()
                 self._processor_inputs.configure(self._processor_input_scopes())
+                self._configure_processor_source_paths(client)
                 self._lombok.refresh(client, self._source_map, force=True)
                 config_changed = self._lombok.dirty | self._processor_inputs.refresh(self._source_map)
                 if reuse_workspace and not self.workspace_reopened:
@@ -1429,6 +1434,32 @@ class PersistentJdtCompileSession:
 
     def _processor_input_scopes(self) -> dict[Path, dict]:
         return {self.private_project: self.processor_options} if self.processor_entries else {}
+
+    def _processor_source_scopes(self) -> dict[Path, tuple[Path, ...]]:
+        roots = self.workspace_source_roots() if self.processor_source_roots is None else self.processor_source_roots
+        return {self.private_project: roots} if self.processor_entries else {}
+
+    def _configure_processor_source_paths(self, client) -> None:
+        scopes = self._processor_source_scopes()
+        if not scopes:
+            return
+        encode = lambda value: base64.b64encode(str(value).encode("utf-8")).decode("ascii")
+        mapping = self.root / "apt-source-paths.txt"
+        mapping.write_text("".join(encode(project.name) + "\n" + "".join(
+            encode(project.name) + "\t" + encode(root) + "\n" for root in roots)
+            for project, roots in scopes.items()), encoding="utf-8")
+        result = client.command("APT_SOURCE_PATH\t" + encode(mapping))
+        if result.get("ok") is not True:
+            raise JdtCompileError("APT_SOURCE_PATH_FAILED", result.get("message", "Cannot configure processor source paths."))
+
+    def _processor_source_reads(self, client) -> dict:
+        scopes = self._processor_source_scopes()
+        if not scopes:
+            return {}
+        result = client.command("APT_SOURCE_INPUTS")
+        if result.get("ok") is not True:
+            raise JdtCompileError("APT_SOURCE_PATH_FAILED", result.get("message", "Cannot read processor source dependencies."))
+        return {str(project): result.get("projects", {}).get(project.name, {}) for project in scopes}
 
     def _configuration_source_changes(self) -> set[Path]:
         return (set(self._lombok.refresh(self._client, self._source_map))
@@ -2036,7 +2067,7 @@ class PersistentJdtCompileSession:
             self._last_compile_error_count = error_count if not compile_ok else 0
         try:
             self._lombok.built(client)
-            self._processor_inputs.built()
+            self._processor_inputs.built(self._processor_source_reads(client))
             if not self._save_workspace_locked(client):
                 raise JdtCompileError(
                     "JDT_WORKSPACE_SAVE_FAILED",

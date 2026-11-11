@@ -381,6 +381,8 @@ def create_gradle_runtime_build_world(
             source_level=source_level,
             generated_source_directory=Path(compile_task["generatedSourceOutputDirectory"])
                 if compile_task.get("generatedSourceOutputDirectory") else None,
+            processor_source_roots=tuple(Path(p) for p in compile_task["sourcePath"])
+                if compile_task.get("sourcePath") is not None else None,
             target_level=source_level,
             fingerprint=fingerprint,
             configuration_inputs=configuration,
@@ -430,6 +432,8 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
         source_level=target["source_level"],
         generated_source_directory=Path(target["generated_source_directory"])
             if target.get("generated_source_directory") else None,
+        processor_source_roots=tuple(Path(p) for p in target["processor_source_roots"])
+            if target.get("processor_source_roots") is not None else None,
         target_level=target["source_level"],
         fingerprint="",  # Finalized by the shared launch configuration capture.
         configuration_inputs=configuration,

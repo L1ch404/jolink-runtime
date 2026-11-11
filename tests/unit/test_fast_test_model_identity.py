@@ -25,6 +25,14 @@ def test_generated_source_directory_survives_cached_test_world(model):
     assert loaded.generated_source_directory == generated
 
 
+@pytest.mark.parametrize("roots", [None, (), (Path("second"), Path("first"))])
+def test_processor_source_roots_survive_cached_test_world(model, roots):
+    world = replace(model.world, processor_source_roots=roots)
+    model.fast.save(world, model.toolchain)
+    loaded, _ = model.fast.load(model.root, "maven")
+    assert loaded.processor_source_roots == roots
+
+
 def active_project(model, manager, monkeypatch, world):
     """Publish via the real finish method so the test cannot prefill a missing baseline."""
     attempt = Attempt(

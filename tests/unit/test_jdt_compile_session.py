@@ -44,6 +44,7 @@ class _FakeWorker:
         self.resource_value: bytes | None = None
         self.delete_resource = False
         self.diagnostics = []
+        self.processor_reads = {}
         self.diagnostics_truncated = False
 
     def command(self, command: str, **_kwargs):
@@ -51,6 +52,10 @@ class _FakeWorker:
         self.commands.append(command)
         if self.command_error is not None:
             raise self.command_error
+        if command.startswith("APT_SOURCE_PATH\t"):
+            return {"ok": True}
+        if command == "APT_SOURCE_INPUTS":
+            return {"ok": True, "projects": self.processor_reads}
         if command == "SAVE":
             return {
                 "ok": self.save_ok,
@@ -829,6 +834,38 @@ def test_processor_input_only_change_compiles_and_saves_prebuild_snapshot(tmp_pa
     worker.fail_compile = False
     assert session.compile(()).compile_ok
     assert not session.workspace_source_changes()
+
+
+def test_discovered_source_path_resource_uses_shared_persisted_invalidation(tmp_path, monkeypatch):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    resource = tmp_path / "template.txt"
+    resource.write_text("alpha")
+    session.processor_entries = (tmp_path / "processor.jar",)
+    # No -A path is provided; only the Worker's actual read discovers this input.
+    worker.processor_reads = {session.private_project.name: {
+        str(resource): [resource.stat().st_mtime_ns, resource.stat().st_size]}}
+    session.start()
+    session.accept_baseline()
+    saved = json.loads((session.root / "source-index.json").read_text())
+    assert str(resource) in saved["processor_file_inputs"][str(session.private_project)]
+    assert not session.workspace_source_changes()
+    resource.write_text("bravo")
+    assert session.workspace_source_changes() == (source,)
+    assert session.compile(()).actual_build_kind == "INCREMENTAL"
+    # A later incremental compilation need not visit/read every old dependency.
+    worker.processor_reads = {}
+    session._restore_persisted_source_map()
+    resource.unlink()
+    assert session.workspace_source_changes() == (source,)
+
+
+def test_explicit_empty_processor_sourcepath_does_not_fall_back_to_sources(tmp_path, monkeypatch):
+    session, source, worker = _session(tmp_path, monkeypatch)
+    session.processor_entries = (tmp_path / "processor.jar",)
+    session.processor_source_roots = ()
+    session.start()
+    mapping = (session.root / "apt-source-paths.txt").read_text().splitlines()
+    assert mapping == [base64.b64encode(session.private_project.name.encode()).decode()]
 
 
 @pytest.mark.parametrize("restore", ["_restore_persisted_source_map", "_synchronize_persisted_sources"])

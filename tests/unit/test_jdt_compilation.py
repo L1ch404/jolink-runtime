@@ -25,6 +25,7 @@ def world_for(plan, **overrides):
             "processor_entries": plan.processor_entries, "processor_names": plan.processor_names,
             "processor_options": plan.processor_options,
             "generated_source_directory": plan.generated_source_directory,
+            "processor_source_roots": plan.processor_source_roots,
             "java_agents": tuple(f"{p}=ECJ" for p in plan.lombok_entries),
             "extra_worker_jvm_arguments": (), "worker_min_heap_mb": plan.worker_min_heap_mb,
             "worker_max_heap_mb": plan.worker_max_heap_mb, "modules": plan.modules,
@@ -41,6 +42,7 @@ def world_for(plan, **overrides):
     ("processor_options", {"flag": None}), ("lombok_entries", (Path("lombok.jar"),)),
     ("worker_max_heap_mb", 1024),
     ("generated_source_directory", Path("generated-sources")),
+    ("processor_source_roots", (Path("explicit-source-path"),)),
 ])
 def test_both_consumers_use_the_same_compiler_identity_rules(plan, field, value):
     old_launch = shared.launch_compilation_configuration(plan)

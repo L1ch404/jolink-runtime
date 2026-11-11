@@ -77,3 +77,48 @@ def test_nonpaths_and_directory_contents_are_not_scanned(tmp_path, monkeypatch):
     empty.configure({tmp_path: {"mode": "ordinary"}})
     monkeypatch.setattr(Path, "stat", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no stat")))
     assert not empty.refresh({})
+
+
+def test_native_reads_include_missing_priority_roots_and_survive_reopen(tmp_path):
+    project, other = tmp_path / "workspace/main", tmp_path / "workspace/test"
+    source, test = tmp_path / "Main.java", tmp_path / "Test.java"
+    sources = {source: project / "src/Main.java", test: other / "src/Test.java"}
+    earlier = tmp_path / "first.txt"
+    fallback = tmp_path / "fallback.txt"
+    fallback.write_text("fallback")
+    tracker = ProcessorFileInputs()
+    tracker.configure({project: {}, other: {}})
+    assert not tracker.refresh(sources)
+    tracker.built({str(project): {str(earlier): None, str(fallback): tracker._stamp(fallback)}})
+    saved = json.loads(json.dumps(tracker.snapshot()))
+    assert not tracker.refresh(sources)
+    # A new higher-priority sourcepath entry must trigger even though the file
+    # actually consumed during the previous build has not changed.
+    earlier.write_text("first")
+    reopened = ProcessorFileInputs()
+    reopened.restore(saved)
+    reopened.configure({project: {}, other: {}})
+    assert reopened.refresh(sources) == {source}
+    reopened.built({})  # Other known dependencies survive partial builds.
+    fallback.unlink()
+    assert reopened.refresh(sources) == {source}
+
+
+def test_read_snapshot_does_not_hide_edits_during_compilation(tmp_path):
+    project = str(tmp_path / "workspace")
+    file = tmp_path / "template.txt"
+    file.write_text("old")
+    tracker = ProcessorFileInputs()
+    source = tmp_path / "Main.java"
+    sources = {source: Path(project) / "src/Main.java"}
+    tracker.configure({Path(project): {}})
+    tracker.refresh(sources)
+    first_read = tracker._stamp(file)
+    file.write_text("edited-after-first-read")
+    tracker.built({project: {str(file): first_read}})
+    assert tracker.refresh(sources) == {source}
+    before_build = tracker.observed[project][str(file)]
+    file.write_text("edited-again-during-build")
+    tracker.built({project: {str(file): tracker._stamp(file)}})
+    assert tracker.snapshot()[project][str(file)] == before_build
+    assert tracker.refresh(sources) == {source}

@@ -54,6 +54,7 @@ def test_cache_reuses_outputs_but_invalidates_changed_pom(
         source_encoding="UTF-8",
         source_level=8,
         generated_source_directory=project / "generated/main",
+        processor_source_roots=(),
         target_level=8,
         fingerprint=fingerprint,
         configuration_inputs=(pom,),
@@ -127,6 +128,7 @@ def test_cache_reuses_outputs_but_invalidates_changed_pom(
     assert reused.jdt_plan.resource_fingerprint == plan.resource_fingerprint
     assert reused.jdt_plan.compilation_configuration == plan.compilation_configuration
     assert reused.jdt_plan.generated_source_directory == plan.generated_source_directory
+    assert reused.jdt_plan.processor_source_roots == ()
 
     # Old cache entries may contain an unresolved alias even after callers
     # start supplying the canonical project path.

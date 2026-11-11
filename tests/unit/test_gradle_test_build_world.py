@@ -187,6 +187,21 @@ def test_gradle_module_compilers_keep_separate_generated_directories(tmp_path):
         assert settings["generated_source_directory"] == expected
 
 
+@pytest.mark.parametrize("paths", [None, [], ["second-root", "first-root"]])
+def test_gradle_source_path_preserves_unset_empty_and_order(tmp_path, paths):
+    from jolink_runtime.launch.gradle_module_world import _compiler_settings
+
+    project, model = _model(tmp_path)
+    actual = None if paths is None else [str(project / path) for path in paths]
+    model["compileJava"]["sourcePath"] = actual
+    model["compileTestJava"]["sourcePath"] = []
+    expected = None if actual is None else tuple(Path(p) for p in actual)
+    assert _compiler_settings(model["compileJava"])["processor_source_roots"] == actual
+    assert _compiler_settings(model["compileTestJava"])["processor_source_roots"] == []
+    assert _convert(tmp_path, model).processor_source_roots == expected
+    assert _runtime_world(tmp_path, model).jdt_plan.processor_source_roots == expected
+
+
 def test_gradle_runtime_configuration_keeps_removals_and_allows_new_working_directory(tmp_path):
     project, model = _model(tmp_path)
     runtime = model["testRuntime"]

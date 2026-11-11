@@ -698,6 +698,17 @@ public final class WorkerApplication implements IApplication {
     }
 
     private boolean handle(String line) throws Exception {
+        if (line.startsWith("APT_SOURCE_PATH\t") || line.equals("APT_SOURCE_INPUTS")) {
+            try {
+                if (line.equals("APT_SOURCE_INPUTS")) emit(SourcePathFiler.inputs());
+                else emit(SourcePathFiler.configure(Paths.get(new String(Base64.getDecoder().decode(
+                        line.substring("APT_SOURCE_PATH\t".length())), StandardCharsets.UTF_8))));
+            } catch (Exception exception) {
+                exception.printStackTrace(System.err);
+                emitError("APT_SOURCE_PATH_FAILED", exception.toString());
+            }
+            return true;
+        }
         if (line.startsWith("LOMBOK_CONFIG\t") || line.equals("LOMBOK_CONFIG_STATE")) {
             try {
                 if (line.equals("LOMBOK_CONFIG_STATE")) {
@@ -990,6 +1001,7 @@ public final class WorkerApplication implements IApplication {
             NullProgressMonitor buildMonitor,
             ActiveBuild active,
             List<String> touchedSources) throws Exception {
+        SourcePathFiler.beginBuild();
         BuildDecisionTrace.begin();
         try {
             buildWithTrace(buildKind, requestedKind, buildMonitor, active, touchedSources);
