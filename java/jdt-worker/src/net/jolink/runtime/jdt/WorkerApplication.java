@@ -73,8 +73,13 @@ public final class WorkerApplication implements IApplication {
     private IJavaProject javaProject;
     private String projectName = PROJECT_NAME;
     private ModuleWorkspace modules;
+    private final JavaModuleSupport javaModules = new JavaModuleSupport();
 
     void useProjectName(String name) { projectName = name; }
+    void configureModules(String paths, String patch, String reads, String exports) throws Exception {
+        javaModules.configure(paths, patch, reads, exports);
+    }
+    String moduleMetadata() throws Exception { return javaModules.metadata(project); }
     private boolean instrumentationEnabled;
     private boolean projectReopened;
     private boolean configurationReused;
@@ -233,7 +238,8 @@ public final class WorkerApplication implements IApplication {
             workspace = ResourcesPlugin.getWorkspace();
             emit("{\"ok\":true,\"status\":\"ready\",\"workspace_project_state\":"
                     + json(modules.reopened ? "reopened" : "created")
-                    + ",\"configuration_reused\":" + modules.reopened + "}");
+                    + ",\"configuration_reused\":" + modules.reopened
+                    + ",\"module_metadata\":" + modules.moduleMetadata() + "}");
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
                 for (String line; (line = reader.readLine()) != null;) if (!handle(line)) return EXIT_OK;
             }
@@ -271,6 +277,8 @@ public final class WorkerApplication implements IApplication {
         try {
             String aptProcessorsFile = arguments.get("apt-processors-file");
             String testClasspathFile = arguments.get("test-classpath-file");
+            configureModules(arguments.get("module-path-file"), arguments.get("patch-module"),
+                    arguments.get("add-reads-file"), arguments.get("add-exports-file"));
             initialize(
                     Paths.get(systemLibrariesFile),
                     sourceEncoding,
@@ -401,6 +409,10 @@ public final class WorkerApplication implements IApplication {
             javaProject.setOutputLocation(output.getFullPath(), monitor);
         }
 
+        // Module discovery depends on the language level. Configure it before
+        // resolving classpath entries, not after a Java-8 model was cached.
+        configureCompilerOptions(sourceLevel, methodParameters, aptProcessorsFile);
+        javaModules.prepare(project);
         List<IClasspathEntry> classpath = new ArrayList<>();
         Set<String> testsIncluded = new LinkedHashSet<>();
         if (testClasspathFile != null) {
@@ -423,7 +435,7 @@ public final class WorkerApplication implements IApplication {
                     classpath.add(JavaCore.newProjectEntry(
                             new org.eclipse.core.runtime.Path("/" + value.substring(8)),
                             new org.eclipse.jdt.core.IAccessRule[0], false,
-                            new IClasspathAttribute[] {JavaCore.newClasspathAttribute("without_test_code", Boolean.toString(!testsIncluded.contains(value.substring(8))))}, false));
+                            javaModules.attributes(value, project, JavaCore.newClasspathAttribute("without_test_code", Boolean.toString(!testsIncluded.contains(value.substring(8))))), false));
                     continue;
                 }
                 Path entry = Paths.get(value);
@@ -431,7 +443,7 @@ public final class WorkerApplication implements IApplication {
                         org.eclipse.core.runtime.Path.fromOSString(
                                 entry.toAbsolutePath().normalize().toString()),
                         null,
-                        null));
+                        null, new org.eclipse.jdt.core.IAccessRule[0], javaModules.attributes(value, project), false));
             }
         }
         if (testClasspathFile != null) {
@@ -470,14 +482,14 @@ public final class WorkerApplication implements IApplication {
                     if (mainProjects.contains(value.substring(14))) continue;
                     classpath.add(JavaCore.newProjectEntry(
                             new org.eclipse.core.runtime.Path("/" + value.substring(14)),
-                            new org.eclipse.jdt.core.IAccessRule[0], false, testAttributes, false));
+                            new org.eclipse.jdt.core.IAccessRule[0], false, javaModules.attributes("project:" + value.substring(14), project, testAttributes), false));
                     continue;
                 }
                 if (value.startsWith("project:")) {
                     classpath.add(JavaCore.newProjectEntry(
                             new org.eclipse.core.runtime.Path("/" + value.substring(8)),
                             new org.eclipse.jdt.core.IAccessRule[0], false,
-                            new IClasspathAttribute[] {testAttributes[0], JavaCore.newClasspathAttribute("without_test_code", "true")}, false));
+                            javaModules.attributes(value, project, testAttributes[0], JavaCore.newClasspathAttribute("without_test_code", "true")), false));
                     continue;
                 }
                 Path entry = Paths.get(value);
@@ -487,7 +499,7 @@ public final class WorkerApplication implements IApplication {
                         null,
                         null,
                         new org.eclipse.jdt.core.IAccessRule[0],
-                        testAttributes,
+                        javaModules.attributes(value, project, testAttributes),
                         false));
             }
             testModelConfigured = true;
@@ -501,6 +513,13 @@ public final class WorkerApplication implements IApplication {
             javaProject.setRawClasspath(desiredClasspath, monitor);
         }
 
+        if (aptProcessorsFile != null) {
+            configureApt(aptProcessorsFile);
+        }
+        pendingDeletedSourceUnits.clear();
+    }
+
+    private void configureCompilerOptions(String sourceLevel, boolean methodParameters, Path aptProcessorsFile) {
         Map<String, String> options = new LinkedHashMap<>(JavaCore.getOptions());
         options.putAll(javaProject.getOptions(false));
         // This worker compiles code; IDE-style warning/info diagnostics are
@@ -533,10 +552,6 @@ public final class WorkerApplication implements IApplication {
         if (!javaProject.getOptions(false).equals(options)) {
             javaProject.setOptions(options);
         }
-        if (aptProcessorsFile != null) {
-            configureApt(aptProcessorsFile);
-        }
-        pendingDeletedSourceUnits.clear();
     }
 
     private Set<String> sourceUnits() throws IOException {
@@ -1288,12 +1303,13 @@ public final class WorkerApplication implements IApplication {
         workspace.save(true, monitor);
     }
 
-    private void emitReady() {
+    private void emitReady() throws Exception {
         if (configurationReused) {
             emit("{\"ok\":true,\"status\":\"ready\","
                     + "\"workspace_project_state\":\"reopened\","
                     + "\"configuration_reused\":true,"
-                    + "\"diagnostic_selection_policy\":\"errors_only\"}");
+                    + "\"diagnostic_selection_policy\":\"errors_only\","
+                    + "\"module_metadata\":{" + json(projectName) + ":" + moduleMetadata() + "}}");
             return;
         }
         int builderCount = 0;
@@ -1309,6 +1325,7 @@ public final class WorkerApplication implements IApplication {
         IFolder source = project.getFolder("src");
         java.net.URI sourceLocation = source.getLocationURI();
         emit("{\"ok\":true,\"status\":\"ready\","
+                + "\"module_metadata\":{" + json(projectName) + ":" + moduleMetadata() + "},"
                 + "\"configuration_reused\":false,"
                 + "\"diagnostic_selection_policy\":\"errors_only\","
                 + "\"application_id\":\"net.jolink.runtime.jdt.worker\","
@@ -1414,7 +1431,7 @@ public final class WorkerApplication implements IApplication {
         return "UNKNOWN";
     }
 
-    private static String jsonNullable(String value) {
+    static String jsonNullable(String value) {
         return value == null ? "null" : json(value);
     }
 

@@ -16,6 +16,10 @@ import org.apache.maven.model.Plugin;
 import org.apache.maven.model.PluginExecution;
 import org.apache.maven.plugin.MojoExecution;
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.BuildPluginManager;
+import org.apache.maven.plugin.descriptor.MojoDescriptor;
+import org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator;
+import org.apache.maven.lifecycle.internal.LifecycleTask;
 import org.apache.maven.plugin.PluginParameterExpressionEvaluator;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -26,7 +30,8 @@ final class TestRuntimeConfiguration {
     boolean enableAssertions;
     final Map<String, String> environment = new LinkedHashMap<>();
 
-    static void appendExecutions(StringBuilder out, MavenProject project, MavenSession session)
+    static void appendExecutions(StringBuilder out, MavenProject project, MavenSession session,
+            BuildPluginManager plugins, LifecycleExecutionPlanCalculator plans, boolean modular)
             throws MojoExecutionException {
         MavenProject previous = session.getCurrentProject();
         try {
@@ -54,7 +59,7 @@ final class TestRuntimeConfiguration {
                     ExportBuildWorldMojo.field(out, "id", artifactId + ":" + id, false);
                     ExportBuildWorldMojo.field(out, "kind", kind, true);
                     try {
-                        append(out, project, session, plugin, id, goal, kind);
+                        append(out, project, session, plugin, id, goal, kind, plugins, plans, modular);
                     } catch (Exception error) {
                         // An unrelated execution's invalid runtime setup must not block other tests or launch.
                         ExportBuildWorldMojo.field(out, "configurationError", error.getClass().getSimpleName(), true);
@@ -69,7 +74,8 @@ final class TestRuntimeConfiguration {
     }
 
     private static void append(StringBuilder out, MavenProject project, MavenSession session,
-            Plugin plugin, String id, String goal, String kind) throws Exception {
+            Plugin plugin, String id, String goal, String kind, BuildPluginManager plugins,
+            LifecycleExecutionPlanCalculator plans, boolean modular) throws Exception {
             Xpp3Dom raw = project.getGoalConfiguration(plugin.getGroupId(), plugin.getArtifactId(), id, goal);
             Xpp3Dom config = raw == null ? new Xpp3Dom("configuration") : new Xpp3Dom(raw);
             PluginParameterExpressionEvaluator evaluator = new PluginParameterExpressionEvaluator(session, new MojoExecution(plugin, goal, id));
@@ -102,6 +108,10 @@ final class TestRuntimeConfiguration {
                 : new String[] {"**/IT*.java", "**/*IT.java", "**/*ITCase.java"}, evaluator, files);
             patterns(config, "excludes", "exclude", new String[] {"**/*$*"}, evaluator, files);
             ExportBuildWorldMojo.field(out, "configurationPrivate", config.toString(), true);
+            Object modulePath = evaluator.evaluate(value(config, "useModulePath", "${surefire.useModulePath}"));
+            boolean useModulePath = modulePath == null || Boolean.parseBoolean(modulePath.toString().trim());
+            if (modular) useModulePath = modulePathEnabled(project, session, plugin, goal, kind, config, evaluator, plugins, plans);
+            ExportBuildWorldMojo.booleanField(out, "useModulePath", useModulePath, true);
             Map<String, String> properties = new LinkedHashMap<>();
             String propertyFile = value(config, "systemPropertiesFile", null);
             if (propertyFile != null) files.add(evaluator.alignToBaseDirectory(new File(propertyFile)).getCanonicalPath());
@@ -132,6 +142,32 @@ final class TestRuntimeConfiguration {
             }
         }
         if (patterns.getChildCount() == 0) for (String pattern : defaults) add(patterns, itemName, pattern);
+    }
+
+    private static boolean modulePathEnabled(MavenProject project, MavenSession session, Plugin plugin,
+            String goal, String kind, Xpp3Dom config, PluginParameterExpressionEvaluator evaluator,
+            BuildPluginManager plugins, LifecycleExecutionPlanCalculator plans) throws Exception {
+        MojoDescriptor descriptor = null;
+        if (plugin.getVersion() != null) {
+            descriptor = plugins.getMojoDescriptor(plugin, goal, project.getRemotePluginRepositories(), session.getRepositorySession());
+        } else {
+            // An omitted Surefire version comes from Maven's lifecycle binding,
+            // not an invented version or the latest plugin in a repository.
+            List<Object> tasks = java.util.Collections.singletonList(new LifecycleTask(
+                    "surefire".equals(kind) ? "test" : "integration-test"));
+            for (MojoExecution execution : plans.calculateExecutionPlan(session, project, tasks, false).getMojoExecutions()) {
+                if (plugin.getGroupId().equals(execution.getGroupId()) && plugin.getArtifactId().equals(execution.getArtifactId())
+                        && goal.equals(execution.getGoal())) { descriptor = execution.getMojoDescriptor(); break; }
+            }
+        }
+        if (descriptor == null) throw new MojoExecutionException("Maven did not resolve the selected test plugin");
+        if (!descriptor.getParameterMap().containsKey("useModulePath")) return false;
+        org.codehaus.plexus.configuration.PlexusConfiguration parameter = descriptor.getMojoConfiguration().getChild("useModulePath", false);
+        Xpp3Dom explicit = config.getChild("useModulePath");
+        Object resolved = explicit == null ? null : evaluator.evaluate(explicit.getValue());
+        if (resolved == null && parameter.getValue() != null) resolved = evaluator.evaluate(parameter.getValue());
+        if (resolved == null) resolved = evaluator.evaluate(parameter.getAttribute("default-value"));
+        return resolved != null && Boolean.parseBoolean(resolved.toString().trim());
     }
 
     private static void add(Xpp3Dom node, String name, String value) {

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .compiler_profile import classify_compiler_arguments
 from .jdt_compile_session import select_target_system_home
+from .module_configuration import module_configuration, unrepresented_patches
 
 
 class GradleModuleError(RuntimeError):
@@ -35,6 +36,7 @@ def _compiler_settings(task: dict) -> dict:
         if not is_lombok or profile.processor_names:
             processors.append(path)
     return {
+        **module_configuration(task.get("jpms", {}), profile, basedir=task.get("projectDirectory", ".")),
         "skipped_compiler_checks": list(profile.skipped_checks),
         "source_level": level,
         "generated_source_directory": task.get("generatedSourceOutputDirectory"),
@@ -102,9 +104,17 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
             else str(Path(item["projectDirectory"]) / "build/classes/java/test")
         )
         dependencies = classpath(compile["classpath"])
+        allowed_patches = [*main["javaSourceDirectories"], *item.get("test", {}).get("javaSourceDirectories", ()), output, test_output]
+        for task in (compile, test):
+            if task and unrepresented_patches(classify_compiler_arguments(task["compilerArgsPrivate"]), allowed_patches, item["projectDirectory"]):
+                raise GradleModuleError("GRADLE_COMPILE_CONFIGURATION_UNMODELED", "External --patch-module inputs are not mapped to the JDT project.")
+        settings["module_path"] = classpath(settings["module_path"])
         modules.append(
             {
                 "module_root": item["projectDirectory"],
+                "artifact_aliases": [path for path, artifact in model.get("projectArtifacts", {}).items()
+                                     if artifact["projectDirectory"] == item["projectDirectory"]
+                                     and artifact["kind"] != "resources"],
                 "source_roots": main["javaSourceDirectories"],
                 "test_source_roots": item["test"]["javaSourceDirectories"]
                 if test
@@ -135,6 +145,7 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                     p for p in classpath(test["classpath"]) if p != test_output
                 ],
             }
+            modules[-1]["test_compiler"]["module_path"] = classpath(modules[-1]["test_compiler"]["module_path"])
     target = next(item for item in modules if item["module_root"] == selected)
     runtime = (
         model["testRuntime"]["classpath"]

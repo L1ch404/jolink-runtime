@@ -17,6 +17,7 @@ from .project_session import JavaProjectSession
 from .runtime_preparation import prepared_runtime
 from .idea_environment import IdeaEnvironmentImporter, build_preferences_key
 from .build_environment import apply_build_preferences
+from .jpms_runtime import module_runtime, module_vm_arguments
 
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,14 @@ class JdtLaunchService:
                     classpath.append(entry)
             if plan.modules:
                 classpath = list(compiler.runtime_classpath(classpath))
-            plan_for_jvm = replace(prepared.jvm_plan, classpath=tuple(classpath))
+            modular = module_runtime(compiler, classpath, resources=prepared.resource_source_roots)
+            module_arguments, module_path = (), ()
+            if modular.name:
+                module_arguments, module_path = module_vm_arguments((), modular, compiler,
+                    directory=prepared.jvm_plan.working_directory,
+                    outputs={prepared.module_output: compiler.output_directory})
+            plan_for_jvm = replace(prepared.jvm_plan, classpath=modular.classpath,
+                module_name=modular.name, module_path=module_path, module_arguments=module_arguments)
             plan_for_jvm, command = runtime._project_pipeline.materialize_command(
                 plan_for_jvm, jdwp_port=request.jdwp_port,
                 attempt_directory=prepared.attempt_directory,
@@ -141,7 +149,8 @@ class JdtLaunchService:
                 generation_seal_ms=0,
                 source_snapshot_ms=0,
             )
-            return replace(prepared, jvm_plan=plan_for_jvm, command=command), session, classpath.index(generation.output_directory)
+            entries = plan_for_jvm.module_path if modular.name else plan_for_jvm.classpath
+            return replace(prepared, jvm_plan=plan_for_jvm, command=command), session, entries.index(generation.output_directory)
         except Exception as error:
             with runtime._project_state_lock:
                 runtime._project_sessions.pop(context.attempt_id, None)

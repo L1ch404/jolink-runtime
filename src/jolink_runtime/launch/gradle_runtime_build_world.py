@@ -7,6 +7,7 @@ import hashlib
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from .module_configuration import main_module_fields, descriptor_inputs
 from typing import Any, Sequence
 
 from .build_world_identity import build_world_fingerprint
@@ -406,6 +407,7 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
 
     project_root = project_root.expanduser().resolve(strict=False)
     modules, target, classpath = module_world(model)
+    inputs = (*inputs, *descriptor_inputs(modules))
     configuration = tuple(
         dict.fromkeys(
             (*inputs, *(Path(p) for p in model.get("configurationFiles", ())),
@@ -416,6 +418,7 @@ def _module_runtime_world(model, project_root, inputs, environment_names):
     output = Path(target["output_directory"])
     resources = tuple(Path(p) for p in target["resource_roots"])
     plan = JdtBuildWorldPlan(
+        **main_module_fields(target),
         project_root=project_root,
         module_root=Path(target["module_root"]),
         source_roots=tuple(Path(p) for m in modules for p in m["source_roots"]),

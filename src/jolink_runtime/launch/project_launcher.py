@@ -48,6 +48,7 @@ from .gradle_runtime_build_world import (
 from .gradle_module_world import GradleModuleError
 from .jdt_compile_session import JdtBuildWorldPlan
 from .compiler_profile import skipped_compiler_checks, compiler_check_warnings
+from .module_configuration import main_module_fields, descriptor_inputs
 from .maven_probe import ProductMavenProbe
 from .maven_module_world import load_module_worlds, skipped_preparation_steps, preparation_warnings
 from .maven_reactor import maven_build_root
@@ -399,6 +400,7 @@ class ProjectLaunchPipeline:
         roots = tuple(Path(p) for m in modules for p in m["source_roots"])
         resources = tuple(Path(p) for p in target["resource_roots"])
         plan = JdtBuildWorldPlan(project_root=request.project_path, module_root=module.directory,
+            **main_module_fields(target),
             source_roots=roots, dependency_entries=tuple(Path(p) for p in target["classpath"]),
             processor_entries=tuple(Path(p) for p in target["processor_entries"]),
             processor_names=tuple(target.get("processor_names", ())),
@@ -415,6 +417,7 @@ class ProjectLaunchPipeline:
             fingerprint="",  # Finalized from the shared compiler configuration in _stabilize.
             configuration_inputs=tuple(dict.fromkeys((
                 workspace.root_pom,
+                *descriptor_inputs(modules),
                 *(m.pom_file for m in workspace.modules),
                 *(Path(m["module_root"]) / "pom.xml" for m in modules),
                 settings_input,

@@ -15,6 +15,13 @@ from .jdt_compile_session import (
 from .jdt_modules import ModuleCompileSession, compilation_modules, module_name, module_resources
 
 
+def module_compiler_options(model):
+    return {name: getattr(model, name, default) for name, default in (
+        ("module_name", None), ("module_descriptor", None), ("module_path", ()),
+        ("patch_module", None), ("add_reads", ()), ("add_exports", ()),
+    )}
+
+
 def launch_compilation_configuration(plan):
     return capture_compilation_configuration(
         target_java_home=plan.target_java_home, modules=plan.modules,
@@ -28,6 +35,7 @@ def launch_compilation_configuration(plan):
         processor_source_roots=plan.processor_source_roots,
         java_agents=tuple(f"{path}=ECJ" for path in plan.lombok_entries),
         min_heap_mb=plan.worker_min_heap_mb, max_heap_mb=plan.worker_max_heap_mb,
+        **module_compiler_options(plan),
     )
 
 
@@ -45,6 +53,7 @@ def test_compilation_configuration(world):
         processor_source_roots=world.processor_source_roots,
         extra_jvm_arguments=world.extra_worker_jvm_arguments,
         min_heap_mb=world.worker_min_heap_mb, max_heap_mb=world.worker_max_heap_mb,
+        **module_compiler_options(world),
     )
 
 
@@ -110,6 +119,8 @@ def open_compile_session(configuration, *, store, project_root, module_root,
         arguments["modules"] = tuple(arguments["modules"].values())
         arguments["target_module"] = Path(arguments["target_module"])
         arguments["runtime_resources"] = module_resources(resource_modules)
+        arguments["runtime_output_aliases"] = {alias: module["output_directory"]
+            for module in resource_modules for alias in module.get("artifact_aliases", ())}
     compiler = factory(root=workspace.root, candidate=candidate, worker_java_home=worker_java.home,
                        preserve_root_on_close=True, **arguments)
     return workspace, compiler

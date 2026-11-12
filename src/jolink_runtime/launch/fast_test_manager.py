@@ -37,6 +37,7 @@ from .maven_module_world import load_module_worlds, combine_effective_poms, skip
 from .test_execution import run_test_executions
 from .test_output import TestOutputLog, read_test_output
 from .maven_compile_scope import compiler_scope, compiler_parameters
+from .module_configuration import main_module_fields, descriptor_inputs
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
 from .build_environment import apply_build_preferences, maven_local_repository
@@ -137,6 +138,7 @@ class _FastTestProject:
     framework_options: dict[str, str] = field(default_factory=dict)
     test_run_order: str = ""
     test_attempts: list[tuple[Path, bool]] = field(default_factory=list)
+    test_use_module_path: bool = False
 
     def close(self) -> bool:
         settled = self.compiler.close()
@@ -1249,6 +1251,9 @@ class FastTestManager:
             generated_source_directory=Path(snapshot["generatedSourceOutputDirectory"])
                 if snapshot.get("generatedSourceOutputDirectory") else None,
             processor_source_roots=tuple(Path(p) for p in snapshot["compileSourceRoots"]),
+            **main_module_fields(next((m for m in snapshot.get("moduleWorlds", ()) if Path(m["module_root"]) == module.directory), {})),
+            test_use_module_path=bool(snapshot.get("jpms", {}).get("main", {}).get("moduleName")) and
+                all(e.get("useModulePath", True) for e in executions),
             method_parameters=method_parameters,
             processor_entries=processor_entries,
             **processor_settings(main_processing),
@@ -1261,7 +1266,7 @@ class FastTestManager:
             runner_environment={},
             test_executions=executions,
             javac_executable=build_jdk.javac_executable,
-            configuration_inputs=configuration_inputs,
+            configuration_inputs=tuple(dict.fromkeys((*configuration_inputs, *descriptor_inputs(snapshot.get("moduleWorlds", ()))))),
             configuration_environment_names=maven_environment_references(
                 maven_configuration_files(workspace.project_root, configuration_inputs)),
             upstream_source_roots=upstream_source_roots,
@@ -1400,6 +1405,7 @@ class FastTestManager:
             test_working_directory=world.test_working_directory,
             runner_environment={**JavaToolchainResolver.maven_environment(build_jdk), **world.runner_environment},
             runner_jvm_arguments=world.test_jvm_arguments,
+            test_use_module_path=world.test_use_module_path,
             test_run_order=world.test_run_order,
             skipped_compiler_checks=world.skipped_compiler_checks,
             skipped_build_steps=world.skipped_build_steps,

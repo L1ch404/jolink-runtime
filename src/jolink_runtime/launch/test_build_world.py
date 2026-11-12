@@ -56,6 +56,13 @@ class JavaTestBuildWorld:
     compilation_configuration: dict[str, Any] = field(default_factory=dict)
     generated_source_directory: Path | None = None
     processor_source_roots: tuple[Path, ...] | None = None
+    module_descriptor: Path | None = None
+    module_name: str | None = None
+    module_path: tuple[Path, ...] = ()
+    patch_module: str | None = None
+    add_reads: tuple[str, ...] = ()
+    add_exports: tuple[str, ...] = ()
+    test_use_module_path: bool = False
 
 
 class TestBuildWorldBootstrap(Protocol):

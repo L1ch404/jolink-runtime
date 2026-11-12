@@ -1,6 +1,7 @@
 """Select runtime configurations independently of the persistent compiler world."""
 
 import re
+import os
 import shlex
 import time
 import xml.etree.ElementTree as ET
@@ -12,6 +13,7 @@ from .fast_test import FastTestError
 from .source_selection import ant_pattern
 from .test_output import TestOutputLog
 from .toolchain import java_executable_path
+from .jpms_runtime import module_runtime, module_vm_arguments
 
 # Maven owns batch scheduling/reporting; explicit development runs use one disposable Runner.
 _SCHEDULING = {
@@ -83,6 +85,7 @@ _MODELED = {
     "excludeJUnit5Engines",
     "properties",
     "useSystemClassLoader",
+    "useModulePath",
     "childDelegation",
 }
 
@@ -320,6 +323,21 @@ def run_test_executions(runner, project, attempt, directory):
         group_directory = directory if len(groups) == 1 else directory / str(index)
         output_log = TestOutputLog(group_directory / "test.log", (execution or {}).get("id", ""))
         attempt.output_logs += (output_log,)
+        classpath = (project.compiler.test_output_directory, project.compiler.output_directory,
+                     *project.runtime_classpath, *extra)
+        arguments = options.get("jvm_arguments", project.runner_jvm_arguments)
+        automatic = (execution or {}).get("useModulePath", getattr(project, "test_use_module_path", False))
+        explicit = any(arg.partition("=")[0] in {"--module-path", "-p", "--patch-module"} for arg in arguments)
+        modular = module_runtime(project.compiler, classpath, tests=True,
+                                 enabled=automatic or explicit, test_access=automatic)
+        if modular.name or explicit:
+            arguments, module_path = module_vm_arguments(arguments, modular, project.compiler,
+                directory=options.get("working_directory", project.test_working_directory))
+            if module_path:
+                arguments = (*arguments, "--module-path", os.pathsep.join(map(str, module_path)))
+            options["jvm_arguments"] = arguments
+            options["module_path"] = module_path
+            classpath = tuple(path for path in modular.classpath if path not in module_path)
         result = runner.run(
             **{
                 "java_executable": project.test_java_executable,
@@ -331,12 +349,7 @@ def run_test_executions(runner, project, attempt, directory):
                 "framework_options": getattr(project, "framework_options", {}),
                 **options,
             },
-            classpath=(
-                project.compiler.test_output_directory,
-                project.compiler.output_directory,
-                *project.runtime_classpath,
-                *extra,
-            ),
+            classpath=classpath,
             selectors=selectors,
             attempt_directory=group_directory,
             output_log=output_log,

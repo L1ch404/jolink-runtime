@@ -50,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest35";
+    private static final String PROBE_VERSION = "0.1.0-fasttest36";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -67,6 +67,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     private org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator executionPlans;
     private org.eclipse.aether.RepositorySystemSession processorRepositorySession;
     private CompilerExecutions compilerExecutions;
+    @Component
+    private org.apache.maven.plugin.BuildPluginManager buildPluginManager;
 
     private static final class ProcessorFacts {
         final String processingMode;
@@ -160,6 +162,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             RepositorySystem repositories, org.eclipse.aether.RepositorySystem resolver,
             org.eclipse.aether.RepositorySystemSession repositorySession,
             org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator plans,
+            org.apache.maven.plugin.BuildPluginManager plugins,
             File destination) throws MojoExecutionException {
         project = selected;
         session = activeSession;
@@ -167,6 +170,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         artifactResolver = resolver;
         processorRepositorySession = repositorySession;
         executionPlans = plans;
+        buildPluginManager = plugins;
         outputDirectory = destination;
         execute();
     }
@@ -245,6 +249,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "compileSourceRoots", project.getCompileSourceRoots(), true);
         booleanField(out, "testSourcesRequired", Boolean.parseBoolean(project.getProperties().getProperty("jolink.probe.testSourcesRequired", "false")), true);
         stringList(out, "compileClasspathElements", classpath, true);
+        try { ModuleConfiguration.append(out, session, project, compilerExecutions, buildPluginManager); }
+        catch (Exception error) { throw new MojoExecutionException("Unable to resolve module configuration", error); }
         field(out, "compilerConfiguration", compilerExecutions.main.configuration.toString(), true);
         field(out, "testCompilerConfiguration", compilerExecutions.test.configuration.toString(), true);
         field(out, "generatedSourceOutputDirectory", compilerExecutions.main.generatedSourceDirectory == null
@@ -391,7 +397,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             false
         );
         out.append(",\"executions\":");
-        TestRuntimeConfiguration.appendExecutions(out, project, session);
+        TestRuntimeConfiguration.appendExecutions(out, project, session, buildPluginManager, executionPlans,
+                compilerExecutions.main.moduleName != null || compilerExecutions.test.moduleName != null);
         field(
             out,
             "runnerSupportSelectedVersion",

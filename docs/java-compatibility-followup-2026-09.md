@@ -1,5 +1,55 @@
 # joLink 产品边界与兼容性跟进
 
+## JPMS基础编译、测试和启动（2026-11-13，已验证）
+
+已接入普通命名模块及两项目模块依赖，不把普通classpath测试通过当作JPMS证据。
+实际回归检查应用/测试类的getModule身份、package-private白盒访问、模块资源读取，
+以及引用上游未导出包时原生编译与JDT均必须失败。
+
+实现沿用共享Build World/CompileSession：Maven从实际compiler-plugin的ClassRealm
+复用Plexus模块解析及路径分类，干净Reactor通过原生解析的源码requires补齐尚未生成的
+上游输出；Gradle复用JavaModuleDetector及Gradle自带解析器，不自行解析构建DSL。
+JDT使用原生module/patch-module/add-reads/add-exports属性，main/test仍是分开的
+持久工程。语言级别先于classpath配置，防止初次发现模块时缓存错误的Java8模型。
+模块属性仅用于实际JPMS工程或显式模块参数，普通非模块工程保留原来路径。
+
+编译与测试运行策略分别处理：Maven默认白盒测试可patch进main模块，实际测试插件的
+useModulePath由MojoDescriptor能力/默认值及项目配置确定，旧Surefire2.12.4不被当作
+新版默认true。Gradle默认classpath测试保留unnamed行为；显式配置的模块化测试按
+原有参数映射。应用使用--module-path和--module，测试Runner保留现有实现；模块资源
+通过对应模块的patch路径可见，没有重新复制整棵class输出。项目JAR别名复用既有
+Gradle artifact映射，避免启动/测试误用尚未打包的原生JAR。
+
+不新增MCP参数。module-info.java纳入配置输入，模块图变化走Probe刷新和真实restart，
+不会对模块描述符做HotSwap。普通方法体修改在同一Worker内已验证增量与HotSwap。
+长模块命令使用Java9+参数文件，普通classpath/JDK8仍走原路径；Unicode/引号实测在Mac。
+
+### 已确认的复用性能边界，尚未解决
+
+真实产品中：MCP重开后无变化测试0编译、应用复用；随后只改方法体，POM和module-info
+字节均未变化，Fast Test未重新Bootstrap，但JDT请求INCREMENTAL实际退成FULL。
+日志报告CLASSPATH_CHANGED，测试工程另有SAVED_STATE_NOT_FOUND；应用更新因本轮
+输出包含未加载类而转真实restart。新HTTP结果正确，之后无变化测试仍为0编译。
+这与修改模块描述符后合法的FULL是两个独立用例，不能混为一谈。尚未完成根因定位，
+不把JDT状态序列化源码中的疑点当成已确认引擎bug，也未添加状态文件补丁。
+普通非JPMS Java11/17/21对照已确认重开后仍INCREMENTAL且只编1文件，没有扩大影响。
+
+### 验证及后续范围
+
+- 新增JPMS真实MCP九项通过：Maven/Gradle单/双模块、白盒与classpath测试模式、旧
+  Surefire、模块描述符变化及重开后方法修改；均含原生对照或对应运行证据。
+- 真实JVM参数文件用例1项通过；已有非模块多工程MCP七项、旧Maven/APT七项MCP与
+  两项Java API对照通过；普通回归1412项通过。
+- wheel/sdist构建成功；隔离Python3.13安装wheel后Maven/Gradle双模块MCP两项通过。
+- 产物：Worker已重建，Maven Probe36、Gradle Probe modules4，Test模型v18、启动v15。
+  初次刷新旧模型/编译缓存，之后按实际输入复用；公开版本号未改。
+
+这不是完整JPMS实现声明。独立命名测试模块、复杂自动模块/混合路径/服务加载组合、
+processor-module-path及完整平台矩阵仍需单独验证。多重/外部patch输入尚未映射，
+不会静默只取最后一项。显式module-version未接入，Maven自动生成的模块版本元数据
+也尚未映射，不承诺模块描述符逐项等价。没有改业务依赖或解除所有模块参数检查。
+回归资产：test_jpms_runtime.py、test_jpms_command.py、test_jpms_runtime_plan.py。
+
 ## U16：旧Maven显式APT路径解析缺类（2026-11-12，已review）
 
 已在Maven3.3.3及3.3.9/JDK8重新复现Probe34的DependencyFilterUtils缺类。类实际存在于
@@ -56,7 +106,8 @@ wheel/sdist构建成功，隔离安装wheel后Maven完整双链路1项通过；�
 
 初轮测试两处预期已纠正并保留日志：生成物缺失后恢复可合法选择restart，不强求
 HotSwap；原生javac拒绝的Filer relativeName不作为有效正向fixture，特殊字符仍在
-归档外层路径和合法Unicode条目中验证。JPMS仍留作独立接入，不在本轮宣称已支持。
+归档外层路径和合法Unicode条目中验证。该轮尚未接入JPMS；后续基础支持见本文顶部，
+不据此扩大APT归档sourcepath与模块路径组合的验证范围。
 
 ## U18：APT的SOURCE_PATH资源读取（2026-11-11，已review）
 
@@ -953,6 +1004,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 
 | 编号 | 当前状态 / 问题 | 已有证据与边界 | 后续落点 |
 |---|---|---|---|
+| JPMS | 基础闭环已接入，复用优化待处理 | 命名模块编译/测试/启动及封装性验证通过；重开后首次方法编辑仍可能FULL并重启 | 定位真实classpath/build-state差异；高级模块组合、版本元数据及完整平台矩阵未宣称支持 |
 | U2 | 已定位、用户暂缓：Guava泛型兼容 | 原生Maven4274项通过；独立ECJ复现与MCP相同的14条诊断，分四类并有不依赖Guava的最小样例。ECJ3.25仍报13条，3.46.100仍报14条 | 不是Probe/源码映射接线；需处理ECJ类型推断/捕获转换。先保存最小复现及strict XFAIL，不改产品或引入javac回退 |
 | U4 | 已接线、已review：Error Prone检查跳过 | Maven/Gradle共用参数分类，保留真正APT，启动/测试明确说明检查未执行；TestNG asserts的70项所选测试通过。Mockito/TestNG core已越过参数拦截，后续问题见U13/U14 | 不执行javac检查本身；正式构建/CI继续负责。其他未知插件未一概忽略 |
 | U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |
@@ -965,7 +1017,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
 | U16 | 已修：旧Maven显式APT路径解析 | 避免调用旧插件API realm不可见的Aether工具类，保留原runtime范围语义；3.3.3/3.3.9/3.9.11双链路通过 | 原生Maven继续解析仓库/依赖/exclusions；未泛化到所有Maven/JDK组合 |
 | U17 | 已修：单个绝对文件参数变化跟踪 | 共用CompileSession按工程跟踪-A文件状态；修改/缺失/恢复/重开及参数删除已交叉验证 | 输出型参数额外编译经用户确认暂留为性能优化；未覆盖任意隐式I/O及相对路径/目录/路径列表 |
-| U18 | 已修：目录及归档资源读取 | 目录/JAR/ZIP资源按原始sourcepath读取，查询路径及外层归档进入共享跟踪；双链路验证 | 保留main/test、顺序、编码及显式空值；JPMS、任意I/O及归档隐式Java编译未宣称支持 |
+| U18 | 已修：目录及归档资源读取 | 目录/JAR/ZIP资源按原始sourcepath读取，查询路径及外层归档进入共享跟踪；双链路验证 | 保留main/test、顺序、编码及显式空值；APT模块路径组合、任意I/O及归档隐式Java编译未宣称支持；基础JPMS见独立条目 |
 | U19 | 已修：APT新生成Lombok源码的配置来源 | 按原生main/test生成目录映射，使用Lombok原生目录解析并跟踪同轮新增配置作用域 | Fast Test与HTTP启动/restart交叉验证配置变化、失败恢复及重开；不包含U17/U18 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。

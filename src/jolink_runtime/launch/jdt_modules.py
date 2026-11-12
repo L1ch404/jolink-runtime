@@ -32,6 +32,7 @@ def compilation_modules(modules):
         "processor_entries", "processor_names", "processor_options", "lombok_entries", "test_compiler",
         "generated_source_directory",
         "processor_source_roots",
+        "module_name", "module_descriptor", "module_path", "patch_module", "add_reads", "add_exports",
     }
     return tuple(
         {
@@ -58,6 +59,7 @@ class ModuleCompileSession(PersistentJdtCompileSession):
         target_module: Path,
         split_tests: bool = False,
         runtime_resources: dict | None = None,
+        runtime_output_aliases: dict | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -126,6 +128,8 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                 self._outputs[str(Path(module["test_output_directory"]))] = (
                     destination / "test-bin"
                 )
+        for alias, original in (runtime_output_aliases or {}).items():
+            self._outputs[str(Path(alias))] = self._outputs[str(Path(original))]
 
     def _materialize_sources(self):
         for source, baseline, destination, encoding in self._source_locations():
@@ -179,6 +183,14 @@ class ModuleCompileSession(PersistentJdtCompileSession):
             )
         return tuple(dict.fromkeys(result))
 
+    def module_runtime_scopes(self):
+        return {project["name"]: {
+            "output": self._outputs[str(Path(project["output_directory"]))],
+            "module_path": tuple(self._outputs.get(str(Path(p)), Path(p)) for p in project.get("module_path", ())),
+            "resources": tuple(Path(p) for p in self._runtime_resources.get(str(Path(project["output_directory"])), ())),
+            "scope": project.get("scope", "main"),
+        } for project in self.projects}
+
     def _prepare_worker_command(self):
         # Reuse the existing JVM command/configuration materialization once.
         command = super()._prepare_worker_command()
@@ -207,6 +219,14 @@ class ModuleCompileSession(PersistentJdtCompileSession):
                 local = names.get(str(Path(entry)))
                 entries.append("project:" + local if local else entry)
             prefix = name + "."
+            for field in ("module_path", "add_reads", "add_exports"):
+                values = module.get(field, ())
+                if field == "module_path":
+                    values = ["project:" + names[str(Path(p))] if str(Path(p)) in names else str(p) for p in values]
+                if values:
+                    properties.append(prefix + field + "=" + write_paths("." + field + ".txt", values))
+            if module.get("patch_module"):
+                properties.append(prefix + "patch_module=" + module["patch_module"])
             properties.extend(
                 (
                     prefix + "classpath=" + write_paths(".classpath.txt", entries),

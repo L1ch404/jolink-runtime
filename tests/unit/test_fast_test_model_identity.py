@@ -25,6 +25,18 @@ def test_generated_source_directory_survives_cached_test_world(model):
     assert loaded.generated_source_directory == generated
 
 
+@pytest.mark.parametrize("test_use_module_path", [False, True])
+def test_module_compile_and_runtime_choices_survive_cached_test_world(model, test_use_module_path):
+    fields = dict(module_name="example.app", module_descriptor=model.root / "src/module-info.java",
+                  module_path=(model.root / "deps/module.jar",), patch_module="example.app",
+                  add_reads=("example.app=ALL-UNNAMED",), add_exports=("example.app/internal=other",),
+                  test_use_module_path=test_use_module_path)
+    world = replace(model.world, **fields)
+    model.fast.save(world, model.toolchain)
+    loaded, _ = model.fast.load(model.root, "maven")
+    assert {name:getattr(loaded,name) for name in fields} == fields
+
+
 @pytest.mark.parametrize("roots", [None, (), (Path("second"), Path("first")),
                                    (Path("resources.jar"), Path("not-created.zip"), Path("sources"))])
 def test_processor_source_roots_survive_cached_test_world(model, roots):

@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import socket
+import subprocess
 import threading
 import time
 import uuid
@@ -21,6 +22,7 @@ from typing import Any, Sequence
 from .contracts import BuildOperationSpec
 from .process_supervisor import AttemptToken, ProcessSupervisor
 from .test_output import TestOutputLog
+from .java_command import argument_file_command
 
 
 class FastTestError(RuntimeError):
@@ -302,6 +304,7 @@ class FastTestRunner:
         framework: str | None = None,
         environment: dict[str, str | None] | None = None,
         jvm_arguments: Sequence[str] = (),
+        module_path: Sequence[Path] = (),
         run_order: str = "",
         framework_options: dict[str, str] | None = None,
         output_log: TestOutputLog | None = None,
@@ -344,7 +347,7 @@ class FastTestRunner:
                 "TEST_JVM_ARGUMENTS_INVALID",
                 "The modeled Test Runner JVM arguments are invalid.",
             )
-        normalized = complete_test_runtime_classpath(classpath)
+        normalized = complete_test_runtime_classpath((*classpath, *module_path))
         detected_framework = detect_test_framework(normalized)
         if framework is None and any((framework_options or {}).get(key)
                                      for key in ("include_engines", "exclude_engines", "configuration_parameters")):
@@ -361,6 +364,7 @@ class FastTestRunner:
                 "TEST_FRAMEWORK_UNAVAILABLE",
                 "The selected test framework is unavailable on the runtime classpath.",
             )
+        normalized = tuple(path for path in normalized if path not in module_path) or (assets.runner_jar,)
         attempt_directory.mkdir(parents=True, exist_ok=False, mode=0o700)
         from .java_properties import write_properties
         options_file = write_properties(attempt_directory / "framework.private.properties", framework_options or {})
@@ -479,6 +483,8 @@ class FastTestRunner:
             "--classpath-file",
             str(classpath_file),
         )
+        if module_path and os.name == "nt" and len(subprocess.list2cmdline(command)) > 30_000:
+            command = argument_file_command(command, attempt_directory / "test-arguments.private.txt")
         started = time.monotonic()
         operation = self._supervisor.run(
             BuildOperationSpec(

@@ -22,7 +22,7 @@ from .configuration_inputs import build_configuration_stamps
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v14"
+_SCHEMA = "jolink.project-launch-cache.v15"
 
 
 def _path(value: Any) -> Path:
@@ -186,6 +186,12 @@ class ProjectLaunchCache:
                 processor_entries=_paths(plan_raw["processor_entries"]),
                 processor_names=tuple(plan_raw.get("processor_names", ())),
                 processor_options=dict(plan_raw.get("processor_options", {})),
+                module_name=plan_raw.get("module_name"),
+                module_descriptor=Path(plan_raw["module_descriptor"]) if plan_raw.get("module_descriptor") else None,
+                module_path=_paths(plan_raw.get("module_path", ())),
+                patch_module=plan_raw.get("patch_module"),
+                add_reads=tuple(plan_raw.get("add_reads", ())),
+                add_exports=tuple(plan_raw.get("add_exports", ())),
                 preparation_inputs=_paths(plan_raw.get("preparation_inputs", ())),
                 preparation_roots=_paths(plan_raw.get("preparation_roots", ())),
                 preparation_resource_sets=tuple(plan_raw.get("preparation_resource_sets", ())),
@@ -231,6 +237,9 @@ class ProjectLaunchCache:
                 java_executable=runtime_jdk.java_executable,
                 classpath=_paths(jvm_raw["classpath"]),
                 main_class=str(jvm_raw["main_class"]),
+                module_name=jvm_raw.get("module_name"),
+                module_path=_paths(jvm_raw.get("module_path", ())),
+                module_arguments=tuple(jvm_raw.get("module_arguments", ())),
                 working_directory=_path(jvm_raw["working_directory"]),
                 jvm_args=tuple(str(value) for value in jvm_raw["jvm_args"]),
                 program_args=tuple(
@@ -298,6 +307,9 @@ class ProjectLaunchCache:
             "jvm_plan": {
                 "classpath": [str(path) for path in jvm_plan.classpath],
                 "main_class": jvm_plan.main_class,
+                "module_name": jvm_plan.module_name,
+                "module_path": [str(p) for p in jvm_plan.module_path],
+                "module_arguments": list(jvm_plan.module_arguments),
                 "working_directory": str(jvm_plan.working_directory),
                 "jvm_args": list(jvm_plan.jvm_args),
                 "program_args": list(jvm_plan.program_args),
@@ -354,6 +366,12 @@ class ProjectLaunchCache:
                 "modules": jdt_plan.modules,
                 "processor_names": jdt_plan.processor_names,
                 "processor_options": jdt_plan.processor_options,
+                "module_name": jdt_plan.module_name,
+                "module_descriptor": str(jdt_plan.module_descriptor) if jdt_plan.module_descriptor is not None else None,
+                "module_path": [str(p) for p in jdt_plan.module_path],
+                "patch_module": jdt_plan.patch_module,
+                "add_reads": list(jdt_plan.add_reads),
+                "add_exports": list(jdt_plan.add_exports),
                 "preparation_inputs": [str(p) for p in jdt_plan.preparation_inputs],
                 "preparation_roots": [str(p) for p in jdt_plan.preparation_roots],
                 "preparation_resource_sets": jdt_plan.preparation_resource_sets,

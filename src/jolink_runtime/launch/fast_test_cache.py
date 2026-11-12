@@ -19,7 +19,7 @@ from .configuration_inputs import (
     preparation_stamps,
 )
 
-_SCHEMA = "jolink.fast-test-world.v17"
+_SCHEMA = "jolink.fast-test-world.v18"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -100,6 +100,13 @@ class FastTestCache:
                     framework_options=dict(world.get("framework_options", {})),
                     processor_names=tuple(world.get("processor_names", ())),
                     processor_options=dict(world.get("processor_options", {})),
+                    module_name=world.get("module_name"),
+                    module_descriptor=Path(world["module_descriptor"]) if world.get("module_descriptor") else None,
+                    module_path=_paths(world.get("module_path", ())),
+                    patch_module=world.get("patch_module"),
+                    add_reads=tuple(world.get("add_reads", ())),
+                    add_exports=tuple(world.get("add_exports", ())),
+                    test_use_module_path=bool(world.get("test_use_module_path", False)),
                     build_system=build_system,
                     project_root=Path(world["project_root"]),
                     module_root=Path(world["module_root"]),
@@ -198,6 +205,13 @@ class FastTestCache:
                 "framework_options": world.framework_options,
                 "processor_names": world.processor_names,
                 "processor_options": world.processor_options,
+                "module_name": world.module_name,
+                "module_descriptor": str(world.module_descriptor) if world.module_descriptor is not None else None,
+                "module_path": values(world.module_path),
+                "patch_module": world.patch_module,
+                "add_reads": list(world.add_reads),
+                "add_exports": list(world.add_exports),
+                "test_use_module_path": world.test_use_module_path,
             },
         }
         path = self._directory(world.project_root, world.build_system) / "build-world.json"

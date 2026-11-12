@@ -118,11 +118,12 @@ def _launch_compiled(
                 "The requested generation disappeared before restart.",
             )
         session.generations.verify_generation(current)
-        classpath = list(retained.jvm_plan.classpath)
+        field = "module_path" if retained.jvm_plan.module_name else "classpath"
+        classpath = list(getattr(retained.jvm_plan, field))
         classpath[retained.generation_classpath_index] = (
             current.output_directory
         )
-        plan = replace(retained.jvm_plan, classpath=tuple(classpath))
+        plan = replace(retained.jvm_plan, **{field: tuple(classpath)})
         plan, command = runtime._project_pipeline.materialize_command(
             plan,
             jdwp_port=request.jdwp_port,

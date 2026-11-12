@@ -13,6 +13,7 @@ final class ModuleWorkspace {
     final Set<IProject> testProjects = new HashSet<>();
     boolean reopened;
     private IWorkspace workspace;
+    private final Map<String, WorkerApplication> workers = new LinkedHashMap<>();
 
     void initialize(java.nio.file.Path specification, boolean reuse) throws Exception {
         Properties properties = new Properties();
@@ -35,6 +36,9 @@ final class ModuleWorkspace {
             String prefix = name + ".";
             String processors = properties.getProperty(prefix + "processors");
             String tests = properties.getProperty(prefix + "tests");
+            module.configureModules(properties.getProperty(prefix + "module_path"),
+                    properties.getProperty(prefix + "patch_module"),
+                    properties.getProperty(prefix + "add_reads"), properties.getProperty(prefix + "add_exports"));
             module.initialize(Paths.get(properties.getProperty(prefix + "classpath")),
                     properties.getProperty(prefix + "encoding"),
                     properties.getProperty(prefix + "level"),
@@ -42,7 +46,15 @@ final class ModuleWorkspace {
                     processors == null ? null : Paths.get(processors),
                     tests == null ? null : Paths.get(tests), reopened);
             module.configureProcessorSettings(properties.getProperty(prefix + "apt_settings"));
+            workers.put(name, module);
         }
+    }
+
+    String moduleMetadata() throws Exception {
+        List<String> entries = new ArrayList<>();
+        for (Map.Entry<String, WorkerApplication> entry : workers.entrySet())
+            entries.add(json(entry.getKey()) + ":" + entry.getValue().moduleMetadata());
+        return "{" + String.join(",", entries) + "}";
     }
 
     String build(int kind, String requested, List<String> touched, NullProgressMonitor monitor) throws Exception {

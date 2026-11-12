@@ -65,6 +65,10 @@ applying_hotswap、restarting。终态明确返回：
 - POM/Gradle 配置已改变时，也走现有重新 launch 路径，刷新 Probe 模型和对应 JDT
   workspace；不拿旧编译配置去编译新项目。**这条模型重建路径沿用先停止旧 JVM 的
   启动流程，不提供旧进程保留、Candidate 或 rollback。**
+- JPMS项目的module-info.java也属于构建模型输入；模块图变化刷新模型并真实重启，
+  不尝试HotSwap模块描述符。命名模块启动使用模块路径，沿用当前编译产物及资源。
+  已知重开后首次方法修改可能因JDT退回FULL而额外重启，详见兼容性跟进的JPMS记录；
+  不把它描述为跨Worker增量状态已完全恢复。
 - 显式提供新 `project_path`/启动选择时，沿用指定项目的完整重新启动。
 - 直接 JAR/classpath 启动没有源码 Build World，只重启该产物，不承诺源码编译。
   两种方式的launch同样支持`java_home`，直接restart也继承/覆盖该选择与已有启动参数。
@@ -88,7 +92,8 @@ HotSwap 不重新执行构造器、静态初始化或 Spring 启动流程。修�
 - `tests/e2e/test_build_configuration_mcp.py`：活动模型不被另一份新缓存误认，restart 刷新。
 
 实现复用现有 JDT/reload/launch 等待机制。项目重启的旧 adapter 编排已移至
-`launch/project_restart.py`；没有改变 Worker、Probe 或持久缓存格式。
+`launch/project_restart.py`。2026-09-17的首次restart改动没有改变Worker、Probe或持久缓存
+格式；2026-11-13的JPMS接入已更新这些产物及模型版本，详见兼容性跟进。
 
 ## 本机验收（2026-09-17，未提交工作区）
 

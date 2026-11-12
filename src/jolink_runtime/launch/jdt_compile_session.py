@@ -751,6 +751,12 @@ class JdtBuildWorldPlan:
     compilation_configuration: dict[str, Any] = field(default_factory=dict)
     generated_source_directory: Path | None = None
     processor_source_roots: tuple[Path, ...] | None = None
+    module_name: str | None = None
+    module_descriptor: Path | None = None
+    module_path: tuple[Path, ...] = ()
+    patch_module: str | None = None
+    add_reads: tuple[str, ...] = ()
+    add_exports: tuple[str, ...] = ()
 
     def is_fresh(self) -> bool:
         configuration_fresh = self.fingerprint == build_world_fingerprint(
@@ -943,6 +949,12 @@ class PersistentJdtCompileSession:
         processor_options: dict[str, str | None] | None = None,
         generated_source_directory: Path | None = None,
         processor_source_roots: Sequence[Path] | None = None,
+        module_name: str | None = None,
+        module_descriptor: Path | None = None,
+        module_path: Sequence[Path] = (),
+        patch_module: str | None = None,
+        add_reads: Sequence[str] = (),
+        add_exports: Sequence[str] = (),
         java_agents: Sequence[str] = (),
         extra_jvm_arguments: Sequence[str] = (),
         min_heap_mb: int = 64,
@@ -1007,6 +1019,12 @@ class PersistentJdtCompileSession:
         self.java_agents = tuple(java_agents)
         self._lombok = LombokConfigurationInputs(self.root, enabled=bool(self.java_agents))
         self._processor_inputs = ProcessorFileInputs()
+        self.module_name = module_name
+        self.module_descriptor = module_descriptor
+        self.module_path = tuple(Path(p) for p in module_path)
+        self.patch_module = patch_module
+        self.add_reads = tuple(add_reads)
+        self.add_exports = tuple(add_exports)
         self.processor_source_roots = (tuple(Path(p) for p in processor_source_roots)
                                        if processor_source_roots is not None else None)
         self.generated_source_directory = (
@@ -1431,6 +1449,16 @@ class PersistentJdtCompileSession:
 
     def workspace_source_roots(self) -> tuple[Path, ...]:
         return (*self.source_roots, *self.test_source_roots)
+
+    @property
+    def module_metadata(self) -> dict:
+        return dict(self._worker_ready_frame.get("module_metadata", {}))
+
+    def module_runtime_scopes(self):
+        return {self.private_project.name: {
+            "output": self.output_directory, "module_path": self.module_path,
+            "resources": (), "scope": "main",
+        }}
 
     def _processor_input_scopes(self) -> dict[Path, dict]:
         return {self.private_project: self.processor_options} if self.processor_entries else {}
@@ -1878,6 +1906,14 @@ class PersistentJdtCompileSession:
             command.extend(
                 ["--test-classpath-file", str(test_classpath_file)]
             )
+        for option, values in (("module-path", self.module_path), ("add-reads", self.add_reads),
+                               ("add-exports", self.add_exports)):
+            if values:
+                path = self.root / (option + ".txt")
+                path.write_text("".join(str(value) + "\n" for value in values), encoding="utf-8")
+                command.extend(["--" + option + "-file", str(path)])
+        if self.patch_module:
+            command.extend(["--patch-module", self.patch_module])
         return command
 
     def _start_worker(self, *, reuse_workspace: bool = False) -> JdtWorkerClient:

@@ -269,6 +269,9 @@ class JvmLaunchPlan:
     ready_port: int = 0
     startup_wait_timeout_seconds: float = 30.0
     command_materialization: str = "direct_classpath"
+    module_name: str | None = None
+    module_path: tuple[Path, ...] = ()
+    module_arguments: tuple[str, ...] = ()
 
     def redacted_summary(self) -> dict[str, Any]:
         return {

@@ -18,6 +18,8 @@ final class CompilerExecutions {
         Xpp3Dom configuration = new Xpp3Dom("configuration");
         boolean ambiguous;
         File generatedSourceDirectory;
+        MojoExecution execution;
+        String moduleName;
 
         void add(String id, Xpp3Dom selected, File generatedDirectory) {
             if (ids.isEmpty()) {
@@ -66,6 +68,8 @@ final class CompilerExecutions {
                     }
                 }
                 ("compile".equals(goal) ? result.main : result.test).add(execution.getExecutionId(), selected, generated);
+                if (("compile".equals(goal) ? result.main : result.test).execution == null)
+                    ("compile".equals(goal) ? result.main : result.test).execution = execution;
             }
             return result;
         } catch (Exception error) {

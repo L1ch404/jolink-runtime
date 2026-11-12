@@ -9,10 +9,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .contracts import JvmLaunchPlan
+from .jpms_runtime import ModuleRuntime, module_vm_arguments
 
 
 _WINDOWS_COMMAND_LIMIT = 30_000
 _MANIFEST_LINE_LIMIT = 72
+
+
+def argument_file_command(command, path):
+    """Materialize Java9+ arguments without shell quoting or a pathing manifest."""
+    def quoted(value):
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '"'
+    path.write_text("\n".join(quoted(value) for value in command[1:]) + "\n", encoding="utf-8")
+    return (command[0], "@" + str(path))
 
 
 @dataclass(frozen=True)
@@ -51,13 +60,18 @@ class JavaCommandMaterializer:
             f"address=127.0.0.1:{jdwp_port}"
         )
         classpath = os.pathsep.join(str(path) for path in plan.classpath)
+        jvm_args, module_path = plan.jvm_args, plan.module_path
+        if plan.module_name:
+            jvm_args, module_path = module_vm_arguments(plan.jvm_args,
+                ModuleRuntime(plan.module_name, plan.classpath, plan.module_path, plan.module_arguments),
+                None, directory=plan.working_directory)
         direct = (
             str(plan.java_executable),
             debug_argument,
-            *plan.jvm_args,
-            "-cp",
-            classpath,
-            plan.main_class,
+            *jvm_args,
+            *(("--module-path", os.pathsep.join(str(p) for p in module_path)) if module_path else ()),
+            "-cp", classpath,
+            *(("--module", plan.module_name + "/" + plan.main_class) if plan.module_name else (plan.main_class,)),
             *plan.program_args,
         )
         needs_pathing_jar = force_pathing_jar or (
@@ -68,8 +82,15 @@ class JavaCommandMaterializer:
         if not needs_pathing_jar:
             return MaterializedJavaCommand(
                 argv=direct,
-                materialization="direct_classpath",
+                materialization="direct_module" if plan.module_name else "direct_classpath",
             )
+
+        if plan.module_name:
+            # Module launches require Java9+, whose argument files can retain a
+            # long module path; a manifest Class-Path jar cannot represent it.
+            attempt_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            arguments = attempt_directory / "runtime-arguments.txt"
+            return MaterializedJavaCommand(argument_file_command(direct, arguments), "module_argfile", (arguments,))
 
         attempt_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         pathing_jar = attempt_directory / "runtime-classpath.jar"

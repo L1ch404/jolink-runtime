@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -110,6 +111,10 @@ class CompilerArgumentProfile:
     method_parameters: bool = False
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = field(default_factory=dict)
+    module_path: tuple[str, ...] | None = None
+    patch_modules: tuple[str, ...] = ()
+    add_reads: tuple[str, ...] = ()
+    add_exports: tuple[str, ...] = ()
 
     @property
     def skipped_checks(self) -> tuple[str, ...]:
@@ -170,11 +175,27 @@ def classify_compiler_arguments(
     method_parameters = False
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = {}
+    module_path = None
+    patches, reads, exports = [], [], []
     skipped = _skipped_check_arguments(arguments)
     index = 0
     while index < len(arguments):
         raw = arguments[index]
         argument = str(raw).strip()
+        flag, equals, inline = argument.partition("=")
+        if flag in {"--module-path", "-p", "--patch-module", "--add-reads", "--add-exports"}:
+            consumed = 1 if equals else 2
+            if equals or index + 1 < len(arguments):
+                value = inline if equals else str(arguments[index + 1])
+                if flag in {"--module-path", "-p"}:
+                    module_path = tuple(p for p in value.split(os.pathsep) if p)
+                elif flag == "--patch-module": patches.append(value)
+                elif flag == "--add-reads": reads.append(value)
+                elif flag == "--add-exports": exports.append(value)
+                decisions.extend(CompilerArgumentDecision(str(a), "MAPPED_TO_JDT", "java_module_configuration")
+                                 for a in arguments[index:index+consumed])
+                index += consumed
+                continue
         if index in skipped:
             decisions.append(
                 CompilerArgumentDecision(argument, "SKIPPED_FOR_JDT", "javac_check")
@@ -296,6 +317,10 @@ def classify_compiler_arguments(
             )
         )
         index += 1
+    if len(patches) > 1:
+        decisions = [CompilerArgumentDecision(item.argument, "UNRESOLVED", "unmapped_module_patch")
+                     if item.argument == "--patch-module" or item.argument.startswith("--patch-module=") or item.argument in patches
+                     else item for item in decisions]
     return CompilerArgumentProfile(
         worker_min_heap_mb=min_heap,
         worker_max_heap_mb=max_heap,
@@ -303,6 +328,8 @@ def classify_compiler_arguments(
         method_parameters=method_parameters,
         processor_names=processor_names,
         processor_options=processor_options,
+        module_path=module_path, patch_modules=tuple(patches),
+        add_reads=tuple(reads), add_exports=tuple(exports),
     )
 
 

@@ -15,6 +15,7 @@ from .maven_compile_scope import (
     compiler_source_patterns,
 )
 from .processor_path import jdt_processor_paths, processor_path, processor_settings
+from .module_configuration import module_configuration, unrepresented_patches
 
 
 def skipped_preparation_steps(modules) -> tuple[str, ...]:
@@ -73,6 +74,9 @@ def load_module_worlds(
         plugin = maven._find_build_plugin(main_scope, "maven-compiler-plugin")
         configurations = maven._compiler_configurations(plugin)
         profile = maven._compiler_argument_profile(configurations)
+        allowed_patches = [*snapshot["compileSourceRoots"], *snapshot["testCompileSourceRoots"], snapshot["outputDirectory"], snapshot["testOutputDirectory"]]
+        if unrepresented_patches(profile, allowed_patches, directory):
+            raise MavenProbeError("MAVEN_COMPILER_ARGUMENT_UNSUPPORTED", "External --patch-module inputs are not mapped to the JDT project.")
         minimum_heap, maximum_heap = maven._structured_compiler_heap(configurations)
         target_home = select_target_system_home(
             (build_jdk.home,), compiler["target_level"]
@@ -89,6 +93,7 @@ def load_module_worlds(
         modules.append(
             {
                 "module_root": str(directory),
+                **module_configuration(snapshot.get("jpms", {}).get("main", {}), profile, basedir=directory),
                 "source_roots": [
                     path
                     for path in snapshot["compileSourceRoots"]
@@ -155,11 +160,16 @@ def load_module_worlds(
             test_model = maven._compiler_model(
                 scoped, build_jdk=build_jdk, runtime_jdk=build_jdk
             )
+            test_profile = maven._compiler_argument_profile(maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin")))
+            if unrepresented_patches(test_profile, allowed_patches, directory):
+                raise MavenProbeError("MAVEN_COMPILER_ARGUMENT_UNSUPPORTED", "External test --patch-module inputs are not mapped to the JDT project.")
             processing = snapshot["testAnnotationProcessing"]
             factories, lombok = jdt_processor_paths(
                 processing, processor_path(processing)
             )
             modules[-1]["test_compiler"] = {
+                **module_configuration(snapshot.get("jpms", {}).get("test", {}), maven._compiler_argument_profile(
+                    maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin"))), basedir=directory),
                 "skipped_compiler_checks": list(maven._compiler_argument_profile(
                     maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin"))
                 ).skipped_checks),

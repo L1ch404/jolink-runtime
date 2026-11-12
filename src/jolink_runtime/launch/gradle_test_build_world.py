@@ -6,6 +6,7 @@ import os
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
+from .module_configuration import main_module_fields, descriptor_inputs
 from typing import Any
 
 from .jdt_compile_session import SUPPORTED_JAVA_LEVELS
@@ -384,6 +385,7 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
     from .gradle_module_world import module_world
 
     modules, target, classpath = module_world(model)
+    inputs = (*inputs, *descriptor_inputs(modules))
     runtime = model["testRuntime"]
     frameworks = {"junit_platform": "junit5", "junit4": "junit4", "testng": "testng"}
     _require(
@@ -401,6 +403,8 @@ def _module_test_world(model, project_root, inputs, environment, environment_nam
         )
     )
     return JavaTestBuildWorld(
+        **main_module_fields(target),
+        test_use_module_path=bool(runtime.get("useModulePath", False)),
         build_system="gradle",
         project_root=project_root,
         module_root=Path(target["module_root"]),

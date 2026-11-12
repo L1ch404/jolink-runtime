@@ -17,7 +17,7 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 - 沿用只收集错误的诊断策略，`showWarnings/showDeprecation`及等价诊断参数不再
   因true/false写法被拒绝；编译错误仍返回，未知扩展和`failOnWarning`没有一概忽略。
 
-本轮Test模型升为v14、启动模型升为v11，旧模型首次重新Probe；不要求删除缓存。
+当前Test模型为v18、启动模型为v15，旧模型首次重新Probe；不要求删除缓存。
 后续仍按实际编译配置复用JDT状态，诊断/debug偏好变化不单独触发Java重编。
 
 ### Lombok目录配置
@@ -46,6 +46,18 @@ Processor的-A参数值为单个绝对文件路径时，共用编译层会单独
 本能力不等于自动编译source archive中的任意Java源码，也不改变JPMS支持范围。
 
 ## 测试进程的运行配置
+
+### JPMS基础支持
+
+普通命名模块沿用同一个编译/测试入口，无需新增工具参数。编译模块路径和测试JVM策略
+独立表达：Maven白盒测试使用JDT原生patch-module；Surefire/Failsafe实际支持并开启
+useModulePath时按模块运行，明确关闭或旧插件不支持时保留classpath运行。Gradle默认
+classpath测试不被强行模块化，显式模块参数会映射到当前JDT产物。main/test仍分别编译。
+已通过真实模块身份、包内访问、未导出包负例及模块资源读取检查，不是只看测试通过。
+
+已知性能边界：命名模块跨MCP重开后首次方法体修改可能退为FULL；结果正确但可能连带
+一次真实应用重启。无修改复用和同Worker内增量已验证。详见兼容性跟进中的JPMS条目，
+不代表独立命名测试模块、所有自动模块、processor-module-path等已完整覆盖。
 
 不需要新增MCP参数，直接沿用项目自己的配置：
 

@@ -43,7 +43,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules3";
+    private static final String VERSION = "0.1.0-modules4";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -444,12 +444,14 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
             throws Exception {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("taskPath", task.getPath());
+        result.put("projectDirectory", canonical(task.getProject().getProjectDir()));
         result.put("sourceCompatibility", task.getSourceCompatibility());
         result.put("targetCompatibility", task.getTargetCompatibility());
         result.put("sourceFiles", orderedFiles(task.getSource().getFiles()));
         result.put("sourcePath", task.getOptions().getSourcepath() == null
                 ? null : orderedFiles(task.getOptions().getSourcepath().getFiles()));
         result.put("classpath", orderedFiles(task.getClasspath().getFiles()));
+        result.put("jpms", ModuleConfiguration.compile(task));
         result.put("destinationDirectory", canonical(
                 task.getDestinationDirectory().get().getAsFile()));
         result.put("encoding", task.getOptions().getEncoding() == null
@@ -487,6 +489,11 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("taskPath", task.getPath());
         result.put("framework", framework(task));
+        Object compileTest = task.getProject().getTasks().findByName("compileTestJava");
+        boolean modularTests = false;
+        if (compileTest instanceof JavaCompile && task.getModularity().getInferModulePath().get())
+            for (File source : ((JavaCompile) compileTest).getSource()) if (source.getName().equals("module-info.java")) modularTests = true;
+        result.put("useModulePath", modularTests);
         result.put("testClassesDirectories", orderedFiles(
                 task.getTestClassesDirs().getFiles()));
         Set<File> runtimeFiles = new LinkedHashSet<>(task.getClasspath().getFiles());
