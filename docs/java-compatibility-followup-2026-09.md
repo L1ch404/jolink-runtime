@@ -1,5 +1,35 @@
 # joLink 产品边界与兼容性跟进
 
+## U16：旧Maven显式APT路径解析缺类（2026-11-12，已review）
+
+已在Maven3.3.3及3.3.9/JDK8重新复现Probe34的DependencyFilterUtils缺类。类实际存在于
+Maven安装包的aether-util.jar，但旧版Maven的插件API realm没有导出util包，Probe错误
+依赖了这个不可见工具类；不是用户Maven安装损坏，也不是JDT或Processor本身失败。
+Maven3.9.11导出了该包，所以同一代码在新版可工作，不能据此认定旧版都兼容。
+
+修复只替换共享ProcessorPathResolver的一处runtime范围过滤：使用已导出的Resolver
+API排除provided/system/test，保留根节点及其他scope。与旧Aether及现代Resolver原实现
+对照一致，不能改成只接受compile/runtime的白名单。仓库、传递依赖、版本管理、optional
+和exclusions仍由Maven原生session/collector处理，没有新增依赖、版本特判或备用解析器。
+
+Probe升为fasttest35并重建Java8字节码；Worker、Test Runner与公开工具参数未变，
+不提升构建模型schema或要求清缓存。Fast Test和应用启动继续共用同一Probe。
+
+验证：
+
+- 原始JMH最小案例同一POM在3.3.3/3.3.9修复前失败，修复后导出相同四项Processor路径。
+- 三组真实MCP矩阵通过：Maven3.3.3/JDK8、3.3.9/JDK8、3.9.11/JDK17。原生Maven对照
+  通过；验证main/test处理器分离、compile/runtime辅助类实际执行、provided/test/optional/
+  excluded类不可见、Processor依赖不泄漏到应用classpath、HTTP启动/HotSwap、失败恢复及重开。
+- 两组真实Java API oracle通过，直接调用已打包的Resolver并与原Aether过滤器比较，
+  覆盖根节点、空/custom/大小写scope及父节点/optional；这不是MCP传输测试。
+- 既有显式APT/传递依赖管理及有效execution真实MCP六项通过；普通回归1401项通过。
+- wheel/sdist构建通过；独立安装wheel后Maven3.3.3/JDK8完整双链路1项通过。
+
+新增回归为test_maven_processor_runtime_compat.py及test_maven_processor_filter.py。
+最初测试夹具的install-plugin版本不兼容旧Maven，改用其支持的版本后才取得原生与MCP
+有效基线；没有通过改变用户项目插件或升级用户Maven来制造通过。以上为本机macOS证据。
+
 ## U18扩展：archive/JAR/ZIP型sourcepath（2026-11-11，已review）
 
 SourcePathFiler现在按原顺序处理目录及归档：普通文件根通过ZipFile查找条目，不按
@@ -225,14 +255,14 @@ APT预生成并已列入Probe source roots的文件与运行期间新生成文�
 此处保留11月2日的失败证据；11月3日已在共享来源映射/配置跟踪处修复，见上方。
 运行期间新生成源码的剩余范围另列U19。
 
-### U16：Maven3.3.3显式APT解析依赖不可见（新记录，未修）
+### U16：Maven3.3.3显式APT解析依赖不可见（历史复现，已修）
 
 补充旧Maven对照时，显式JMH Processor路径在现有ProcessorPathResolver处出现
 `NoClassDefFoundError: org/eclipse/aether/util/filter/DependencyFilterUtils`。
 独立安装本轮修改前的a10 wheel、使用标准default执行布局和同一显式路径，也报
 相同错误；不是本轮有效execution选择回归。不带显式APT的自定义布局冷/暖均通过。
-这里只确认Maven3.3.3/JDK8组合，未泛化到所有旧Maven。后续检查Probe运行依赖与
-Maven插件ClassRealm导出，不自动升级用户Maven，也不在本轮扩大修复。
+这是当时仅确认Maven3.3.3/JDK8的记录；11月12日已确认3.3.9同类可见性问题并修复，
+详见顶部。没有据此泛化到所有Maven/JDK组合，也未自动升级用户Maven。
 
 ## 项目启动默认关闭DevTools自动重启（2026-10-29，已review）
 
@@ -933,7 +963,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
-| U16 | 新记录：Maven3.3.3显式APT运行依赖 | ProcessorPathResolver缺DependencyFilterUtils；修改前a10独立包相同失败，无APT自定义执行通过 | 后续修Probe依赖/ClassRealm；未泛化为所有旧Maven不支持 |
+| U16 | 已修：旧Maven显式APT路径解析 | 避免调用旧插件API realm不可见的Aether工具类，保留原runtime范围语义；3.3.3/3.3.9/3.9.11双链路通过 | 原生Maven继续解析仓库/依赖/exclusions；未泛化到所有Maven/JDK组合 |
 | U17 | 已修：单个绝对文件参数变化跟踪 | 共用CompileSession按工程跟踪-A文件状态；修改/缺失/恢复/重开及参数删除已交叉验证 | 输出型参数额外编译经用户确认暂留为性能优化；未覆盖任意隐式I/O及相对路径/目录/路径列表 |
 | U18 | 已修：目录及归档资源读取 | 目录/JAR/ZIP资源按原始sourcepath读取，查询路径及外层归档进入共享跟踪；双链路验证 | 保留main/test、顺序、编码及显式空值；JPMS、任意I/O及归档隐式Java编译未宣称支持 |
 | U19 | 已修：APT新生成Lombok源码的配置来源 | 按原生main/test生成目录映射，使用Lombok原生目录解析并跟踪同轮新增配置作用域 | Fast Test与HTTP启动/restart交叉验证配置变化、失败恢复及重开；不包含U17/U18 |

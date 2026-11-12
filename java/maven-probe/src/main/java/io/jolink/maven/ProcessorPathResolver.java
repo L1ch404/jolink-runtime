@@ -16,7 +16,6 @@ import org.eclipse.aether.collection.CollectRequest;
 import org.eclipse.aether.resolution.ArtifactResult;
 import org.eclipse.aether.resolution.DependencyRequest;
 import org.eclipse.aether.resolution.DependencyResolutionException;
-import org.eclipse.aether.util.filter.DependencyFilterUtils;
 
 /** Resolve a processor classpath using Maven's active repositories/session. */
 final class ProcessorPathResolver {
@@ -58,7 +57,16 @@ final class ProcessorPathResolver {
         try {
             LinkedHashSet<String> resolved = new LinkedHashSet<>();
             for (ArtifactResult artifact : resolver.resolveDependencies(session,
-                    new DependencyRequest(request, DependencyFilterUtils.classpathFilter("runtime")))
+                    new DependencyRequest(request, (node, parents) -> {
+                        // Aether's runtime classpath filter excludes these scopes;
+                        // empty/custom scopes and the root node are retained.
+                        // Use only the Resolver API exported by older Maven,
+                        // whose plugin realm may not expose aether-util classes.
+                        org.eclipse.aether.graph.Dependency dependency = node.getDependency();
+                        if (dependency == null) return true;
+                        String scope = dependency.getScope();
+                        return !"provided".equals(scope) && !"system".equals(scope) && !"test".equals(scope);
+                    }))
                     .getArtifactResults()) {
                 resolved.add(artifact.getArtifact().getFile().getCanonicalPath());
             }
