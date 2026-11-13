@@ -1,5 +1,6 @@
 package net.jolink.runtime.jdt;
 
+import java.lang.module.ModuleDescriptor;
 import java.lang.module.ModuleFinder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -67,6 +68,15 @@ final class JavaModuleSupport {
         return "{\"module_name\":" + WorkerApplication.jsonNullable(sourceModuleName(project))
                 + ",\"patched_module_name\":" + WorkerApplication.jsonNullable(patchModule)
                 + ",\"module_path\":" + WorkerApplication.jsonArray(modulePath) + "}";
+    }
+
+    /** Capture only when a new application JVM is about to define its modules. */
+    static String runtimePackages(IProject project) {
+        Path output = project.getLocation().toFile().toPath().resolve("bin");
+        if (!Files.isRegularFile(output.resolve("module-info.class"))) return "null";
+        ModuleDescriptor descriptor = ModuleFinder.of(output).findAll().iterator().next().descriptor();
+        return "{\"module_name\":" + WorkerApplication.json(descriptor.name())
+                + ",\"packages\":" + WorkerApplication.jsonArray(descriptor.packages().stream().sorted().toList()) + "}";
     }
 
     private static String moduleName(String entry, IProject project) throws Exception {

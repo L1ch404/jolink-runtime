@@ -1460,6 +1460,20 @@ class PersistentJdtCompileSession:
             "resources": (), "scope": "main",
         }}
 
+    def capture_runtime_module_packages(self) -> dict[Path, tuple[str, ...]]:
+        """Snapshot named-module packages once per application JVM, not per edit."""
+        if not any(info.get("module_name") for info in self.module_metadata.values()):
+            return {}
+        with self._operation_lock:
+            if self._client is None:
+                raise JdtCompileError("JDT_SESSION_NOT_READY", "JDT is not running.")
+            result = self._client.command("MODULE_PACKAGES")
+        if result.get("ok") is not True:
+            raise JdtCompileError("MODULE_PACKAGES_FAILED", result.get("message", "Cannot read module packages."))
+        scopes = self.module_runtime_scopes()
+        return {Path(scopes[name]["output"]): tuple(info["packages"])
+                for name, info in result["modules"].items() if info is not None}
+
     def _processor_input_scopes(self) -> dict[Path, dict]:
         return {self.private_project: self.processor_options} if self.processor_entries else {}
 

@@ -208,54 +208,78 @@ class JdtReloadService:
         definitions = {}
         signatures = set()
         names = set()
+        deferred = set()
+        module_packages = getattr(prepared.jvm_plan, "runtime_module_packages", {})
         for relative in paths:
             class_path, file = compiler.class_file(relative)
             name = class_path.removesuffix(".class").replace("/", ".")
             signature = "L" + name.replace(".", "/") + ";"
             loaded = jdwp.classes_by_signature(signature)
+            if not loaded:
+                output = file.parents[len(class_path.split("/")) - 1]
+                packages = module_packages.get(output)
+                if packages is not None and name.rpartition(".")[0] not in packages:
+                    # A running module cannot acquire a new package merely by
+                    # adding a class file. Existing packages can load new types.
+                    return replace_process("MODULE_PACKAGES_CHANGED")
+                # Managed project JVMs read these persistent JDT outputs directly.
+                # Leave new bytes for normal first loading; do not initialize a
+                # class just to update it, or send an empty RedefineClasses call.
+                deferred.add(name)
+                continue
             if len(loaded) != 1:
-                return replace_process("CLASS_NOT_LOADED" if not loaded else "AMBIGUOUS_CLASS_LOADER")
+                return replace_process("AMBIGUOUS_CLASS_LOADER")
             definitions[loaded[0].reference_type_id] = file.read_bytes()
             names.add(name)
             signatures.add(signature)
-        session.transition_reload(ReloadStage.APPLYING_HOTSWAP)
-        started = time.monotonic()
-        try:
-            jdwp.redefine_classes(definitions)
-        except JDWPCommandRejected as error:
-            timing["jdwp_error_code"] = error.code
-            return replace_process("HOT_SWAP_REJECTED")
-        except JDWPCommandOutcomeUnknown:
-            runtime._runtime_overlay_state = "unknown"
-            return RuntimeResult(ok=False, error="The JVM did not confirm HotSwap.", data={
-                **timing, "error_code": "HOT_SWAP_OUTCOME_UNKNOWN", "applied": None,
-                "suggested_next_step": "Call restart with hotswap=false to establish the application's code state.",
-            })
-        apply_ms = round((time.monotonic() - started) * 1000, 1)
-        # RedefineClasses has acknowledged the change. Keep that fact even if
-        # subsequent local bookkeeping or breakpoint refresh fails.
+        apply_ms = 0.0
+        if definitions:
+            session.transition_reload(ReloadStage.APPLYING_HOTSWAP)
+            started = time.monotonic()
+            try:
+                jdwp.redefine_classes(definitions)
+            except JDWPCommandRejected as error:
+                timing["jdwp_error_code"] = error.code
+                return replace_process("HOT_SWAP_REJECTED")
+            except JDWPCommandOutcomeUnknown:
+                runtime._runtime_overlay_state = "unknown"
+                return RuntimeResult(ok=False, error="The JVM did not confirm HotSwap.", data={
+                    **timing, "error_code": "HOT_SWAP_OUTCOME_UNKNOWN", "applied": None,
+                    "suggested_next_step": "Call restart with hotswap=false to establish the application's code state.",
+                })
+            apply_ms = round((time.monotonic() - started) * 1000, 1)
+        # Compiled outputs are already on disk; only nonempty definitions were
+        # applied to loaded classes. Keep that distinction in the returned result.
         attempt.applied = True
-        attempt.apply_method = "hotswap"
+        attempt.apply_method = "hotswap" if definitions else "class_output"
         # These are observations of accepted definitions, not a full class digest.
-        runtime._runtime_overlay_state = "active"
-        runtime._runtime_overlay_sources.update(source_names)
-        runtime._code_revision += 1
+        if definitions:
+            runtime._runtime_overlay_state = "active"
+            runtime._runtime_overlay_sources.update(source_names)
+            runtime._code_revision += 1
         compiler.mark_published()
         if restart and getattr(action, "java_home", None) is not None:
             with runtime._project_state_lock:
                 runtime._last_project_request = prepared.request
                 runtime._project_update_plans[attempt_id] = prepared
-        breakpoints = runtime._refresh_updated_breakpoints(jdwp, signatures)
+        breakpoints = (runtime._refresh_updated_breakpoints(jdwp, signatures) if definitions
+                       else {"state": "not_required", "stale": [], "warnings": []})
         return RuntimeResult(ok=True, data={
-            **timing, "apply_ms": apply_ms, "status": "reloaded", "applied": True,
-            "apply_method": "hotswap", "persistence": "jdt_workspace",
+            **timing, "apply_ms": apply_ms,
+            "status": "reloaded" if definitions else "updated", "applied": True,
+            "apply_method": attempt.apply_method, "persistence": "jdt_workspace",
             "restart_loses_update": False, "redefined_classes": sorted(names),
+            **({"deferred_classes": sorted(deferred), "deferred_class_count": len(deferred)} if deferred else {}),
             "breakpoint_refresh_state": breakpoints["state"],
             "stale_breakpoint_ids": breakpoints["stale"],
             "warnings": breakpoints["warnings"],
             "framework_state_refreshed": False,
             **runtime._runtime_overlay_snapshot(),
-            "suggested_next_step": "Trigger a fresh request and verify the changed behavior.",
+            "suggested_next_step": (
+                "Classes in deferred_classes were not loaded when checked; their compiled output is ready "
+                "for normal first loading. Trigger a fresh request and verify the changed behavior."
+                if deferred else "Trigger a fresh request and verify the changed behavior."
+            ),
         })
 
 

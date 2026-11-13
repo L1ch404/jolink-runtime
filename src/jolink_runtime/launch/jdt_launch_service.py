@@ -139,7 +139,8 @@ class JdtLaunchService:
                     directory=prepared.jvm_plan.working_directory,
                     outputs={prepared.module_output: compiler.output_directory})
             plan_for_jvm = replace(prepared.jvm_plan, classpath=modular.classpath,
-                module_name=modular.name, module_path=module_path, module_arguments=module_arguments)
+                module_name=modular.name, module_path=module_path, module_arguments=module_arguments,
+                runtime_module_packages=compiler.capture_runtime_module_packages() if modular.name else {})
             plan_for_jvm, command = runtime._project_pipeline.materialize_command(
                 plan_for_jvm, jdwp_port=request.jdwp_port,
                 attempt_directory=prepared.attempt_directory,

@@ -57,6 +57,13 @@ final class ModuleWorkspace {
         return "{" + String.join(",", entries) + "}";
     }
 
+    String modulePackages() {
+        List<String> entries = new ArrayList<>();
+        for (IProject project : projects)
+            entries.add(json(project.getName()) + ":" + JavaModuleSupport.runtimePackages(project));
+        return "{" + String.join(",", entries) + "}";
+    }
+
     String build(int kind, String requested, List<String> touched, NullProgressMonitor monitor) throws Exception {
         long started = System.nanoTime();
         BuildObservation.begin();

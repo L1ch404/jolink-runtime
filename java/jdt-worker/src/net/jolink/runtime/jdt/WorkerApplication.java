@@ -713,6 +713,17 @@ public final class WorkerApplication implements IApplication {
     }
 
     private boolean handle(String line) throws Exception {
+        if (line.equals("MODULE_PACKAGES")) {
+            try {
+                String packages = modules != null ? modules.modulePackages()
+                        : "{" + json(projectName) + ":" + JavaModuleSupport.runtimePackages(project) + "}";
+                emit("{\"ok\":true,\"modules\":" + packages + "}");
+            } catch (Exception exception) {
+                exception.printStackTrace(System.err);
+                emitError("MODULE_PACKAGES_FAILED", exception.toString());
+            }
+            return true;
+        }
         if (line.startsWith("APT_SOURCE_PATH\t") || line.equals("APT_SOURCE_INPUTS")) {
             try {
                 if (line.equals("APT_SOURCE_INPUTS")) emit(SourcePathFiler.inputs());

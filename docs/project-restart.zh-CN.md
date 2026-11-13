@@ -18,7 +18,7 @@
 3. 对实际新增、修改、删除的源码调用一次 `compile()`，由 JavaBuilder 处理依赖传播。
    无源码变化时不发出 JDT build；上轮未应用的输出差异仍参与本轮处理。
 4. 正常编译结果和构建状态沿用现有持久化，无产物副本。
-5. 根据结果选择 HotSwap 或真实重启。
+5. 已加载类按需HotSwap，未加载类保留新磁盘产物；需要重新建立JVM状态时才真实重启。
 
 公开 `restart` 不接收 `source_files`，自动发现所有变化，不套用旧 reload 的 16 文件限制。Maven/Gradle、
 单模块/多模块共用这条编译流程，不调用正式 Maven/Gradle 编译任务。
@@ -26,10 +26,13 @@
 | 情况 | 处理 |
 |---|---|
 | 有 class 差异且 JVM 接受 | HotSwap，PID 不变 |
+| 同轮包含未加载的类 | 已加载类HotSwap；其余留在当前JDT输出中，等待正常首次加载，不强制加载或初始化 |
+| 全部变更类都未加载 | `class_output`：产物已保存，PID不变，不发送空HotSwap请求 |
 | `hotswap=false` 或明确传入 JVM/程序/端口参数 | 编译后真实重启 |
 | `java_home` 选择了不同的应用 JDK | 编译实际源码变化后，以新 JDK 真正重启；无源码变化不额外编译 |
 | 没有待应用 class 差异 | 不编译，真实重启 |
-| 删除 class、生成资源变化、类未加载或加载器不唯一 | 使用刚编好的产物重启 |
+| 删除 class、生成资源变化或加载器不唯一 | 使用刚编好的产物重启 |
+| 命名模块出现该JVM启动时没有的包 | `MODULE_PACKAGES_CHANGED`，使用当前产物重启；已有包内新增类仍可延后加载 |
 | JVM 明确拒绝 RedefineClasses | 使用刚编好的产物重启，不再编译一次 |
 | 编译错误 | 返回诊断，不主动停止原 JVM；不能带错误继续启动 |
 | RedefineClasses 的回复超时或通信中断 | 返回 `HOT_SWAP_OUTCOME_UNKNOWN`，不假设成功或拒绝 |
@@ -45,11 +48,22 @@
 applying_hotswap、restarting。终态明确返回：
 
 - `apply_method=hotswap`，`status=reloaded`：字节码已更新，应用未重新初始化。
+- `apply_method=class_output`，`status=updated`：本轮只有尚未加载的类，磁盘产物已就位，
+  不代表它们已在JVM执行；不会增加仅用于已确认HotSwap的`code_revision`。
 - `apply_method=restart`，`status=restarted`：新进程已达到配置的启动就绪条件。
 - 失败：实际 error/diagnostics，不把已提交的启动任务当成已应用。
 
 超时仅结束本次回复等待，不取消后台操作。`java_status` 可观察进展，`stop` 可停止。
 保留原操作对象，不会把后续另一轮 restart 的结果误当成本轮结果。
+
+`redefined_classes`只包含本轮真正发送并确认热替换的类；`deferred_classes`列出检查时
+尚未加载、保留新产物等待首次加载的类。它们是本轮观察，不是持续监听的加载清单。
+status摘要只返回`deferred_class_count`，详情保留类名，不把完整名单塞回摘要。
+新增类不会自动触发Spring扫描、注册Bean或重新执行应用初始化，仍返回
+`framework_state_refreshed=false`；需要这些行为时使用`hotswap=false`。
+
+命名模块的包集合由JDK ModuleFinder读取，在每次启动新应用JVM前捕获一次，包含上游
+模块；不存成跨JVM的配置缓存，也不在每轮reload扫描。普通classpath工程不执行这一步。
 
 ## 与完整启动的关系
 

@@ -175,7 +175,8 @@ public static void main(String[] args) throws Exception {
                     )
                     assert accepted["ok"], accepted
                     try:
-                        await poll(lambda s: s.get("launch_phase") == "runtime_active")
+                        active = await poll(lambda s: s.get("launch_phase") == "runtime_active")
+                        pid = active["pid"]
 
                         def response(load_nested=False):
                             with socket.create_connection(
@@ -199,14 +200,17 @@ public static void main(String[] args) throws Exception {
                                     (s.get("last_reload") or {}).get("reload_id") == rid
                                 )
                             )
+                            assert state["pid"] == pid, state
+                            assert state["last_reload"]["apply_method"] == "hotswap", state
                             if value == 2:
                                 # A same-source nested class has not been loaded;
-                                # restart applies the already compiled output.
-                                assert (
-                                    state["last_reload"]["restart_reason"]
-                                    == "CLASS_NOT_LOADED"
-                                ), state
-                                assert state["last_reload"]["apply_method"] == "restart"
+                                # update the loaded Foo and leave Nested on disk
+                                # for its first normal load, without replacing JVM.
+                                details = await call("java_status", {"action": "status", "details": True})
+                                applied = details["last_reload"]
+                                assert applied["reload_id"] == reload["reload_id"], details
+                                assert applied["deferred_classes"] == ["Foo$Nested"], applied
+                                assert applied["redefined_classes"] == ["Foo"], applied
                                 assert (
                                     await anyio.to_thread.run_sync(response, True)
                                     == b"2"

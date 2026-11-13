@@ -352,8 +352,8 @@ def test_project_launch_and_restart_preserve_unverified_guidance(tmp_path):
                     await allow_http("old")
                     gate.unlink()
                     reply.write_text(original.replace('"old"', '"new"'))
-                    restarted = await call("java_application", action="restart")
-                    assert restarted["restart_reason"] == "CLASS_NOT_LOADED", restarted
+                    restarted = await call("java_application", action="restart", hotswap=False)
+                    assert restarted["restart_reason"] == "EXPLICIT_PROCESS_RESTART", restarted
                     assert restarted["pid"] != launched["pid"]
                     await check_unverified(restarted)
                     await allow_http("new")

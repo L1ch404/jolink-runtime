@@ -272,6 +272,8 @@ class JvmLaunchPlan:
     module_name: str | None = None
     module_path: tuple[Path, ...] = ()
     module_arguments: tuple[str, ...] = ()
+    # Per-JVM package membership, not a persisted Build World input.
+    runtime_module_packages: Mapping[Path, tuple[str, ...]] = field(default_factory=dict, repr=False)
 
     def redacted_summary(self) -> dict[str, Any]:
         return {

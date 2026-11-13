@@ -133,6 +133,21 @@ def test_build_logs_without_a_launch_do_not_create_work():
         dispatcher.close_session()
 
 
+def test_deferred_classes_are_counted_without_expanding_compact_status(product):
+    boundary, _, state, _ = product
+    state["last_reload"] = {"ok": True, "status": "updated", "applied": True,
+        "apply_method": "class_output", "deferred_class_count": 300,
+        "deferred_classes": [f"example.New{i}" for i in range(300)], "redefined_classes": []}
+    async def scenario():
+        summary = (await boundary.call_tool("java_status", {"action": "status"})).structuredContent
+        assert summary["last_reload"]["apply_method"] == "class_output"
+        assert summary["last_reload"]["deferred_class_count"] == 300
+        assert "deferred_classes" not in summary["last_reload"]
+        details = (await boundary.call_tool("java_status", {"action": "status", "details": True})).structuredContent
+        assert details["last_reload"] == state["last_reload"]
+    anyio.run(scenario)
+
+
 def test_build_log_reader_keeps_windows_host_encoding(product, monkeypatch):
     boundary, _, _, directory = product
     monkeypatch.setattr(observation.locale, "getencoding", lambda: "gbk")

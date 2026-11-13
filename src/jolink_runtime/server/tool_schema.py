@@ -507,7 +507,8 @@ JAVA_APPLICATION_INPUT_SCHEMA["properties"]["project_path"]["description"] = (
 )
 JAVA_APPLICATION_INPUT_SCHEMA["properties"]["hotswap"]["description"] = (
     "For restart, default true: incrementally compile edits and prefer HotSwap; "
-    "if changes cannot be hot-swapped, restart the JVM with those compiled outputs. "
+    "unloaded classes stay in the compiled output for normal first loading when possible. "
+    "Changes requiring a new JVM restart it with those compiled outputs. "
     "False forces a JVM restart after compilation. Use false to reinitialize application "
     "state or reload framework/startup configuration. No pending code changes also "
     "restart the JVM without recompiling."
@@ -634,7 +635,8 @@ JAVA_APPLICATION_DESCRIPTION = (
     "sources, incrementally compiles them, and prefers "
     "HotSwap (hotswap=true by default). Incompatible changes use the same compiled "
     "outputs to restart the JVM. Set hotswap=false for a real process restart and "
-    "application reinitialization. apply_method reports hotswap or restart; HotSwap "
+    "application reinitialization. apply_method reports hotswap, class_output "
+    "(only unloaded classes updated on disk), or restart; HotSwap "
     "does not refresh framework state or count as a JVM startup. "
     "previous_startup_ms reports the prior successful "
     "startup duration saved locally for this launch, or null if unavailable. "

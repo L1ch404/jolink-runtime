@@ -68,15 +68,17 @@ class BackgroundReloadCoordinator:
                     "applied": False,
                 }
                 if applied:
+                    output_only = reload_attempt.apply_method == "class_output"
                     payload = {
                         "ok": True,
-                        "status": "reloaded",
+                        "status": "updated" if output_only else "reloaded",
                         "applied": True,
                         "apply_method": reload_attempt.apply_method,
                         "post_apply_state": "incomplete",
                         "warnings": [
-                            "The JVM accepted the reload, but post-apply bookkeeping failed. "
-                            "Verify current behavior; do not retry on the assumption that code was not applied."
+                            ("Compiled output is ready for first loading, but post-update bookkeeping failed. "
+                             if output_only else "The JVM accepted the reload, but post-apply bookkeeping failed. ")
+                            + "Verify current behavior; do not retry on the assumption that code was not applied."
                         ],
                         "post_apply_error_type": type(error).__name__,
                     }

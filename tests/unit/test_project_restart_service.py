@@ -2,6 +2,7 @@
 
 import time
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -108,14 +109,14 @@ def test_descriptor_only_output_does_not_send_an_empty_hotswap(running):
     running.jdwp.redefine_classes.assert_not_called()
 
 
-@pytest.mark.parametrize("reason", ["forced", "no_changes", "deleted", "resource", "unloaded", "rejected", "launch_args", "suspended", "process_exited"])
+@pytest.mark.parametrize("reason", ["forced", "no_changes", "deleted", "resource", "ambiguous", "rejected", "launch_args", "suspended", "process_exited"])
 def test_compile_once_before_real_restart(running, reason):
     args = {}
     if reason == "forced": args["hotswap"] = False
     if reason == "no_changes": running.result.runtime_changed_classes = ()
     if reason == "deleted": running.result.runtime_deleted_classes = ("Old.class",)
     if reason == "resource": running.result.runtime_changed_resources = ("generated.txt",)
-    if reason == "unloaded": running.jdwp.classes_by_signature.return_value = []
+    if reason == "ambiguous": running.jdwp.classes_by_signature.return_value *= 2
     if reason == "rejected": running.jdwp.redefine_classes.side_effect = JDWPCommandRejected(
         64, command_set=1, command=18, operation="redefine_classes")
     if reason == "launch_args": args["vm_args"] = ["-Xmx512m"]
@@ -126,6 +127,105 @@ def test_compile_once_before_real_restart(running, reason):
     running.compiler.compile.assert_called_once_with(running.sources)
     running.replace.assert_called_once()
     if reason != "rejected": running.jdwp.redefine_classes.assert_not_called()
+
+
+@pytest.mark.parametrize("prefix", ["", "upstream/"])
+def test_unloaded_outputs_wait_for_first_load_without_redefinition(running, prefix):
+    running.result.runtime_changed_classes = (prefix + "Changed.class",)
+    original = running.compiler.class_file
+    running.compiler.class_file = lambda path: original(path.removeprefix(prefix))
+    running.jdwp.classes_by_signature.return_value = []
+    result = finish(running)
+    assert result["ok"] and result["applied"] and result["status"] == "updated", result
+    assert result["apply_method"] == "class_output"
+    assert result["redefined_classes"] == []
+    assert result["deferred_classes"] == ["Changed"]
+    assert result["deferred_class_count"] == 1
+    assert result["code_revision"] == 0 and result["runtime_overlay_active"] is False
+    assert result["breakpoint_refresh_state"] == "not_required"
+    assert result["persistence"] == "jdt_workspace" and result["restart_loses_update"] is False
+    running.jdwp.redefine_classes.assert_not_called()
+    running.replace.assert_not_called()
+    running.compiler.mark_published.assert_called_once()
+
+
+def test_mixed_outputs_only_redefine_loaded_classes(running):
+    running.result.runtime_changed_classes = ("New.class", "Changed.class", "Changed$Nested.class")
+    running.jdwp.classes_by_signature.side_effect = lambda signature: (
+        [SimpleNamespace(reference_type_id=10)] if signature == "LChanged;" else [])
+    result = finish(running)
+    assert result["ok"] and result["apply_method"] == "hotswap", result
+    assert result["redefined_classes"] == ["Changed"]
+    assert result["deferred_classes"] == ["Changed$Nested", "New"]
+    assert result["deferred_class_count"] == 2
+    assert result["code_revision"] == 1
+    running.jdwp.redefine_classes.assert_called_once_with({10: b"compiled bytecode"})
+    running.replace.assert_not_called()
+    running.compiler.mark_published.assert_called_once()
+
+
+@pytest.mark.parametrize("known_package", [True, False])
+def test_named_module_package_membership_uses_the_current_jvm_snapshot(running, known_package):
+    output = running.compiler.class_file("Changed.class")[1].parent
+    running.result.runtime_changed_classes = ("Changed.class", "fresh/Added.class")
+    running.jdwp.classes_by_signature.side_effect = lambda signature: (
+        [SimpleNamespace(reference_type_id=10)] if signature == "LChanged;" else [])
+    prepared = running.runtime._project_update_plans["active"]
+    running.runtime._project_update_plans["active"] = replace(prepared,
+        jvm_plan=SimpleNamespace(runtime_module_packages={output: ("fresh",) if known_package else ("example",)}))
+    running.compiler.capture_runtime_module_packages = Mock(side_effect=AssertionError("no reload scan"))
+    result = finish(running)
+    assert result["ok"], result
+    if known_package:
+        assert result["apply_method"] == "hotswap"
+        assert result["deferred_classes"] == ["fresh.Added"]
+        running.replace.assert_not_called()
+    else:
+        assert result["apply_method"] == "restart" and result["restart_reason"] == "MODULE_PACKAGES_CHANGED"
+        running.jdwp.redefine_classes.assert_not_called()
+        running.compiler.mark_published.assert_not_called()
+    running.compiler.capture_runtime_module_packages.assert_not_called()
+
+
+def test_mixed_ambiguous_class_does_not_partially_redefine(running):
+    running.result.runtime_changed_classes = ("Changed.class", "New.class", "Ambiguous.class")
+    running.jdwp.classes_by_signature.side_effect = lambda signature: (
+        [SimpleNamespace(reference_type_id=10)] if signature == "LChanged;" else
+        [SimpleNamespace(reference_type_id=20), SimpleNamespace(reference_type_id=21)]
+        if signature == "LAmbiguous;" else [])
+    result = finish(running)
+    assert result["restart_reason"] == "AMBIGUOUS_CLASS_LOADER", result
+    running.jdwp.redefine_classes.assert_not_called()
+    running.compiler.mark_published.assert_not_called()
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_mixed_redefinition_failure_does_not_publish_deferred_as_success(running, unknown):
+    running.result.runtime_changed_classes = ("Changed.class", "New.class")
+    running.jdwp.classes_by_signature.side_effect = lambda signature: (
+        [SimpleNamespace(reference_type_id=10)] if signature == "LChanged;" else [])
+    running.jdwp.redefine_classes.side_effect = (
+        JDWPCommandOutcomeUnknown(packet_id=1, command_set=1, command=18,
+                                 operation="redefine_classes", cause=TimeoutError()) if unknown else
+        JDWPCommandRejected(64, command_set=1, command=18, operation="redefine_classes"))
+    result = finish(running)
+    if unknown:
+        assert result["error_code"] == "HOT_SWAP_OUTCOME_UNKNOWN" and result["applied"] is None
+        running.replace.assert_not_called()
+    else:
+        assert result["apply_method"] == "restart" and result["restart_reason"] == "HOT_SWAP_REJECTED"
+    running.compiler.mark_published.assert_not_called()
+
+
+def test_output_only_post_apply_failure_does_not_claim_jvm_redefinition(running):
+    running.jdwp.classes_by_signature.return_value = []
+    running.compiler.mark_published.side_effect = OSError("bookkeeping failed")
+    result = finish(running)
+    assert result["ok"] and result["applied"] and result["status"] == "updated", result
+    assert result["apply_method"] == "class_output" and result["post_apply_state"] == "incomplete"
+    assert "first loading" in result["warnings"][0] and "JVM accepted" not in result["warnings"][0]
+    running.replace.assert_not_called()
+    running.jdwp.redefine_classes.assert_not_called()
 
 
 def test_compile_error_keeps_old_process_even_when_forced(running):

@@ -1,5 +1,34 @@
 # joLink 产品边界与兼容性跟进
 
+## U9：未加载类不再导致整轮重启（2026-11-14，已实现）
+
+固定旧提交14eba08的独立真实MCP复现：只修改未加载类，原策略因CLASS_NOT_LOADED
+重启。现有应用已经直接使用持久JDT输出，所以无需增加副本或加载动作：已加载类送
+RedefineClasses，未加载类留在当前输出等待首次加载。不区分内部类/普通类/上游模块。
+混合更新返回hotswap及两组类名；全未加载返回class_output/updated，redefined_classes
+为空，不发空HotSwap，不增加已确认HotSwap的code_revision。status仅保留deferred数量。
+只有成功后清待应用清单，失败或unknown不冒充整轮成功；结构不兼容、删除、资源变化、
+加载器歧义及显式hotswap=false仍沿用真实重启。框架不会因此自动重扫/初始化。
+
+扩测发现并处理了真实JPMS约束：运行中命名模块无法仅靠新增磁盘class获得新包。
+原生JDK17和真实MCP均复现existing package新类可加载、新package会ClassNotFound，
+但Fast Test的新JVM已通过。现在每次新应用JVM启动前通过已有Worker/JDK ModuleFinder
+获取本模块及上游named模块包集合；reload只比较本轮未加载类，遇到新包以
+MODULE_PACKAGES_CHANGED重启。重启后刷新基线，后续同包新增类可继续延后加载。
+不删除模块限制，不对所有JPMS新增类一概重启，也不增加每轮整树扫描或哈希。
+
+真实回归沉淀在test_deferred_class_loading.py、test_deferred_module_packages.py：
+Maven/Gradle单/双模块，以及JPMS本模块/上游共六项通过。HTTP findLoadedClass与初始化
+计数共同证实没有强制加载或初始化；Fast Test先编译不改变live应用，首次使用新字节码、
+错误恢复、已加载类结构变化及跨MCP复用均验证。旧compile_restart/source_layout断言
+已更新为新语义，readiness测试改用显式强制重启，保留原验收目的。
+本轮未修改jdwp_adapter.py或新增工具参数；Worker仅增加私有包集合查询命令。
+最终Worker为78fad2a3前缀；新增六项、既有启动/restart五项、JPMS十一项真实MCP均通过，
+普通回归1434项通过。wheel/sdist构建及隔离Python3.13安装wheel后的Gradle reactor、
+JPMS上游模块两项通过。更新输出状态的摘要及说明已同步，未重新设计缓存或编译后端。
+此处验证的是joLink管理的项目JVM与当前JDT输出，不承诺任意自定义ClassLoader或框架
+自动重新发现新类型。构建系统、编译器差异等其他待办仍按各自条目处理。
+
 ## JPMS基础编译、测试和启动（2026-11-13，已验证）
 
 已接入普通命名模块及两项目模块依赖，不把普通classpath测试通过当作JPMS证据。
@@ -1028,7 +1057,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |
 | U6 | 已修复、已review：MyBatis准备阶段阻塞 | 默认配置下依执行映射跳过检查/重写步骤，main8/test17、1316源码FULL及87项所选测试通过，增量/错误恢复/重开通过；没有关闭profile | whitespace明确execute仍会使Java变化额外Probe；仅保留为准备开销优化，不把它混成原阻塞未解决 |
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
-| U9 | 功能已有替代路径，优化暂缓：未加载类的HotSwap | `05a8bf0`后公开restart会增量编译，并在`CLASS_NOT_LOADED`时使用本轮产物自动重启；尚不支持已加载类热更、未加载类留待正常加载 | 待讨论的是减少不必要重启，不再记成“restart无法应用变更”。见[restart流程](project-restart.zh-CN.md) |
+| U9 | 已实现：已加载/未加载类分开应用 | 普通及上游类可HotSwap/首次加载；全未加载返回class_output。命名模块新增包按真实JVM约束重启 | 已覆盖Fast Test隔离、加载/初始化观察、错误恢复及重开；不等同于框架重新扫描或任意自定义加载器支持 |
 | U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
@@ -1327,6 +1356,9 @@ Gradle 8.14 / target 11 两组复现相同问题：前面的启动、增量、Ho
   现有失败断言来获得全绿。
 
 ### Reload待办：未加载类（2026-09-13，用户决定先记录、不修改）
+
+2026-11-14更新：U9已按用户授权实现，当前行为及验证见本文顶部。下文保留原始问题
+和当时暂缓的决定，不再作为当前未实现状态。
 
 2026-09-17 更新：公开reload已合入restart，默认先增量编译并尝试HotSwap；
 遇到未加载类会直接用本轮产物重启，不再要求LLM另发stop/launch。以下是原问题

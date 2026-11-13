@@ -55,7 +55,7 @@ def test_restart_compiles_current_sources_and_chooses_apply_method(tmp_path):
                         return value
                     with anyio.fail_after(90):
                         while True:
-                            state = await call("status")
+                            state = await call("status", details=True)
                             last = state.get("last_reload") or {}
                             if last.get("reload_id") == value.get("reload_id") and last:
                                 return last
@@ -104,8 +104,10 @@ def test_restart_compiles_current_sources_and_chooses_apply_method(tmp_path):
                 extra = source.with_name("Extra.java")
                 extra.write_text('package example; public class Extra {static String value(){return "47";}}')
                 source.write_text('package example; public class Reply {public static int extra; public static String value(){return Extra.value();}}')
-                pid, added = await restarted("47", "restart", previous_pid=pid)
-                assert added["restart_reason"] == "CLASS_NOT_LOADED", added
+                pid, added = await restarted("47", "hotswap", previous_pid=pid)
+                assert added["deferred_classes"] == ["example.Extra"], added
+                assert "example.Reply" in added["redefined_classes"], added
+                assert "example.Extra" not in added["redefined_classes"], added
                 extra.unlink()
                 edit("48", "public static int extra;")
                 pid, deleted = await restarted("48", "restart", previous_pid=pid)

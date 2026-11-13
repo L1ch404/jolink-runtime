@@ -57,6 +57,7 @@ def status_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "ok", "status", "reload_id", "stage", "applied", "apply_method",
             "error_code", "restart_reason", "compile_ms", "startup_ms", "total_ms",
             "compiled_source_count", "source_changes_pending", "post_apply_state",
+            "deferred_class_count",
         ))
         result["last_reload"]["next_action"] = _details_action()
     elif "last_reload" in payload:

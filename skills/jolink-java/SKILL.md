@@ -135,6 +135,10 @@ Example — tool `java_application` (an application already managed by joLink):
 - After HotSwap, verify with a fresh request or relevant test. It does not rerun
   constructors/static initialization or reset existing framework state. Unknown
   HotSwap outcome is not definite failure; follow the returned guidance.
+- `apply_method=class_output` means only unloaded classes were updated on disk,
+  not redefined in the JVM. `deferred_classes` lists classes unloaded when checked;
+  normal first use can load the new output. Verify through the intended application
+  path, not forced class loading. New framework components may still require a restart.
 - Use the returned `suspension_id` for inspection. Always resume or clean up a
   suspension you create. Redefined-class breakpoints can become stale; reset them
   against the current source when reported.

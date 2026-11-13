@@ -123,7 +123,9 @@ def _launch_compiled(
         classpath[retained.generation_classpath_index] = (
             current.output_directory
         )
-        plan = replace(retained.jvm_plan, **{field: tuple(classpath)})
+        plan = replace(retained.jvm_plan, **{field: tuple(classpath)},
+                       runtime_module_packages=(session.compile_session.capture_runtime_module_packages()
+                                                if retained.jvm_plan.module_name else {}))
         plan, command = runtime._project_pipeline.materialize_command(
             plan,
             jdwp_port=request.jdwp_port,
