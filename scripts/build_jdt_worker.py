@@ -20,6 +20,8 @@ class WorkerBuildError(RuntimeError):
 
 
 _PRODUCT_WORKER_CLASS_MAJOR = 61
+_STATE_PATCH_CLASS = "org/eclipse/jdt/internal/core/builder/State.java"
+_STATE_PATCH_RESOURCE_ROOT = "META-INF/jolink/patches"
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -98,6 +100,24 @@ def _source_files(worker_root: Path) -> list[Path]:
     return files
 
 
+def _compile_sources(
+    javac: Path, sources: list[Path], classes: Path, jars: list[Path], worker_root: Path,
+) -> None:
+    classes.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        [
+            str(javac), "-encoding", "UTF-8", "--release", "17", "-proc:none",
+            "-classpath", os.pathsep.join(map(str, jars)), "-d", str(classes),
+            *(str(path) for path in sources),
+        ],
+        cwd=worker_root, text=True, encoding="utf-8", errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False,
+    )
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stderr[-8000:])
+        raise WorkerBuildError("Worker javac failed.")
+
+
 def _verify_bundles(
     lock: dict[str, object], *, plugins: Path
 ) -> tuple[list[Path], str]:
@@ -124,6 +144,7 @@ def _source_fingerprint(worker_root: Path) -> str:
         worker_root / "META-INF" / "MANIFEST.MF",
         worker_root / "plugin.xml",
         *_source_files(worker_root),
+        *(path for path in (worker_root / "patches").rglob("*") if path.is_file()),
     ]
     for path in sorted(inputs):
         digest.update(path.relative_to(worker_root).as_posix().encode("utf-8"))
@@ -152,6 +173,13 @@ def _create_worker_jar(worker_root: Path, classes: Path, destination: Path) -> N
         for path in sorted(classes.rglob("*")):
             if path.is_file():
                 write_entry(path.relative_to(classes).as_posix(), path.read_bytes())
+        patches = worker_root / "patches"
+        for path in sorted(patches.rglob("*")):
+            if path.is_file():
+                write_entry(
+                    f"{_STATE_PATCH_RESOURCE_ROOT}/{path.relative_to(patches).as_posix()}",
+                    path.read_bytes(),
+                )
 
 
 def _verify_worker_classes(classes: Path) -> None:
@@ -188,7 +216,10 @@ def _update_product_artifacts(
             {"filename": item["filename"], "sha256": item["sha256"]}
             for item in candidate_lock["artifacts"]
         ],
-        "worker_artifact": {"filename": worker_jar.name},
+        "worker_artifact": {
+            "filename": worker_jar.name,
+            "license_identity": "MIT AND EPL-2.0",
+        },
         "equinox": {
             "launcher_filename": candidate_lock["equinox"]["launcher_filename"],
             "configuration_sha256": hashlib.sha256(config_bytes).hexdigest(),
@@ -297,34 +328,13 @@ def main(argv: list[str] | None = None) -> int:
 
         with tempfile.TemporaryDirectory(prefix="jolink-jdt-worker-") as temporary:
             classes = Path(temporary) / "classes"
-            classes.mkdir()
-            command = [
-                str(javac),
-                "-encoding",
-                "UTF-8",
-                "--release",
-                "17",
-                "-proc:none",
-                "-classpath",
-                os.pathsep.join(str(path) for path in jars),
-                "-d",
-                str(classes),
-                *(str(path) for path in _source_files(worker_root)),
-            ]
-            completed = subprocess.run(
-                command,
-                cwd=worker_root,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=120,
-                check=False,
+            _compile_sources(javac, _source_files(worker_root), classes, jars, worker_root)
+            # Keep the patched upstream class outside the Worker's classpath.
+            # Its bytes are installed into JDT's own classloader by the activator.
+            _compile_sources(
+                javac, [worker_root / "patches" / _STATE_PATCH_CLASS],
+                classes / _STATE_PATCH_RESOURCE_ROOT, jars, worker_root,
             )
-            if completed.returncode != 0:
-                sys.stderr.write(completed.stderr[-8000:])
-                raise WorkerBuildError("Worker javac failed.")
             _verify_worker_classes(classes)
             worker_filename = "net.jolink.runtime.jdt.worker_0.1.0.jar"
             worker_jar = plugins / worker_filename
@@ -341,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
             "version": "0.1.0",
             "origin_url": "workspace://java/jdt-worker",
             "sha256": sha256_file(worker_jar),
-            "license_identity": "MIT",
+            "license_identity": "MIT AND EPL-2.0",
             "compressed_bytes": worker_jar.stat().st_size,
             "installed_bytes": worker_jar.stat().st_size,
             "bundle_start_level": 4,

@@ -5,6 +5,8 @@ Bundle-SymbolicName: net.jolink.runtime.jdt.worker;singleton:=true
 Bundle-Version: 0.1.0
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Bundle-ActivationPolicy: lazy
+Bundle-Activator: net.jolink.runtime.jdt.StatePatchActivator
+Import-Package: org.osgi.framework.hooks.weaving
 Require-Bundle: org.eclipse.equinox.app,
  org.eclipse.core.runtime,
  org.eclipse.core.resources,

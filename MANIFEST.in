@@ -3,6 +3,7 @@ include server.json
 recursive-include rules *.md
 recursive-include skills *.md
 recursive-include java *.java *.xml *.MF *.json *.gradle *.template *.md
+recursive-include java/jdt-worker/patches *.txt
 include scripts/build_*.py scripts/resolve_jdt_dependencies.py
 include scripts/prepare_jdt_worker.py
 prune java/maven-probe/target

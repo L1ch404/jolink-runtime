@@ -67,8 +67,8 @@ applying_hotswap、restarting。终态明确返回：
   启动流程，不提供旧进程保留、Candidate 或 rollback。**
 - JPMS项目的module-info.java也属于构建模型输入；模块图变化刷新模型并真实重启，
   不尝试HotSwap模块描述符。命名模块启动使用模块路径，沿用当前编译产物及资源。
-  已知重开后首次方法修改可能因JDT退回FULL而额外重启，详见兼容性跟进的JPMS记录；
-  不把它描述为跨Worker增量状态已完全恢复。
+  已修复命名模块重开后首次方法修改无故FULL；FULL重写的module-info.class也不再被
+  当作普通类送入HotSwap检查。单/双模块重开增量及PID不变已验证，详见兼容性跟进。
 - 显式提供新 `project_path`/启动选择时，沿用指定项目的完整重新启动。
 - 直接 JAR/classpath 启动没有源码 Build World，只重启该产物，不承诺源码编译。
   两种方式的launch同样支持`java_home`，直接restart也继承/覆盖该选择与已有启动参数。

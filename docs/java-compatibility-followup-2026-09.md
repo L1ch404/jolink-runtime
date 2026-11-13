@@ -24,25 +24,43 @@ Gradle artifact映射，避免启动/测试误用尚未打包的原生JAR。
 不会对模块描述符做HotSwap。普通方法体修改在同一Worker内已验证增量与HotSwap。
 长模块命令使用Java9+参数文件，普通classpath/JDK8仍走原路径；Unicode/引号实测在Mac。
 
-### 已确认的复用性能边界，尚未解决
+### 重开后FULL及多余restart：已定位并修复（2026-11-13）
 
 真实产品中：MCP重开后无变化测试0编译、应用复用；随后只改方法体，POM和module-info
 字节均未变化，Fast Test未重新Bootstrap，但JDT请求INCREMENTAL实际退成FULL。
-日志报告CLASSPATH_CHANGED，测试工程另有SAVED_STATE_NOT_FOUND；应用更新因本轮
-输出包含未加载类而转真实restart。新HTTP结果正确，之后无变化测试仍为0编译。
-这与修改模块描述符后合法的FULL是两个独立用例，不能混为一谈。尚未完成根因定位，
-不把JDT状态序列化源码中的疑点当成已确认引擎bug，也未添加状态文件补丁。
-普通非JPMS Java11/17/21对照已确认重开后仍INCREMENTAL且只编1文件，没有扩大影响。
+日志报告CLASSPATH_CHANGED，测试工程另有SAVED_STATE_NOT_FOUND。八阶段快照确认
+classpath/工程设置和state.dat并未被重写或丢失；直接调用锁定JDT的State.write/read
+证实两处读写不对称：空模块限集被读成null，多条AddReads只读取一条导致后续数据错位。
+不是Probe失效、没有保存或10轮增量阈值。
+
+Worker现在只替换锁定JDT的State类：null写-1，空集写0并恢复NO_LIMIT_MODULES哨兵，
+按数量读回全部AddReads（不删除或去重）。State格式版本升至0x28，旧格式由原生版本
+判断拒绝并重建一次。一个单目标OSGi hook在加载State后立即注销，不增加每轮编译扫描，
+不修改下载的Eclipse JAR或引入新的字节码依赖。修改源、原版权和EPL许可随Worker及
+源码包交付，详见java/jdt-worker/patches/README.md及THIRD_PARTY_NOTICES.md。
+
+另一个独立问题在joLink：FULL会通知module-info.class被重写，原HotSwap代码将它
+当普通类查询，因此返回CLASS_NOT_LOADED。实测描述符SHA未变，真正变化只有Service。
+现在输出分类排除模块描述符，不添加整树哈希；真实module-info.java变化仍走既有配置
+刷新及restart。原始诊断不能再表述为业务类未加载。
+
+新增严格真实MCP回归：单/双模块连续三次重开，中间包含无改动重开后关闭；方法编辑
+均要求实际INCREMENTAL、1个源文件、HotSwap及PID不变，test-only编辑也只编1个源。
+独立删除隔离fixture的原生state.dat，强制FULL，仍要求方法更新HotSwap且描述符SHA不变；
+另保留真实描述符修改必须restart的对照。这不是放宽复用判断或强制假报增量。
 
 ### 验证及后续范围
 
-- 新增JPMS真实MCP九项通过：Maven/Gradle单/双模块、白盒与classpath测试模式、旧
-  Surefire、模块描述符变化及重开后方法修改；均含原生对照或对应运行证据。
-- 真实JVM参数文件用例1项通过；已有非模块多工程MCP七项、旧Maven/APT七项MCP与
-  两项Java API对照通过；普通回归1412项通过。
-- wheel/sdist构建成功；隔离Python3.13安装wheel后Maven/Gradle双模块MCP两项通过。
-- 产物：Worker已重建，Maven Probe36、Gradle Probe modules4，Test模型v18、启动v15。
-  初次刷新旧模型/编译缓存，之后按实际输入复用；公开版本号未改。
+- 本次修复JPMS真实MCP十一项通过：Maven/Gradle单/双模块、白盒与classpath测试模式、
+  旧Surefire、模块描述符变化、多次重开后严格增量，以及原生状态丢失后的FULL/HotSwap。
+- 非模块多工程MCP七项、Lombok/APT四项通过；普通回归1419项通过，包含真实Java状态
+  编解码（null/空哨兵/非空、多条不同或重复reads、exports、旧格式拒绝），没有只测mock。
+- wheel/sdist构建成功；隔离Python3.13安装wheel后Maven严格重开与Gradle双模块两项通过。
+  新旧分发Worker的唯一后续差异是EPL文本末尾换行原样同步，所有class字节相同；最终
+  Worker再次完整跑过十一项JPMS。前轮的旧Maven/API及长命令验证证据仍保留，不重复计数。
+- 产物：Worker SHA前缀d07027855d，State格式0x28；Maven Probe36、Gradle Probe modules4、
+  Test模型v18及启动v15本轮未变。旧Worker/编译状态按现有规则重建一次，不用手动清缓存。
+  公开版本号未改；包含EPL补丁的分发包许可表达式已同步，joLink自身MIT许可不变。
 
 这不是完整JPMS实现声明。独立命名测试模块、复杂自动模块/混合路径/服务加载组合、
 processor-module-path及完整平台矩阵仍需单独验证。多重/外部patch输入尚未映射，
@@ -1004,7 +1022,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 
 | 编号 | 当前状态 / 问题 | 已有证据与边界 | 后续落点 |
 |---|---|---|---|
-| JPMS | 基础闭环已接入，复用优化待处理 | 命名模块编译/测试/启动及封装性验证通过；重开后首次方法编辑仍可能FULL并重启 | 定位真实classpath/build-state差异；高级模块组合、版本元数据及完整平台矩阵未宣称支持 |
+| JPMS | 基础闭环及已复现的重开FULL已修 | 修复JDT State空限集及多AddReads读写；模块描述符不再误入HotSwap。单/双模块多次重开严格增量已验证 | 高级模块组合、版本元数据及完整平台矩阵仍未宣称支持；升级旧Worker状态正常重建一次 |
 | U2 | 已定位、用户暂缓：Guava泛型兼容 | 原生Maven4274项通过；独立ECJ复现与MCP相同的14条诊断，分四类并有不依赖Guava的最小样例。ECJ3.25仍报13条，3.46.100仍报14条 | 不是Probe/源码映射接线；需处理ECJ类型推断/捕获转换。先保存最小复现及strict XFAIL，不改产品或引入javac回退 |
 | U4 | 已接线、已review：Error Prone检查跳过 | Maven/Gradle共用参数分类，保留真正APT，启动/测试明确说明检查未执行；TestNG asserts的70项所选测试通过。Mockito/TestNG core已越过参数拦截，后续问题见U13/U14 | 不执行javac检查本身；正式构建/CI继续负责。其他未知插件未一概忽略 |
 | U5 | 用户暂缓：Checkstyle注解位置差异 | 新ECJ的5条错误已在独立ECJ、原生Eclipse Java Builder复现，涉及泛型方法类型参数后的注解归属；不是已修复的源码目录映射问题 | 保留最小样例与原诊断，详见[升级记录](jdt-346-upgrade.zh-CN.md)；本轮不改源码、不屏蔽错误 |

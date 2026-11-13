@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -319,6 +321,80 @@ def _run_jpms_lifecycle(tmp_path, system, reactor, patch_tests, *, legacy_surefi
     anyio.run(scenario)
 
 
+def test_native_full_rebuild_can_hotswap_unchanged_module_descriptor(tmp_path):
+    project, app, source, _, _, java, env = _fixture(tmp_path, "maven", False, True)
+    port = reserve_local_port()
+    launch = dict(action="launch", project_path=str(app), main_class="example.App", java_home=str(java),
+                  build_java_home=str(java), ready_port=port, jdwp_port=reserve_local_port(), app_args=[str(port)], timeout=30)
+    if os.environ.get("JOLINK_TEST_MAVEN_SETTINGS"):
+        launch["maven_settings"] = os.environ["JOLINK_TEST_MAVEN_SETTINGS"]
+    observations = {}
+
+    async def application(session, args):
+        async def call(tool, request):
+            result = dict((await session.call_tool(tool, request)).structuredContent)
+            with (tmp_path / "calls.jsonl").open("a", encoding="utf-8") as log:
+                log.write(json.dumps(dict(tool=tool, arguments=request, result=result)) + "\n")
+            return result
+        result = await call("java_application", args)
+        with anyio.fail_after(180):
+            while result.get("ok") and result.get("status") in {
+                "project_launch_started", "project_launch_restarted", "restart_started", "reload_started"
+            } and result.get("launch_phase") != "runtime_active" and result.get("stage") != "succeeded":
+                await anyio.sleep(.5)
+                state = await call("java_status", dict(action="status", details=True))
+                result = (state.get("last_reload") or result) if result.get("reload_id") else state
+        assert result.get("ok"), result
+        return result
+
+    async def scenario():
+        with (tmp_path / "initial-stderr.log").open("w", encoding="utf-8") as log:
+            async with open_mcp_session(log, environment=env) as session:
+                try:
+                    observations["initial"] = await application(session, launch)
+                    assert _http(port) == "example.app|none|v1|resource-v1"
+                finally:
+                    await application(session, dict(action="stop"))
+        cache = tmp_path / "cache"
+        descriptors = list(cache.rglob("bin/module-info.class"))
+        assert len(descriptors) == 1, descriptors
+        descriptor = descriptors[0]
+        before_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+        before_stamp = descriptor.stat().st_mtime_ns
+        persisted = {path: path.read_bytes() for path in cache.rglob("*")
+                     if path.is_file() and path.name in {"state.json", "source-index.json"}}
+        native_states = [path for path in cache.rglob("state.dat") if path.parent.name == "org.eclipse.jdt.core"]
+        assert len(native_states) == 1, native_states
+        native_states[0].unlink()  # Only this isolated test's native JDT build state.
+        assert {path: path.read_bytes() for path in persisted} == persisted
+        assert hashlib.sha256(descriptor.read_bytes()).hexdigest() == before_digest
+        with (tmp_path / "reopen-stderr.log").open("w", encoding="utf-8") as log:
+            async with open_mcp_session(log, environment=env) as session:
+                try:
+                    observations["reopen"] = started = await application(session, launch)
+                    assert started.get("jdt_bootstrap_reused") is True, started
+                    assert started.get("jdt_bootstrap_build_kind") is None, started
+                    assert _http(port) == "example.app|none|v1|resource-v1"
+                    source.write_text(source.read_text().replace('"v1"', '"v2"'))
+                    observations["method_edit"] = updated = await application(session, dict(action="restart", timeout=30))
+                    assert updated.get("build_kind") == "FULL", updated
+                    assert updated.get("apply_method") == "hotswap", updated
+                    assert "module-info" not in updated.get("redefined_classes", [])
+                    state = dict((await session.call_tool("java_status", dict(action="status"))).structuredContent)
+                    assert state.get("pid") == started["pid"], (started, state)
+                    assert _http(port) == "example.app|none|v2|resource-v1"
+                    assert hashlib.sha256(descriptor.read_bytes()).hexdigest() == before_digest
+                    assert descriptor.stat().st_mtime_ns != before_stamp, "FULL must actually rewrite the descriptor"
+                finally:
+                    await application(session, dict(action="stop"))
+        observations["descriptor_sha256"] = before_digest
+        observations["build_finished_events"] = [line for line in (tmp_path / "reopen-stderr.log").read_text().splitlines()
+                                                 if "jdt.build.finished" in line]
+        (tmp_path / "full-rebuild-hotswap.json").write_text(json.dumps(observations, indent=2))
+
+    anyio.run(scenario)
+
+
 def test_legacy_surefire_default_keeps_classpath_tests(tmp_path):
     # Older Surefire has no useModulePath parameter. No explicit false override
     # is supplied: native plugin capability determines the default runtime mode.
@@ -415,9 +491,11 @@ def test_module_descriptor_edit_refreshes_test_and_restarts_runtime(tmp_path):
     anyio.run(scenario)
 
 
-def test_method_only_edit_after_reopen_records_actual_builder_kind(tmp_path):
-    project, app, source, _, expected_file, java, env = _fixture(tmp_path, "maven", False, True)
-    before_build_files = {path: path.read_bytes() for path in (project / "pom.xml", app / "src/main/java/module-info.java")}
+@pytest.mark.parametrize("reactor", [False, True])
+def test_method_only_edit_after_reopen_is_incremental(tmp_path, reactor):
+    project, app, source, test_source, expected_file, java, env = _fixture(tmp_path, "maven", reactor, True)
+    before_build_files = {path: path.read_bytes() for path in project.rglob("*")
+                          if path.is_file() and path.name in {"pom.xml", "module-info.java"}}
     port = reserve_local_port()
     launch = dict(action="launch", project_path=str(app), main_class="example.App", java_home=str(java),
                   build_java_home=str(java), ready_port=port, jdwp_port=reserve_local_port(), app_args=[str(port)], timeout=30)
@@ -425,6 +503,21 @@ def test_method_only_edit_after_reopen_records_actual_builder_kind(tmp_path):
     if os.environ.get("JOLINK_TEST_MAVEN_SETTINGS"):
         launch["maven_settings"] = test_args["maven_settings"] = os.environ["JOLINK_TEST_MAVEN_SETTINGS"]
     observations = {}
+    upstream = "example.lib:40" if reactor else "none"
+
+    def expected(value):
+        return f"example.app|{upstream}|{value}|resource-v1"
+
+    def build_events(log_path):
+        return [line for line in log_path.read_text().splitlines() if "jdt.build.finished" in line]
+
+    def assert_incremental_one(log_path, previous_events):
+        events = build_events(log_path)[len(previous_events):]
+        assert len(events) == 1, events
+        event = events[0]
+        assert re.search(r"\brequested=INCREMENTAL actual=INCREMENTAL\b", event), event
+        assert re.search(r"\bcompiled_sources=1\b", event), event
+        return event
 
     async def call(session, tool, args):
         result = dict((await session.call_tool(tool, args)).structuredContent)
@@ -440,7 +533,7 @@ def test_method_only_edit_after_reopen_records_actual_builder_kind(tmp_path):
                 result = await call(session, "java_fast_test", dict(action="result", test_run_id=result["test_run_id"]))
         if not result.get("passed"):
             result = await call(session, "java_fast_test", dict(action="result", test_run_id=result["test_run_id"]))
-        assert result.get("passed") and result.get("tests") == 1, result
+        assert result.get("ok") and result.get("passed") and result.get("tests") == 1, result
         return result
 
     async def application(session, args):
@@ -461,33 +554,65 @@ def test_method_only_edit_after_reopen_records_actual_builder_kind(tmp_path):
                 try:
                     observations["initial_test"] = await tests(session)
                     observations["initial_application"] = await application(session, launch)
-                    assert _http(port) == "example.app|none|v1|resource-v1"
+                    assert _http(port) == expected("v1")
                 finally:
                     await application(session, dict(action="stop"))
-        with (tmp_path / "reopen-stderr.log").open("w", encoding="utf-8") as log:
-            async with open_mcp_session(log, environment=env) as session:
-                try:
-                    observations["reopen_test"] = await tests(session)
-                    assert observations["reopen_test"]["compiled_source_count"] == 0
-                    observations["reopen_application"] = await application(session, launch)
-                    assert observations["reopen_application"].get("jdt_bootstrap_reused") is True
-                    assert observations["reopen_application"].get("jdt_bootstrap_build_kind") is None
-                    source.write_text(source.read_text().replace('"v1"', '"v2"'))
-                    expected_file.write_text("v2")
-                    assert {path: path.read_bytes() for path in before_build_files} == before_build_files
-                    observations["method_edit_test"] = await tests(session)
-                    assert observations["method_edit_test"]["compiled_source_count"] > 0
-                    assert "bootstrap_ms" not in observations["method_edit_test"]
-                    assert _http(port) == "example.app|none|v1|resource-v1"
-                    observations["method_edit_application"] = await application(session, dict(action="restart", timeout=30))
-                    assert _http(port) == "example.app|none|v2|resource-v1"
-                    observations["next_test"] = await tests(session)
-                    assert observations["next_test"]["compiled_source_count"] == 0
-                finally:
-                    await application(session, dict(action="stop"))
-        # Correctness remains strict. Actual FULL vs INCREMENTAL is evidence,
-        # not a frozen assertion that would bless an unnecessary FULL rebuild.
-        observations["build_finished_events"] = [line for name in ("initial-stderr.log", "reopen-stderr.log")
+        current_value = "v1"
+        # First reopen is deliberately build-free before close, then two fresh
+        # Worker lifetimes must both retain their distinct main/test build state.
+        for cycle in (1, 2, 3):
+            log_path = tmp_path / f"reopen-{cycle}-stderr.log"
+            with log_path.open("w", encoding="utf-8") as log:
+                async with open_mcp_session(log, environment=env) as session:
+                    try:
+                        key = f"reopen_{cycle}"
+                        observations[key + "_test"] = await tests(session)
+                        assert observations[key + "_test"]["compiled_source_count"] == 0
+                        observations[key + "_application"] = started = await application(session, launch)
+                        assert started.get("jdt_bootstrap_reused") is True, started
+                        assert started.get("jdt_bootstrap_build_kind") is None, started
+                        assert _http(port) == expected(current_value)
+                        assert not build_events(log_path), "No-op reopening must not build"
+                        if cycle == 1:
+                            continue
+
+                        value = f"v{cycle}"
+                        source.write_text(source.read_text().replace(json.dumps(current_value), json.dumps(value)))
+                        expected_file.write_text(value)
+                        assert {path: path.read_bytes() for path in before_build_files} == before_build_files
+                        previous = build_events(log_path)
+                        observations[key + "_method_test"] = compiled = await tests(session)
+                        assert compiled["compiled_source_count"] == 1, compiled
+                        assert "bootstrap_ms" not in compiled, compiled
+                        observations[key + "_test_build"] = assert_incremental_one(log_path, previous)
+                        assert _http(port) == expected(current_value), "Fast Test must not update the live application"
+
+                        previous = build_events(log_path)
+                        observations[key + "_method_application"] = applied = await application(session, dict(action="restart", timeout=30))
+                        assert applied.get("compiled_source_count") == 1, applied
+                        assert applied.get("build_kind") == "INCREMENTAL", applied
+                        assert applied.get("apply_method") == "hotswap", applied
+                        observations[key + "_application_build"] = assert_incremental_one(log_path, previous)
+                        status = await call(session, "java_status", dict(action="status"))
+                        assert status.get("pid") == started["pid"], (started, status)
+                        assert _http(port) == expected(value)
+                        current_value = value
+
+                        if cycle == 3:
+                            # Patched tests have ALL-UNNAMED reads unlike main.
+                            # Their first own edit must also remain incremental.
+                            test_source.write_text(test_source.read_text().replace("assertEquals(1,1)", "assertEquals(2,2)"))
+                            previous = build_events(log_path)
+                            observations[key + "_test_only"] = test_only = await tests(session)
+                            assert test_only["compiled_source_count"] == 1, test_only
+                            assert "bootstrap_ms" not in test_only, test_only
+                            observations[key + "_test_only_build"] = assert_incremental_one(log_path, previous)
+                            assert _http(port) == expected(value)
+                        observations[key + "_next_test"] = await tests(session)
+                        assert observations[key + "_next_test"]["compiled_source_count"] == 0
+                    finally:
+                        await application(session, dict(action="stop"))
+        observations["build_finished_events"] = [line for name in ("initial-stderr.log", *(f"reopen-{n}-stderr.log" for n in (1, 2, 3)))
             for line in (tmp_path / name).read_text().splitlines() if "jdt.build.finished" in line]
         (tmp_path / "post-reopen-method-edit.json").write_text(json.dumps(observations, indent=2))
 

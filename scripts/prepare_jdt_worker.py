@@ -3,9 +3,11 @@
 
 import argparse
 import hashlib
+import io
 import importlib.metadata
 import json
 import tarfile
+import zipfile
 from pathlib import Path
 
 from jolink_runtime.launch.jdt_compile_session import JdtCandidate
@@ -68,6 +70,16 @@ def create_offline_bundles(destination: Path, *, candidate_root: Path,
         add_legal_materials(archive, legal_root)
         for source in sources:
             archive.add(source, arcname="sources/" + source.name)
+        # Keep the modified corresponding source with offline distributions too.
+        prefix = "META-INF/jolink/patches/"
+        for worker in (candidate_root / "plugins").glob("net.jolink.runtime.jdt.worker_*.jar"):
+            with zipfile.ZipFile(worker) as jar:
+                for name in jar.namelist():
+                    if name.startswith(prefix) and name.endswith((".java", ".md", ".txt")):
+                        data = jar.read(name)
+                        member = tarfile.TarInfo("sources/jolink-jdt-patches/" + name.removeprefix(prefix))
+                        member.size = len(data)
+                        archive.addfile(member, io.BytesIO(data))
     with tarfile.open(destination, "w:gz") as archive:
         for root in (candidate_root, runtime_root):
             archive.add(root, arcname=root.relative_to(cache).as_posix())

@@ -204,16 +204,16 @@
     "symbolic_name": "net.jolink.runtime.jdt.worker",
     "version": "0.1.0",
     "origin_url": "workspace://java/jdt-worker",
-    "sha256": "7beb7501b680538a1287dac75e300b67aaeb0cce4e5ee766013a56aef7f52c6c",
-    "license_identity": "MIT",
-    "compressed_bytes": 78428,
-    "installed_bytes": 78428,
+    "sha256": "d07027855d6fe90f585f6b9ffa38d88972d90a5d5dddd2f8bcd426837c4d4433",
+    "license_identity": "MIT AND EPL-2.0",
+    "compressed_bytes": 107333,
+    "installed_bytes": 107333,
     "bundle_start_level": 4,
     "activation_policy": "lazy",
     "filename": "net.jolink.runtime.jdt.worker_0.1.0.jar"
   },
   "worker_build": {
-    "source_fingerprint": "6bfa6aad138331f18eead29f6d896d0a22ee0034d0606d5cb73fbd6f3d40f550",
+    "source_fingerprint": "4c908b0edfa5c840d1f9aa46d6bcf4111a6d0200c335d923883512d7b294367b",
     "java_home_identity": {
       "java_binary_sha256": "9be1d0a740ff6502df1a762145e62860f5de4b7e17658d9cb9498da3acf9d16c",
       "javac_binary_sha256": "20ce8ae6a5771801267af082a573e02758e5004a25ef3cba71d14fc95897bb2f"

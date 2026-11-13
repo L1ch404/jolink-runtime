@@ -1,8 +1,12 @@
 """Release-only license/source checks; no checks enter the runtime build loop."""
+import base64
 import hashlib
+import io
 import importlib.util
 import json
 import tarfile
+import tomllib
+import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
@@ -57,6 +61,22 @@ def test_nested_licenses_and_original_attribution_are_present():
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in (ROOT / adodb).read_text()
 
 
+def test_worker_patch_ships_its_exact_corresponding_source_and_license():
+    root = ROOT / "java/jdt-worker/patches"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    candidate = json.loads((ROOT / "src/jolink_runtime/launch/jdt-product-candidate.json").read_text())
+    assert project["project"]["license"] == candidate["worker_artifact"]["license_identity"]
+    worker = base64.b64decode((ROOT / "src/jolink_runtime/launch/jdt-product-worker.jar.b64").read_bytes())
+    state = "org/eclipse/jdt/internal/core/builder/State"
+    with zipfile.ZipFile(io.BytesIO(worker)) as jar:
+        assert jar.read("META-INF/jolink/patches/" + state + ".class").startswith(b"\xca\xfe\xba\xbe")
+        for relative in (state + ".java", "README.md", "LICENSE-EPL-2.0.txt"):
+            assert jar.read("META-INF/jolink/patches/" + relative) == (root / relative).read_bytes()
+        assert jar.read("META-INF/jolink/patches/LICENSE-EPL-2.0.txt") == (ROOT / "licenses/common/EPL-2.0.txt").read_bytes()
+        # The replacement is an inert resource, not a competing Worker class.
+        assert state + ".class" not in jar.namelist()
+
+
 @pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
 def test_installed_materials_can_be_found_without_a_checkout(tmp_path, monkeypatch, path_type):
     script = tmp_path / "tools/prepare_jdt_worker.py"
@@ -77,6 +97,15 @@ def test_offline_runtime_and_source_kits_keep_legal_files(tmp_path):
     for path in [candidate / "worker.jar", runtime / "legal/upstream/LICENSE"]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"original")
+    worker = candidate / "plugins/net.jolink.runtime.jdt.worker_0.1.0.jar"
+    worker.parent.mkdir()
+    patched_sources = {"org/eclipse/jdt/internal/core/builder/State.java": b"modified EPL source",
+                       "README.md": b"source provenance and modifications",
+                       "LICENSE-EPL-2.0.txt": b"EPL terms"}
+    with zipfile.ZipFile(worker, "w") as jar:
+        for name, payload in patched_sources.items():
+            jar.writestr("META-INF/jolink/patches/" + name, payload)
+        jar.writestr("META-INF/jolink/patches/org/eclipse/jdt/internal/core/builder/State.class", b"bytecode")
     legal = tmp_path / "legal-input"
     (legal / "licenses").mkdir(parents=True)
     (legal / "LICENSE").write_text("joLink MIT")
@@ -102,6 +131,9 @@ def test_offline_runtime_and_source_kits_keep_legal_files(tmp_path):
         assert "sources/source.tar.gz" not in archive.getnames()
     with tarfile.open(companion) as archive:
         assert archive.extractfile("sources/source.tar.gz").read() == source.read_bytes()
+        for name, payload in patched_sources.items():
+            assert archive.extractfile("sources/jolink-jdt-patches/" + name).read() == payload
+        assert not any(name.endswith("State.class") for name in archive.getnames())
 
 
 @pytest.mark.parametrize("cached", [None, b"damaged cache"])

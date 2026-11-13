@@ -8,14 +8,16 @@ This inventory was reviewed on 2026-09-21.
 ## What joLink distributes
 
 The Python package contains joLink's JDT Worker, Maven Probe, Gradle Probe and
-Test Runner JARs. Those JARs contain joLink classes; they do not embed the JDT,
-Maven, Gradle or JUnit implementations. Their source is in `java/` in the source
+Test Runner JARs. Apart from the JDT state-persistence patch described below,
+those JARs contain joLink classes, not embedded Maven, Gradle or JUnit implementations.
+Their source is in `java/` in the source
 distribution and the [joLink repository](https://github.com/L1ch404/jolink-runtime).
 The repository's Runtime lineage records the MIT-licensed Hermes origin at
 commit `cc726310c7d9d7981ef3f0bf9e2d27513d0c9515`.
 
-The Eclipse bundles and Temurin JDK are separate, unmodified upstream runtime
-distributions, downloaded when needed. Their original `about.html`, `NOTICE`,
+The downloaded Eclipse bundle files and Temurin JDK remain unmodified upstream
+distributions. The Worker substitutes one patched JDT class at load time as
+described below. Their original `about.html`, `NOTICE`,
 `LICENSE` and JDK `legal/` content is retained. Additional copies of applicable
 notices and license texts accompany this package in [licenses/](licenses/README.md).
 
@@ -29,6 +31,31 @@ notices and license texts accompany this package in [licenses/](licenses/README.
 | Apache/OSGi material within Eclipse bundles | See the original `about.html` and `about_files/` notices for the individual bundle; EPL is not a replacement for these terms. |
 | Eclipse Temurin 21.0.12.1+1 / OpenJDK | [GPLv2 with the Classpath Exception](licenses/openjdk/LICENSE), [additional licensing information](licenses/openjdk/ADDITIONAL_LICENSE_INFO), [Assembly Exception](licenses/openjdk/ASSEMBLY_EXCEPTION), and the other original JDK `legal/` notices |
 | Temurin build scripts supplied with the corresponding source bundle | [Apache-2.0](licenses/temurin-build/LICENSE) |
+
+### JDT state-persistence compatibility patch
+
+The Worker includes a narrowly modified copy of Eclipse JDT's
+`org.eclipse.jdt.internal.core.builder.State`, under **EPL-2.0**, not MIT.
+It preserves null versus empty module-limit sets and reads all serialized
+module-read edges. Its state-format version changes so older state is rebuilt,
+not interpreted using the new format. The original copyright and license
+header remain in the source.
+
+The modified source and its provenance are in
+[`java/jdt-worker/patches/`](java/jdt-worker/patches/). The same source, change
+notice and EPL-2.0 text are embedded under `META-INF/jolink/patches/` in the
+Worker JAR, alongside the patched bytecode. They therefore accompany the wheel
+and a separately distributed Worker JAR; the source distribution also includes
+the source files directly. Offline source kits include these modified sources
+in addition to the unmodified upstream archives. The existing runtime source
+index continues to identify the unmodified downloaded Eclipse bundles.
+
+The small joLink loader uses OSGi's weaving hook for this single class. It does
+not change the downloaded JAR, its original notices or its pinned checksum.
+joLink's own loader and other original code remain MIT-licensed.
+The wheel/sdist `License-Expression` is `MIT AND EPL-2.0` to describe the
+distributed archive including this patch; it does not relicense joLink's
+original code or replace the root MIT `LICENSE`.
 
 ## Corresponding source code
 

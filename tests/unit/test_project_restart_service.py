@@ -84,6 +84,30 @@ def test_restart_defaults_to_hotswap_and_scans_whole_workspace(running):
     assert result["framework_state_refreshed"] is False
 
 
+@pytest.mark.parametrize("prefix", ["", "module_example/"])
+def test_full_build_descriptor_is_not_queried_as_a_loaded_class(running, prefix):
+    running.result.actual_build_kind = "FULL"
+    running.result.runtime_changed_classes = (prefix + "Changed.class", prefix + "module-info.class")
+    original = running.compiler.class_file
+    running.compiler.class_file = lambda path: original(path.removeprefix(prefix))
+    result = finish(running)
+    assert result["ok"] and result["apply_method"] == "hotswap", result
+    assert result["redefined_classes"] == ["Changed"]
+    running.jdwp.classes_by_signature.assert_called_once_with("LChanged;")
+    running.jdwp.redefine_classes.assert_called_once_with({10: b"compiled bytecode"})
+    running.replace.assert_not_called()
+    running.compiler.mark_published.assert_called_once()
+
+
+def test_descriptor_only_output_does_not_send_an_empty_hotswap(running):
+    running.result.runtime_changed_classes = ("module-info.class",)
+    result = finish(running)
+    assert result["ok"] and result["apply_method"] == "restart", result
+    assert result["restart_reason"] == "NO_CODE_CHANGES"
+    running.jdwp.classes_by_signature.assert_not_called()
+    running.jdwp.redefine_classes.assert_not_called()
+
+
 @pytest.mark.parametrize("reason", ["forced", "no_changes", "deleted", "resource", "unloaded", "rejected", "launch_args", "suspended", "process_exited"])
 def test_compile_once_before_real_restart(running, reason):
     args = {}

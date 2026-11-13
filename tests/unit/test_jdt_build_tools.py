@@ -33,6 +33,27 @@ def test_product_worker_source_fingerprint_matches_bundled_build():
     assert worker_build._source_fingerprint(REPO_ROOT / "java/jdt-worker") == lock["worker_build_provenance"]["source_fingerprint"]
 
 
+@pytest.mark.parametrize("relative", [
+    "patches/org/eclipse/jdt/internal/core/builder/State.java",
+    "patches/LICENSE-EPL-2.0.txt",
+])
+def test_worker_identity_tracks_patch_code_and_distribution_inputs(tmp_path, relative):
+    for name, content in {
+        "META-INF/MANIFEST.MF": "Manifest-Version: 1.0\n",
+        "plugin.xml": "<plugin/>\n",
+        "src/Worker.java": "class Worker {}\n",
+        relative: "before\n",
+    }.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    before = worker_build._source_fingerprint(tmp_path)
+    (tmp_path / relative).write_text("after\n", encoding="utf-8")
+    assert worker_build._source_fingerprint(tmp_path) != before
+    (tmp_path / relative).write_text("before\n", encoding="utf-8")
+    assert worker_build._source_fingerprint(tmp_path) == before
+
+
 def test_product_probe_and_runner_build_inputs_exist_outside_retired_tree():
     fast = _load_module("jolink_fast_assets_build", REPO_ROOT / "scripts/build_fast_test_assets.py")
     gradle = _load_module("jolink_gradle_assets_build", REPO_ROOT / "scripts/build_gradle_probe_assets.py")

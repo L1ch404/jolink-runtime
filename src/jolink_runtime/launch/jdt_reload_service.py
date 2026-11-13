@@ -190,7 +190,11 @@ class JdtReloadService:
         if (result.runtime_deleted_classes or result.runtime_changed_resources
                 or result.runtime_deleted_resources):
             return replace_process("NON_HOTSWAPPABLE_OUTPUT_DELTA")
-        paths = result.runtime_changed_classes
+        # A FULL build can rewrite an unchanged module descriptor. It is JVM
+        # module metadata, not a loadable class for RedefineClasses. Actual
+        # descriptor edits already refresh the Build World and restart earlier.
+        paths = tuple(path for path in result.runtime_changed_classes
+                      if path.rsplit("/", 1)[-1] != "module-info.class")
         if not paths:
             if restart:
                 return replace_process("NO_CODE_CHANGES")
