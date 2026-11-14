@@ -1,5 +1,39 @@
 # joLink 产品边界与兼容性跟进
 
+## U12：已知配置的Probe基线窗口（2026-11-14，已修；冷发现输入仍待补齐）
+
+真实Maven和Gradle均已复现，不再只是受控Python方法：原生构建已读取旧parameters=false，
+资源准备任务等待期间配置被改成true，旧版本仍继续编译/启动，并将false模型配上新文件
+哈希写入缓存。Gradle重开MCP后仍0编译且继续使用旧模型；同份新配置原生测试已通过。
+
+现在四条冷路径（Maven/Gradle × Fast Test/启动）共用ProbeConfiguration：
+
+- 消费配置前记录已知内容快照。Maven早于settings复制及localRepository读取，包含
+  本地父链/静态模块、.mvn、所选用户及全局settings；Gradle包括根配置和明确目标子目录
+  的构建文件。既存缓存即使schema/模型失效，也只复用它的输入路径清单，不复用旧值。
+- 模型转换完成、进入JDT前检查这些输入；变化返回BUILD_CONFIGURATION_CHANGED、
+  retryable=true及变更路径。调用者等编辑结束后重试原请求，不在内部循环重试。
+- 已验证快照随模型保留，_stabilize不重新用当前文件为旧模型背书；迟到修改不会把已知
+  基线覆盖成新值，后续缓存比较仍能发现过期。缓存保存及活跃模型共用已有快照机制。
+- 只增加冷Probe阶段的配置读取；普通Java编辑及warm复用不新增扫描、哈希或重试。
+
+Test缓存升v19、启动缓存升v16，让既存可能错误的旧基线重新Probe一次。不删除JDT
+workspace/产物，Worker、Probe JAR及实际编译配置身份不变；配置相同仍可复用编译状态。
+
+实际回归：Maven四项、Gradle四项真实MCP通过，覆盖cold Test/launch、单/子模块或父POM、
+运行中restart重导出、失败不写新缓存、重试后反射/HTTP新行为、warm0编译及跨MCP复用。
+使用原生Ant/Gradle任务的文件门控，不mock Probe或靠sleep碰时序。单测另覆盖settings
+复制期间修改、同mtime/size编辑、删除/新增配置、保留模型快照及旧缓存路径清单迁移。
+普通回归1469项通过；已有配置刷新链路三项真实MCP、隔离Python3.13安装wheel后的
+Maven/Gradle两项通过，wheel/sdist构建通过。没有新增工具参数或修改jdwp_adapter.py。
+
+**仍未完整覆盖的同类窗口**：冷Probe首次才发现的输入，没有事前内容快照。例如根目录
+入口通过类名首次定位出的Gradle子工程、动态/profile模块POM、仓库父POM、首次发现的
+项目外apply脚本。在“原生已读取、Python尚不知道路径”期间修改它们，仍可能发生旧模型
+与新基线关联。本轮只给这些输入建立事后基线，不能据通过结果宣称整个U12已关闭。
+已有输入清单后的后续Probe会纳入检查；完整封闭首次发现窗口需原生读取阶段的捕获，
+本轮没有引入扩展/监听框架、两遍Probe或mtime猜测。
+
 ## U9：未加载类不再导致整轮重启（2026-11-14，已实现）
 
 固定旧提交14eba08的独立真实MCP复现：只修改未加载类，原策略因CLASS_NOT_LOADED
@@ -1058,7 +1092,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U6 | 已修复、已review：MyBatis准备阶段阻塞 | 默认配置下依执行映射跳过检查/重写步骤，main8/test17、1316源码FULL及87项所选测试通过，增量/错误恢复/重开通过；没有关闭profile | whitespace明确execute仍会使Java变化额外Probe；仅保留为准备开销优化，不把它混成原阻塞未解决 |
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
 | U9 | 已实现：已加载/未加载类分开应用 | 普通及上游类可HotSwap/首次加载；全未加载返回class_output。命名模块新增包按真实JVM约束重启 | 已覆盖Fast Test隔离、加载/初始化观察、错误恢复及重开；不等同于框架重新扫描或任意自定义加载器支持 |
-| U12 | 用户暂缓：Probe执行期间改配置的基线窗口 | 生产方法受控复现：Probe返回旧编码模型，返回前POM已修改，随后`_stabilize()`给旧模型记上新文件快照。尚未完成真实Maven并发编辑窗口复现 | 先保留问题；临时避免在Probe运行期间修改构建配置。现有“JDT编译前固定快照”不等于已解决此窗口 |
+| U12 | 已知/已跟踪输入窗口已修；首次冷发现输入仍待处理 | Maven/Gradle真实门控复现旧模型＋新hash；四路径共享前后快照、拒绝当轮及重试/重开已验证 | 首次才发现的动态模块/外部脚本等读取窗口仍缺原生内容关联，不宣称完全关闭。旧模型缓存重新Probe一次，不清编译产物 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |

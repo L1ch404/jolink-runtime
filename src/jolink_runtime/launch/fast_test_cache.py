@@ -18,8 +18,9 @@ from .configuration_inputs import (
     maven_configuration_files,
     preparation_stamps,
 )
+from .probe_configuration import recorded_configuration_inputs
 
-_SCHEMA = "jolink.fast-test-world.v18"
+_SCHEMA = "jolink.fast-test-world.v19"
 
 
 def _paths(values) -> tuple[Path, ...]:
@@ -67,6 +68,9 @@ class FastTestCache:
 
     def workspace_store(self, project: Path, build_system: str) -> JdtWorkspaceStore:
         return JdtWorkspaceStore(self._directory(project, build_system) / "workspace")
+
+    def configuration_inputs(self, project: Path, build_system: str) -> tuple[Path, ...]:
+        return recorded_configuration_inputs(self._directory(project, build_system) / "build-world.json", "inputs")
 
     def is_current(self, project: Path, build_system: str, *, build_preferences=None) -> bool:
         path = self._directory(project, build_system) / "build-world.json"

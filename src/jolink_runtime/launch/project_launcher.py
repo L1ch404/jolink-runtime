@@ -50,6 +50,7 @@ from .jdt_compile_session import JdtBuildWorldPlan
 from .compiler_profile import skipped_compiler_checks, compiler_check_warnings
 from .module_configuration import main_module_fields, descriptor_inputs
 from .maven_probe import ProductMavenProbe
+from .probe_configuration import ProbeConfiguration, ProbeConfigurationChanged
 from .maven_module_world import load_module_worlds, skipped_preparation_steps, preparation_warnings
 from .maven_reactor import maven_build_root
 from .project_launch_cache import (
@@ -211,6 +212,15 @@ class ProjectLaunchPipeline:
         *,
         attempt_directory: Path,
     ) -> PreparedProjectLaunch:
+        try:
+            return self._prepare(context, request, attempt_directory=attempt_directory)
+        except ProbeConfigurationChanged as error:
+            raise LaunchPipelineFailure(error.error_code, str(error), retryable=True,
+                suggested_next_step=error.suggested_next_step, context=error.context) from error
+
+    def _prepare(
+        self, context: LaunchContext, request: ProjectLaunchRequest, *, attempt_directory: Path,
+    ) -> PreparedProjectLaunch:
         context.check_cancelled()
         imported = self._launch_intent(request)
         context.set_intent(imported.intent)
@@ -370,6 +380,11 @@ class ProjectLaunchPipeline:
         settings_input = settings if settings is not None else Path.home() / ".m2/settings.xml"
         if settings is None and settings_input.is_file():
             settings = settings_input
+        configuration = ProbeConfiguration.capture(request.project_path, "maven", (
+            workspace.root_pom, *(m.pom_file for m in workspace.modules), settings_input,
+            *((maven.home / "conf/settings.xml",) if maven.home is not None else ()),
+            *self._launch_cache.configuration_inputs(request.project_path, intent.launch_name),
+        ))
         local_repository = maven_local_repository(preferences, maven, settings)
         offline = "-o" in shlex.split(os.environ.get("MAVEN_ARGS", "")) or "--offline" in shlex.split(os.environ.get("MAVEN_ARGS", ""))
         prepared = probe.prepare(attempt_directory=directory / "probe",
@@ -432,6 +447,7 @@ class ProjectLaunchPipeline:
             skipped_compiler_checks=skipped_compiler_checks(modules),
             skipped_build_steps=skipped_preparation_steps(modules),
             modules=modules if len(modules) > 1 or target.get("source_patterns") else ())
+        plan = replace(plan, configuration_stamps=configuration.finish(plan.configuration_inputs))
         runtime_jdk = self._select_runtime_java(
             context, intent, preferences, plan, build_jdk, log,
         )
@@ -470,9 +486,10 @@ class ProjectLaunchPipeline:
         )
         # Build choices and raw configuration invalidate Probe; only its actual
         # JDT inputs decide whether the compiled workspace needs rebuilding.
-        stable = replace(stable, configuration_stamps=build_configuration_stamps(
-            stable.project_root, prepared.build_system, stable.configuration_inputs
-        ))
+        if stable.configuration_stamps is None:
+            stable = replace(stable, configuration_stamps=build_configuration_stamps(
+                stable.project_root, prepared.build_system, stable.configuration_inputs
+            ))
         return replace(
             prepared,
             jdt_build_world_plan=stable,
@@ -604,6 +621,11 @@ class ProjectLaunchPipeline:
                 suggested_next_step="Remove unsupported GRADLE_ARGS and retry.",
             )
         offline = any(value in {"-o", "--offline"} for value in gradle_args)
+        configuration = ProbeConfiguration.capture(request.project_path, "gradle", (
+            *gradle_configuration_inputs(project),
+            *(request.project_path / name for name in ("build.gradle", "build.gradle.kts", "gradle.properties")),
+            *self._launch_cache.configuration_inputs(request.project_path, imported.intent.launch_name),
+        ))
         prepared_probe = probe.prepare(
             attempt_directory / "gradle-probe", scope="runtime"
         )
@@ -701,6 +723,8 @@ class ProjectLaunchPipeline:
                 retryable=False,
                 suggested_next_step="Use the formal Gradle launch for this project.",
             ) from error
+        world = replace(world, jdt_plan=replace(world.jdt_plan,
+            configuration_stamps=configuration.finish(world.jdt_plan.configuration_inputs)))
         runtime_jdk = self._select_runtime_java(
             context, imported.intent, preferences, world.jdt_plan, build_jdk, build_log,
         )

@@ -19,10 +19,11 @@ from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import build_configuration_stamps
+from .probe_configuration import recorded_configuration_inputs
 from .idea_environment import build_preferences_key
 
 
-_SCHEMA = "jolink.project-launch-cache.v15"
+_SCHEMA = "jolink.project-launch-cache.v16"
 
 
 def _path(value: Any) -> Path:
@@ -130,6 +131,9 @@ class ProjectLaunchCache:
             ).encode("utf-8", errors="surrogateescape")
         ).hexdigest()[:24]
         return self.root / key / "build-world.json"
+
+    def configuration_inputs(self, project_root: Path, launch_name: str) -> tuple[Path, ...]:
+        return recorded_configuration_inputs(self._file(project_root, launch_name), "configuration_stamps")
 
     def load(
         self,

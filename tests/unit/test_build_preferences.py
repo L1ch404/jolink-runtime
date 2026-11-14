@@ -146,6 +146,19 @@ def test_workspace_identity_follows_resolved_configuration_not_build_choice(cach
     assert same.jdt_build_world_plan.fingerprint == first
 
 
+@pytest.mark.parametrize("system", ["maven", "gradle"])
+def test_stabilizing_a_model_keeps_its_captured_configuration_baseline(cached_launch, system):
+    f = cached_launch
+    prepared = f.pipeline.prepare(Context(), f.request, attempt_directory=f.attempt)
+    prepared = replace(prepared, build_system=system)
+    captured = dict(prepared.jdt_build_world_plan.configuration_stamps)
+    config = prepared.jdt_build_world_plan.project_root / "pom.xml"
+    config.write_text(config.read_text() + "\n<!-- edited after Probe -->")
+    stabilized = f.pipeline._stabilize(prepared)
+    assert stabilized.jdt_build_world_plan.configuration_stamps == captured
+    assert JdtLaunchService.configuration_rejection(stabilized).data["error_code"] == "BUILD_CONFIGURATION_CHANGED"
+
+
 def test_running_model_uses_its_own_build_preferences_snapshot(model, monkeypatch):
     old = IdeaBuildPreferences(active_profiles=("A",))
     new = IdeaBuildPreferences(active_profiles=("B",))

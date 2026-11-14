@@ -426,6 +426,22 @@ def test_old_launch_cache_without_snapshot_requires_probe_not_deleting_cache(mod
     assert file.is_file()
 
 
+@pytest.mark.parametrize("kind,old_schema", [("launch", "jolink.project-launch-cache.v15"),
+                                           ("test", "jolink.fast-test-world.v18")])
+def test_pre_guard_cache_requires_probe_but_its_known_inputs_remain_useful(model, kind, old_schema):
+    model.save(kind)
+    path = (model.launch._file(model.root, model.intent.launch_name) if kind == "launch"
+            else model.fast._directory(model.root, "maven") / "build-world.json")
+    raw = json.loads(path.read_text())
+    raw["schema"] = old_schema
+    path.write_text(json.dumps(raw))
+    assert model.load(kind) is None
+    known = (model.launch.configuration_inputs(model.root, model.intent.launch_name) if kind == "launch"
+             else model.fast.configuration_inputs(model.root, "maven"))
+    assert model.pom in known
+    assert path.is_file(), "Refresh Probe, not the compile cache or the retained input inventory"
+
+
 def test_unreadable_configuration_and_missing_running_baseline_are_not_current(
     model, monkeypatch
 ):
@@ -516,8 +532,9 @@ def test_reload_restart_check_uses_running_model_not_new_cache(model, build_syst
 @pytest.mark.parametrize("explicit", [False, True])
 @pytest.mark.parametrize("default_exists", [False, True])
 @pytest.mark.parametrize("profile_extra", [False, True])
+@pytest.mark.parametrize("edit_during_settings_copy", [False, True])
 def test_launch_tracks_only_selected_settings_through_probe_and_cache(
-    model, tmp_path, monkeypatch, explicit, default_exists, profile_extra
+    model, tmp_path, monkeypatch, explicit, default_exists, profile_extra, edit_during_settings_copy
 ):
     from jolink_runtime.launch import project_launcher as module
 
@@ -540,6 +557,8 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
             supplied.append(kwargs["source_settings"])
             temporary = directory / "probe-settings.xml"
             temporary.write_text("<settings/>")
+            if edit_during_settings_copy:
+                selected.write_text("<settings><!-- changed after settings copy --></settings>")
             return SimpleNamespace(
                 settings_file=temporary,
                 output_directory=directory,
@@ -607,7 +626,7 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         maven_runner_jdk_name=None,
         jdk_homes_by_name={},
     )
-    prepared = pipeline._prepare_maven_probe(
+    arguments = (
         context,
         request,
         model.intent,
@@ -619,6 +638,13 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         directory,
         directory / "build.log",
     )
+    if edit_during_settings_copy:
+        from jolink_runtime.launch.probe_configuration import ProbeConfigurationChanged
+        with pytest.raises(ProbeConfigurationChanged) as error:
+            pipeline._prepare_maven_probe(*arguments)
+        assert str(selected) in error.value.context["changed_configuration_files"]
+        return
+    prepared = pipeline._prepare_maven_probe(*arguments)
     prepared = pipeline._stabilize(prepared)
     assert supplied == [selected if explicit or default_exists else None]
     model.plan = prepared.jdt_build_world_plan

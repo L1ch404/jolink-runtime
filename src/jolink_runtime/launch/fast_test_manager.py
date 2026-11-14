@@ -27,6 +27,7 @@ from .compiler_profile import (
 from .fast_test import FastTestError, FastTestRunner
 from .fast_test_cache import FastTestCache
 from .configuration_inputs import maven_configuration_files, maven_environment_references
+from .probe_configuration import ProbeConfiguration, ProbeConfigurationChanged
 from .jdt_compilation import (
     test_compilation_configuration, open_compile_session, initialize_compile_session,
     accept_compile_session,
@@ -579,6 +580,7 @@ class FastTestManager:
             GradleModuleError,
             MavenProbeError,
             MavenResolutionError,
+            ProbeConfigurationChanged,
         ) as error:
             attempt.state = (
                 "cancelled"
@@ -740,6 +742,11 @@ class FastTestManager:
         if source_settings is None:
             default_settings = Path.home() / ".m2/settings.xml"
             source_settings = default_settings if default_settings.is_file() else None
+        configuration = ProbeConfiguration.capture(root, "maven", (
+            workspace.root_pom, source_settings or Path.home() / ".m2/settings.xml",
+            *((maven.home / "conf/settings.xml",) if maven.home is not None else ()),
+            *self._cache.configuration_inputs(root, "maven"),
+        ))
         local_repository = maven_local_repository(preferences, maven, source_settings)
         offline = any(
             token in {"-o", "--offline"}
@@ -790,6 +797,7 @@ class FastTestManager:
             source_settings=source_settings,
             snapshot=snapshot,
             maven_home=maven.home,
+            probe_configuration=configuration,
         )
         with self._lock:
             self._pending_roots.discard(session_root)
@@ -825,6 +833,11 @@ class FastTestManager:
                 "Only Gradle offline mode is supported through GRADLE_ARGS.",
             )
         offline = any(value in {"-o", "--offline"} for value in gradle_args)
+        configuration = ProbeConfiguration.capture(attempt.project_path, "gradle", (
+            *gradle_configuration_inputs(project),
+            *(attempt.project_path / name for name in ("build.gradle", "build.gradle.kts", "gradle.properties")),
+            *self._cache.configuration_inputs(attempt.project_path, "gradle"),
+        ))
         prepared = probe.prepare(bootstrap)
         try:
             operation = self._supervisor.run(
@@ -889,7 +902,8 @@ class FastTestManager:
                 configuration_environment_names
             ),
         )
-        world = replace(world, build_preferences=preferences.cache_values())
+        world = replace(world, build_preferences=preferences.cache_values(),
+                        configuration_stamps=configuration.finish(world.configuration_inputs))
         result = self._start_build_world(
             attempt=attempt,
             world=world,
@@ -1015,6 +1029,7 @@ class FastTestManager:
         source_settings: Path | None,
         snapshot: dict[str, Any],
         maven_home: Path | None = None,
+        probe_configuration: ProbeConfiguration | None = None,
     ) -> _FastTestProject:
         attempt.require_not_cancelled()
         main_roots = self._paths(snapshot, "compileSourceRoots", module.directory)
@@ -1288,6 +1303,8 @@ class FastTestManager:
                 test_runtime_classpath=tuple(Path(p) for p in snapshot["testClasspathElements"] if p not in own_outputs) + runner_support,
                 resource_roots=tuple(resource_roots),
             )
+        if probe_configuration is not None:
+            world = replace(world, configuration_stamps=probe_configuration.finish(world.configuration_inputs))
         result = self._start_build_world(
             attempt=attempt,
             world=world,
@@ -1908,6 +1925,8 @@ class FastTestManager:
     @staticmethod
     def _error_next_step(error: BaseException) -> str:
         code = str(getattr(error, "error_code", ""))
+        if isinstance(error, ProbeConfigurationChanged):
+            return error.suggested_next_step
         if code == "UNDECLARED_SOURCE_CHANGES":
             return "Retry test and include every edited main/test Java source_file."
         if code in {"TEST_TIMEOUT", "TEST_OUTPUT_LIMIT_EXCEEDED"}:
