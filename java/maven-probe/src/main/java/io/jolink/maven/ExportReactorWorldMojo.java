@@ -30,9 +30,11 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
     @Component private org.eclipse.aether.RepositorySystem artifactResolver;
     @Component private org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator executionPlans;
     @Component private org.apache.maven.plugin.BuildPluginManager pluginManager;
+    @Component private org.apache.maven.model.building.ModelProcessor modelProcessor;
 
     public void execute() throws MojoExecutionException {
         try {
+            ConfigurationSnapshot configuration = ConfigurationSnapshot.capture(session.getProjects(), modelProcessor);
             Map<String, MavenProject> projects = new LinkedHashMap<>();
             MavenProject selected = null;
             for (MavenProject p : session.getProjects()) {
@@ -104,7 +106,7 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
             for (MavenProject p : session.getProjects()) {
                 if (!required.contains(p)) continue;
                 new SourcePreparation(executionPlans, pluginManager, getLog()).execute(session, p, testsRequired.contains(p.getId()));
-                new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, executionPlans, pluginManager, output);
+                new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, executionPlans, pluginManager, output, configuration);
                 String key = Integer.toHexString(p.getBasedir().getCanonicalPath().hashCode());
                 try (java.io.Writer writer = java.nio.file.Files.newBufferedWriter(
                         output.toPath().resolve(key+".pom.xml"), java.nio.charset.StandardCharsets.UTF_8)) {

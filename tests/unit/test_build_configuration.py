@@ -427,7 +427,9 @@ def test_old_launch_cache_without_snapshot_requires_probe_not_deleting_cache(mod
 
 
 @pytest.mark.parametrize("kind,old_schema", [("launch", "jolink.project-launch-cache.v15"),
-                                           ("test", "jolink.fast-test-world.v18")])
+                                           ("test", "jolink.fast-test-world.v18"),
+                                           ("launch", "jolink.project-launch-cache.v16"),
+                                           ("test", "jolink.fast-test-world.v19")])
 def test_pre_guard_cache_requires_probe_but_its_known_inputs_remain_useful(model, kind, old_schema):
     model.save(kind)
     path = (model.launch._file(model.root, model.intent.launch_name) if kind == "launch"

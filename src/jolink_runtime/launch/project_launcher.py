@@ -447,7 +447,7 @@ class ProjectLaunchPipeline:
             skipped_compiler_checks=skipped_compiler_checks(modules),
             skipped_build_steps=skipped_preparation_steps(modules),
             modules=modules if len(modules) > 1 or target.get("source_patterns") else ())
-        plan = replace(plan, configuration_stamps=configuration.finish(plan.configuration_inputs))
+        plan = configuration.bind(plan, native=(snapshot,))
         runtime_jdk = self._select_runtime_java(
             context, intent, preferences, plan, build_jdk, log,
         )
@@ -723,8 +723,8 @@ class ProjectLaunchPipeline:
                 retryable=False,
                 suggested_next_step="Use the formal Gradle launch for this project.",
             ) from error
-        world = replace(world, jdt_plan=replace(world.jdt_plan,
-            configuration_stamps=configuration.finish(world.jdt_plan.configuration_inputs)))
+        plan = configuration.bind(world.jdt_plan, native=(model,))
+        world = replace(world, configuration_inputs=plan.configuration_inputs, jdt_plan=plan)
         runtime_jdk = self._select_runtime_java(
             context, imported.intent, preferences, world.jdt_plan, build_jdk, build_log,
         )

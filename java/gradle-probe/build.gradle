@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'io.jolink'
-version = '0.1.0-modules4'
+version = '0.1.0-modules5'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8

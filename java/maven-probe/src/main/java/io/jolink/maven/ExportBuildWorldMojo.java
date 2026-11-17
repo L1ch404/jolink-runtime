@@ -50,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest36";
+    private static final String PROBE_VERSION = "0.1.0-fasttest37";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -67,6 +67,9 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     private org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator executionPlans;
     private org.eclipse.aether.RepositorySystemSession processorRepositorySession;
     private CompilerExecutions compilerExecutions;
+    private ConfigurationSnapshot configurationSnapshot;
+    @Component
+    private org.apache.maven.model.building.ModelProcessor modelProcessor;
     @Component
     private org.apache.maven.plugin.BuildPluginManager buildPluginManager;
 
@@ -163,7 +166,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             org.eclipse.aether.RepositorySystemSession repositorySession,
             org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator plans,
             org.apache.maven.plugin.BuildPluginManager plugins,
-            File destination) throws MojoExecutionException {
+            File destination, ConfigurationSnapshot configuration) throws MojoExecutionException {
         project = selected;
         session = activeSession;
         repositorySystem = repositories;
@@ -172,6 +175,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         executionPlans = plans;
         buildPluginManager = plugins;
         outputDirectory = destination;
+        configurationSnapshot = configuration;
         execute();
     }
 
@@ -179,6 +183,13 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     public void execute() throws MojoExecutionException {
         if (outputDirectory == null) {
             throw new MojoExecutionException("jolink.probe.outputDirectory is required");
+        }
+        if (configurationSnapshot == null) {
+            try {
+                configurationSnapshot = ConfigurationSnapshot.capture(session.getProjects(), modelProcessor);
+            } catch (IOException error) {
+                throw new MojoExecutionException("Unable to capture Maven configuration", error);
+            }
         }
         final List<String> classpath;
         final List<String> testClasspath;
@@ -238,6 +249,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         field(out, "schema", SCHEMA, false);
         field(out, "probeVersion", PROBE_VERSION, true);
         field(out, "probeImplementationId", implementationId(), true);
+        configurationSnapshot.appendTo(out);
         out.append(",\"project\":{");
         field(out, "groupId", project.getGroupId(), false);
         field(out, "artifactId", project.getArtifactId(), true);

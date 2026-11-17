@@ -902,8 +902,7 @@ class FastTestManager:
                 configuration_environment_names
             ),
         )
-        world = replace(world, build_preferences=preferences.cache_values(),
-                        configuration_stamps=configuration.finish(world.configuration_inputs))
+        world = configuration.bind(replace(world, build_preferences=preferences.cache_values()), native=(model,))
         result = self._start_build_world(
             attempt=attempt,
             world=world,
@@ -1304,7 +1303,7 @@ class FastTestManager:
                 resource_roots=tuple(resource_roots),
             )
         if probe_configuration is not None:
-            world = replace(world, configuration_stamps=probe_configuration.finish(world.configuration_inputs))
+            world = probe_configuration.bind(world, native=(snapshot,))
         result = self._start_build_world(
             attempt=attempt,
             world=world,

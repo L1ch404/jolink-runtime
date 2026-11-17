@@ -17,13 +17,14 @@ Build World；main/test编译由持久JDT workspace完成，测试由独立Runne
 - 沿用只收集错误的诊断策略，`showWarnings/showDeprecation`及等价诊断参数不再
   因true/false写法被拒绝；编译错误仍返回，未知扩展和`failOnWarning`没有一概忽略。
 
-当前Test模型为v19、启动模型为v16，旧模型首次重新Probe；不要求删除缓存。
+当前Test模型为v20、启动模型为v17，旧模型首次重新Probe；不要求删除缓存。
 后续仍按实际编译配置复用JDT状态，诊断/debug偏好变化不单独触发Java重编。
 
 冷Probe期间已知构建配置发生变化，会返回`BUILD_CONFIGURATION_CHANGED`并提示重试，
 不继续JDT或将旧模型记成新配置；同样适用于启动和restart。warm复用不新增检查。
-首次才发现的动态/外部配置输入仍有读取窗口边界，详见兼容性跟进文档U12，不宣称
-对所有并发编辑提供原子快照。
+原生Probe现已覆盖常规冷发现的子工程/profile POM/父POM/本地外部脚本，构建逻辑
+SourceSet采用实际生产任务开始前的消费基线。详见兼容性跟进U12续篇；自定义缓存脚本、
+远端或隐式I/O及更早模型构造交错，不宣称都具备原子快照。
 
 ### Lombok目录配置
 

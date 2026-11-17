@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,123 @@ def test_newly_discovered_input_has_only_a_post_probe_baseline(configuration):
     captured.check()  # It was not known, so this read window is not guarded.
     result = captured.finish((path, external))
     assert result[str(external)] == hashlib.sha256(external.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("change", ["modify", "delete", "same_metadata"])
+def test_native_discovery_baseline_rejects_changes_before_python_knew_the_path(configuration, change):
+    root, system, path = configuration
+    external = root.parent / "external.config"
+    external.write_text("old native input")
+    before = external.stat()
+    native = {"configurationStamps": {str(external): hashlib.sha256(external.read_bytes()).hexdigest()}}
+    captured = ProbeConfiguration.capture(root, system, (path,))
+    if change == "delete":
+        external.unlink()
+    else:
+        external.write_text("new native input")
+        if change == "same_metadata":
+            os.utime(external, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ProbeConfigurationChanged) as error:
+        captured.finish((path,), native=(native,))
+    assert error.value.context["changed_configuration_files"] == [str(external)]
+
+
+def test_native_model_mismatch_is_not_erased_when_current_bytes_match(configuration):
+    root, system, path = configuration
+    native = {"configurationStamps": {str(path): hashlib.sha256(path.read_bytes()).hexdigest()},
+              "configurationChanges": [str(path)]}
+    with pytest.raises(ProbeConfigurationChanged):
+        ProbeConfiguration.capture(root, system, (path,)).finish((path,), native=(native,))
+
+
+def test_conflicting_native_observations_are_not_last_wins(configuration):
+    root, system, path = configuration
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ProbeConfigurationChanged):
+        ProbeConfiguration.capture(root, system, (path,)).finish((path,), native=(
+            {"configurationStamps": {str(path): "earlier different input"}},
+            {"configurationStamps": {str(path): digest}},
+        ))
+
+
+def test_native_paths_remain_with_the_model_for_later_cache_checks(configuration):
+    root, system, path = configuration
+    external = root.parent / "external.config"
+    external.write_text("native input")
+    @dataclass(frozen=True)
+    class Model:
+        configuration_inputs: tuple
+        configuration_stamps: dict | None = None
+    original = Model((path,))
+    native = {"configurationStamps": {str(external): hashlib.sha256(external.read_bytes()).hexdigest()}}
+    result = ProbeConfiguration.capture(root, system, (path,)).bind(original, native=(native,))
+    assert result.configuration_inputs == (path, external)
+    assert result.configuration_stamps[str(external)] == native["configurationStamps"][str(external)]
+    assert original.configuration_stamps is None and original.configuration_inputs == (path,)
+    native["configurationStamps"][str(external)] = "later mutation"
+    assert result.configuration_stamps[str(external)] != "later mutation"
+
+
+def test_native_consumption_can_follow_legitimate_generation(configuration):
+    root, system, path = configuration
+    sources = root / "build-logic-source-set"
+    sources.mkdir()
+    generated = sources / "build-logic-input.txt"
+    generated.write_text("old generated configuration")
+    captured = ProbeConfiguration.capture(root, system, (path, generated))
+    generated.write_text("new configuration consumed by native build")
+    native = {"configurationStamps": {str(sources): "directory", str(generated): hashlib.sha256(generated.read_bytes()).hexdigest()},
+              "configurationSourceDirectories": [str(sources)]}
+    result = captured.finish((path, generated), native=(native,))
+    assert result[str(generated)] == native["configurationStamps"][str(generated)]
+    generated.write_text("edited after native consumption")
+    with pytest.raises(ProbeConfigurationChanged):
+        captured.finish((path, generated), native=(native,))
+
+
+def test_late_native_config_stamp_cannot_override_known_properties(configuration):
+    root, system, path = configuration
+    captured = ProbeConfiguration.capture(root, system, (path,))
+    path.write_text(path.read_text().replace("old", "new"))
+    native = {"configurationStamps": {str(path): hashlib.sha256(path.read_bytes()).hexdigest()}}
+    with pytest.raises(ProbeConfigurationChanged):
+        captured.finish((path,), native=(native,))
+
+
+@pytest.mark.parametrize("change", ["add", "delete"])
+def test_declared_source_set_generation_before_consumption_is_valid(tmp_path, change):
+    source = tmp_path / "source-set"
+    source.mkdir()
+    file = source / "generated.input"
+    if change == "delete":
+        file.write_text("old generated input")
+    captured = ProbeConfiguration.capture(tmp_path, "gradle", (source,))
+    if change == "delete":
+        file.unlink()
+    else:
+        file.write_text("new generated input")
+    stamps = module.build_configuration_stamps(tmp_path, "gradle", (source,))
+    result = captured.finish((source,), native=({"configurationStamps": stamps,
+        "configurationSourceDirectories": [str(source)]},))
+    assert result == stamps
+
+
+@pytest.mark.parametrize("change", ["add", "delete", "rename"])
+def test_cold_native_directory_keeps_its_consumed_file_set(tmp_path, change):
+    root = tmp_path / "discovered-source-set"
+    root.mkdir()
+    source = root / "One.txt"
+    source.write_text("first")
+    captured = ProbeConfiguration.capture(tmp_path, "gradle", ())
+    native = {"configurationStamps": {str(root): "directory", str(source): hashlib.sha256(source.read_bytes()).hexdigest()}}
+    if change == "delete":
+        source.unlink()
+    elif change == "rename":
+        source.rename(root / "Two.txt")
+    else:
+        (root / "Two.txt").write_text("new member")
+    with pytest.raises(ProbeConfigurationChanged):
+        captured.finish((), native=(native,))
 
 
 def test_finish_never_relabels_known_model_with_a_later_sample(configuration, monkeypatch):

@@ -1,6 +1,46 @@
 # joLink 产品边界与兼容性跟进
 
+## U12续：原生冷发现配置输入（2026-11-17）
+
+补上上一轮Python事前不知道路径的常规本地输入：Gradle根入口首次选子工程、子工程
+gradle.properties、首次项目外apply脚本，以及Maven profile内上游模块和外部父POM。
+固定136a99a的真实MCP门控已复现这些缺口，包含脚本执行体内修改而不只是任务执行期。
+
+- Maven Probe在准备目标前读取Maven已经解析的项目及父链。通过注入的ModelProcessor
+  对单次读取的bytes解析，并与getOriginalModel经MavenXpp3Writer规范化的内容比较；
+  不匹配记录configurationChanges，匹配的bytes形成configurationStamps。没有Maven
+  extension、手写POM语义或重复执行两遍Probe。capture后的修改由Python核对原始SHA。
+- Gradle复用原有原生脚本观察点，在普通本地脚本apply前记录首个SHA；按原生
+  ProjectDescriptor在settingsEvaluated捕获子工程配置，避免properties已加载后才取值。
+  后续重复观察不同内容会留下changes，不用新值覆盖旧观察。
+- 普通配置继续同时受Python事前快照保护。构建逻辑SourceSet可以由配置脚本合法生成，
+  对这类原生声明的输入，在classesDirs实际生产任务beforeTask捕获消费基线；不按任务名、
+  语言或项目名称特判。配置求值结束不是可靠的源码消费点：另一个included build的配置
+  仍可能生成它。这点已通过正常included-script回归发现并修正。
+- 启动/restart和Fast Test共用bind/finish，合并原生路径及已验证基线；构建逻辑源码以
+  实际消费快照为准，消费后文件内容或目录成员变化仍会报BUILD_CONFIGURATION_CHANGED。
+  不额外扫描业务Java源码，不给warm复用增加Probe或检查，不自动循环重试。
+
+新模型缓存为Test v20、启动v17，让旧的冷发现错误基线重新Probe一次；实际JDT编译
+身份规则、Worker和Test Runner不变，没有清空编译产物。Maven Probe升fasttest37，Gradle
+Probe升modules5。回归资产包括test_discovered_probe_configuration_race.py及实际
+Maven模型测试test_maven_configuration_snapshot.py／MavenConfigurationSnapshotHarness.java。
+
+最终验证（macOS，冻结Maven Probe b77116f4／Gradle Probe f12b6f8b）：冷发现竞态十一项、
+既有已知窗口八项、正常Gradle构建逻辑六项真实MCP通过；后者包含7.4.2、8.10、8.14，
+没有把合法生成源码误判为配置竞态。Maven3.3.3/3.3.9＋JDK8、3.9.11＋JDK17共24项
+原生模型/API测试通过（不是MCP测试）。普通回归1492项通过，wheel/sdist构建通过；
+隔离Python3.13安装wheel后，Maven父POM launch、Gradle外部脚本test及正常included-script
+生成链三项通过。失败基线和过程中发现的正常流程误拒证据均保留，未放宽验收断言。
+
+边界：这是原生标准本地输入的关联，不是文件系统锁或所有构建行为的原子事务。
+自定义插件预先缓存/构造的ScriptSource、内存或远端脚本、任意隐式I/O，以及Maven模型
+构造时非Reactor父对象被二次构建的更早交错，不据此宣称完整覆盖。UTF-8 BOM和UTF-16
+中文POM则已实际验证，不与“所有dependencyManagement BOM行为”混为同一承诺。
+
 ## U12：已知配置的Probe基线窗口（2026-11-14，已修；冷发现输入仍待补齐）
+
+本节保留11月14日的实现与边界；上方11月17日续篇优先，常规冷发现输入已继续接入。
 
 真实Maven和Gradle均已复现，不再只是受控Python方法：原生构建已读取旧parameters=false，
 资源准备任务等待期间配置被改成true，旧版本仍继续编译/启动，并将false模型配上新文件
@@ -1092,7 +1132,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U6 | 已修复、已review：MyBatis准备阶段阻塞 | 默认配置下依执行映射跳过检查/重写步骤，main8/test17、1316源码FULL及87项所选测试通过，增量/错误恢复/重开通过；没有关闭profile | whitespace明确execute仍会使Java变化额外Probe；仅保留为准备开销优化，不把它混成原阻塞未解决 |
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
 | U9 | 已实现：已加载/未加载类分开应用 | 普通及上游类可HotSwap/首次加载；全未加载返回class_output。命名模块新增包按真实JVM约束重启 | 已覆盖Fast Test隔离、加载/初始化观察、错误恢复及重开；不等同于框架重新扫描或任意自定义加载器支持 |
-| U12 | 已知/已跟踪输入窗口已修；首次冷发现输入仍待处理 | Maven/Gradle真实门控复现旧模型＋新hash；四路径共享前后快照、拒绝当轮及重试/重开已验证 | 首次才发现的动态模块/外部脚本等读取窗口仍缺原生内容关联，不宣称完全关闭。旧模型缓存重新Probe一次，不清编译产物 |
+| U12 | 已接入已知及原生冷发现的常规本地配置 | Maven保留rawModel对照；Gradle脚本/descriptor与buildLogic实际生产任务记录消费基线；四路径共用校验 | 不是任意扩展/远端I/O/整段模型构造的原子事务；旧模型缓存重新Probe一次，不清编译产物，详见顶部续篇 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
 | U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |

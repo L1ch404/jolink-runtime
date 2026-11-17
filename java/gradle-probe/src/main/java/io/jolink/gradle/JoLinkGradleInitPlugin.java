@@ -43,14 +43,14 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules4";
+    private static final String VERSION = "0.1.0-modules5";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
     private String probeSha256;
     private String exportTaskName;
     private String exportScope;
-    private Set<File> scriptInputs;
+    private GradleConfigurationInputs.ObservedInputs scriptInputs;
 
     private static final class BoundaryException extends RuntimeException {
         final String code;
@@ -85,7 +85,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                         ignored -> configureProject(project));
             }
         });
-        gradle.projectsEvaluated(build -> GradleConfigurationInputs.capture(build, outputPath()));
+        gradle.projectsEvaluated(build -> GradleConfigurationInputs.capture(build, outputPath(), scriptInputs));
     }
 
     private void configureProject(final Project project) {
