@@ -110,20 +110,6 @@ async def _status(
     raise TimeoutError(status)
 
 
-async def _launch_outcome(
-    session: ClientSession,
-    *,
-    timeout: float = 120,
-) -> dict[str, object]:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        status = await _payload(session, "java_status", {"action": "status", "details": True})
-        if status.get("launch_phase") == "failed" or status.get("startup_state") == "ready":
-            return status
-        await anyio.sleep(0.1)
-    raise TimeoutError(status)
-
-
 def _write_project(project: Path, port: int, *, target_java: int) -> Path:
     source = project / "src/main/java/example/GradleRuntimeApp.java"
     source.parent.mkdir(parents=True)
@@ -389,13 +375,17 @@ async def _run(
                     stream.write(
                         """
 compileJava.doLast {
-    def target = file("$buildDir/classes/java/main/example/GradleRuntimeApp.class")
-    target << (byte) 0
+    def target = destinationDirectory.file("example/GradleRuntimeApp.class").get().asFile
+    // Latin-1 preserves arbitrary class bytes; the two UTF-8 constants have equal size.
+    def charset = java.nio.charset.StandardCharsets.ISO_8859_1
+    def bytes = new String(target.bytes, charset)
+    assert bytes.contains("structural")
+    target.bytes = bytes.replace("structural", "doLast-ran").getBytes(charset)
 }
 """
                     )
                 # The build-file edit must invalidate the model without deleting caches.
-                rejected = await _payload(
+                transformed = await _payload(
                     session,
                     "java_application",
                     {
@@ -407,13 +397,15 @@ compileJava.doLast {
                         "timeout": 20,
                     },
                 )
-                outcome = rejected if rejected.get("ok") is False else await _launch_outcome(session)
-                transform_rejected = outcome.get("error_code", outcome.get("launch_error", {}).get("error_code")) == "GRADLE_BYTECODE_TRANSFORM_UNMODELED"
-                if not transform_rejected:
-                    # U13 is recorded in java-compatibility-followup-2026-09.md.
-                    # Keep the failure assertion, without waiting two minutes for
-                    # a rejection that the module-world path does not implement.
-                    raise RuntimeError("U13: expected compileJava.doLast rejection; observed " + str(outcome))
+                if transformed.get("ok") is not True:
+                    raise RuntimeError(transformed)
+                await _status(session, lambda value: value.get("startup_state") == "ready")
+                observed = _message(ready_port)
+                if observed != "doLast-ran:resource-v2":
+                    raise RuntimeError(f"Application did not load the doLast-transformed class: {observed}")
+                stopped = await _payload(session, "java_application", {"action": "stop"})
+                if stopped.get("ok") is not True:
+                    raise RuntimeError(stopped)
                 return {
                     "ok": True,
                     "build_system": "gradle",
@@ -427,7 +419,7 @@ compileJava.doLast {
                     "prepared_resources_refreshed_without_recompilation": True,
                     "runtime_probe_ignored_test_world": True,
                     "private_model_deleted": True,
-                    "bytecode_transform_rejected": transform_rejected,
+                    "bytecode_transform_applied": True,
                     "final_process_state": "absent",
                 }
 

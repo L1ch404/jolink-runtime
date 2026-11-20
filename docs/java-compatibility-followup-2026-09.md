@@ -1,5 +1,45 @@
 # joLink 产品边界与兼容性跟进
 
+## U13 续：Java 编译任务原地改写 class（2026-11-20）
+
+此前不仅是“该拒绝却没有拒绝”：有三个原生 Gradle 测试通过的项目，joLink 的
+JUnit 或已 ready 应用的 HTTP 返回却读到了未改写的值。现在 Probe 比较项目最终配置
+的编译任务和本次发行版的标准 JavaCompile，发现定制动作时让 Gradle 构建，测试和
+应用继续使用各自的产物。无需用户传参数，也不解析回调源码。
+
+- Gradle 8.14 的真实 MCP 覆盖项目给 main 追加动作、上游插件追加动作、以及仅 test
+  追加动作；7.4.2 也通过 main 场景。测试先编译不会改变还在运行的应用，restart 后
+  HTTP 才读到新值。仅改声明的文件、在空文件树中新增/删除匹配项也能更新；不匹配的
+  文件不会触发编译。另实测了由 Copy 生成的文件输入：旧候选只改原件时曾误报 0 编译；
+  最终版对 provider 连接和显式 `dependsOn` 加文件路径两种形式都读到了新值。
+  8.14 四组、7.4.2 两组真实 MCP 全部通过。仅定制 test 时启动和 restart 仍走 JDT，重开后无改动复用。
+- 历史 8.10 / Java 8、8.14 / Java 11 两项启动验收保留了前面的热替换、结构重启和
+  资源刷新，再就地修改构建脚本，不清缓存。用合法等长常量替换验证：旧版新进程实际返回
+  `structural:resource-v2`，新版两组均实际返回 `doLast-ran:resource-v2`。
+- 这是 Gradle 在需要构建时真正执行动作，不是 joLink 实现字节码增强。未声明的 I/O、
+  依赖每次运行的副作用、仅在真正执行时才临时改写任务图等，不能据此宣称支持。
+
+## U13：Gradle 已声明的额外输出（2026-11-20）
+
+Mockito `7834859` 的干净副本以前在 Fast Test 编译阶段报 2 条 build path 错误：
+项目将编译得到的 `MockMethodDispatcher.class` 复制为运行时需要的 `.raw`，
+但 joLink 没有调度生产任务。现在应用和 Fast Test 共用 Gradle 导出的额外输出和
+任务依赖，不要求先手工构建、不按项目或扩展名处理。没有额外输出和自定义编译动作的普通 Java 仍用 JDT。
+
+用 Gradle 8.5、干净项目输出和新 joLink 缓存复验，沿用已有 Gradle 依赖与构建缓存。
+项目自己的 `copyMockMethodDispatcher` 实际执行；编译的 class、生成的 raw、
+Test Runner 私有副本三者 SHA-256 一致。所选 23 项冷、暖两次与原生均为
+21 通过、2 跳过、0 失败；最终候选本机冷跑约 21.5 秒、无改动暖跑约 1.4 秒，后者未编译。
+这不是 Mockito 全套测试，也不是应用启动证据。
+
+启动/restart 单独用可真实发 HTTP 的工程验证，覆盖单模块、上游模块和 test 专属输出。
+测试先编译不会改变在跑的应用；应用 restart 才读新产物。详见[Gradle 流程及验收](gradle-modules.zh-CN.md)。
+最终 Probe 在 Gradle 8.14 跑三种布局，另在 7.4.2 跑上游、8.10 跑主模块，5 次真实
+MCP 验收全部通过；包含冷时不存在、后来新增的文件，以及大小写不敏感的文件筛选。
+隔离安装 wheel 后，已有纯 Java 和 Java/Groovy 多模块两项真实 MCP 回归也通过。
+没有注册额外输出、直接在 `compileJava.doLast` 改写原 class，是另一条路径，见上方续篇。
+远端或未声明的生产任务输入不在本次范围。
+
 ## U14：Gradle 混合源码联合编译（2026-11-18 至 19 日，优先于下方调查记录）
 
 已接通原生编译链，不是要求用户先手工编译一次。Probe modules6 导出源码根、classes
@@ -1191,7 +1231,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U8 | 用户暂缓：Lombok1.18.20兼容 | `@Builder(toBuilder=true)`等部分用法依赖旧ECJ内部接口；不代表所有Lombok注解都失败 | 后续单独研究旧版本支持；不自动升级业务依赖、不增加整版本拦截 |
 | U9 | 已实现：已加载/未加载类分开应用 | 普通及上游类可HotSwap/首次加载；全未加载返回class_output。命名模块新增包按真实JVM约束重启 | 已覆盖Fast Test隔离、加载/初始化观察、错误恢复及重开；不等同于框架重新扫描或任意自定义加载器支持 |
 | U12 | 已接入已知及原生冷发现的常规本地配置 | Maven保留rawModel对照；Gradle脚本/descriptor与buildLogic实际生产任务记录消费基线；四路径共用校验 | 不是任意扩展/远端I/O/整段模型构造的原子事务；旧模型缓存重新Probe一次，不清编译产物，详见顶部续篇 |
-| U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
+| U13 | 已修复已复现的两类问题：额外输出、原地改写 class | Mockito 所选 23 项与原生相同；上游/main/test 定制的编译动作通过 Fast Test 和应用实际行为验收 | 不承诺未声明输入与每次都需要执行的外部副作用 |
 | U14 | 普通 Gradle JVM 混编已接入 | 纯 Java 保留 JDT；混编任务归 Gradle、测试和应用使用隔离产物。TestNG 原阻塞选择冷/暖均 16/16 | 平台、混编 JPMS、自定义任务/变体与隐藏输入仍有边界；不等于已实现 U13 |
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
 | U16 | 已修：旧Maven显式APT路径解析 | 避免调用旧插件API realm不可见的Aether工具类，保留原runtime范围语义；3.3.3/3.3.9/3.9.11双链路通过 | 原生Maven继续解析仓库/依赖/exclusions；未泛化到所有Maven/JDK组合 |
@@ -1200,13 +1240,13 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U19 | 已修：APT新生成Lombok源码的配置来源 | 按原生main/test生成目录映射，使用Lombok原生目录解析并跟踪同轮新增配置作用域 | Fast Test与HTTP启动/restart交叉验证配置变化、失败恢复及重开；不包含U17/U18 |
 
 U11、U10、U4、U6均已提交，不再作为待实现项。
-后续可讨论U13的构建步骤、U14的语言任务，以及已缩小复现的U2编译器修复范围。
+后续可讨论 U14 普通 JVM 范围以外的组合，以及已缩小复现的 U2 编译器问题。
 必要源码生成（如ANTLR）与可留给正式构建的质量检查不能混为一类。用户已明确暂缓的
 事项继续保留，不因这次更新文档就自动开展实现。
 
-U13本轮补充：Mockito的`copyMockMethodDispatcher`依赖`compileJava`，把编译后的
+U13历史复现（已声明输出部分已于 2026-11-20 修复）：Mockito的`copyMockMethodDispatcher`依赖`compileJava`，把编译后的
 `MockMethodDispatcher.class`复制/重命名为`.raw`，写入额外SourceSet输出目录。
-当前Probe准备`processResources`，不会执行这条编译后资源链；新副本因此缺少目录，
+当时Probe准备`processResources`，不会执行这条编译后资源链；新副本因此缺少目录，
 JDT test工程报告build path错误。不能简单把所有额外输出当普通资源忽略；这个文件是
 Mockito inline mock的实际运行输入。本轮只定位记录，不扩展编译后任务调度。
 

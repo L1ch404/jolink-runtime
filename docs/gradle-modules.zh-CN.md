@@ -1,7 +1,8 @@
 # Gradle 多模块：启动、reload 和 Fast Test
 
-Gradle 项目通过同一个 Probe 和同一套 MCP 工具使用两条编译路径。纯 Java 使用
-持久 JDT；选定范围需要联合编译时，Gradle 负责自己的语言编译器。无需指定后端。
+Gradle 项目通过同一个 Probe 和同一套 MCP 工具使用两条编译路径。普通 Java 使用
+持久 JDT；选定范围需要混编、通过 `SourceSet.output.dir(...)` 声明额外输出，或定制了 Java 编译动作时，
+Gradle 执行自己的任务。无需指定后端。
 
 ## 混合源码：编译交给谁
 
@@ -25,6 +26,30 @@ Gradle 项目通过同一个 Probe 和同一套 MCP 工具使用两条编译路�
   mtime/size 约定，不承诺跨进程同时编辑/构建的原子快照。
 
 回归入口：[联合编译与测试隔离](../tests/e2e/test_gradle_joint_compile.py)。
+
+### 已声明的额外输出
+
+有些项目需要在编译之后再复制或生成文件供类加载器读取。Probe 读取 Gradle
+登记的输出目录和任务依赖；既支持显式 `builtBy`，也支持任务挂在 `classes.dependsOn`
+且实际写入注册目录的子目录。下游依赖上游的普通项目 JAR 时，运行路径也保留这些输出。
+只有 test 声明时，应用 main 仍使用原来的后端。
+
+重跑时检查已声明的文件输入，包括原本为空的文件树和注册目录中不归生成任务所有的文件。
+文件树沿用 Gradle 导出的 includes、excludes 与大小写设置，而不是从一次构建中列出已有文件。
+无变化不启动 Gradle；有变化则由 Gradle 决定哪些任务实际重做。
+回归入口：[Fast Test 与真实 HTTP 启动 / restart](../tests/e2e/test_gradle_declared_outputs.py)。
+
+### 原地改写已有 class，不声明额外输出
+
+项目或插件可以给 `compileJava` / `compileTestJava` 追加 `doFirst`、`doLast`。
+Probe 比较配置完成后的任务类型和动作列表，与**当前 Gradle 发行版**给标准 JavaCompile
+安装的动作类型和顺序。不同就由 Gradle 执行整个任务；不尝试从回调内容猜测它是改 class
+还是只打印日志。只定制 test 不影响应用 main；上游 main 的定制会影响使用它的下游。
+回调显式注册的本地文件、目录与文件树进入同一套变更检测。若某个直接依赖的任务声明
+自己生产该输入，Probe 沿这条文件依赖链追溯原始输入；暖缓存比较原始文件，不把中间产物当成新改动。
+没有改动依然跳过 Gradle，
+所以这不适合依赖未声明的外部输入或要求每次调用都产生副作用的回调。
+回归入口：[测试与应用实际读取改写后的字节码](../tests/e2e/test_gradle_compile_actions.py)。
 
 ## 纯 Java 流程
 

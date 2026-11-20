@@ -3,7 +3,7 @@
 import re
 
 
-def ant_pattern(pattern):
+def ant_pattern(pattern, flags=0):
     value = pattern.replace("\\", "/")
     if value.endswith("/"):
         value += "**"
@@ -17,13 +17,14 @@ def ant_pattern(pattern):
             expression += "".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in part)
             if not last:
                 expression += "/"
-    return re.compile(expression)
+    return re.compile(expression, flags)
 
 
 class SourceSelection:
     def __init__(self, patterns):
-        self.includes = tuple(ant_pattern(p) for p in patterns.get("includes", ()))
-        self.excludes = tuple(ant_pattern(p) for p in patterns.get("excludes", ()))
+        flags = 0 if patterns.get("caseSensitive", True) else re.IGNORECASE
+        self.includes = tuple(ant_pattern(p, flags) for p in patterns.get("includes", ()))
+        self.excludes = tuple(ant_pattern(p, flags) for p in patterns.get("excludes", ()))
 
     def accepts(self, relative):
         return (not self.includes or any(p.fullmatch(relative) for p in self.includes)) and not any(

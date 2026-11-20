@@ -43,7 +43,8 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules6";
+    private static final String VERSION = "0.1.0-modules8";
+    private final JavaCompileActions compileActions = new JavaCompileActions();
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -220,8 +221,9 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
             SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
             SourceSet main = sets.getByName("main");
             Map<String, Object> facts = commonModel(module);
-            facts.put("main", sourceSet(module, main));
-            facts.put("compileJava", compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
+            facts.put("main", module.equals(project) ? result.get("main") : sourceSet(module, main));
+            facts.put("compileJava", module.equals(project) ? result.get("compileJava")
+                    : compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
             if (module.equals(project) && exportScope.equals("test")) {
                 facts.put("test", result.get("test"));
                 facts.put("compileTestJava", result.get("compileTestJava"));
@@ -445,6 +447,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 sourceSet.getOutput().getClassesDirs().getFiles()));
         result.put("languageRoots", orderedFiles(languageRoots(sourceSet)));
         result.put("classesTask", project.getTasks().getByName(sourceSet.getClassesTaskName()).getPath());
+        DeclaredOutputs.describe(project, sourceSet, result);
         result.put("resourcesDirectory", nullableFile(
                 sourceSet.getOutput().getResourcesDir()));
         result.put("compileClasspath", orderedFiles(
@@ -454,9 +457,10 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return result;
     }
 
-    private static Map<String, Object> compileTask(JavaCompile task)
+    private Map<String, Object> compileTask(JavaCompile task)
             throws Exception {
         Map<String, Object> result = new LinkedHashMap<>();
+        compileActions.describe(task, result);
         result.put("taskPath", task.getPath());
         result.put("projectDirectory", canonical(task.getProject().getProjectDir()));
         result.put("sourceCompatibility", task.getSourceCompatibility());

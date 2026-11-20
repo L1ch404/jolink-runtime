@@ -132,9 +132,10 @@ Set `hotswap=false` to force process/application reinitialization. The result's
 [restart workflow](docs/project-restart.zh-CN.md).
 
 Fast Test uses a Maven or Gradle Probe only when its small configuration cache
-is absent or changed. Pure Java uses a persistent JDT workspace. Mixed Gradle JVM
-projects use their native compilation tasks, with separate outputs for tests and
-the live application. In both cases an isolated runner executes the selected
+is absent or changed. Ordinary Java uses a persistent JDT workspace. If a Gradle
+source set mixes JVM languages, declares extra output directories, or customizes
+its Java compile actions, Gradle builds it; tests and the live application use separate outputs.
+In both cases an isolated runner executes the selected
 JUnit 4/5 or TestNG tests:
 
 ```text

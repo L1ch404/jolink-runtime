@@ -32,9 +32,10 @@ verification task into tool installation or treat missing tools as test success.
 
 - Native Maven/Gradle probes export resolved source roots, classpaths, compiler and
   processor settings. Supported source/resource preparation still uses the build
-  system. Pure Java uses Eclipse JDT's Java Builder (ECJ). Mixed Gradle JVM
-  sources can use their native compilation tasks instead, with separate test and
-  application outputs. Neither path wraps a full test lifecycle on every edit.
+  system. Ordinary Java uses Eclipse JDT's Java Builder (ECJ). Gradle source
+  sets with mixed JVM languages, additional output directories, or custom Java compile actions use
+  native Gradle tasks, with separate test and application outputs. Neither
+  path wraps a full test lifecycle on every edit.
 - JDT keeps workspace/build state on disk, tracks source deltas and dependent
   modules, and reuses unchanged output. Main/test have separate compilation
   settings within one Worker. Cold or invalidated workspaces can require a full build.

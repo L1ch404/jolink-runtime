@@ -89,3 +89,71 @@ def test_successful_build_can_replace_same_size_and_timestamp(tmp_path):
     assert c._build(ok).runtime_changed_classes == (key,)
     assert c.class_file(key)[1].read_bytes() == b"new"
     c.close()
+
+
+def test_declared_output_tracks_static_siblings_not_producer_writes(tmp_path):
+    project = tmp_path / "project"
+    classes = project / "build/classes"
+    extra = project / "build/extra"
+    nested = extra / "generated"
+    inputs = project / "payload"
+    plan = {"build_root": str(project), "tasks": [":classes"],
+            "resource_inputs": [], "outputs": list(map(str, (classes, extra))),
+            "extraUnownedDirs": [str(extra)], "extraGeneratedPaths": [str(nested)],
+            "extraInputTrees": [{"directory": str(inputs), "includes": ["**/*.txt"],
+                                 "excludes": ["ignored/**"]}],
+            "extraInputFiles": [str(classes), str(nested)]}
+    model = {"module_root": str(project), "source_roots": [], "test_source_roots": [],
+             "output_directory": str(classes), "test_output_directory": str(project / "test"),
+             "native_compile": plan}
+    native = GradleNativeSession(tmp_path / "private", (model,), project, tmp_path / "jdk")
+    def generate(_):
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "payload.raw").write_text("generated")
+        return SimpleNamespace(succeeded=True)
+    try:
+        native.start(run_operation=generate)
+        assert not native.workspace_source_changes()  # building didn't invalidate its own inputs
+        private, = native.runtime_classpath([extra])
+        sibling = extra / "static.txt"
+        sibling.write_text("original")
+        included = inputs / "new.txt"
+        ignored = inputs / "ignored/also.txt"
+        ignored.parent.mkdir(parents=True)
+        ignored.write_text("unrelated")
+        included.write_text("new")
+        assert set(native.workspace_source_changes()) == {sibling, included}
+        native._build(generate)
+        assert (private / "static.txt").read_text() == "original"
+        sibling.unlink()
+        included.unlink()
+        assert set(native.workspace_source_changes()) == {sibling, included}
+        native._build(generate)
+        assert not (private / "static.txt").exists() and not native.workspace_source_changes()
+    finally:
+        native.close()
+
+
+def test_literal_root_scoped_copy_inputs_do_not_walk_project(tmp_path, monkeypatch):
+    from jolink_runtime.launch.gradle_native_session import _producer_files
+
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text("notice")
+    output = tmp_path / "build"
+    output.mkdir()
+    (output / "NOTICE").touch()
+    def unexpected_walk(*args):
+        pytest.fail("a literal root-scoped input must not enumerate unrelated directories")
+    monkeypatch.setattr(os, "walk", unexpected_walk)
+    spec = {"includes": ["LICENSE", "build/NOTICE", "not-created-yet"]}
+    assert list(_producer_files(tmp_path, spec, {output})) == [license_file]
+
+
+def test_case_insensitive_producer_tracks_real_filenames_and_honors_excludes(tmp_path):
+    from jolink_runtime.launch.gradle_native_session import _producer_files
+
+    for name in ("license", "new.txt", "ignored.txt"):
+        (tmp_path / name).touch()
+    for patterns, expected in [(["LICENSE"], {"license"}), (["*.TXT"], {"new.txt"})]:
+        spec = {"caseSensitive": False, "includes": patterns, "excludes": ["IGNORED.TXT"]}
+        assert {p.name for p in _producer_files(tmp_path, spec, set())} == expected

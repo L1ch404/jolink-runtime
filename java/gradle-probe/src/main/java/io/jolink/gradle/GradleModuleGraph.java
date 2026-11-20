@@ -41,6 +41,7 @@ final class GradleModuleGraph {
                         String path = artifact.getFile().getCanonicalPath();
                         String kind;
                         if (main.getOutput().getClassesDirs().getFiles().contains(artifact.getFile())) kind = "classes";
+                        else if (main.getOutput().getDirs().getFiles().contains(artifact.getFile())) kind = "extra";
                         else if (artifact.getFile().equals(main.getOutput().getResourcesDir())) kind = "resources";
                         else if (artifact.getFile().equals(((Jar) producer.getTasks().getByName(main.getJarTaskName()))
                                 .getArchiveFile().get().getAsFile())) kind = "jar";

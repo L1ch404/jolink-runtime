@@ -187,6 +187,31 @@ def test_gradle_module_compilers_keep_separate_generated_directories(tmp_path):
         assert settings["generated_source_directory"] == expected
 
 
+@pytest.mark.parametrize(("scope", "action", "native"), [
+    ("runtime", "compileJava", True), ("test", "compileJava", True),
+    ("runtime", "compileTestJava", False), ("test", "compileTestJava", True),
+])
+def test_gradle_compile_action_uses_only_selected_scopes_and_preserves_inputs(tmp_path, scope, action, native):
+    from jolink_runtime.launch.gradle_module_world import module_world
+
+    project, model = _model(tmp_path)
+    model[action].update(customCompileActions=True, extraInputFiles=[str(project / "mode")])
+    model["main"]["runtimeClasspath"] = model["compileJava"]["classpath"]
+    module = {"projectDirectory": str(project)}
+    scopes = [("main", "compileJava", ":classes")]
+    if scope == "test":
+        scopes.append(("test", "compileTestJava", ":testClasses"))
+    for name, task, lifecycle in scopes:
+        module[task] = model[task]
+        module[name] = dict(model[name], classesTask=lifecycle, languageRoots=model[name]["javaSourceDirectories"])
+    model.update(projectDirectory=str(project), rootDirectory=str(project), exportScope=scope, modules=[module])
+    _, target, _ = module_world(model)
+    assert ("native_compile" in target) == native
+    if native:
+        assert target["native_compile"]["extraInputFiles"] == [str(project / "mode")]
+        assert target["native_compile"]["tasks"] == [t for _, _, t in scopes]
+
+
 @pytest.mark.parametrize("paths", [None, [], ["second-root", "first-root"]])
 def test_gradle_source_path_preserves_unset_empty_and_order(tmp_path, paths):
     from jolink_runtime.launch.gradle_module_world import _compiler_settings

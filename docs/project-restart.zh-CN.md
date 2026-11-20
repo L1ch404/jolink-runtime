@@ -121,8 +121,8 @@ HotSwap 不重新执行构造器、静态初始化或 Spring 启动流程。修�
   新增字段后自动重启且新行为保持；恢复源码并强制重启回到200；3项所选Fast Test
   通过，期间应用PID不变。测试源码及临时启动项已恢复。
 - compileall、定向静态检查、diff检查、wheel/sdist构建通过。
-- 额外旧Gradle单模块脚本末尾的doLast拒绝预期不通过；干净e5bad1d也已真实复现，
-  单独记录为兼容性文档U13。没有将该整组报告为通过。
+- 当时旧 Gradle 单模块脚本末尾的 doLast 拒绝预期不通过，干净 e5bad1d 也已复现。
+  2026-11-20 已改为交给 Gradle 执行并验证服务真实返回值，两组复验均通过，见[U13](java-compatibility-followup-2026-09.md)。
 
 运行环境为本机macOS，不能替代Windows公司项目验收。真实MCP测试启动的是当前
 工作区的新stdio进程，不依赖客户端里可能仍存活的旧MCP实例。

@@ -46,7 +46,7 @@ def _compiler_settings(task: dict, *, native=False) -> dict:
         # not translate them into ECJ options or claim checks were skipped.
         jpms = task.get("jpms", {})
         if jpms.get("moduleName") or jpms.get("patchModule"):
-            raise GradleModuleError("GRADLE_MIXED_JPMS_UNSUPPORTED", "Mixed-language JPMS execution is not yet modeled.")
+            raise GradleModuleError("GRADLE_MIXED_JPMS_UNSUPPORTED", "JPMS execution with native Gradle compilation is not yet modeled.")
         # Prefer the project's target for an implicit application JVM, but do
         # not require a separate platform installation to run native Gradle.
         home = Path(task["compilerJavaHome"])
@@ -98,7 +98,9 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         for scope, task in (("main", "compileJava"), ("test", "compileTestJava")):
             if task in item:
                 candidates.update(_foreign_inputs(item[scope], item[task]))
-    native = mixed_sources_present(candidates)
+    native = any(m[scope].get("extraOutputDirs") or m[task].get("customCompileActions")
+                 for m in facts.values() for scope, task in (("main", "compileJava"), ("test", "compileTestJava"))
+                 if task in m) or mixed_sources_present(candidates)
     output_sources = {}
     for item in facts.values():
         for source in (item["main"], item.get("test", {})):
@@ -115,7 +117,7 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                 producer = facts[artifact["projectDirectory"]]
                 if native and artifact["kind"] == "jar":
                     paths.extend(producer["main"]["classesDirectories"])
-                elif native and artifact["kind"] == "classes":
+                elif native and artifact["kind"] in {"classes", "extra"}:
                     paths.append(raw)
                 elif artifact["kind"] != "resources":
                     paths.append(producer["compileJava"]["destinationDirectory"])
@@ -125,6 +127,8 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                         for p in producer["main"].get("preparedResourceDirectories", producer["main"]["resourceDirectories"])
                         if native or Path(p).is_dir()
                     )
+                if native and artifact["kind"] == "jar":
+                    paths.extend(producer["main"].get("extraOutputDirs", ()))
             elif raw in output_sources:
                 if runtime:
                     paths.extend(p for p in output_sources[raw] if native or Path(p).is_dir())
@@ -196,15 +200,21 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         if native:
             scopes = [main] + ([item["test"]] if test else [])
             outputs = list(dict.fromkeys(p for s in scopes for p in
-                           (*s["classesDirectories"], *s.get("preparedResourceDirectories", ())) if p))
+                           (*s["classesDirectories"], *s.get("preparedResourceDirectories", ()),
+                            *s.get("extraOutputDirs", ())) if p))
             resource_inputs = dict.fromkeys(p for s in scopes for p in
                                             (*s["resourceDirectories"], *s.get("resourcePreparationInputs", ())))
             modules[-1]["native_compile"] = {
                 "build_root": model["rootDirectory"],
-                "tasks": [s["classesTask"] for s in scopes],
+                "tasks": list(dict.fromkeys(t for s in scopes for t in
+                                            (s["classesTask"], *s.get("extraOutputTasks", ())))),
                 "outputs": outputs,
                 "resource_inputs": [p for p in resource_inputs if p not in outputs],
             }
+            for field in ("extraInputFiles", "extraInputTrees", "extraGeneratedPaths", "extraUnownedDirs"):
+                values = [v for part in (*scopes, compile, test or {}) for v in part.get(field, ())]
+                if values:
+                    modules[-1]["native_compile"][field] = values
             modules[-1]["source_roots"] = main["languageRoots"]
             modules[-1]["test_source_roots"] = item["test"]["languageRoots"] if test else []
     target = next(item for item in modules if item["module_root"] == selected)

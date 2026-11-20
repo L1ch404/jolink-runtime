@@ -1,6 +1,7 @@
 """Gradle owns joint compilation; only successful outputs enter this consumer's private classpath."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -11,8 +12,36 @@ import uuid
 from .contracts import BuildOperationSpec
 from .build_log import redacted_build_log_tail
 from .gradle_module_world import LANGUAGE_SUFFIXES
+from .source_selection import SourceSelection
 from .jdt_compile_session import JdtCompileError, JdtCompileResult
 from .process_supervisor import AttemptToken, ProcessSupervisor
+
+
+def _producer_files(root: Path, spec: dict, excluded: set[Path]) -> Iterator[Path]:
+    selection = SourceSelection(spec)
+    includes = spec.get("includes", ())
+    # Common root-scoped CopySpecs name individual files, e.g. from(projectDir)
+    # { include "LICENSE" }. Do not enumerate the entire repository for them.
+    if includes and spec.get("caseSensitive", True) and all(
+        not any(c in pattern for c in "*?\\") and not pattern.endswith("/")
+        and not Path(pattern).is_absolute() and ".." not in Path(pattern).parts for pattern in includes
+    ):
+        for pattern in includes:
+            path = root / pattern
+            if path.is_file() and selection.accepts(pattern) and not any(path.is_relative_to(out) for out in excluded):
+                yield path
+    elif root.is_file():
+        if selection.accepts("."):
+            yield root
+    else:
+        top_level_only = includes and all("/" not in p and "\\" not in p and p != "**" for p in includes)
+        for folder, dirs, files in os.walk(root):
+            folder = Path(folder)
+            dirs[:] = [] if top_level_only else [d for d in dirs if folder / d not in excluded]
+            for name in files:
+                path = folder / name
+                if path not in excluded and selection.accepts(path.relative_to(root).as_posix()) and path.is_file():
+                    yield path
 
 
 class GradleNativeSession:
@@ -31,6 +60,21 @@ class GradleNativeSession:
         self.resources = tuple(dict.fromkeys(Path(p) for m in modules for p in m["native_compile"]["resource_inputs"]))
         outputs = dict.fromkeys(p for m in modules for p in m["native_compile"]["outputs"])
         self._outputs = {Path(p): self.root / "workspace" / str(i) for i, p in enumerate(outputs)}
+        # Track original inputs, not the class/resource/intermediate directories
+        # these same tasks will rewrite. Test and application have separate baselines.
+        produced = {Path(p) for m in modules for p in m["native_compile"].get("extraGeneratedPaths", ())}
+        generated = set(self._outputs) | produced
+        self.producer_inputs = []
+        for m in modules:
+            plan = m["native_compile"]
+            # A producer can own only a child of a registered output root.
+            # Watch its static siblings, never its generated destination.
+            for p in plan.get("extraUnownedDirs", ()):
+                self.producer_inputs.append((Path(p), {}, produced))
+            for spec in [*plan.get("extraInputTrees", ()), *({"directory": p} for p in plan.get("extraInputFiles", ()))]:
+                path = Path(spec["directory"])
+                if not any(path.is_relative_to(out) for out in generated):
+                    self.producer_inputs.append((path, spec, generated))
         self.output_directory = self._outputs[Path(target["output_directory"])]
         self.test_output_directory = self._outputs.get(Path(target["test_output_directory"]), self.root / "unused-test")
         self.index = self.root / "native-state.json"
@@ -58,6 +102,10 @@ class GradleNativeSession:
                     if (not sources or path.suffix in LANGUAGE_SUFFIXES) and path.is_file():
                         stat = path.stat()
                         result[str(path)] = [stat.st_mtime_ns, stat.st_size]
+        for root, spec, excluded in self.producer_inputs:
+            for path in _producer_files(root, spec, excluded):
+                stat = path.stat()
+                result[str(path)] = [stat.st_mtime_ns, stat.st_size]
         return result
 
     def workspace_source_changes(self):
