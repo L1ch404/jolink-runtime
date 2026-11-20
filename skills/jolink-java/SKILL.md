@@ -32,12 +32,15 @@ verification task into tool installation or treat missing tools as test success.
 
 - Native Maven/Gradle probes export resolved source roots, classpaths, compiler and
   processor settings. Supported source/resource preparation still uses the build
-  system; repeated business-source compilation uses headless Eclipse JDT's Java
-  Builder (ECJ), not a fresh `mvn test` or `gradle test` lifecycle on every edit.
+  system. Pure Java uses Eclipse JDT's Java Builder (ECJ). Mixed Gradle JVM
+  sources can use their native compilation tasks instead, with separate test and
+  application outputs. Neither path wraps a full test lifecycle on every edit.
 - JDT keeps workspace/build state on disk, tracks source deltas and dependent
   modules, and reuses unchanged output. Main/test have separate compilation
   settings within one Worker. Cold or invalidated workspaces can require a full build.
 - Tests execute in an independent JVM using the project's JUnit/TestNG libraries.
+  An absent `compiled_source_count` is not zero: Gradle can compile without
+  reporting an exact count.
   Application updates send compiled class bytes to the running JVM through JDWP
   `RedefineClasses`, or restart on those same outputs when HotSwap is unsuitable.
   Debugging observes actual JVM events, stacks and values. No running IDE is required.

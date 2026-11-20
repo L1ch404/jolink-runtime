@@ -18,6 +18,7 @@ from .runtime_preparation import prepared_runtime
 from .idea_environment import IdeaEnvironmentImporter, build_preferences_key
 from .build_environment import apply_build_preferences
 from .jpms_runtime import module_runtime, module_vm_arguments
+from .gradle_module_world import dormant_language_roots, mixed_sources_present
 
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,8 @@ class JdtLaunchService:
             current = build_configuration_stamps(
                 plan.project_root, prepared.build_system, plan.configuration_inputs
             )
-            if preferences_match and plan.configuration_stamps is not None and current == plan.configuration_stamps:
+            if (preferences_match and plan.configuration_stamps is not None and current == plan.configuration_stamps
+                    and not mixed_sources_present(dormant_language_roots(getattr(plan, "modules", ())))):
                 return None
         except OSError:
             pass
@@ -83,22 +85,25 @@ class JdtLaunchService:
         try:
             context.check_cancelled()
             session.begin_jdt_bootstrap()
-            candidate, selected = prepared_runtime(
-                (prepared.build_jdk.home,), check_request=context.check_cancelled
-            )
-            plan = replace(plan, worker_java_home=selected.home, worker_java_major=selected.major)
-            prepared = replace(prepared, jdt_build_world_plan=plan)
-            session.record_jdt_worker_runtime(
-                java_major=plan.worker_java_major, data_model=64
-            )
+            candidate = selected = None
+            if not plan.compilation_configuration.get("gradle_native"):
+                candidate, selected = prepared_runtime(
+                    (prepared.build_jdk.home,), check_request=context.check_cancelled
+                )
+                plan = replace(plan, worker_java_home=selected.home, worker_java_major=selected.major)
+                prepared = replace(prepared, jdt_build_world_plan=plan)
+                session.record_jdt_worker_runtime(java_major=selected.major, data_model=64)
             workspace, compiler = open_compile_session(
                 plan.compilation_configuration, store=runtime._jdt_workspaces,
                 project_root=plan.project_root, module_root=plan.module_root,
                 candidate=candidate, worker_java=selected, resource_modules=plan.modules,
+                build_java_home=prepared.build_jdk.home,
             )
             session.attach_jdt_workspace_lease(workspace)
             session.attach_compile_session(compiler)
-            result = initialize_compile_session(compiler, reuse_workspace=workspace.reusable)
+            result = initialize_compile_session(compiler, reuse_workspace=workspace.reusable,
+                **({"run_operation": context.run_operation, "probe_refreshed": not prepared.probe_cache_reused}
+                   if plan.compilation_configuration.get("gradle_native") else {}))
             context.check_cancelled()
             if not result.compile_ok:
                 raise JdtCompileError(

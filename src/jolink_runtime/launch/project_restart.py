@@ -13,7 +13,7 @@ from ..adapters.java.process_manager import ProcessStartCancelledError, ProcessS
 from .contracts import LaunchErrorCode, LaunchPhase, RuntimeProcessState
 from .project_launcher import ProjectLaunchRequest
 from .controller import LaunchCancelled, LaunchContext, LaunchControlError, LaunchPipelineFailure
-from .jdt_compile_session import JdtCompileError, PersistentJdtCompileSession
+from .jdt_compile_session import JdtCompileError
 from .jdt_launch_service import JdtLaunchService
 from .project_session import JavaProjectSession, ProjectSessionError
 from .startup_timing import StartupTimings
@@ -227,7 +227,7 @@ def _launch_compiled(
         context.check_cancelled()
         session.generations.mark_runtime_current()
         compiler = session.compile_session
-        if isinstance(compiler, PersistentJdtCompileSession):
+        if compiler is not None:
             try:
                 compiler.reset_publication_baseline(
                     current.output_directory

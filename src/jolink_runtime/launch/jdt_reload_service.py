@@ -8,7 +8,7 @@ from typing import Any
 
 from ..core.models import RuntimeAction, RuntimeResult
 from ..adapters.java.jdwp_client import JDWPCommandOutcomeUnknown, JDWPCommandRejected
-from .jdt_compile_session import JdtCompileError, PersistentJdtCompileSession
+from .jdt_compile_session import JdtCompileError
 from .project_session import JavaProjectSession, ProjectSessionError, ReloadStage
 from .reload_coordinator import BackgroundReloadCoordinator
 from .jdt_launch_service import JdtLaunchService
@@ -56,7 +56,7 @@ class JdtReloadService:
         if configuration_error is not None:
             return configuration_error
         compiler = project_session.compile_session
-        if not isinstance(compiler, PersistentJdtCompileSession) or not compiler.ready:
+        if compiler is None or not compiler.ready:
             return RuntimeResult(ok=False, error="JDT is not running.",
                 data={"error_code": "JDT_SESSION_NOT_READY", "applied": False})
         if not restart and runtime._active_suspension is not None:
@@ -111,6 +111,9 @@ class JdtReloadService:
         try:
             result = compiler.compile(sources)
         except JdtCompileError as error:
+            if error.error_code == "GRADLE_NATIVE_COMPILE_FAILED":
+                return RuntimeResult(ok=False, error=str(error), data={
+                    "error_code": error.error_code, "applied": False, **error.context})
             if not compiler.ready:
                 compiler.close()
                 session.clear_compile_session(compiler)
@@ -124,9 +127,14 @@ class JdtReloadService:
             "compile_total_ms": compile_total_ms,
             "jdt_build_ms": result.jdt_build_ms,
             "diagnostics_ms": result.diagnostics_ms,
-            "compiled_source_count": result.compiled_source_count,
             "build_kind": result.actual_build_kind,
         }
+        if result.compiled_source_count is not None:
+            timing["compiled_source_count"] = result.compiled_source_count
+        if getattr(compiler, "strategy", None) == "gradle_native":
+            timing["compile_backend"] = compiler.strategy
+            timing["native_compile_log"] = str(compiler.compile_log)
+            timing.pop("jdt_build_ms")
         if not result.compile_ok:
             return RuntimeResult(ok=False, error="JDT incremental compilation failed.", data={
                 **timing, "error_code": "JDT_COMPILE_FAILED", "applied": False,

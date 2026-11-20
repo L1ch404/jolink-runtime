@@ -55,7 +55,7 @@ class DebugEvaluation:
                         if runtime._project_processes.get(key) is current]
         for session in sessions:
             compiler = session.compile_session
-            if compiler is not None and compiler.ready:
+            if compiler is not None and compiler.ready and hasattr(compiler, "compile_snippet"):
                 return compiler
         if self.compiler is not None:
             return self.compiler

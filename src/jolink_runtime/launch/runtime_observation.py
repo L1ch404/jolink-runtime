@@ -29,7 +29,7 @@ def status_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "orphan_events_resumed", "startup_state", "readiness_configured",
         "startup_elapsed_ms", "ready_observed_at", "startup_failed_at",
         "failure_type", "startup_wait_timed_out",
-        "attempt_id", "launch_phase", "cancel_requested", "compile_ready",
+        "attempt_id", "launch_phase", "cancel_requested", "compile_ready", "compile_backend",
         "jdt_bootstrap_state", "active_operation", "fast_test", "code_revision",
         "verification_state", "restart_required", "warnings", "next_action",
         "suggested_next_step",

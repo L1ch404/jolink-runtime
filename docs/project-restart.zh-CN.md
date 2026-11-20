@@ -21,7 +21,8 @@
 5. 已加载类按需HotSwap，未加载类保留新磁盘产物；需要重新建立JVM状态时才真实重启。
 
 公开 `restart` 不接收 `source_files`，自动发现所有变化，不套用旧 reload 的 16 文件限制。Maven/Gradle、
-单模块/多模块共用这条编译流程，不调用正式 Maven/Gradle 编译任务。
+单模块/多模块共用这条应用更新流程。纯 Java 由 JDT 编译；混合语言的 Gradle 目标
+使用[原生联合编译](gradle-modules.zh-CN.md)，然后对应用自己的输出执行同一套更新判断。
 
 | 情况 | 处理 |
 |---|---|

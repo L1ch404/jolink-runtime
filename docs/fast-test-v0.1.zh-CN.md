@@ -1,7 +1,8 @@
 # joLink Fast Test
 
-Fast Test不是`mvn test`或`gradle test`的包装。构建系统只负责通过Probe导出测试
-Build World；main/test编译由持久JDT workspace完成，测试由独立Runner JVM执行。
+Fast Test不是`mvn test`或`gradle test`的包装。构建系统通过Probe导出测试
+Build World；纯Java由持久JDT workspace编译，Gradle混编使用项目的原生编译任务，
+测试均由独立Runner JVM执行。
 
 ## 开发编译配置策略
 
@@ -50,6 +51,9 @@ Processor的-A参数值为单个绝对文件路径时，共用编译层会单独
 归档按搜索顺序读取具体条目，不整包解压；跟踪外层文件，替换/删除或新增优先条目后
 可增量更新。Maven保留原生注册的完整source roots给Processor，Java镜像仍只扫描目录；
 本能力不等于自动编译source archive中的任意Java源码，也不改变JPMS支持范围。
+
+Gradle 联合编译项目仍用相同测试入口和独立 Runner，只更换编译后端。运行结果、
+产物隔离及范围见[Gradle 多模块](gradle-modules.zh-CN.md)。
 
 ## 测试进程的运行配置
 

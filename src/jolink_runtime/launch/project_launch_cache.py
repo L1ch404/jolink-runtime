@@ -19,6 +19,7 @@ from .jdt_workspace_store import jolink_cache_root
 from .toolchain import JavaToolchainCandidate
 from .gradle_probe import environment_input_stamps as _environment_inputs
 from .configuration_inputs import build_configuration_stamps
+from .gradle_module_world import dormant_language_roots, mixed_sources_present
 from .probe_configuration import recorded_configuration_inputs
 from .idea_environment import build_preferences_key
 
@@ -170,6 +171,8 @@ class ProjectLaunchCache:
                     *(Path(m["module_root"]) / "pom.xml" for m in plan_raw.get("modules", ())),
                 )))
             configuration = raw.get("configuration_stamps")
+            if mixed_sources_present(dormant_language_roots(plan_raw.get("modules", ()))):
+                return None
             if configuration is None or configuration != build_configuration_stamps(
                 project_root, build_system, inputs
             ):

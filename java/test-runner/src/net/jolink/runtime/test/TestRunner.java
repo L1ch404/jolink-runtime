@@ -678,9 +678,8 @@ public final class TestRunner {
                     continue;
                 }
                 Path entry = Paths.get(line).toAbsolutePath().normalize();
-                if (!Files.exists(entry)) {
-                    throw new IOException("Test classpath entry is unavailable.");
-                }
+                // Match the Java launcher's classpath semantics: absent optional
+                // outputs are harmless until an actual class is required.
                 entries.add(entry.toString());
                 if (entries.size() > 4096) {
                     throw new IOException("Test classpath has too many entries.");

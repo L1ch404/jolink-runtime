@@ -1,9 +1,32 @@
 # Gradle 多模块：启动、reload 和 Fast Test
 
-Gradle 多模块使用已有 `ModuleCompileSession` / `ModuleWorkspace`，没有第二套
-编译管理器，没有改 `jdwp_adapter.py`，没有新增 MCP Tool 或 Action。
+Gradle 项目通过同一个 Probe 和同一套 MCP 工具使用两条编译路径。纯 Java 使用
+持久 JDT；选定范围需要联合编译时，Gradle 负责自己的语言编译器。无需指定后端。
 
-## 流程
+## 混合源码：编译交给谁
+
+- 看目标及依赖模块的源码集和输出，不看仓库名，也不把 `build.gradle.kts` 当成 Kotlin 业务源码。
+  应用只看 main，Fast Test 还看目标的 test。仅测试使用 Groovy/Kotlin 的项目，应用可以继续用 JDT。
+  配了额外语言输出但没有对应源码时，保留 Java 快路径；新增首份语言源码后重新选择。
+- 混编范围里，Probe 导出源根、classes 任务路径、各个 class/资源输出目录；由项目 Wrapper
+  调用该目标及必要依赖的 classes/testClasses 任务。执行次序、工具链、APT、编译器插件和
+  增量判断归 Gradle。不会另让 JDT 重编这批 Java，也不运行 clean、Gradle test 或完整 build。
+  自定义任务若是 classes 的依赖，依然会被执行。
+- Gradle 写项目原有 build 目录，复用自己的编译缓存。**应用 JVM 和 joLink Test Runner 使用
+  两份独立的持久输出**：仅在各自请求的构建成功后同步变更（包括删除），不直接从对方
+  正在编译的 class 目录加载。失败不发布部分编译结果。外部依赖 JAR 仍用原路径。
+- 无源码/资源变化时直接复用，不为测试另外启动 Gradle。发生修改时由 Gradle 判断各任务
+  是否 up-to-date、是否全编。返回 `compile_backend=gradle_native`；实际执行 Gradle 时
+  没有精确计数就不返回 `compiled_source_count`，确认跳过编译时返回 0。
+  可在运行结果详情中查看 `native_compile_log`，编译失败时查看诊断及 `compile_log`。
+- 应用仍使用原有 HotSwap / restart 判断；测试仍通过独立 Runner 只运行请求的选择器。
+  `gradle_native` 不是完整 CI 的替代。当前针对普通 JVM main/test 和 classpath 应用；
+  混编 JPMS、Android、自定义变体和所有隐式生成输入并未验证。文件变更检测沿用本地
+  mtime/size 约定，不承诺跨进程同时编辑/构建的原子快照。
+
+回归入口：[联合编译与测试隔离](../tests/e2e/test_gradle_joint_compile.py)。
+
+## 纯 Java 流程
 
 1. 从工程根目录或子项目目录找到 Wrapper。Probe 根据主类或测试选择器确定目标。
 2. 首次由 Gradle 配置工程并解析依赖，只执行导出任务，不执行 Java 编译或打包。

@@ -149,7 +149,10 @@ def complete_test_runtime_classpath(
     different JUnit version.
     """
 
-    normalized = tuple(path.expanduser().resolve(strict=True) for path in classpath)
+    # Native Java classpaths may contain absent outputs (e.g. a Gradle language
+    # source set with no sources). Preserve them; missing required classes are
+    # diagnosed by the framework/JVM, not as a Python FileNotFoundError.
+    normalized = tuple(path.expanduser().resolve(strict=False) for path in classpath)
     if all(
         any(_contains_class(entry, name) for entry in normalized)
         for name in _JUNIT_PLATFORM_LAUNCHER_CLASSES

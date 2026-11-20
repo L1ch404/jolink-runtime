@@ -59,3 +59,16 @@ def test_reopening_unchanged_workspace_does_not_invent_compile_time(tmp_path):
     attempt.record_compilation(build(None))
     assert attempt.summary()["compiled_source_count"] == 0
     assert "compile_ms" not in attempt.summary()
+
+
+def test_unobserved_and_native_unknown_counts_are_absent_on_every_surface(tmp_path):
+    attempt = Attempt("native", 1, AttemptToken("native", 1), tmp_path, (), ("T",), 30)
+    assert "compiled_source_count" not in attempt.summary()
+    attempt.compile_backend = "gradle_native"
+    attempt.record_compilation(build("GRADLE_NATIVE", elapsed=30))
+    attempt.record_compilation(build(None))  # A later no-op cannot erase earlier work.
+    for passed in (True, False):
+        attempt.result = {"ok": passed, "passed": passed, "diagnostics": []}
+        for payload in (attempt.summary(), attempt.run_response(), attempt.snapshot()):
+            assert "compiled_source_count" not in payload
+            assert payload["compile_backend"] == "gradle_native"

@@ -921,6 +921,8 @@ class JavaProjectSession:
                 })
             return {
                 "compile_ready": self.compile_ready,
+                **({"compile_backend": self.compile_session.strategy}
+                   if getattr(self.compile_session, "strategy", None) else {}),
                 "jdt_bootstrap_state": self.jdt_bootstrap_state,
                 "jdt_bootstrap_reused": self._jdt_bootstrap_reused,
                 "jdt_bootstrap_build_kind": self._jdt_bootstrap_build_kind,

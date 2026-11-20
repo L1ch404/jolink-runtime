@@ -10,6 +10,7 @@ import uuid
 
 from .jdt_workspace_store import JdtWorkspaceStore, jolink_cache_root
 from .test_build_world import JavaTestBuildWorld
+from .gradle_module_world import dormant_language_roots, mixed_sources_present
 from .toolchain import JavaToolchainCandidate
 from .idea_environment import build_preferences_key
 from .gradle_probe import environment_input_stamps as _environment_inputs
@@ -240,6 +241,7 @@ class FastTestCache:
             "inputs": dict(world.configuration_stamps) if world.configuration_stamps is not None else FastTestCache.input_snapshot(world),
             "environment_inputs": _environment_inputs(world.configuration_environment_names),
             "preparation_inputs": inputs,
+            "dormant_language_roots": dormant_language_roots(world.modules),
             "preparation_roots": roots,
             "preparation_resource_sets": resources,
             "preparation_stamps": preparation_stamps(inputs, roots, resources),
@@ -249,6 +251,8 @@ class FastTestCache:
     def snapshot_is_current(project, build_system, snapshot, *, build_preferences=None):
         """Compare the supplied model's baseline, never substitute a disk model."""
         try:
+            if mixed_sources_present(snapshot.get("dormant_language_roots", {})):
+                return False
             if build_preferences_key(snapshot.get("build_preferences"), build_system) != build_preferences_key(
                 build_preferences, build_system
             ):

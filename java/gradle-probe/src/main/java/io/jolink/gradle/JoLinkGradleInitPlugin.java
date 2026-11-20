@@ -43,7 +43,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules5";
+    private static final String VERSION = "0.1.0-modules6";
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
     private String requestId;
@@ -247,9 +247,14 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 if (sources == null) continue;
                 boolean match = true;
                 for (String name : (main.isEmpty() ? tests : main).split(",")) {
-                    String file = name.split("#", 2)[0].split("\\$", 2)[0].replace('.', '/') + ".java";
+                    String file = name.split("#", 2)[0].split("\\$", 2)[0].replace('.', '/');
                     boolean found = false;
-                    for (File source : sources.getJava().getSrcDirs()) found |= new File(source, file).isFile();
+                    for (File source : languageRoots(sources)) {
+                        for (String ext : Arrays.asList(".java", ".groovy", ".kt", ".scala"))
+                            found |= new File(source, file + ext).isFile();
+                        if (file.endsWith("Kt"))
+                            found |= new File(source, file.substring(0, file.length() - 2) + ".kt").isFile();
+                    }
                     match &= found;
                 }
                 if (!match) continue;
@@ -412,6 +417,13 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return result;
     }
 
+    private static Set<File> languageRoots(SourceSet source) {
+        Set<File> roots = new LinkedHashSet<>(source.getAllSource().getSrcDirs());
+        roots.removeAll(source.getResources().getSrcDirs());
+        roots.addAll(source.getJava().getSrcDirs());
+        return roots;
+    }
+
     private static Map<String, Object> sourceSet(Project project, SourceSet sourceSet)
             throws IOException {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -431,6 +443,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
                 sourceSet.getResources().getExcludes()));
         result.put("classesDirectories", orderedFiles(
                 sourceSet.getOutput().getClassesDirs().getFiles()));
+        result.put("languageRoots", orderedFiles(languageRoots(sourceSet)));
+        result.put("classesTask", project.getTasks().getByName(sourceSet.getClassesTaskName()).getPath());
         result.put("resourcesDirectory", nullableFile(
                 sourceSet.getOutput().getResourcesDir()));
         result.put("compileClasspath", orderedFiles(

@@ -1,5 +1,63 @@
 # joLink 产品边界与兼容性跟进
 
+## U14：Gradle 混合源码联合编译（2026-11-18 至 19 日，优先于下方调查记录）
+
+已接通原生编译链，不是要求用户先手工编译一次。Probe modules6 导出源码根、classes
+任务及多个输出目录。目标和必要上游存在混编输入时由 Gradle 编译，包括相应 Java；
+不再让 JDT 重编这批源码。纯 Java 保留 JDT，应用 main 和目标 test 分别判断。
+测试、应用只读取各自的成功产物；错误不发布，无变化不进入 Gradle。真实构建时
+Gradle 不报告精确重编文件数时省略 `compiled_source_count`；确认未编译时返回 0。详见[流程与边界](gradle-modules.zh-CN.md)。
+
+TestNG `9665805` 隔离副本，Gradle 8.7/JDK17、原依赖版本和业务源码，本地公开依赖
+镜像并关闭 build scan：testng-core 的 AnnotationTransformerTest 冷/暖均 16/16。
+首轮冷请求约 126s（其中原生编译与同步约 45s）。最终复验清除 core 输出并使用全新
+joLink 缓存、复用已有 Gradle 依赖和上游缓存，首次 51.8s（编译与同步 34.2s，
+Gradle 报告 73 个任务中 62 个 up-to-date），再次无修改 4.85s（Runner 4.79s），
+没有编译。原生 Gradle 跑相同选择也为 16 通过、0 跳过。
+这是选定测试和本机耗时，不是全项目所有测试或通用性能承诺。
+
+新增真实 MCP 验收覆盖 Java＋Groovy、Java＋Kotlin、Java＋Scala、Java/Kotlin/Groovy
+共存的单/双模块。检查原生测试对照、测试先更新但应用首次加载类仍得旧值、HTTP
+热替换、错误保留旧 JVM、恢复、Java 源修改及真实重启、MCP 重开复用。另测从纯 Java
+新增 Kotlin/Groovy/Scala 测试类、方法选择和删除；纯 Java 应用不受影响。此前记录的
+“缺少其他语言输出”和“改动后仍报 0 编译/返回旧值”在这些路径上已修复。
+macOS 回归：Gradle 8.14 的混编 11 组通过（8 组单/双模块组合、3 组仅测试语言）；
+另有 Gradle 7.4.2 Groovy 和 8.10 Kotlin 双模块实测。普通测试 1496 项通过；
+原有 Java 多模块/可选 classpath 共 8 项、JPMS 11 项真实 MCP 通过。
+隔离 Python 3.13 安装 wheel 后，三语言双模块和 Scala 测试源码切换两项真实 MCP 也通过。
+混编 JPMS、Android/任意自定义 source set、隐藏输入和 U13 任意后处理仍不能宣称覆盖。
+
+## U14推进：联合编译实测与运行classpath小修（2026-11-17）
+
+以下为修复前调查。后续编译归属已确定，当前行为见上方 11 月 18–19 日记录。
+
+本轮使用隔离的Gradle8.14／JDK17 Java+Groovy工程取得了新的真实证据；没有修改公司
+源码，也没有把它当作Kotlin已经完成支持的证据。
+
+- 原生compileGroovy实际先执行compileJava；Groovy源码与同目录的JointJava.java共同
+  产出到classes/groovy/main，原生JUnit通过。这是联合编译，不只是把额外目录加进classpath。
+- clean后真实MCP Fast Test因缺少Groovy主产物在JDT阶段失败，应用也因找不到类未能启动。
+- 先让原生Gradle准备产物后，另遇到一个通用小bug：没有Groovy测试源码时，合法的
+  classes/groovy/test目录不生成，Python和Test Runner却分别要求runtime classpath路径
+  必须存在。两处已改为保留原路径并遵循JVM加载行为，不建假目录、不改变顺序；真正
+  需要却缺失的类仍由编译器／框架／JVM报告，不把缺框架当测试成功。
+- 小修后，已准备产物的项目经MCP测试及启动通过。继续修改Groovy及联合编译目录里的
+  Java，Fast Test仍compiled_source_count=0/source_changes_pending=false，测试读取旧值；
+  restart也因NO_CODE_CHANGES只重启旧产物，HTTP仍为旧值。原生Gradle再次test则通过。
+  所以“首次准备一次额外输出”不等于接通混合语言的后续开发循环。
+
+小修回归：新增optional runtime classpath真实MCP覆盖Fast Test、直接及项目启动/restart，
+JUnit4/5和TestNG既有排序/重开回归一并通过，共7项；普通回归1494项通过。仅更新Runner
+及其资源锁，Maven/Gradle Probe、JDT Worker、Build World格式未改。新增测试为
+test_optional_runtime_classpath.py；本项不宣称U14主体已解决。
+
+待确定的产品方向：纯Java目标继续现有JDT；需要联合编译的目标及必要依赖范围允许
+原生Gradle增量编译，避免同一份Java被两个后端重复编译。测试仍用joLink Runner，并
+保持测试与运行应用的产物隔离。需要补通用生产任务、输入变化、完整输出集合映射及
+编译后端归属，不按仓库/语言目录硬编码任务顺序；不是每轮clean/test完整生命周期。
+这一取舍尚未实施，先与用户确认，再接主链路。上游输出集合当前被折叠为单Java输出的
+映射也需要一起处理；这是已读代码确认的结构，不冒充本轮跨模块实测结果。
+
 ## U12续：原生冷发现配置输入（2026-11-17）
 
 补上上一轮Python事前不知道路径的常规本地输入：Gradle根入口首次选子工程、子工程
@@ -1134,7 +1192,7 @@ Maven/Gradle执行实际资源处理，保留过滤、目录映射及原生文�
 | U9 | 已实现：已加载/未加载类分开应用 | 普通及上游类可HotSwap/首次加载；全未加载返回class_output。命名模块新增包按真实JVM约束重启 | 已覆盖Fast Test隔离、加载/初始化观察、错误恢复及重开；不等同于框架重新扫描或任意自定义加载器支持 |
 | U12 | 已接入已知及原生冷发现的常规本地配置 | Maven保留rawModel对照；Gradle脚本/descriptor与buildLogic实际生产任务记录消费基线；四路径共用校验 | 不是任意扩展/远端I/O/整段模型构造的原子事务；旧模型缓存重新Probe一次，不清编译产物，详见顶部续篇 |
 | U13 | 用户暂缓：Gradle编译后处理未接入 | 依赖`compileJava.doLast`修改class的效果未进入JDT产物；Gradle8.10/8.14两组验证属于同一边界。应用ready不能证明后处理已执行 | 区分普通回调与产物变换，再讨论通用接入；不见到doLast就一律拒绝，也不删除仍失败的验收断言 |
-| U14 | 新实测：Gradle Java/Kotlin/Groovy混合源码 | TestNG core导出的classpath包含Kotlin/Groovy输出，干净副本没有这些产物，JDT FULL报告缺失库；项目确有其他语言源码，不是只有空目录 | 后续讨论如何执行原生语言任务并跟踪其产物；不靠建立空目录、丢classpath或只选Java测试宣称支持 |
+| U14 | 普通 Gradle JVM 混编已接入 | 纯 Java 保留 JDT；混编任务归 Gradle、测试和应用使用隔离产物。TestNG 原阻塞选择冷/暖均 16/16 | 平台、混编 JPMS、自定义任务/变体与隐藏输入仍有边界；不等于已实现 U13 |
 | U15 | 已修：原始源码Lombok配置来源 | 通过Lombok原生解析器按原路径读取，配置变化驱动增量；芋道原639诊断消失，所选测试冷/暖1/1 | 已覆盖目录/导入/多根/main-test/模块/重开，并交叉验证应用启动及restart；APT新生成源码另列U19 |
 | U16 | 已修：旧Maven显式APT路径解析 | 避免调用旧插件API realm不可见的Aether工具类，保留原runtime范围语义；3.3.3/3.3.9/3.9.11双链路通过 | 原生Maven继续解析仓库/依赖/exclusions；未泛化到所有Maven/JDK组合 |
 | U17 | 已修：单个绝对文件参数变化跟踪 | 共用CompileSession按工程跟踪-A文件状态；修改/缺失/恢复/重开及参数删除已交叉验证 | 输出型参数额外编译经用户确认暂留为性能优化；未覆盖任意隐式I/O及相对路径/目录/路径列表 |

@@ -93,8 +93,9 @@ MCP 负责执行，Skill 说明方法，可选的[全局验证准则](rules/joli
 }
 ```
 
-`action` 默认 `run`，也可省略。构建系统通过 Probe 导出模型，JDT 维护 main/test 的
-编译输出，独立 Test Runner 执行 JUnit 4/5 或 TestNG。它不是 `mvn test` 或
+`action` 默认 `run`，也可省略。构建系统通过 Probe 导出模型；纯 Java 由 JDT 增量编译，
+Gradle 混合语言工程由项目自己的编译任务生成产物，测试与运行中的应用各用一份。
+两种路径都由独立 Test Runner 执行所选 JUnit 4/5 或 TestNG 测试。它不是 `mvn test` 或
 `gradle test` 的简单包装。
 
 冷准备可能需要较长时间；之后复用模型和编译缓存，只处理变化。main/test 的语言级别、
@@ -117,7 +118,7 @@ MCP 负责执行，Skill 说明方法，可选的[全局验证准则](rules/joli
 
 项目启动可直接提供 `project_path + main_class`，也可读取已有 IDEA Application/Spring Boot
 启动配置；`java_home` 可指定应用 JDK。通过 Maven/Gradle Probe
-获得模型，在 JVM 启动前完成必要的 JDT 编译，不要求先打 fat JAR。也支持直接启动
+获得模型，在 JVM 启动前完成必要的编译，不要求先打 fat JAR。也支持直接启动
 已有 JAR/classpath，或 attach 到本机已有 JVM。
 
 修改受管项目后调用 `java_application`：
@@ -136,7 +137,7 @@ restart 自动发现目标和所需上游模块的源码变化，增量编译后
 {"action":"restart","hotswap":false}
 ```
 
-编译结果和构建状态保存在 JDT workspace，HotSwap 不只是内存中的临时更新。
+编译结果保存在应用的持久输出目录，HotSwap 不只是内存中的临时更新。
 无源码变化不编译；无待应用的 class 变化时 restart 仍会真实重启 JVM。
 普通源码编译失败会返回诊断，不主动停止旧 JVM；构建配置变化或会话不可用时，复用
 现有完整 launch 流程，该路径先停止旧实例，不提供 Candidate/rollback。

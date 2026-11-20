@@ -685,7 +685,7 @@ class JdtWorkerClient:
 class JdtCompileResult:
     compile_ok: bool
     actual_build_kind: str | None
-    compiled_source_count: int
+    compiled_source_count: int | None
     compiled_source_units: tuple[str, ...]
     changed_classes: tuple[str, ...]
     deleted_classes: tuple[str, ...]

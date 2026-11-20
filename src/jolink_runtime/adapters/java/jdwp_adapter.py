@@ -1941,7 +1941,7 @@ class JavaRuntime(Runtime):
                 ):
                     snapshot["fast_update"] = {
                         "available": True,
-                        "strategy": "jdt_incremental",
+                        "strategy": getattr(project_session.compile_session, "strategy", "jdt_incremental"),
                         "build_system": prepared.build_system,
                         "offline": prepared.build_offline,
                         "source_level": (

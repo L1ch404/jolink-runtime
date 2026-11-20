@@ -125,16 +125,17 @@ joLink exposes four focused MCP tools:
 - `java_debugger` — breakpoints, exception events, stacks, variables, and resume.
 
 After editing a managed project, call `java_application(action=restart)`.
-It incrementally compiles changes in the existing JDT workspace and prefers
+It compiles changes using the project's selected backend and prefers
 HotSwap; incompatible changes restart the JVM using those same compiled outputs.
 Set `hotswap=false` to force process/application reinitialization. The result's
 `apply_method` distinguishes HotSwap from a real restart. See
 [restart workflow](docs/project-restart.zh-CN.md).
 
 Fast Test uses a Maven or Gradle Probe only when its small configuration cache
-is absent or changed. The exported test Build World and JDT workspace persist
-across MCP processes. JDT keeps main and test classes current and runs
-explicit JUnit 4/5 or TestNG tests in an isolated JVM:
+is absent or changed. Pure Java uses a persistent JDT workspace. Mixed Gradle JVM
+projects use their native compilation tasks, with separate outputs for tests and
+the live application. In both cases an isolated runner executes the selected
+JUnit 4/5 or TestNG tests:
 
 ```text
 java_fast_test(action=run,

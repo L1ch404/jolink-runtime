@@ -336,6 +336,27 @@ def test_fast_test_manager_starts_idle_and_closes() -> None:
     assert manager.close() is True
 
 
+def test_runtime_classpath_preserves_optional_missing_entries_and_order(tmp_path):
+    missing_output = tmp_path / "classes/unused-language"
+    missing_jar = tmp_path / "optional.jar"
+    junit = tmp_path / "junit"
+    for relative in ("org/junit/Test.class", "org/junit/runner/JUnitCore.class"):
+        file = junit / relative
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(b"class")
+    paths = complete_test_runtime_classpath((missing_output, junit, missing_jar))
+    assert paths == (missing_output.resolve(), junit.resolve(), missing_jar.resolve())
+    assert detect_test_framework(paths) == "junit4"
+    assert not missing_output.exists() and not missing_jar.exists()
+
+
+def test_missing_runtime_framework_still_has_a_meaningful_failure(tmp_path):
+    paths = complete_test_runtime_classpath((tmp_path / "missing-junit.jar",))
+    with pytest.raises(FastTestError) as error:
+        detect_test_framework(paths)
+    assert error.value.error_code == "TEST_FRAMEWORK_UNAVAILABLE"
+
+
 def test_runner_reports_an_unusable_working_directory_without_starting_java(tmp_path):
     directory = tmp_path / "not-a-directory"
     directory.write_text("existing file")
