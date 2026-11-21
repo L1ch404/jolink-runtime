@@ -26,6 +26,7 @@ import org.apache.maven.project.MavenProject;
 final class ConfigurationSnapshot {
     final Map<String, String> stamps = new LinkedHashMap<>();
     final Set<String> changes = new LinkedHashSet<>();
+    final Set<String> modelMismatches = new LinkedHashSet<>();
 
     static ConfigurationSnapshot capture(Iterable<MavenProject> projects, ModelProcessor reader) throws IOException {
         ConfigurationSnapshot result = new ConfigurationSnapshot();
@@ -58,10 +59,19 @@ final class ConfigurationSnapshot {
                 // Compare every retained model even if several projects share
                 // this POM path; parent instances need not be the same object.
                 Model original = item.getOriginalModel();
-                if (original == null || !canonical(original).equals(currentModels.get(path)))
+                if (original == null) {
                     result.changes.add(path);
+                } else if (currentModels.containsKey(path) && !canonical(original).equals(currentModels.get(path))) {
+                    // Maven may merge plugin management or interpolate a profile
+                    // into this retained model without changing the file.
+                    result.modelMismatches.add(path);
+                }
             }
         }
+        // If any retained instance for this path had a hard error, it must not
+        // be downgraded to a model-only mismatch by another parent instance.
+        result.modelMismatches.removeAll(result.changes);
+        result.changes.addAll(result.modelMismatches);
         return result;
     }
 
@@ -74,6 +84,7 @@ final class ConfigurationSnapshot {
         }
         json.append('}');
         ExportBuildWorldMojo.stringList(json, "configurationChanges", new ArrayList<>(changes), true);
+        ExportBuildWorldMojo.stringList(json, "configurationModelMismatches", new ArrayList<>(modelMismatches), true);
     }
 
     private static String canonical(Model model) throws IOException {

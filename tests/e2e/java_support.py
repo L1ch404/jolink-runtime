@@ -100,6 +100,46 @@ def temporary_stderr() -> TextIO:
     return tempfile.TemporaryFile(mode="w+", encoding="utf-8")
 
 
+async def call_workflow(session, tool: str, arguments: dict, output: Path | None = None) -> dict:
+    """Return the submitted workflow's result, even if the initial MCP wait expires."""
+    async def call(name, args):
+        return dict((await session.call_tool(name, args)).structuredContent)
+
+    result = await call(tool, arguments)
+    with anyio.fail_after(180):
+        if tool == "java_fast_test" and result.get("test_run_id"):
+            test_id = result["test_run_id"]
+            while result.get("ok", True) and result.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
+                await anyio.sleep(.25)
+                result = await call(tool, {"action": "result", "test_run_id": test_id})
+        elif tool == "java_application" and result.get("status") in {"project_launch_started", "restart_started"}:
+            restart = result["status"] == "restart_started"
+            token = result["reload_id" if restart else "attempt_id"]
+            # java_status reports the state of the query, not that of this operation:
+            # a pending launch snapshot has launch_phase but may not have status at all.
+            while True:
+                await anyio.sleep(.25)
+                state = await call("java_status", {"action": "status", "details": True})
+                if state.get("ok") is False:
+                    result = state
+                    break
+                if restart:
+                    last = state.get("last_reload") or {}
+                    if last.get("reload_id") == token and last.get("stage") in {"succeeded", "failed"}:
+                        result = last
+                        break
+                elif state.get("attempt_id") == token and state.get("launch_phase") in {
+                    "runtime_active", "failed", "cancelled", "stopped",
+                }:
+                    # A successful status query can report a failed/stopped launch.
+                    result = {**state, "ok": state["launch_phase"] == "runtime_active"}
+                    break
+    if output is not None:
+        with output.open("a", encoding="utf-8") as log:
+            log.write(json.dumps({"tool": tool, "result": result}, ensure_ascii=False) + "\n")
+    return result
+
+
 async def call_payload(
     session: ClientSession,
     arguments: dict[str, Any],

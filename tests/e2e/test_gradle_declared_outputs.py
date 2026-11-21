@@ -9,7 +9,7 @@ from urllib.request import urlopen
 import anyio
 import pytest
 
-from java_support import open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
+from java_support import call_workflow, open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
 
 
 @pytest.mark.mcp_java_e2e
@@ -155,18 +155,7 @@ package fixture; public class PayloadTest {
             return response.read().decode()
 
     async def call(session, tool, args):
-        result = dict((await session.call_tool(tool, args)).structuredContent)
-        with anyio.fail_after(150):
-            while result.get("status") in {"starting","bootstrapping","compiling","running","project_launch_started","restart_started"} and result.get("stage") != "succeeded" and result.get("launch_phase") != "runtime_active" and result.get("ok", True):
-                await anyio.sleep(.25)
-                if tool == "java_fast_test":
-                    result = dict((await session.call_tool(tool, {"action":"result","test_run_id":result["test_run_id"]})).structuredContent)
-                else:
-                    state = dict((await session.call_tool("java_status", {"action":"status","details":True})).structuredContent)
-                    result = state.get("last_reload") or state
-        with (tmp_path / "calls.jsonl").open("a", encoding="utf-8") as log:
-            log.write(json.dumps({"tool":tool,"result":result})+"\n")
-        return result
+        return await call_workflow(session, tool, args, tmp_path / "calls.jsonl")
 
     async def scenario():
         for reopened in (False, True):

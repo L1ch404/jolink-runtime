@@ -150,6 +150,44 @@ def test_native_model_mismatch_is_not_erased_when_current_bytes_match(configurat
         ProbeConfiguration.capture(root, system, (path,)).finish((path,), native=(native,))
 
 
+@pytest.mark.parametrize("scenario", [
+    "stable", "not-known-before", "missing-native-stamp", "conflicting-native-stamp",
+    "bytes-changed", "file-replaced", "hard-error-in-second-snapshot",
+])
+def test_only_a_corroborated_maven_model_difference_is_not_a_file_change(tmp_path, scenario):
+    root = tmp_path / "project"
+    root.mkdir()
+    path = (tmp_path if scenario == "not-known-before" else root) / "parent.pom"
+    path.write_text("<project/>")
+    initial = ProbeConfiguration.capture(root, "maven", () if scenario == "not-known-before" else (path,))
+    key = str(path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    model = {"configurationChanges": [key], "configurationModelMismatches": [key],
+             "configurationStamps": {key: digest}}
+    snapshots = [model]
+    if scenario == "stable":
+        assert initial.finish((path,), native=snapshots)[key] == digest
+        return
+    if scenario == "missing-native-stamp":
+        model["configurationStamps"].clear()
+    elif scenario == "conflicting-native-stamp":
+        model["configurationStamps"][key] = "0" * 64
+    elif scenario == "bytes-changed":
+        path.write_text("<changed/>")
+    elif scenario == "file-replaced":
+        # Same contents and mtime do not establish that Maven read this file.
+        other = path.with_suffix(".replacement")
+        other.write_bytes(path.read_bytes())
+        stamp = path.stat()
+        os.utime(other, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        other.replace(path)
+    elif scenario == "hard-error-in-second-snapshot":
+        snapshots.append({"configurationChanges": [key], "configurationStamps": {key: digest}})
+    with pytest.raises(ProbeConfigurationChanged) as error:
+        initial.finish((path,), native=snapshots)
+    assert error.value.context["changed_configuration_files"] == [key]
+
+
 def test_conflicting_native_observations_are_not_last_wins(configuration):
     root, system, path = configuration
     digest = hashlib.sha256(path.read_bytes()).hexdigest()

@@ -7,7 +7,7 @@ from urllib.request import urlopen
 
 import anyio
 import pytest
-from java_support import open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
+from java_support import call_workflow, open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
 
 
 def fixture(root, language, multi):
@@ -124,18 +124,7 @@ def test_gradle_joint_compilation_keeps_live_and_test_outputs_separate(tmp_path,
     def http(path=""):
         with urlopen(f"http://127.0.0.1:{port}/{path}", timeout=5) as r: return r.read().decode()
     async def call(s, tool, args):
-        result = dict((await s.call_tool(tool, args)).structuredContent)
-        with anyio.fail_after(150):
-            while result.get("status") in {"starting","compiling","bootstrapping","running","project_launch_started","restart_started"} and result.get("stage") != "succeeded" and result.get("launch_phase") != "runtime_active" and result.get("ok", True):
-                await anyio.sleep(.25)
-                if tool == "java_fast_test":
-                    result = dict((await s.call_tool(tool, dict(action="result",test_run_id=result["test_run_id"]))).structuredContent)
-                else:
-                    state = dict((await s.call_tool("java_status", dict(action="status",details=True))).structuredContent)
-                    result = state.get("last_reload") or state
-        with (tmp_path/"calls.jsonl").open("a",encoding="utf-8") as log:
-            log.write(json.dumps({"tool":tool,"result":result},ensure_ascii=False)+"\n")
-        return result
+        return await call_workflow(s, tool, args, tmp_path / "calls.jsonl")
     async def scenario():
         tests = dict(common, tests=["example.MixedTest"])
         for reopened in (False, True):
@@ -231,12 +220,7 @@ def test_test_only_language_first_source_switches_only_test_backend(tmp_path, la
         with (tmp_path/"mcp.log").open("w") as log:
             async with open_mcp_session(log,environment=env) as s:
                 async def call(tool, **kw):
-                    r=dict((await s.call_tool(tool, kw)).structuredContent)
-                    with anyio.fail_after(180):
-                        while r.get("status") in {"starting","compiling","bootstrapping","running"}:
-                            await anyio.sleep(.3)
-                            r=dict((await s.call_tool("java_fast_test",dict(action="result",test_run_id=r["test_run_id"]))).structuredContent)
-                    return r
+                    return await call_workflow(s, tool, kw)
                 try:
                     launch = await call("java_application",**args,action="launch", main_class="example.App",ready_port=port,jdwp_port=reserve_local_port(),app_args=[str(port)])
                     assert launch.get("startup_state")=="ready" and launch["fast_update"]["strategy"]=="jdt_incremental",launch

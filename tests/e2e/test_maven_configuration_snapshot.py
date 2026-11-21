@@ -169,6 +169,11 @@ def test_native_maven_configuration_matches_retained_models(tmp_path, native_pro
     key = str(target.resolve())
     assert snapshot["native_session"] is True
     assert key in snapshot["configurationStamps"]
+    # A model comparison alone can't distinguish normalization from an edit;
+    # only the caller with a pre-Probe baseline may corroborate this signal.
+    assert snapshot["configurationModelMismatches"] == (
+        [key] if mode in {"changed-before-capture", "external-parent"} else []
+    ), snapshot
     if mode in {"unchanged", "changed-after-capture", "utf8-bom", "utf16-chinese"}:
         assert snapshot["configurationChanges"] == [], snapshot
     else:

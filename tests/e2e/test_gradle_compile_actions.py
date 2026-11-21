@@ -9,33 +9,13 @@ from urllib.request import urlopen
 import anyio
 import pytest
 
-from java_support import open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
+from java_support import call_workflow, open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
 
 
 def _write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value, encoding="utf-8")
     return path
-
-
-async def _call(session, tool, arguments, output):
-    response = await session.call_tool(tool, arguments)
-    result = dict(response.structuredContent)
-    pending = {"starting", "bootstrapping", "compiling", "running", "project_launch_started", "restart_started"}
-    with anyio.fail_after(180):
-        while (result.get("status") in pending and result.get("stage") != "succeeded"
-               and result.get("launch_phase") != "runtime_active" and result.get("ok", True)):
-            await anyio.sleep(.2)
-            if tool == "java_fast_test":
-                status = await session.call_tool(tool, dict(action="result", test_run_id=result["test_run_id"]))
-                result = dict(status.structuredContent)
-            else:
-                status = await session.call_tool("java_status", dict(action="status", details=True))
-                state = dict(status.structuredContent)
-                result = state.get("last_reload") or state
-    with output.open("a", encoding="utf-8") as results:
-        results.write(json.dumps(dict(tool=tool, result=result)) + "\n")
-    return result
 
 
 @pytest.mark.mcp_java_e2e
@@ -183,7 +163,7 @@ public class PayloadTest {
         with (tmp_path / f"mcp-{reopened}.log").open("w", encoding="utf-8") as log:
             async with open_mcp_session(log, environment=env) as session:
                 async def call(tool, arguments):
-                    return await _call(session, tool, arguments, tmp_path / "calls.jsonl")
+                    return await call_workflow(session, tool, arguments, tmp_path / "calls.jsonl")
 
                 async def check():
                     result = await call("java_fast_test", dict(common, tests=["example.PayloadTest"]))
@@ -195,7 +175,7 @@ public class PayloadTest {
                 try:
                     if not reopened and main_action:
                         await check()  # No existing app outputs can satisfy a cold Fast Test.
-                    started = await call("java_application", launch)
+                    started = await call("java_application", dict(launch, timeout=0))
                     assert started.get("startup_state") == "ready", started
                     assert http() == expected()
                     if test_only:
@@ -212,7 +192,7 @@ public class PayloadTest {
                     version_file.write_text("B", encoding="utf-8")
                     await check()
                     assert http() == previous, "test compilation changed the live application"
-                    updated = await call("java_application", dict(action="restart", timeout=30))
+                    updated = await call("java_application", dict(action="restart", timeout=0))
                     assert updated.get("ok") and http() == expected(), updated
                     if test_only:
                         assert updated.get("compile_backend") != "gradle_native", updated

@@ -85,10 +85,37 @@ public class ConfigTest { @org.junit.Test public void usesCurrentParameters() th
 @pytest.mark.parametrize("multi", [False, True], ids=["single", "reactor-parent"])
 @pytest.mark.parametrize("entry", ["test", "launch"])
 def test_configuration_changed_inside_native_probe_is_not_published(tmp_path, multi, entry):
+    _exercise_configuration_race(tmp_path, multi, entry)
+
+
+@pytest.mark.parametrize("entry", ["test", "launch"])
+def test_maven_354_retained_profile_normalization_is_not_a_pom_edit(tmp_path, entry):
+    # 3.5.4 mutates the retained profile model in this case; 3.9.11
+    # doesn't, so running only the default Maven wouldn't catch this bug.
+    home = os.environ.get("JOLINK_TEST_MAVEN354_HOME")
+    if not home:
+        pytest.skip("set JOLINK_TEST_MAVEN354_HOME to run the Maven 3.5.4 profile regression")
+    assert (Path(home) / "lib/maven-core-3.5.4.jar").is_file(), home
+    _exercise_configuration_race(tmp_path, True, entry, maven_home=home)
+
+
+def _exercise_configuration_race(tmp_path, multi, entry, *, maven_home=None):
     root, app, config, gate, expected, source, java, env = _fixture(tmp_path, multi)
+    if maven_home:
+        # Real Maven can inject a pluginManagement version into an active
+        # profile's retained original model without ever rewriting the POM.
+        # A concurrent edit must still fail, but the unchanged retry must work.
+        plugin = "<artifactId>maven-antrun-plugin</artifactId>"
+        management = f"<pluginManagement><plugins><plugin>{plugin}<version>3.1.0</version></plugin></plugins></pluginManagement>"
+        profile = (f"<profiles><profile><id>local-build</id><activation><activeByDefault>true</activeByDefault></activation>"
+                   f"<build><plugins><plugin>{plugin}</plugin></plugins></build></profile></profiles>")
+        config.write_text(config.read_text().replace("<build>", "<build>" + management, 1)
+                          .replace("</project>", profile + "</project>"))
     original_source = source.read_bytes()
     port = reserve_local_port()
     common = dict(project_path=str(app), java_home=str(java), build_java_home=str(java), timeout=0)
+    if maven_home:
+        common["maven_home"] = maven_home
     if os.environ.get("JOLINK_TEST_MAVEN_SETTINGS"):
         common["maven_settings"] = os.environ["JOLINK_TEST_MAVEN_SETTINGS"]
     test_args = dict(common, tests=["example.ConfigTest"])

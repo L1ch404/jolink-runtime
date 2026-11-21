@@ -1,5 +1,32 @@
 # joLink 产品边界与兼容性跟进
 
+## C1：未改动的 Maven 根 POM 被误报变化（2026-11-21）
+
+JFlex 1.9.1 和 MockServer 5.15.0 在干净副本上重试仍返回
+`BUILD_CONFIGURATION_CHANGED`。文件哈希与 Git 一致；不同的是 Maven 保留的
+`originalModel`：一个已注入插件管理中的版本，另一个已展开并合并了 `${basedir}`。
+因此不能只凭内存模型与重读 POM 的序列化差异，断定文件发生过编辑。
+
+Maven Probe `fasttest38` 区分“仅模型表示不同”和文件缺失、解析失败等硬错误。
+Fast Test 与 launch/restart 共用判断：只有调用前已观察到该文件、三次文件摘要
+（调用前、原生 Probe、结束时）一致且文件身份与时间属性没有变化，才不因此拒绝。
+未提前发现的父 POM 没有这份证据，仍保留原保护；这不是对任意并发文件编辑的原子快照保证。
+不增加重复执行 Maven 的流程。已有配置和编译缓存的无变化复用不扫描额外文件。
+
+- MockServer：真实 MCP 启动和 restart 两次都在新 JVM 通过本机
+  `PUT /mockserver/status` 返回 200 和版本 5.15.0。Fast Test 仍受另一个已知的
+  `MAVEN_COMPILER_EXECUTION_AMBIGUOUS` 阻塞，不计作测试通过。
+- JFlex：真实 MCP 的 Fast Test、启动和 restart 均不再报 C1，但都出现了后续编译错误。
+  **待跟进：** 原生 Maven 生成 `LexScan.java`，joLink 则按项目给
+  `jflex-maven-plugin:generate` 配置的 m2e `<ignore/>` 跳过了它。该轮 53 条诊断
+  都涉及这个缺失的类型，不能据此认定 ECJ 无法编译它，也不能把整个项目列为已通过。
+- [竞态和稳定重试回归](../tests/e2e/test_probe_configuration_race.py)包括旧 Maven 的
+  活动 profile。配置在 Probe 执行期间真实变动仍应拒绝，不变重试、应用实际返回值与重开复用分别验证。
+
+同批报告里 U13 夹具的提前结束是独立的测试问题：状态查询可仍处于
+`resolving_runtime` 且不返回顶层 `status`。异步 launch/restart 现在按本轮
+attempt/reload ID 等终态；不把旧结果或状态查询自身的成功当作本轮操作成功。
+
 ## U13 续：Java 编译任务原地改写 class（2026-11-20）
 
 此前不仅是“该拒绝却没有拒绝”：有三个原生 Gradle 测试通过的项目，joLink 的

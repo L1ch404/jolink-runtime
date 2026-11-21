@@ -23,19 +23,34 @@ class ProbeConfigurationChanged(RuntimeError):
         }
 
 
+def _file_version(path):
+    try:
+        stat = Path(path).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 @dataclass(frozen=True)
 class ProbeConfiguration:
     project: Path
     build_system: str
     inputs: tuple[Path, ...]
     _before: dict[str, str] = field(repr=False)
+    _maven_versions: dict[str, tuple[int, ...] | None] = field(default_factory=dict, repr=False)
 
     @classmethod
     def capture(cls, project, build_system, inputs):
         project = Path(project).resolve(strict=False)
         inputs = tuple(dict.fromkeys(Path(path).resolve(strict=False) for path in inputs))
-        return cls(project, build_system, inputs,
-                   build_configuration_stamps(project, build_system, inputs))
+        before = build_configuration_stamps(project, build_system, inputs)
+        # Taken for a Maven Probe, not on the warm path. An edit-and-restore
+        # can leave the same bytes but a different file version.
+        versions = {}
+        if build_system == "maven":
+            versions = {path: _file_version(path) for path, stamp in before.items()
+                        if stamp not in {"missing", "directory"}}
+        return cls(project, build_system, inputs, before, versions)
 
     def check(self, *, native_sources=()):
         current = build_configuration_stamps(self.project, self.build_system, self.inputs)
@@ -56,9 +71,19 @@ class ProbeConfiguration:
         changed = set()
         source_roots = []
         for model in native:
-            changed.update(model.get("configurationChanges", ()))
+            # Maven's retained "original" Model may already be normalized. Only
+            # discount that signal for files observed before invocation; native
+            # vs final digest and pre-invocation checks still run below.
+            mismatches = set(model.get("configurationModelMismatches", ()))
+            stamps = model.get("configurationStamps", {})
+            for path in model.get("configurationChanges", ()):
+                if (path in mismatches and self._maven_versions.get(path) is not None
+                        and self._before[path] == stamps.get(path)
+                        and self._maven_versions[path] == _file_version(path)):
+                    continue
+                changed.add(path)
             source_roots.extend(Path(path) for path in model.get("configurationSourceDirectories", ()))
-            for path, stamp in model.get("configurationStamps", {}).items():
+            for path, stamp in stamps.items():
                 if path in observed and observed[path] != stamp:
                     changed.add(path)
                 observed.setdefault(path, stamp)
