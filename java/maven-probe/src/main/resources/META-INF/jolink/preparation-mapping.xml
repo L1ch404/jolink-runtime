@@ -18,5 +18,25 @@
       </pluginExecutionFilter>
       <action><ignore/></action>
     </pluginExecution>
+    <!-- These goals rewrite source text or project legal files; they do not
+         produce compiler inputs. Leave them to the project's normal build. -->
+    <pluginExecution>
+      <pluginExecutionFilter>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>license-maven-plugin</artifactId>
+        <versionRange>[0,)</versionRange>
+        <goals><goal>update-file-header</goal><goal>update-project-license</goal></goals>
+      </pluginExecutionFilter>
+      <action><ignore/></action>
+    </pluginExecution>
+    <pluginExecution>
+      <pluginExecutionFilter>
+        <groupId>com.googlecode.maven-java-formatter-plugin</groupId>
+        <artifactId>maven-java-formatter-plugin</artifactId>
+        <versionRange>[0,)</versionRange>
+        <goals><goal>format</goal></goals>
+      </pluginExecutionFilter>
+      <action><ignore/></action>
+    </pluginExecution>
   </pluginExecutions>
 </lifecycleMappingMetadata>
