@@ -5,6 +5,30 @@ from xml.etree import ElementTree as ET
 
 from .native_compile_session import NativeCompileSession
 from .maven_probe import ProductMavenProbe
+from .jdt_compile_session import JdtCompileError
+
+
+def _deletion_refresh(modules, previous, current):
+    removed = [Path(p) for p in previous.keys() - current.keys() if p.endswith(".java")]
+    if not removed:
+        return {}
+    scopes = {}
+    for m in modules:
+        output = m["output_directory"]
+        scopes[output] = (m["source_roots"], set(m["classpath"]))
+        if "test_compiler" in m:
+            scopes[m["test_output_directory"]] = (m["test_source_roots"],
+                {output, *m["classpath"], *m["test_classpath"], *m["test_compiler"].get("classpath", ())})
+    owners = {out for out, (roots, _) in scopes.items() if any(p.is_relative_to(r) for r in roots for p in removed)}
+    affected = owners.copy()
+    while True:
+        dependents = {out for out, (_, deps) in scopes.items() if deps & affected}
+        if dependents <= affected:
+            break
+        affected.update(dependents)
+    current_java = [Path(p) for p in current if p.endswith(".java")]
+    return {out: (out in owners, any(p.is_relative_to(r) for r in scopes[out][0] for p in current_java))
+            for out in affected}
 
 
 def attach_maven_native(modules, *, target, build_root, maven_argv, settings, local_repository, offline, profiles, tests):
@@ -38,6 +62,8 @@ class MavenNativeSession(NativeCompileSession):
 
     def __init__(self, root, modules, target_module, build_java_home):
         super().__init__(root, modules, target_module, build_java_home)
+        # A selected upstream test-jar has sources too, not just the leaf module.
+        self.test_source_roots = tuple(dict.fromkeys(Path(p) for m in modules for p in m["test_source_roots"]))
         self.modules, self.target = modules, target_module
         self.options = next(m["native_compile"]["maven"] for m in modules if Path(m["module_root"]) == target_module)
         self.product_files = {p for m in modules for p in m.get("post_test_products", ())}
@@ -67,16 +93,22 @@ class MavenNativeSession(NativeCompileSession):
     def _inputs(self):
         return self._committed_inputs(super()._inputs())
 
-    def _command(self):
+    def _command(self, inputs):
         plan = self.options
         directory = self._attempt_directory
         probe = ProductMavenProbe.load().prepare(attempt_directory=directory,
             source_settings=Path(plan["settings"]) if plan["settings"] else None,
             local_repository=Path(plan["repository"]), offline=plan["offline"])
         probe.output_directory.mkdir(parents=True, exist_ok=True)
+        self._clean_reason = probe.output_directory / "source-removal-requires-clean.txt"
         manifest = ET.Element("modules")
+        refresh = _deletion_refresh(self.modules, self.stamps, inputs)
         for m in self.modules:
             module = ET.SubElement(manifest, "module", root=m["module_root"])
+            for goal, output in (("compile", m["output_directory"]), ("testCompile", m["test_output_directory"])):
+                if output in refresh:
+                    owner, has_sources = refresh[output]
+                    ET.SubElement(module, "refresh", goal=goal, removed=str(owner).lower(), sources=str(has_sources).lower())
             for key, tag in (("source_roots","main"), ("test_source_roots","test"), ("post_test_executions","post")):
                 for value in m.get(key, ()):
                     ET.SubElement(module, tag).text = value
@@ -91,4 +123,11 @@ class MavenNativeSession(NativeCompileSession):
     def _build(self, run_operation=None):
         with TemporaryDirectory(prefix="native-maven-", dir=self.root) as directory:
             self._attempt_directory = Path(directory)
-            return super()._build(run_operation)
+            self._clean_reason = None
+            try:
+                return super()._build(run_operation)
+            except JdtCompileError as error:
+                if self._clean_reason and self._clean_reason.is_file():
+                    raise JdtCompileError("MAVEN_NATIVE_SOURCE_REMOVAL_REQUIRES_CLEAN",
+                                          self._clean_reason.read_text(encoding="utf-8"), context=error.context) from error
+                raise

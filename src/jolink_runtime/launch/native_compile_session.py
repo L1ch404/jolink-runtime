@@ -112,7 +112,7 @@ class NativeCompileSession:
         log = self.compile_log
         log.unlink(missing_ok=True)
         spec = BuildOperationSpec(
-            argv=self._command(), cwd=self.directory,
+            argv=self._command(before), cwd=self.directory,
             environment={"JAVA_HOME": str(self.home), "PATH": str(self.home / "bin") + os.pathsep + os.environ.get("PATH", "")},
             output_capture=log, operation_name=self.operation_name, timeout_seconds=900,
             max_output_bytes=16 * 1024 * 1024,

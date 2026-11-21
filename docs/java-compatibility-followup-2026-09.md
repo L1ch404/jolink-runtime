@@ -1,5 +1,21 @@
 # joLink 产品边界与兼容性跟进
 
+## Maven 原生编译：删除源码之后仍可能运行旧测试 class（2026-11-22）
+
+已有真实 MCP 对照：删除唯一的 main 类型，测试代码的一个未执行分支仍引用它。
+旧原生后端和普通 `mvn test` 非 clean 重跑均误报 1/1；独立的无 target 同源码
+在 javac 阶段明确找不到已删除的类。缺口是消费者 testCompile 沿用原增量状态，
+不是 joLink 根本没看到文件删除，也不能只检查“运行时找不找得到旧 class”。
+
+现在仅在已经观察过的 Java 源码被删除/改名后，根据当前 main/test classpath 找出
+受影响的编译范围（包括跨模块依赖），使 Maven 编译器自己重查这些源。只处理对应
+compiler execution 的输入清单，保留插件维护的产物清单及正常空源码清理流程；
+不清空用户 target 或改写源码，常规编辑、无改动复用不额外强制重编。
+若项目关闭了增量记账或记录缺失、删源一侧仍有来源不明的 class，则明确返回
+`MAVEN_NATIVE_SOURCE_REMOVAL_REQUIRES_CLEAN`：用户可先对提示的模块运行 Maven clean 再试。
+测试覆盖模块最后一个 main 源删除、Reactor 上游改名、失败后旧应用保持可用、
+修正引用后测试与 restart 生效，并单独验证无账本时的提示与 clean 后恢复。
+
 ## MockServer：无改动时不应因上轮编译写入 class 而重新 Maven Bootstrap
 
 3 个 Reactor 模块用 Maven Replacer 的 `basedir=target`、`includes=dependency-reduced-pom.xml`。

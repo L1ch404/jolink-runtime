@@ -568,7 +568,8 @@ class FastTestManager:
             MavenResolutionError,
             ProbeConfigurationChanged,
         ) as error:
-            if getattr(error, "error_code", "") in {"GRADLE_NATIVE_COMPILE_FAILED", "MAVEN_NATIVE_COMPILE_FAILED"}:
+            if getattr(error, "error_code", "") in {"GRADLE_NATIVE_COMPILE_FAILED", "MAVEN_NATIVE_COMPILE_FAILED",
+                                                   "MAVEN_NATIVE_SOURCE_REMOVAL_REQUIRES_CLEAN"}:
                 attempt.compile_backend = error.context["compile_backend"]
                 attempt.compiled_source_count = None
             attempt.state = (
