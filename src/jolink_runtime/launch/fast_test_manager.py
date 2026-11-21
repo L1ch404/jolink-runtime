@@ -1200,6 +1200,7 @@ class FastTestManager:
             main_scope,
             unsupported_test_compiler,
             test_project=test_scope,
+            native_maven=any(m.get("native_compile", {}).get("maven") for m in snapshot.get("moduleWorlds", ())),
         )
         if unsupported_test_compiler:
             raise FastTestManagerError(
@@ -1647,6 +1648,7 @@ class FastTestManager:
         unsupported_test_configuration: Sequence[str],
         *,
         test_project: ET.Element,
+        native_maven: bool = False,
     ) -> tuple[list[str], int, int]:
         compiler = self._maven._find_build_plugin(
             project, "maven-compiler-plugin"
@@ -1663,7 +1665,7 @@ class FastTestManager:
             "testCompile.compilerArgument",
             "testCompile.compilerArguments",
         }
-        if test_profile.decisions and not test_profile.unresolved_arguments:
+        if native_maven or (test_profile.decisions and not test_profile.unresolved_arguments):
             remaining = [
                 value
                 for value in remaining
@@ -1673,7 +1675,7 @@ class FastTestManager:
             *main_profile.unresolved_arguments,
             *test_profile.unresolved_arguments,
         )
-        if unresolved:
+        if unresolved and not native_maven:
             raise FastTestManagerError(
                 "FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED",
                 "Fast Test cannot reproduce one or more compiler arguments.",

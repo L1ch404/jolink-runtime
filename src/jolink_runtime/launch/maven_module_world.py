@@ -37,6 +37,11 @@ def _platform_home(build_jdk, compiler):
     return select_target_system_home((build_jdk.home,), compiler["target_level"])
 
 
+def _requires_native_compiler(compiler, profile):
+    # This javac switch changes platform symbol visibility, not just diagnostics.
+    return compiler["native_legacy"] or "-XDignore.symbol.file" in profile.unresolved_arguments
+
+
 def load_module_worlds(
     output: Path, target: Path, build_jdk, *, tests: bool
 ) -> tuple[dict, ...]:
@@ -159,7 +164,7 @@ def load_module_worlds(
                 **processor_settings(processing),
             }
         )
-        if compiler["native_legacy"]:
+        if _requires_native_compiler(compiler, profile):
             modules[-1]["native_main_compile"] = True
             modules[-1]["target_level"] = compiler["target_level"]
         main_patterns = compiler_source_patterns(main_scope)
@@ -173,9 +178,9 @@ def load_module_worlds(
             test_model = maven._compiler_model(
                 scoped, build_jdk=build_jdk, runtime_jdk=build_jdk
             )
-            if test_model["native_legacy"]:
-                modules[-1]["native_test_compile"] = True
             test_profile = maven._compiler_argument_profile(maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin")))
+            if _requires_native_compiler(test_model, test_profile):
+                modules[-1]["native_test_compile"] = True
             if unrepresented_patches(test_profile, allowed_patches, directory):
                 raise MavenProbeError("MAVEN_COMPILER_ARGUMENT_UNSUPPORTED", "External test --patch-module inputs are not mapped to the JDT project.")
             processing = snapshot["testAnnotationProcessing"]

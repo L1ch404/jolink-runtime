@@ -11,6 +11,11 @@ def attach_maven_native(modules, *, target, build_root, maven_argv, settings, lo
     if not any(m.get("native_main_compile") or (tests and (m.get("native_test_compile") or m.get("native_test_phase"))) for m in modules):
         return
     for m in modules:
+        # Maven will run the actual compiler configuration, including checks
+        # that would have been skipped on the JDT path.
+        m["skipped_compiler_checks"] = []
+        if tests and "test_compiler" in m:
+            m["test_compiler"]["skipped_compiler_checks"] = []
         outputs = [m["output_directory"]]
         if tests and "test_compiler" in m:
             outputs.append(m["test_output_directory"])

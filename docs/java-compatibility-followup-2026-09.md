@@ -1,5 +1,10 @@
 # joLink 产品边界与兼容性跟进
 
+MockServer 后续：main/test 的 `-XDignore.symbol.file` 现在交给项目 Maven 的真实
+编译器处理，不会当成告警删除。JDK 8 的 forked javac 可以据此编译引用隐藏平台类型
+的源码；Fast Test 和启动/restart 共用原生产物会话。该项解决编译阶段，不代替
+Surefire Provider 配置的 Runner 验收。
+
 ## C7：Gradle 项目的 javac 参数无法映射到 JDT（2026-11-22）
 
 WireMock 3.13.1 的 main 在同一项目中曾因 `-XDenableSunApiLintControl` 提前拒绝；
