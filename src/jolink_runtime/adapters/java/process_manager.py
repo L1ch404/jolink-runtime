@@ -394,6 +394,9 @@ class ProcessManager:
                     cmd.extend(app_args)
 
             popen_kwargs = {
+                # The MCP server's stdin carries protocol frames. Give a
+                # managed application its own stream, held open until stop.
+                "stdin": subprocess.PIPE,
                 "stdout": log_fp or subprocess.DEVNULL,
                 "stderr": subprocess.STDOUT,
             }
@@ -479,6 +482,7 @@ class ProcessManager:
                         process.pid,
                     )
             elif proc is not None:
+                self._close_stdin(proc)
                 try:
                     proc.kill()
                 except Exception:
@@ -874,7 +878,15 @@ class ProcessManager:
 
     @staticmethod
     def _cleanup_retained_files(process: ProcessInfo) -> None:
+        if process.owned:
+            ProcessManager._close_stdin(process.proc)
         ProcessManager._cleanup_paths(process.retained_files)
+
+    @staticmethod
+    def _close_stdin(proc) -> None:
+        stream = getattr(proc, "stdin", None)
+        if stream is not None:
+            stream.close()
 
     @staticmethod
     def _cleanup_paths(paths: tuple[Path, ...]) -> None:

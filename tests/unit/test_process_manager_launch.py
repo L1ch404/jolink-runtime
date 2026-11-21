@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -49,6 +50,25 @@ def _advance_clock(monkeypatch: pytest.MonkeyPatch) -> None:
         return value
 
     monkeypatch.setattr(process_module.time, "monotonic", monotonic)
+
+
+def test_managed_target_reads_its_own_stdin_and_stop_closes_it(tmp_path, monkeypatch):
+    # Use a real child blocked on input, like servers that wait for Enter.
+    monkeypatch.setattr(ProcessManager, "_check_jdwp_port", staticmethod(lambda *args: True))
+    manager = ProcessManager()
+    script = "import sys,pathlib; pathlib.Path(sys.argv[1]).write_bytes(sys.stdin.buffer.readline())"
+    marker = tmp_path / "input"
+    info = manager.start(".", "ReadsStdin", command_argv=(sys.executable, "-c", script, str(marker)))
+    pipe = info.proc.stdin
+    try:
+        assert pipe is not None and not pipe.closed and not marker.exists()
+        pipe.write(b"only for this process\n")
+        pipe.flush()
+        assert info.proc.wait(timeout=5) == 0
+        assert marker.read_bytes() == b"only for this process\n"
+    finally:
+        manager.stop()
+    assert pipe.closed
 
 
 def test_start_accepts_exact_java_command_cwd_and_environment(
