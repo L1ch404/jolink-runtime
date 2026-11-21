@@ -112,7 +112,7 @@ async def call_workflow(session, tool: str, arguments: dict, output: Path | None
             while result.get("ok", True) and result.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
                 await anyio.sleep(.25)
                 result = await call(tool, {"action": "result", "test_run_id": test_id})
-        elif tool == "java_application" and result.get("status") in {"project_launch_started", "restart_started"}:
+        elif tool == "java_application" and result.get("status") in {"project_launch_started", "project_launch_restarted", "restart_started"}:
             restart = result["status"] == "restart_started"
             token = result["reload_id" if restart else "attempt_id"]
             # java_status reports the state of the query, not that of this operation:

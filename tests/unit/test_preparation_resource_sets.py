@@ -1,12 +1,57 @@
 """Maven resource selection must not turn ordinary edits into Probe invalidations."""
 
 import json
+import os
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from test_build_configuration import model
 
 from jolink_runtime.launch.configuration_inputs import preparation_stamps
+
+
+@pytest.mark.parametrize("kind", ["test", "launch"])
+def test_named_output_uses_content_without_hashing_unchanged_files(model, kind, monkeypatch):
+    from jolink_runtime.launch.configuration_inputs import _named_output_digest
+
+    named = model.root / "target" / "generated.txt"
+    named.parent.mkdir(exist_ok=True)
+    plain = named.with_name("ordinary-input.txt")
+    named.write_bytes(b"one")
+    plain.write_bytes(b"input")
+    inputs = (plain, named)
+    model.plan = replace(model.plan, preparation_inputs=inputs, preparation_named_outputs=(named,))
+    model.world = replace(model.world, modules=({
+        "module_root": str(model.root), "preparation_inputs": list(map(str, inputs)),
+        "preparation_named_outputs": [str(named)],
+    },))
+    opened = []
+    original = Path.open
+    def count(path, *args, **kwargs):
+        if path in inputs and args and args[0] == "rb":
+            opened.append(path)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", count)
+    model.save(kind)
+    assert opened == [named]
+    _named_output_digest.cache_clear()  # simulate an MCP reopen
+    assert model.load(kind) is not None and opened == [named]
+    stamp = named.stat()
+    os.utime(named, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10_000_000_000))
+    assert model.load(kind) is not None and opened == [named, named]
+    assert model.load(kind) is not None and opened == [named, named]
+    named.write_bytes(b"two")
+    # Match the saved mtime and size, but this new write has different ctime.
+    os.utime(named, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert model.load(kind) is None and opened == [named, named, named]
+    named.unlink()
+    assert model.load(kind) is None
+    named.write_bytes(b"one")
+    assert model.load(kind) is not None
+    stat = plain.stat()
+    os.utime(plain, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000_000))
+    assert model.load(kind) is None and plain not in opened
 
 
 def test_literal_preparation_selection_does_not_walk_compiler_outputs(tmp_path, monkeypatch):

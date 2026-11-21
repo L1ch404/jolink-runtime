@@ -153,6 +153,7 @@ def load_module_worlds(
                 "processor_entries": [str(path) for path in factories],
                 "lombok_entries": [str(path) for path in lombok],
                 "preparation_inputs": snapshot.get("preparationInputs", []),
+                "preparation_named_outputs": snapshot.get("preparationNamedOutputs", []),
                 "preparation_roots": snapshot.get("preparationRoots", []),
                 "preparation_resource_sets": snapshot.get("preparationResourceSets", []),
                 "preparation_executions": snapshot.get("preparationExecutions", []),

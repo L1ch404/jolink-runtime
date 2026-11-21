@@ -431,6 +431,7 @@ class ProjectLaunchPipeline:
             processor_names=tuple(target.get("processor_names", ())),
             processor_options=target.get("processor_options", {}),
             preparation_inputs=tuple(Path(p) for m in modules for p in m.get("preparation_inputs", ())),
+            preparation_named_outputs=tuple(Path(p) for m in modules for p in m.get("preparation_named_outputs", ())),
             preparation_roots=tuple(Path(p) for m in modules for p in m.get("preparation_roots", ())),
             preparation_resource_sets=tuple(r for m in modules for r in m.get("preparation_resource_sets", ())),
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),

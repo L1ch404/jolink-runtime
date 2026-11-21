@@ -235,6 +235,7 @@ class FastTestCache:
         inputs = [str(p) for m in world.modules for p in m.get("preparation_inputs", ())]
         roots = [str(p) for m in world.modules for p in m.get("preparation_roots", ())]
         resources = [r for m in world.modules for r in m.get("preparation_resource_sets", ())]
+        named = [str(p) for m in world.modules for p in m.get("preparation_named_outputs", ())]
         return {
             "build_preferences": dict(world.build_preferences),
             "configuration_files": [str(p) for p in _world_configuration_files(world)],
@@ -244,7 +245,8 @@ class FastTestCache:
             "dormant_language_roots": dormant_language_roots(world.modules),
             "preparation_roots": roots,
             "preparation_resource_sets": resources,
-            "preparation_stamps": preparation_stamps(inputs, roots, resources),
+            "preparation_named_outputs": named,
+            "preparation_stamps": preparation_stamps(inputs, roots, resources, named),
         }
 
     @staticmethod
@@ -261,6 +263,7 @@ class FastTestCache:
                 snapshot.get("preparation_inputs", ()),
                 snapshot.get("preparation_roots", ()),
                 snapshot.get("preparation_resource_sets", ()),
+                snapshot.get("preparation_named_outputs", ()), snapshot.get("preparation_stamps"),
             )
             if snapshot.get("preparation_stamps") != prepared:
                 return False

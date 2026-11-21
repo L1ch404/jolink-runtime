@@ -178,7 +178,10 @@ class ProjectLaunchCache:
             ):
                 return None
             from .configuration_inputs import preparation_stamps
-            if raw.get("preparation_stamps", {}) != preparation_stamps(plan_raw.get("preparation_inputs", ()), plan_raw.get("preparation_roots", ()), plan_raw.get("preparation_resource_sets", ())):
+            baseline = raw.get("preparation_stamps", {})
+            if baseline != preparation_stamps(plan_raw.get("preparation_inputs", ()), plan_raw.get("preparation_roots", ()),
+                                              plan_raw.get("preparation_resource_sets", ()),
+                                              plan_raw.get("preparation_named_outputs", ()), baseline):
                 return None
             if build_system == "gradle" and plan_raw.get("modules"):
                 if raw.get("gradle_environment") != _environment_inputs(raw.get("gradle_environment", ())):
@@ -201,6 +204,7 @@ class ProjectLaunchCache:
                 add_reads=tuple(plan_raw.get("add_reads", ())),
                 add_exports=tuple(plan_raw.get("add_exports", ())),
                 preparation_inputs=_paths(plan_raw.get("preparation_inputs", ())),
+                preparation_named_outputs=_paths(plan_raw.get("preparation_named_outputs", ())),
                 preparation_roots=_paths(plan_raw.get("preparation_roots", ())),
                 preparation_resource_sets=tuple(plan_raw.get("preparation_resource_sets", ())),
                 lombok_entries=_paths(plan_raw["lombok_entries"]),
@@ -384,6 +388,7 @@ class ProjectLaunchCache:
                 "preparation_inputs": [str(p) for p in jdt_plan.preparation_inputs],
                 "preparation_roots": [str(p) for p in jdt_plan.preparation_roots],
                 "preparation_resource_sets": jdt_plan.preparation_resource_sets,
+                "preparation_named_outputs": [str(p) for p in getattr(jdt_plan, "preparation_named_outputs", ())],
                 "resource_fingerprint": jdt_plan.resource_fingerprint,
             },
         }

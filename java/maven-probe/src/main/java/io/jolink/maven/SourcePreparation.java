@@ -1,7 +1,9 @@
 package io.jolink.maven;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.*;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator;
@@ -19,6 +21,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 /** Run declared preparation and native resources, not the compile/test lifecycle. */
 final class SourcePreparation {
     static final String INPUTS = "jolink.preparation.inputs";
+    static final String NAMED_OUTPUTS = "jolink.preparation.named.outputs";
     static final String EXECUTIONS = "jolink.preparation.executions";
     static final String SKIPPED = "jolink.preparation.skipped";
     static final String ROOTS = "jolink.preparation.roots";
@@ -40,12 +43,14 @@ final class SourcePreparation {
     void execute(MavenSession session, MavenProject project, boolean tests) throws MojoExecutionException {
         MavenProject previous = session.getCurrentProject();
         Set<String> inputs = new LinkedHashSet<>();
+        Set<String> namedOutputs = new LinkedHashSet<>();
         Set<String> registrations = new LinkedHashSet<>();
         List<String> executions = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
         List<String> post = new ArrayList<>();
         Set<String> postInputs = new LinkedHashSet<>();
         try (ResourcePreparation resources = new ResourcePreparation()) {
+            Path build = new File(project.getBuild().getDirectory()).getCanonicalFile().toPath();
             PreparationMapping mapping = new PreparationMapping();
             session.setCurrentProject(project);
             List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-classes" : "process-resources"));
@@ -82,6 +87,7 @@ final class SourcePreparation {
                 ReplacerInputs replacer = ReplacerInputs.describe(execution, evaluator);
                 Xpp3Dom fileConfiguration = replacer == null ? execution.getConfiguration() : replacer.otherConfiguration;
                 collectPaths(fileConfiguration, evaluator, project, paths, resource);
+                Map<String, FileTime> before = resource ? Collections.emptyMap() : namedBuildFiles(paths, build);
                 log.info("joLink source preparation: " + identity + " (" + phase + ")");
                 if (resource) resources.execute(session, project, execution, plugins);
                 else plugins.executeMojo(session, execution);
@@ -89,6 +95,9 @@ final class SourcePreparation {
                 // Include newly created output/source roots in the same small
                 // file-input snapshot, so deleting generated outputs refreshes it.
                 collectPaths(fileConfiguration, evaluator, project, paths, resource);
+                if (!resource) namedBuildFiles(paths, build).forEach((file, time) -> {
+                    if (!time.equals(before.get(file))) namedOutputs.add(file);
+                });
                 if (resource) {
                     // Native output may also contain javac classes. Track only
                     // resource inputs and the individual outputs we produced.
@@ -112,10 +121,10 @@ final class SourcePreparation {
             Collections.sort(inputPaths);
             Collections.sort(rootPaths);
             project.setContextValue(INPUTS, inputPaths);
+            project.setContextValue(NAMED_OUTPUTS, new ArrayList<>(namedOutputs));
             project.setContextValue(EXECUTIONS, executions);
             project.setContextValue(SKIPPED, skipped);
             project.setContextValue(ROOTS, rootPaths);
-            Path build = new File(project.getBuild().getDirectory()).getCanonicalFile().toPath();
             Set<String> products = new LinkedHashSet<>();
             for (String path : postInputs) if (new File(path).toPath().startsWith(build)) products.add(path);
             postInputs.removeAll(products);
@@ -146,6 +155,17 @@ final class SourcePreparation {
         // Injected packaging defaults have no positive POM source line.
         org.apache.maven.model.InputLocation location = execution.getLocation("");
         return location != null && location.getLineNumber() > 0;
+    }
+
+    // Only files individually referenced by this mojo AND created/rewritten
+    // during it. Do not walk parameter directories or classify copied resources.
+    private static Map<String, FileTime> namedBuildFiles(Set<String> parameters, Path build) throws java.io.IOException {
+        Map<String, FileTime> files = new HashMap<>();
+        for (String name : parameters) {
+            Path file = new File(name).toPath();
+            if (file.startsWith(build) && Files.isRegularFile(file)) files.put(name, Files.getLastModifiedTime(file));
+        }
+        return files;
     }
 
     private static Set<String> sourceRoots(MavenProject project) throws java.io.IOException {

@@ -1,7 +1,9 @@
 """Shared file/directory inputs for the existing Build World caches."""
 
 import hashlib
+from functools import lru_cache
 import re
+from stat import S_ISREG
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -88,15 +90,34 @@ def configuration_file_stamps(paths):
     }
 
 
-def preparation_stamps(paths, roots=(), resource_sets=()):
+@lru_cache(maxsize=256)
+def _named_output_digest(path, observed_stat):
+    # The key is the observed file identity, not just the pathname. Ordinary
+    # resources and directories never enter this cache.
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def preparation_stamps(paths, roots=(), resource_sets=(), named_outputs=(), baseline=None):
     """Stat generator inputs and selected resources without reading file contents."""
     result = {}
+    named = set(map(str, named_outputs))
     for path in expand_configuration_inputs(dict.fromkeys(paths)):
         try:
             stat = path.stat()
-            result[str(path)] = (
-                [stat.st_mtime_ns, stat.st_size] if path.is_file() else "directory"
-            )
+            name = str(path)
+            if name in named and S_ISREG(stat.st_mode):
+                observed = [stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns, stat.st_dev, stat.st_ino]
+                old = (baseline or {}).get(name)
+                if isinstance(old, dict) and old.get("stat") == observed:
+                    result[name] = old
+                else:
+                    digest = _named_output_digest(path, tuple(observed))
+                    result[name] = old if isinstance(old, dict) and old.get("sha256") == digest else {
+                        "stat": observed, "sha256": digest,
+                    }
+            else:
+                result[name] = [stat.st_mtime_ns, stat.st_size] if S_ISREG(stat.st_mode) else "directory"
         except FileNotFoundError:
             result[str(path)] = "missing"
     result.update({"root:" + str(path): Path(path).is_dir() for path in roots})
@@ -110,5 +131,6 @@ def preparation_stamps(paths, roots=(), resource_sets=()):
 
 def plan_preparation_stamps(plan):
     return preparation_stamps(
-        plan.preparation_inputs, plan.preparation_roots, plan.preparation_resource_sets
+        plan.preparation_inputs, plan.preparation_roots, plan.preparation_resource_sets,
+        getattr(plan, "preparation_named_outputs", ()), getattr(plan, "preparation_baseline", None),
     )

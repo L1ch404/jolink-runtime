@@ -745,6 +745,7 @@ class JdtBuildWorldPlan:
     processor_names: tuple[str, ...] = ()
     processor_options: dict[str, str | None] = field(default_factory=dict)
     preparation_inputs: tuple[Path, ...] = ()
+    preparation_named_outputs: tuple[Path, ...] = ()
     preparation_roots: tuple[Path, ...] = ()
     preparation_resource_sets: tuple[dict[str, Any], ...] = ()
     configuration_stamps: dict[str, str] | None = None
