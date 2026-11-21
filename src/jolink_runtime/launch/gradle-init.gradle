@@ -1,6 +1,7 @@
 initscript {
     dependencies {
-        classpath files(System.getProperty('jolink.gradle.probeJar'))
+        classpath files(gradle.startParameter.systemPropertiesArgs['jolink.gradle.probeJar']
+                ?: System.getProperty('jolink.gradle.probeJar'))
     }
 }
 

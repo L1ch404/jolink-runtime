@@ -32,6 +32,9 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
         pytest.skip("JUnit4/Hamcrest fixture dependencies are required")
     project = tmp_path / "Gradle 模块 workspace"
     project.mkdir()
+    # Exercise an actual forked daemon: on Gradle 6.9.4 the init-script JVM
+    # properties can be empty although the invocation's -D flags are present.
+    (project / "gradle.properties").write_text("org.gradle.jvmargs=-Xmx512m -XX:+UseParallelGC\n")
     launcher = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
     launcher.write_text(
         f'@call "{gradle}" %*\r\n'
@@ -53,7 +56,7 @@ def test_gradle_modules_mcp_launch_reload_test_and_reopen(tmp_path: Path, dsl: s
     (project / ("build" + suffix)).write_text(
         'subprojects { apply(plugin = "java-library")\n extensions.configure<JavaPluginExtension> { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }\n}\n'
         if kotlin
-        else "subprojects { apply plugin: 'java-library'; java { sourceCompatibility = '8'; targetCompatibility = '8' } }\n"
+        else "subprojects { apply plugin: 'java-library'; java { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 } }\n"
     )
     for name in ("base", "core", "app", "runtime", "unused", "testkit"):
         (project / name / "src/main/java/example").mkdir(parents=True)

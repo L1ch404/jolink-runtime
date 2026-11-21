@@ -43,7 +43,8 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules8";
+    private static final String VERSION = "0.1.0-modules8.1";
+    private Map<String, String> invocationProperties;
     private final JavaCompileActions compileActions = new JavaCompileActions();
     private final Map<String, Map<String, String>> baselineEnvironments =
             new LinkedHashMap<>();
@@ -64,6 +65,9 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
 
     @Override
     public void apply(final Gradle gradle) {
+        // In older single-use daemons CLI -D flags are already on the
+        // StartParameter, but not necessarily on the JVM during init.
+        invocationProperties = gradle.getStartParameter().getSystemPropertiesArgs();
         requestId = requiredIdentity("jolink.gradle.requestId", 8, 128);
         probeSha256 = requiredIdentity("jolink.gradle.probeSha256", 64, 64);
         if (!probeSha256.matches("[0-9a-f]{64}")) {
@@ -71,7 +75,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         }
         exportTaskName = "jolinkExportBuildWorld_"
                 + probeSha256.substring(0, 12);
-        exportScope = System.getProperty("jolink.gradle.scope", "test");
+        exportScope = property("jolink.gradle.scope", "test");
         if (!exportScope.equals("test") && !exportScope.equals("runtime")) {
             throw new GradleException(
                     "GRADLE_PROBE_SCOPE_INVALID: " + exportScope);
@@ -99,7 +103,7 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     }
 
     private void registerSlowCompileGate(final Project project) {
-        long slowMillis = Long.parseLong(System.getProperty(
+        long slowMillis = Long.parseLong(property(
                 "jolink.gradle.slowCompileMillis", "0"));
         if (slowMillis <= 0) {
             return;
@@ -181,8 +185,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         }
     }
 
-    private static Path outputPath() {
-        String rawOutput = System.getProperty("jolink.gradle.output");
+    private Path outputPath() {
+        String rawOutput = property("jolink.gradle.output", null);
         if (rawOutput == null || rawOutput.trim().isEmpty()) {
             throw new IllegalArgumentException("Missing jolink.gradle.output.");
         }
@@ -237,9 +241,9 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     }
 
     private Project selectTarget(Project root) throws IOException {
-        String main = System.getProperty("jolink.gradle.mainClass", "");
-        String tests = System.getProperty("jolink.gradle.testClasses", "");
-        String directory = System.getProperty("jolink.gradle.targetDirectory", "");
+        String main = property("jolink.gradle.mainClass", "");
+        String tests = property("jolink.gradle.testClasses", "");
+        String directory = property("jolink.gradle.targetDirectory", "");
         List<Project> matches = new ArrayList<>();
         for (Project project : root.getAllprojects()) {
             SourceSetContainer sets = project.getExtensions().findByType(SourceSetContainer.class);
@@ -640,9 +644,14 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         return new BoundaryException(code, message);
     }
 
-    private static String requiredIdentity(
+    private String property(String name, String fallback) {
+        String value = invocationProperties.get(name);
+        return value != null ? value : System.getProperty(name, fallback);
+    }
+
+    private String requiredIdentity(
             String name, int minimum, int maximum) {
-        String value = System.getProperty(name);
+        String value = property(name, null);
         if (value == null || value.length() < minimum
                 || value.length() > maximum
                 || !value.matches("[A-Za-z0-9_.-]+")) {
