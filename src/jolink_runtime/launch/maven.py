@@ -731,7 +731,12 @@ class MavenBuildSystemAdapter:
                     "build and restart."
                 ),
             )
-        if build_major >= 9:
+        legacy = source_level < 8 or target_level < 8
+        if legacy:
+            # The bundled ECJ starts at Java 8. Maven runs its configured
+            # compiler for this scope, with its own source/target/toolchain.
+            platform_args = ()
+        elif build_major >= 9:
             if release_level is None and source_level != target_level:
                 raise MavenResolutionError(
                     LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
@@ -764,6 +769,7 @@ class MavenBuildSystemAdapter:
                 str(target_level),
             )
         return {
+            "native_legacy": legacy,
             "build_jdk_major": build_major,
             "runtime_jdk_major": runtime_major,
             "source_level": source_level,
@@ -1090,10 +1096,10 @@ class MavenBuildSystemAdapter:
                 ),
             )
         level = int(match.group(1))
-        if level < 8:
+        if level < 1:
             raise MavenResolutionError(
                 LaunchErrorCode.FAST_COMPILE_MODEL_UNVERIFIED,
-                "Fast source update supports Java 8 or newer targets.",
+                "The effective Maven Java level is invalid.",
                 retryable=False,
                 suggested_next_step=(
                     "Use the formal Maven build and restart the application."

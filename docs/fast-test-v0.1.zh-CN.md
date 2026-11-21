@@ -360,7 +360,11 @@ Maven 资源缓存按 Probe 导出的目录、includes/excludes 跟踪匹配文�
   Processor 名称和 `-A` 参数均已接入。指定名称时只加载所选处理器，不要求服务声明；
   Maven 未指定 Processor 路径时使用其编译 classpath。普通 MapStruct、MapStruct＋Lombok binding
   样本均通过；Worker 先完成处理器初始化再按原顺序执行，见[路径接入与实测](maven-processor-path.zh-CN.md)。
-- 当前产品已升级JDT3.46，支持Java8～26的source/target；已实测8/11/17/21，
+- Maven 配置低于 Java 8 的源码或字节码级别时，交给项目自己的 Maven 编译器，
+  不把 `1.6` 改写为 `1.8`。在 JDK 8 上实测 NanoHTTPD 2.3.1（12 项测试）
+  和 main 8/test 6；Java 6 class 的 major 为 50，lambda 仍是编译错误。仅测试目标较老时，
+  普通 main 的应用启动仍用 JDT。不自动更换项目 JDK；它的编译器不支持旧目标时会报错。
+- JDT 3.46 路径支持Java8～26的source/target；已实测8/11/17/21，
   包括main8/test17和main11/test21。目标系统库、Runner JDK仍按项目配置选择。
   Worker默认使用joLink管理的Temurin21，旧Lombok1.18.20问题暂不处理。
   详见[升级与实际结果](jdt-346-upgrade.zh-CN.md)，不将编译器支持范围等同于所有项目通过；

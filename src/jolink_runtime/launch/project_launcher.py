@@ -413,6 +413,8 @@ class ProjectLaunchPipeline:
                 settings=settings, local_repository=local_repository, offline=offline, profiles=preferences.active_profiles, tests=False)
             target = next(m for m in modules if Path(m["module_root"]) == module.directory)
             snapshot = probe.load_snapshot(prepared, module_root=module.directory)
+        except MavenResolutionError as error:
+            raise self._maven_failure(error) from error
         except MavenProbeError as error:
             raise LaunchPipelineFailure(
                 error.error_code, str(error), retryable=False, context=error.context,
@@ -433,7 +435,7 @@ class ProjectLaunchPipeline:
             preparation_resource_sets=tuple(r for m in modules for r in m.get("preparation_resource_sets", ())),
             lombok_entries=tuple(dict.fromkeys(Path(p) for m in modules for p in m["lombok_entries"])),
             target_java_home=Path(target["target_java_home"]), source_encoding=target["source_encoding"],
-            source_level=target["source_level"], target_level=target["source_level"],
+            source_level=target["source_level"], target_level=target.get("target_level", target["source_level"]),
             generated_source_directory=Path(target["generated_source_directory"])
                 if target.get("generated_source_directory") else None,
             processor_source_roots=tuple(Path(p) for p in target["processor_source_roots"]),

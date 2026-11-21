@@ -14,6 +14,15 @@ from jolink_runtime.launch.maven_compile_scope import (
 )
 
 
+@pytest.mark.parametrize(("source", "target", "native"), [(6, 6, True), (7, 8, True), (8, 8, False)])
+def test_maven_levels_are_not_replaced_to_fit_ecj(source, target, native):
+    project = ET.fromstring(f"<project><properties><maven.compiler.source>1.{source}</maven.compiler.source>"
+                            f"<maven.compiler.target>1.{target}</maven.compiler.target></properties></project>")
+    jdk = SimpleNamespace(compiler_major_version=8, major_version=8)
+    model = MavenBuildSystemAdapter()._compiler_model(project, build_jdk=jdk, runtime_jdk=jdk)
+    assert (model["source_level"], model["target_level"], model["native_legacy"]) == (source, target, native)
+
+
 def test_scope_preserves_main_and_applies_test_execution_and_properties():
     project = ET.fromstring("""<project><properties>
 <maven.compiler.release>8</maven.compiler.release>

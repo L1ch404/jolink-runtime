@@ -1132,7 +1132,7 @@ class FastTestManager:
             build_jdk=build_jdk,
             runtime_jdk=build_jdk,
         )
-        if (
+        if not compiler_model["native_legacy"] and (
             compiler_model["source_level"]
             != compiler_model["target_level"]
             or compiler_model["target_level"] not in SUPPORTED_JAVA_LEVELS
@@ -1147,7 +1147,9 @@ class FastTestManager:
             )
         test_scope = compiler_scope(effective_project, test=True, configuration=snapshot["testCompilerConfiguration"])
         test_model = self._maven._compiler_model(test_scope, build_jdk=build_jdk, runtime_jdk=build_jdk)
-        if test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in SUPPORTED_JAVA_LEVELS:
+        if not test_model["native_legacy"] and (
+            test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in SUPPORTED_JAVA_LEVELS
+        ):
             raise FastTestManagerError("FAST_TEST_JAVA_LEVEL_UNSUPPORTED",
                 "The bundled JDT supports equal Java 8 through 26 test source/target levels.",
                 context={"scope": "test", **test_model})
@@ -1214,7 +1216,7 @@ class FastTestManager:
         processor_entries, lombok = jdt_processor_paths(main_processing, main_processor_paths)
         method_parameters = compiler_parameters(main_scope)
         target_level = int(compiler_model["target_level"])
-        target_java_home = self._select_target_java(
+        target_java_home = build_jdk.home if compiler_model["native_legacy"] else self._select_target_java(
             preferences,
             build_jdk,
             target_level=target_level,
@@ -1261,7 +1263,7 @@ class FastTestManager:
             resource_roots=tuple(resource_roots),
             target_java_home=target_java_home,
             source_encoding=self._maven._source_encoding(main_scope),
-            source_level=target_level,
+            source_level=compiler_model["source_level"],
             generated_source_directory=Path(snapshot["generatedSourceOutputDirectory"])
                 if snapshot.get("generatedSourceOutputDirectory") else None,
             processor_source_roots=tuple(Path(p) for p in snapshot["compileSourceRoots"]),
