@@ -219,13 +219,9 @@ def runtime_options(execution, project):
         unsupported.add("childDelegation")
     if _text(config, "useSystemClassLoader", "true").lower() == "false":
         unsupported.add("useSystemClassLoader")
-    properties = config.find("properties")
-    if properties is not None:
-        unsupported.update(
-            "properties." + p.tag
-            for p in properties
-            if p.tag != "configurationParameters"
-        )
+    provider_properties = _system_properties(config, "properties")
+    unsupported.update("properties." + str(key) for key in provider_properties
+                       if key not in {"configurationParameters", "listener"})
     if unsupported:
         raise FastTestError(
             "TEST_EXECUTION_CONFIGURATION_UNSUPPORTED",
@@ -262,9 +258,11 @@ def runtime_options(execution, project):
                 if len(node)
                 else node.text or ""
             )
-    value = config.findtext("properties/configurationParameters")
+    value = provider_properties.get("configurationParameters")
     if value:
         framework["configuration_parameters"] = value
+    if provider_properties.get("listener"):
+        framework["junit4_listeners"] = provider_properties["listener"]
     order = _text(config, "runOrder")
     adjustments = sorted(
         name

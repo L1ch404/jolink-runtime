@@ -1,5 +1,10 @@
 # joLink 产品边界与兼容性跟进
 
+MockServer 5.15.0 整体验收：C2 之后的两个阻塞（javac 平台符号、JUnit 4
+provider listener）均已接通。所选 MainTest 冷、暖 7/7，与原生 Maven 一致。
+在隔离副本增加 HTTP 响应头断言，改业务代码后测试变红，更新预期后又是 7/7；
+期间独立运行的应用仍返回旧响应，restart 后真实 HTTP 才带上新响应头。
+
 ## JFlex：执行项上的 m2e 处理指令与生成器输入
 
 JFlex 1.9.1 的 POM 同时给 `jflex-maven-plugin:generate` 配置了通用 m2e

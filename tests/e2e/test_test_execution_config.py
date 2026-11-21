@@ -290,6 +290,10 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
         ET.SubElement(
             ET.SubElement(config, "properties"), "configurationParameters"
         ).text = "fixture.option = 中文 value"
+    if framework == "junit4":
+        listener = ET.SubElement(ET.SubElement(config, "properties"), "property")
+        ET.SubElement(listener, "name").text = "listener"
+        ET.SubElement(listener, "value").text = "example.FilterTest$Trace"
     xml.write(pom, encoding="utf-8")
     if framework == "junit4":
         annotations = (
@@ -332,6 +336,12 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
  public void beforeAll(org.junit.jupiter.api.extension.ExtensionContext context){org.junit.Assert.assertEquals("中文 value",context.getConfigurationParameter("fixture.option").orElse("missing"));}}
 }"""
         )
+    if framework == "junit4":
+        source = source.replace("org.junit.Assert.assertTrue(true);",
+                                'org.junit.Assert.assertEquals("good",System.getProperty("callback.method"));')
+        source = source[:-1] + """public static class Trace extends org.junit.runner.notification.RunListener {
+ public void testStarted(org.junit.runner.Description d){System.setProperty("callback.method",d.getMethodName());}
+}}"""
     (root / "src/test/java/example/FilterTest.java").write_text(source)
     native_tests(root, env, ["test"], ["-Dtest=example.FilterTest"])
     shutil.rmtree(root / "target")

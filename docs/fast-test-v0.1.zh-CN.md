@@ -6,6 +6,10 @@ Build World；纯Java由持久JDT workspace编译，Gradle混编使用项目的�
 
 ## 开发编译配置策略
 
+JUnit 4 项目在 Surefire/Failsafe provider properties 中配置的 `listener` 会从项目
+测试 classpath 加载，并注册到实际的 JUnitCore。监听器观察的是真实测试事件，
+不是 joLink 在结果中补写的输出。该配置不代表其他 Provider 的自定义监听器也受支持。
+
 - Maven main/test编译配置由Probe根据实际生命周期执行计划选择，而非固定读取
   `default-compile/default-testCompile`或按POM顺序合并全部execution。
   禁用项及不在当前编译阶段内的项不参与；自定义ID和配置等价的重复执行可用。

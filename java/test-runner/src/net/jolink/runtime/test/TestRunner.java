@@ -40,6 +40,11 @@ public final class TestRunner {
         return value.isEmpty() ? new String[0] : value.split("\\s*,\\s*");
     }
 
+    private static void requireNoJUnit4Listeners() {
+        if (optionValues("junit4_listeners").length != 0)
+            throw new IllegalArgumentException("This Maven provider listener configuration requires JUnit 4.");
+    }
+
     private TestRunner() {
     }
 
@@ -146,6 +151,11 @@ public final class TestRunner {
         Class<?> coreType = Class.forName(
                 "org.junit.runner.JUnitCore", true, loader);
         Object core = coreType.getConstructor().newInstance();
+        for (String name : optionValues("junit4_listeners")) {
+            Class<?> type = Class.forName("org.junit.runner.notification.RunListener", true, loader);
+            Object listener = Class.forName(name, true, loader).asSubclass(type).getConstructor().newInstance();
+            coreType.getMethod("addListener", type).invoke(core, listener);
+        }
         Method run = coreType.getMethod("run", requestType);
         Method classRequest = requestType.getMethod("aClass", Class.class);
         Method methodRequest = requestType.getMethod(
@@ -198,6 +208,7 @@ public final class TestRunner {
 
     private static Result runJUnit5(
             List<String> selectors, ClassLoader loader) throws Exception {
+        requireNoJUnit4Listeners();
         Class<?> builderType = Class.forName(
                 "org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder",
                 true, loader);
@@ -374,6 +385,7 @@ public final class TestRunner {
 
     private static Result runTestNG(
             List<String> selectors, ClassLoader loader) throws Exception {
+        requireNoJUnit4Listeners();
         Class<?> testngType = Class.forName("org.testng.TestNG", true, loader);
         Class<?> suiteType = Class.forName(
                 "org.testng.xml.XmlSuite", true, loader);
