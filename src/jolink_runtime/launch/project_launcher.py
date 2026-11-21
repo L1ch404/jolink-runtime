@@ -74,6 +74,7 @@ from .toolchain import (
 )
 from .test_build_world import build_input_manifest
 from .build_environment import apply_build_preferences, maven_local_repository
+from .maven_native_session import attach_maven_native
 
 
 @dataclass(frozen=True)
@@ -408,6 +409,8 @@ class ProjectLaunchPipeline:
                 raise LaunchPipelineFailure("MAVEN_MODULE_PROBE_FAILED", "Maven module export failed.",
                     retryable=True, suggested_next_step="Inspect build.log_tail.")
             modules = load_module_worlds(prepared.output_directory, module.directory, build_jdk, tests=False)
+            attach_maven_native(modules, target=module.directory, build_root=workspace.build_root, maven_argv=maven.argv_prefix,
+                settings=settings, local_repository=local_repository, offline=offline, profiles=preferences.active_profiles, tests=False)
             target = next(m for m in modules if Path(m["module_root"]) == module.directory)
             snapshot = probe.load_snapshot(prepared, module_root=module.directory)
         except MavenProbeError as error:
@@ -451,7 +454,7 @@ class ProjectLaunchPipeline:
             worker_max_heap_mb=max(m["worker_max_heap_mb"] for m in modules),
             skipped_compiler_checks=skipped_compiler_checks(modules),
             skipped_build_steps=skipped_preparation_steps(modules),
-            modules=modules if len(modules) > 1 or target.get("source_patterns") else ())
+            modules=modules if len(modules) > 1 or target.get("source_patterns") or target.get("native_compile") else ())
         plan = configuration.bind(plan, native=(snapshot,))
         runtime_jdk = self._select_runtime_java(
             context, intent, preferences, plan, build_jdk, log,

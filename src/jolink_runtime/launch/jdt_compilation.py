@@ -14,6 +14,8 @@ from .jdt_compile_session import (
 )
 from .jdt_modules import ModuleCompileSession, compilation_modules, module_name, module_resources
 from .gradle_native_session import GradleNativeSession
+from .native_compile_session import NativeCompileSession
+from .maven_native_session import MavenNativeSession
 from .gradle_probe import environment_input_stamps
 
 
@@ -27,7 +29,8 @@ def module_compiler_options(model):
 def _native_configuration(model):
     if not any("native_compile" in m for m in model.modules):
         return None
-    return {"gradle_native": True, "modules": model.modules,
+    kind = "maven_native" if any("maven" in m["native_compile"] for m in model.modules) else "gradle_native"
+    return {kind: True, "modules": model.modules,
             "configuration_stamps": model.configuration_stamps or {},
             "environment_stamps": environment_input_stamps(model.configuration_environment_names)}
 
@@ -116,10 +119,11 @@ def capture_compilation_configuration(*, target_java_home, modules=(), target_mo
 def open_compile_session(configuration, *, store, project_root, module_root,
                          candidate, worker_java, resource_modules=(), build_java_home=None):
     """Bind the saved compiler arguments to the selected Worker and workspace."""
-    if configuration.get("gradle_native"):
+    if configuration.get("gradle_native") or configuration.get("maven_native"):
         identity = {**configuration, "build_java_home": str(build_java_home)}
         workspace = store.claim(project_root=project_root, module_root=module_root, identity=identity)
-        return workspace, GradleNativeSession(workspace.root, configuration["modules"], module_root, build_java_home)
+        factory = MavenNativeSession if configuration.get("maven_native") else GradleNativeSession
+        return workspace, factory(workspace.root, configuration["modules"], module_root, build_java_home)
     options = dict(configuration["options"])
     options["extra_jvm_arguments"] = [
         *options["extra_jvm_arguments"],
@@ -148,7 +152,7 @@ def open_compile_session(configuration, *, store, project_root, module_root,
 
 def initialize_compile_session(compiler, *, reuse_workspace, run_operation=None, probe_refreshed=False):
     """Cold FULL, or reopen then synchronize only edits; return the actual build."""
-    if isinstance(compiler, GradleNativeSession):
+    if isinstance(compiler, NativeCompileSession):
         return compiler.start(reuse_workspace=reuse_workspace, run_operation=run_operation,
                               probe_refreshed=probe_refreshed)
     result = compiler.start(reuse_workspace=True, build_on_reuse=False) if reuse_workspace else compiler.start()

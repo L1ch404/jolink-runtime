@@ -1,5 +1,21 @@
 # joLink 产品边界与兼容性跟进
 
+## C4：测试资源需要已编译的测试类（Winstone）
+
+项目在 `process-test-classes` 打包用于测试的 WAR。只执行到
+`process-test-resources` 太早：运行打包插件却没有新编译的 class，也是不正确的。
+现在 Probe 保留实际绑定的后置 goal；仅需要它的测试使用 Maven 原生 compiler
+和对应后置 Mojo，按生命周期计划顺序执行。不会再执行一遍源码准备，也不会执行
+Surefire 或整个 test 生命周期。运行时与 Fast Test 分别持有成功构建的私有产物。
+编译源码、声明的打包输入或生成的具名文件发生变化时重新构建；未修改时，包括
+重开 MCP，直接复用。Maven 原生编译没有精确源码计数时不返回该字段。
+
+Winstone `0b9170f` 用原始 POM 生成了真实含测试字节码的 WAR。
+原样测试在本机仍受其硬编码回环地址影响，Runner 达到 300 秒内部上限；
+只改测试里的 `127.0.0.2` 为 `127.0.0.1`，冷/暖/重开均为 6/6。
+原生 Maven 的同一地址对照也为 6/6。独立启动和 restart 的真实 HTTP 访问通过。
+回归：[已编译 class、资源打包、源/资源修改及生成文件删除](../tests/e2e/test_maven_post_test_classes.py)。
+
 ## C3：Gradle 消费其他 SourceSet 的 artifact（2026-11-22）
 
 WireMock 3.13.1 `1a9a615`，Gradle 8.6/JDK 17。以前 `:test` 的 `testFixtures`

@@ -135,7 +135,7 @@ def test_declared_output_tracks_static_siblings_not_producer_writes(tmp_path):
 
 
 def test_literal_root_scoped_copy_inputs_do_not_walk_project(tmp_path, monkeypatch):
-    from jolink_runtime.launch.gradle_native_session import _producer_files
+    from jolink_runtime.launch.native_compile_session import _producer_files
 
     license_file = tmp_path / "LICENSE"
     license_file.write_text("notice")
@@ -150,7 +150,7 @@ def test_literal_root_scoped_copy_inputs_do_not_walk_project(tmp_path, monkeypat
 
 
 def test_case_insensitive_producer_tracks_real_filenames_and_honors_excludes(tmp_path):
-    from jolink_runtime.launch.gradle_native_session import _producer_files
+    from jolink_runtime.launch.native_compile_session import _producer_files
 
     for name in ("license", "new.txt", "ignored.txt"):
         (tmp_path / name).touch()

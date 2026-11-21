@@ -27,6 +27,8 @@ from .fast_test_cache import FastTestCache
 from .configuration_inputs import maven_configuration_files, maven_environment_references
 from .build_log import redacted_build_log_tail as _redacted_build_log_tail
 from .gradle_native_session import GradleNativeSession
+from .native_compile_session import NativeCompileSession
+from .maven_native_session import attach_maven_native
 from .probe_configuration import ProbeConfiguration, ProbeConfigurationChanged
 from .jdt_compilation import (
     test_compilation_configuration, open_compile_session, initialize_compile_session,
@@ -98,7 +100,7 @@ class _FastTestProject:
     test_working_directory: Path
     runner_environment: dict[str, str | None]
     runner_jvm_arguments: tuple[str, ...]
-    compiler: PersistentJdtCompileSession | GradleNativeSession
+    compiler: PersistentJdtCompileSession | NativeCompileSession
     runtime_classpath: tuple[Path, ...]
     upstream_source_roots: tuple[Path, ...]
     runner_support_provenance: dict[str, Any]
@@ -164,7 +166,7 @@ class TestAttempt:
         self.compiled_source_units = tuple(dict.fromkeys((
             *self.compiled_source_units, *result.compiled_source_units,
         )))
-        self.compiled_source_count = (None if result.actual_build_kind == "GRADLE_NATIVE" else len(self.compiled_source_units))
+        self.compiled_source_count = (None if result.actual_build_kind in {"GRADLE_NATIVE", "MAVEN_NATIVE"} else len(self.compiled_source_units))
 
     def require_not_cancelled(self) -> None:
         if self.cancel_requested:
@@ -254,7 +256,7 @@ class FastTestManager:
             GradleTestBuildWorldBootstrap(),
         )
         self._project: _FastTestProject | None = None
-        self._initializing_compiler: PersistentJdtCompileSession | GradleNativeSession | None = None
+        self._initializing_compiler: PersistentJdtCompileSession | NativeCompileSession | None = None
         self._active: TestAttempt | None = None
         self._last: TestAttempt | None = None
         self._generation = 0
@@ -434,7 +436,7 @@ class FastTestManager:
                     (time.monotonic() - source_scan_started) * 1000, 1
                 )
                 if selected_sources:
-                    if attempt.compile_backend == "gradle_native":
+                    if attempt.compile_backend in {"gradle_native", "maven_native"}:
                         attempt.compiled_source_count = None
                     attempt.state = "compiling"
                     attempt.require_not_cancelled()
@@ -525,7 +527,7 @@ class FastTestManager:
                     "source_changes_pending": False,
                     "build_world_changes_pending": False,
                     **({"native_compile_log": str(project.compiler.compile_log)}
-                       if attempt.compile_backend == "gradle_native" else {}),
+                       if attempt.compile_backend in {"gradle_native", "maven_native"} else {}),
                     "suggested_next_step": (
                         "Inspect failed_tests, edit the relevant source, and "
                         "retry the same explicit test selection."
@@ -566,8 +568,8 @@ class FastTestManager:
             MavenResolutionError,
             ProbeConfigurationChanged,
         ) as error:
-            if getattr(error, "error_code", "") == "GRADLE_NATIVE_COMPILE_FAILED":
-                attempt.compile_backend = "gradle_native"
+            if getattr(error, "error_code", "") in {"GRADLE_NATIVE_COMPILE_FAILED", "MAVEN_NATIVE_COMPILE_FAILED"}:
+                attempt.compile_backend = error.context["compile_backend"]
                 attempt.compiled_source_count = None
             attempt.state = (
                 "cancelled"
@@ -774,6 +776,9 @@ class FastTestManager:
         attempt.require_not_cancelled()
         native = snapshot["project"]
         directory = Path(native["baseDirectory"])
+        attach_maven_native(snapshot.get("moduleWorlds", ()), target=directory, build_root=workspace.build_root,
+            maven_argv=maven.argv_prefix, settings=source_settings, local_repository=local_repository,
+            offline=offline, profiles=preferences.active_profiles, tests=True)
         module = MavenModule(
             relative_path=Path(os.path.relpath(directory, workspace.project_root)).as_posix(),
             directory=directory, pom_file=directory / "pom.xml",
@@ -1326,8 +1331,8 @@ class FastTestManager:
         from .runtime_preparation import prepared_runtime
 
         candidate = worker_java = None
-        if world.compilation_configuration.get("gradle_native"):
-            attempt.compile_backend = "gradle_native"
+        if world.compilation_configuration.get("gradle_native") or world.compilation_configuration.get("maven_native"):
+            attempt.compile_backend = "maven_native" if world.compilation_configuration.get("maven_native") else "gradle_native"
         else:
             candidate, worker_java = prepared_runtime(
                 (build_jdk.home, world.target_java_home),
@@ -1353,14 +1358,14 @@ class FastTestManager:
                 configuration_snapshot=configuration_snapshot,
             ),
             reuse_workspace=workspace.reusable,
-            **({"probe_refreshed": True} if fresh_model and attempt.compile_backend == "gradle_native" else {}),
+            **({"probe_refreshed": True} if fresh_model and attempt.compile_backend in {"gradle_native", "maven_native"} else {}),
         )
 
     def _run_compiler_initialization_transaction(
         self,
         *,
         attempt: TestAttempt,
-        compiler: PersistentJdtCompileSession | GradleNativeSession,
+        compiler: PersistentJdtCompileSession | NativeCompileSession,
         finish: Any,
         reuse_workspace: bool = False,
         probe_refreshed: bool = False,
@@ -1395,7 +1400,7 @@ class FastTestManager:
         *,
         attempt: TestAttempt,
         full: Any,
-        compiler: PersistentJdtCompileSession | GradleNativeSession,
+        compiler: PersistentJdtCompileSession | NativeCompileSession,
         world: JavaTestBuildWorld,
         build_jdk: JavaToolchainCandidate,
         workspace: Any,
@@ -1433,7 +1438,7 @@ class FastTestManager:
             framework_options=world.framework_options,
             compiler=compiler,
             runtime_classpath=(
-                *(compiler.runtime_classpath(world.resource_roots) if attempt.compile_backend == "gradle_native"
+                *(compiler.runtime_classpath(world.resource_roots) if attempt.compile_backend in {"gradle_native", "maven_native"}
                   else (path for path in world.resource_roots if path.is_dir())),
                 *(compiler.runtime_classpath(world.test_runtime_classpath) if world.modules else world.test_runtime_classpath),
             ),

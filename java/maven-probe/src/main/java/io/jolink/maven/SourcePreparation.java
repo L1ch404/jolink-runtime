@@ -22,6 +22,9 @@ final class SourcePreparation {
     static final String EXECUTIONS = "jolink.preparation.executions";
     static final String SKIPPED = "jolink.preparation.skipped";
     static final String ROOTS = "jolink.preparation.roots";
+    static final String POST_TEST = "jolink.post.test.executions";
+    static final String POST_INPUTS = "jolink.post.test.inputs";
+    static final String POST_PRODUCTS = "jolink.post.test.products";
     private static final Set<String> MAIN = new HashSet<>(Arrays.asList(
         "generate-sources", "process-sources", "generate-resources", "process-resources"));
     private static final Set<String> TEST = new HashSet<>(Arrays.asList(
@@ -40,14 +43,17 @@ final class SourcePreparation {
         Set<String> registrations = new LinkedHashSet<>();
         List<String> executions = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
+        List<String> post = new ArrayList<>();
+        Set<String> postInputs = new LinkedHashSet<>();
         try (ResourcePreparation resources = new ResourcePreparation()) {
             PreparationMapping mapping = new PreparationMapping();
             session.setCurrentProject(project);
-            List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-resources" : "process-resources"));
+            List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-classes" : "process-resources"));
             for (MojoExecution execution : plans.calculateExecutionPlan(session, project, tasks, false).getMojoExecutions()) {
                 String phase = execution.getLifecyclePhase();
                 boolean resource = ResourcePreparation.handles(execution);
-                if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase))) || !(resource || isDeclared(project, execution))) continue;
+                boolean afterCompile = tests && "process-test-classes".equals(phase);
+                if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase)) && !afterCompile) || !(resource || isDeclared(project, execution))) continue;
                 plans.setupMojoExecution(session, project, execution);
                 String identity = execution.getGroupId() + ":" + execution.getArtifactId() + ":" + execution.getGoal() + "@" + execution.getExecutionId();
                 String skipReason = mapping.skipReason(session, project, execution);
@@ -60,6 +66,11 @@ final class SourcePreparation {
                 // it while promising that business compilation stays in JDT.
                 if (!execution.getForkedExecutions().isEmpty())
                     throw new MojoExecutionException("Source preparation requires a forked lifecycle: " + execution.getGoal());
+                if (afterCompile) {
+                    post.add(identity);
+                    collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, postInputs, false, true);
+                    continue; // Its input is compiled bytecode, not just prepared source.
+                }
                 Set<String> paths = new LinkedHashSet<>();
                 Set<String> rootsBefore = sourceRoots(project);
                 collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths, resource);
@@ -95,6 +106,13 @@ final class SourcePreparation {
             project.setContextValue(EXECUTIONS, executions);
             project.setContextValue(SKIPPED, skipped);
             project.setContextValue(ROOTS, rootPaths);
+            Path build = new File(project.getBuild().getDirectory()).getCanonicalFile().toPath();
+            Set<String> products = new LinkedHashSet<>();
+            for (String path : postInputs) if (new File(path).toPath().startsWith(build)) products.add(path);
+            postInputs.removeAll(products);
+            project.setContextValue(POST_PRODUCTS, new ArrayList<>(products));
+            project.setContextValue(POST_INPUTS, new ArrayList<>(postInputs));
+            project.setContextValue(POST_TEST, post);
         } catch (MojoExecutionException error) {
             throw error;
         } catch (Exception error) {
@@ -130,6 +148,11 @@ final class SourcePreparation {
 
     private static void collectPaths(Xpp3Dom configuration, PluginParameterExpressionEvaluator evaluator,
             MavenProject project, Set<String> paths, boolean resourceExecution) throws Exception {
+        collectPaths(configuration, evaluator, project, paths, resourceExecution, false);
+    }
+
+    private static void collectPaths(Xpp3Dom configuration, PluginParameterExpressionEvaluator evaluator,
+            MavenProject project, Set<String> paths, boolean resourceExecution, boolean post) throws Exception {
         if (configuration == null) return;
         for (Xpp3Dom child : configuration.getChildren()) {
             // ResourcePreparation exports these with their selection patterns;
@@ -137,17 +160,21 @@ final class SourcePreparation {
             if (resourceExecution && "resources".equals(child.getName())) continue;
             for (String attribute : child.getAttributeNames()) {
                 if (!"implementation".equals(attribute) && !"default-value".equals(attribute))
-                    collectPath(child.getAttribute(attribute), false, evaluator, project, paths);
+                    collectPath(child.getAttribute(attribute), false, evaluator, project, paths, post);
             }
-            if (child.getChildCount() > 0) { collectPaths(child, evaluator, project, paths, false); continue; }
+            if (child.getChildCount() > 0) { collectPaths(child, evaluator, project, paths, false, post); continue; }
             String value = child.getValue();
             if (value == null) value = child.getAttribute("default-value");
-            collectPath(value, "java.io.File".equals(child.getAttribute("implementation")), evaluator, project, paths);
+            collectPath(value, "java.io.File".equals(child.getAttribute("implementation")), evaluator, project, paths, post);
         }
     }
 
     private static void collectPath(String value, boolean fileParameter, PluginParameterExpressionEvaluator evaluator,
             MavenProject project, Set<String> paths) throws Exception {
+        collectPath(value, fileParameter, evaluator, project, paths, false);
+    }
+    private static void collectPath(String value, boolean fileParameter, PluginParameterExpressionEvaluator evaluator,
+            MavenProject project, Set<String> paths, boolean post) throws Exception {
         if (value == null) return;
         Object evaluated = evaluator.evaluate(value);
         if (evaluated instanceof Collection<?>) {
@@ -164,7 +191,9 @@ final class SourcePreparation {
         File file = evaluator.alignToBaseDirectory(evaluated instanceof File ? (File)evaluated : new File((String)evaluated));
         // Pattern/enum/text options are not paths. Check existence before
         // canonicalizing them (notably wildcard patterns on Windows).
-        if (!file.exists() && !fileParameter && !(evaluated instanceof File)) return;
+        if (!file.exists() && !fileParameter && !(evaluated instanceof File)
+                && !(post && new File(String.valueOf(evaluated)).isAbsolute()
+                    && !file.getPath().contains("*") && !file.getPath().contains("?"))) return;
         Path path = file.getCanonicalFile().toPath();
         // A context/basedir value must not become a scan of the entire repo.
         if (project.getBasedir().getCanonicalFile().toPath().startsWith(path)) return;

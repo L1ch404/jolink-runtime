@@ -105,6 +105,10 @@ public final class ExportReactorWorldMojo extends AbstractMojo {
             // Maven's reactor order prepares upstream modules before consumers.
             for (MavenProject p : session.getProjects()) {
                 if (!required.contains(p)) continue;
+                if (System.getProperty("jolink.probe.nativeCompile") != null) {
+                    NativeCompilation.execute(session, p, executionPlans, pluginManager, output, testsRequired.contains(p.getId()), getLog());
+                    continue;
+                }
                 new SourcePreparation(executionPlans, pluginManager, getLog()).execute(session, p, testsRequired.contains(p.getId()));
                 new ExportBuildWorldMojo().exportProject(p, session, repositories, artifactResolver, repositorySession, executionPlans, pluginManager, output, configuration);
                 String key = Integer.toHexString(p.getBasedir().getCanonicalPath().hashCode());

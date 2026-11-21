@@ -145,6 +145,10 @@ def load_module_worlds(
                 "preparation_roots": snapshot.get("preparationRoots", []),
                 "preparation_resource_sets": snapshot.get("preparationResourceSets", []),
                 "preparation_executions": snapshot.get("preparationExecutions", []),
+                "post_test_executions": snapshot.get("postTestExecutions", []),
+                "post_test_inputs": snapshot.get("postTestInputs", []),
+                "post_test_products": snapshot.get("postTestProducts", []),
+                "native_test_phase": "process-test-classes" if snapshot.get("postTestExecutions") else None,
                 "skipped_build_steps": snapshot.get("skippedPreparationExecutions", []),
                 **processor_settings(processing),
             }

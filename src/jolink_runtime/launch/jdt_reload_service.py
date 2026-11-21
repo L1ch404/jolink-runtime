@@ -111,7 +111,7 @@ class JdtReloadService:
         try:
             result = compiler.compile(sources)
         except JdtCompileError as error:
-            if error.error_code == "GRADLE_NATIVE_COMPILE_FAILED":
+            if error.error_code in {"GRADLE_NATIVE_COMPILE_FAILED", "MAVEN_NATIVE_COMPILE_FAILED"}:
                 return RuntimeResult(ok=False, error=str(error), data={
                     "error_code": error.error_code, "applied": False, **error.context})
             if not compiler.ready:
@@ -131,7 +131,7 @@ class JdtReloadService:
         }
         if result.compiled_source_count is not None:
             timing["compiled_source_count"] = result.compiled_source_count
-        if getattr(compiler, "strategy", None) == "gradle_native":
+        if getattr(compiler, "strategy", None) in {"gradle_native", "maven_native"}:
             timing["compile_backend"] = compiler.strategy
             timing["native_compile_log"] = str(compiler.compile_log)
             timing.pop("jdt_build_ms")

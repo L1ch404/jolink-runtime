@@ -86,7 +86,7 @@ class JdtLaunchService:
             context.check_cancelled()
             session.begin_jdt_bootstrap()
             candidate = selected = None
-            if not plan.compilation_configuration.get("gradle_native"):
+            if not (plan.compilation_configuration.get("gradle_native") or plan.compilation_configuration.get("maven_native")):
                 candidate, selected = prepared_runtime(
                     (prepared.build_jdk.home,), check_request=context.check_cancelled
                 )
@@ -103,7 +103,7 @@ class JdtLaunchService:
             session.attach_compile_session(compiler)
             result = initialize_compile_session(compiler, reuse_workspace=workspace.reusable,
                 **({"run_operation": context.run_operation, "probe_refreshed": not prepared.probe_cache_reused}
-                   if plan.compilation_configuration.get("gradle_native") else {}))
+                   if plan.compilation_configuration.get("gradle_native") or plan.compilation_configuration.get("maven_native") else {}))
             context.check_cancelled()
             if not result.compile_ok:
                 raise JdtCompileError(
