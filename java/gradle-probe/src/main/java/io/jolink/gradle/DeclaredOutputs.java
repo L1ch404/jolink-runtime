@@ -11,10 +11,23 @@ import org.gradle.api.internal.file.FileCollectionStructureVisitor;
 import org.gradle.api.internal.file.FileTreeInternal;
 import org.gradle.api.internal.file.collections.FileSystemMirroringFileTree;
 import org.gradle.api.tasks.SourceSet;
+import org.gradle.api.tasks.bundling.Jar;
 import org.gradle.api.tasks.util.PatternSet;
 
 /** Facts for directories registered via SourceSet.output.dir, not arbitrary task actions. */
 final class DeclaredOutputs {
+    static void describeArchive(Jar jar, Map<String, Object> model) throws IOException {
+        if (jar == null) return;
+        model.put("archive", jar.getArchiveFile().get().getAsFile().getCanonicalPath());
+        model.put("archiveTask", jar.getPath());
+        Inputs inputs = new Inputs();
+        ((FileCollectionInternal) jar.getInputs().getFiles()).visitStructure(inputs);
+        Map<String, Object> facts = new LinkedHashMap<>();
+        inputs.exportTo(facts);
+        facts.put("extraGeneratedPaths", Collections.singletonList(jar.getTemporaryDir().getCanonicalPath()));
+        model.put("archiveInputs", facts);
+    }
+
     static void describe(Project project, SourceSet source, Map<String, Object> model) throws IOException {
         Set<File> dirs = source.getOutput().getDirs().getFiles();
         if (dirs.isEmpty()) return;

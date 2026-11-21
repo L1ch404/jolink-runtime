@@ -1,5 +1,14 @@
 # joLink 产品边界与兼容性跟进
 
+## C3：Gradle 消费其他 SourceSet 的 artifact（2026-11-22）
+
+WireMock 3.13.1 `1a9a615`，Gradle 8.6/JDK 17。以前 `:test` 的 `testFixtures`
+依赖在 Probe 阶段被拒绝。现在使用 Gradle 的已解析产物和对应生产任务；支持同项目、
+上游项目和只在测试使用的夹具。未识别的 classifier 或其他构建的业务产物不据此放开。
+真实 MCP 的两个版本接口测试及两项 schema 测试冷/暖均 4/4；无改动时 0 编译。
+仅改 YAML、保留旧期望时 schema 测试实际 1 过 1 失败，更新期望后 2/2。
+此项单独修复时应用仍被编译参数映射拦截（C7），不是启动成功证据。
+
 ## C2：同一 Maven 编译范围内，多次执行只差可选告警（2026-11-22）
 
 MockServer 5.15.0 / Maven 3.6.3 / JDK 11 的原生 `default-testCompile` 和

@@ -59,6 +59,7 @@ class GradleNativeSession:
         self.test_source_roots = tuple(Path(p) for p in target["test_source_roots"])
         self.resources = tuple(dict.fromkeys(Path(p) for m in modules for p in m["native_compile"]["resource_inputs"]))
         outputs = dict.fromkeys(p for m in modules for p in m["native_compile"]["outputs"])
+        self.archives = {Path(p) for m in modules for p in m["native_compile"].get("archives", ())}
         self._outputs = {Path(p): self.root / "workspace" / str(i) for i, p in enumerate(outputs)}
         # Track original inputs, not the class/resource/intermediate directories
         # these same tasks will rewrite. Test and application have separate baselines.
@@ -89,7 +90,8 @@ class GradleNativeSession:
         self._index_dirty = False
 
     def runtime_classpath(self, entries):
-        return tuple(dict.fromkeys(self._outputs.get(Path(p), Path(p)) for p in entries))
+        return tuple(dict.fromkeys(self._outputs[p] / p.name if p in self.archives else self._outputs.get(p, p)
+                                   for p in map(Path, entries)))
 
     def workspace_source_roots(self):
         return (*self.source_roots, *self.test_source_roots)
@@ -157,10 +159,11 @@ class GradleNativeSession:
         digests = {}
         for original, private in self._outputs.items():
             private.mkdir(parents=True, exist_ok=True)
-            for path in original.rglob("*"):
+            archive = original in self.archives
+            for path in ((original,) if archive else original.rglob("*")):
                 if not path.is_file():
                     continue
-                rel = path.relative_to(original)
+                rel = Path(path.name) if archive else path.relative_to(original)
                 dest = private / rel
                 key = private.name + "/" + rel.as_posix()
                 # Output tasks (including cache restores) may preserve a file's

@@ -13,7 +13,7 @@ from java_support import call_workflow, open_mcp_session, require_real_mcp_java_
 
 
 @pytest.mark.mcp_java_e2e
-@pytest.mark.parametrize("layout", ["main", "upstream", "test-only"])
+@pytest.mark.parametrize("layout", ["main", "upstream", "test-only", "fixture-main", "fixture-test"])
 def test_declared_gradle_outputs_follow_their_producers_and_stay_isolated(tmp_path, layout):
     require_real_mcp_java_e2e()
     gradle = os.environ.get("JOLINK_FAST_TEST_GRADLE")
@@ -22,11 +22,12 @@ def test_declared_gradle_outputs_follow_their_producers_and_stay_isolated(tmp_pa
         pytest.skip("a local Gradle distribution and JDK17 are required")
 
     root = tmp_path / "project"
-    multi = layout == "upstream"
-    test_only = layout == "test-only"
+    variant = layout.startswith("fixture-")
+    multi = layout == "upstream" or variant
+    test_only = layout in {"test-only", "fixture-test"}
     app = root / "application" if multi else root
     owner = root / "producer" if multi else root
-    scope = "test" if test_only else "main"
+    scope = "testFixtures" if variant else "test" if test_only else "main"
     java_home = Path(home)
     env = {**os.environ, "JAVA_HOME": home, "PATH": str(java_home / "bin") + os.pathsep + os.environ["PATH"],
            "GRADLE_ARGS": "--offline", "XDG_CACHE_HOME": str(tmp_path / "cache"), "JOLINK_LOG_LEVEL": "INFO"}
@@ -51,7 +52,11 @@ def test_declared_gradle_outputs_follow_their_producers_and_stay_isolated(tmp_pa
     plugin = "apply plugin:'java-library'\n"
     consumer = f"dependencies {{testImplementation files('{junit.as_posix()}','{ham.as_posix()}')}}\n"
     if multi:
-        write(app / "build.gradle", plugin + consumer + "dependencies {implementation project(':producer')}\n")
+        dependency = "project(':producer')"
+        if variant:
+            dependency = f"testFixtures({dependency})"
+        configuration = "testImplementation" if test_only else "implementation"
+        write(app / "build.gradle", plugin + consumer + f"dependencies {{ {configuration}({dependency}) }}\n")
     # Both registrations are intentional: Mockito's directory has no builtBy; its
     # producer is instead a dependency of classes. The destination can be nested
     # inside the registered output, rather than exactly equal to it.
@@ -83,7 +88,13 @@ gradle.taskGraph.whenReady { graph ->
 """.replace("SCOPE", scope)
     declaration = ("selected.output.dir(generated)\ntasks.named(selected.classesTaskName) {dependsOn assemblePayload}"
                    if layout == "main" else "selected.output.dir([builtBy: assemblePayload], generated)")
-    write(owner / "build.gradle", plugin + ("" if multi else consumer) + script.replace("REGISTRATION", declaration))
+    extra = ""
+    if variant:
+        extra = ("apply plugin:'java-test-fixtures'\ntestFixturesJar {from('archive-only.txt')}\n"
+                 "sourceSets { unused }\n")
+        write(owner / "archive-only.txt", "packaged")
+        write(owner / "src/unused/java/Broken.java", "intentionally not Java")
+    write(owner / "build.gradle", plugin + extra + ("" if multi else consumer) + script.replace("REGISTRATION", declaration))
     if multi:
         write(root / "build.gradle", "")
     code = write(owner / f"src/{scope}/java/fixture/Encoded.java",
@@ -97,6 +108,7 @@ public class ProbeApp {
    ClassLoader loader=ProbeApp.class.getClassLoader();
    try(InputStream in=loader.getResourceAsStream("inspect/fixture/proof.raw")) {
     if(in==null) return "absent";
+    ARCHIVE_CHECK
     byte[] bytes=in.readAllBytes();
     if(bytes.length<4 || bytes[0]!=(byte)0xca || bytes[1]!=(byte)0xfe ||
         bytes[2]!=(byte)0xba || bytes[3]!=(byte)0xbe) return "not-bytecode";
@@ -116,7 +128,10 @@ public class ProbeApp {
        e.getResponseBody().write(b); e.close();}catch(Exception x){throw new RuntimeException(x);}});
    s.start();
  }
-}""")
+}""".replace("ARCHIVE_CHECK", '''try (InputStream archive = loader.getResourceAsStream("archive-only.txt")) {
+       if (archive == null) return "missing-archive-entry";
+       if ("new archive data".equals(new String(archive.readAllBytes(), "UTF-8"))) return "jar-updated";
+    }''' if variant else ""))
     write(app / "src/test/java/fixture/PayloadTest.java", """
 package fixture; public class PayloadTest {
  @org.junit.Test public void verifiesRawClassAndSideInput() throws Exception {
@@ -205,6 +220,15 @@ package fixture; public class PayloadTest {
                                 updated = await call(session, "java_application", {"action":"restart","timeout":30})
                                 assert updated.get("ok") and updated.get("apply_method")=="restart", updated
                                 assert http() == value
+                        if variant:
+                            previous = expected.read_text()
+                            write(owner / "archive-only.txt", "new archive data")
+                            expected.write_text("jar-updated")
+                            await check()
+                            assert http() == ("absent" if test_only else previous)
+                            if not test_only:
+                                updated = await call(session, "java_application", {"action":"restart","timeout":0})
+                                assert updated.get("ok") and http() == "jar-updated", updated
                     finally:
                         await session.call_tool("java_application", {"action":"stop"})
     anyio.run(scenario)

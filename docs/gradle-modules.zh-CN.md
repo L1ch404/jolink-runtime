@@ -33,6 +33,12 @@ Gradle 执行自己的任务。无需指定后端。
 
 ### 已声明的额外输出
 
+当解析到的项目依赖属于另一个 SourceSet（例如 `testFixtures(project(":lib"))`），
+Probe 按实际 artifact 找到生产者，沿该 SourceSet 的依赖继续解析，交给 Gradle
+构建对应 classes 及已选择的 Jar。若运行路径选中 JAR，使用原生任务生成的实际 JAR
+的私有副本，不用 main classes 或手工拼出的目录冒充；仅测试使用 fixture 不会改变
+应用的编译后端。未选中的 SourceSet 不要求编译。
+
 有些项目需要在编译之后再复制或生成文件供类加载器读取。Probe 读取 Gradle
 登记的输出目录和任务依赖；既支持显式 `builtBy`，也支持任务挂在 `classes.dependsOn`
 且实际写入注册目录的子目录。下游依赖上游的普通项目 JAR 时，运行路径也保留这些输出。
@@ -157,7 +163,7 @@ uv run python scripts/validate_gradle_modules_project.py /path/to/project \
 
 ## 当前尚未完成
 
-- 作为业务依赖的composite / included build、testFixtures或自定义classifier产物映射。
+- 作为业务依赖的 composite / included build，以及无法从当前构建的 SourceSet 输出或对应 Jar 任务识别的自定义 artifact。
   用于构建逻辑的included build已支持，不应与业务产物映射混为一项。
 - 需要先运行代码生成任务的源码；不会偷偷执行正式 Gradle 编译。
 - main/test不同compiler/Processor配置已通过分工程接入，不再作为未支持项；

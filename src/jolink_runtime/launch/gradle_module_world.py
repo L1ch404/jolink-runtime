@@ -98,12 +98,12 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         for scope, task in (("main", "compileJava"), ("test", "compileTestJava")):
             if task in item:
                 candidates.update(_foreign_inputs(item[scope], item[task]))
-    native = any(m[scope].get("extraOutputDirs") or m[task].get("customCompileActions")
+    native = any(m.get("selectedVariants") for m in facts.values()) or any(m[scope].get("extraOutputDirs") or m[task].get("customCompileActions")
                  for m in facts.values() for scope, task in (("main", "compileJava"), ("test", "compileTestJava"))
                  if task in m) or mixed_sources_present(candidates)
     output_sources = {}
     for item in facts.values():
-        for source in (item["main"], item.get("test", {})):
+        for source in (item["main"], item.get("test", {}), *item.get("selectedVariants", {}).values()):
             if source.get("resourcesDirectory"):
                 output_sources[source["resourcesDirectory"]] = source.get(
                     "preparedResourceDirectories", source["resourceDirectories"]
@@ -115,6 +115,11 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
             artifact = model.get("projectArtifacts", {}).get(raw)
             if artifact:
                 producer = facts[artifact["projectDirectory"]]
+                if artifact.get("sourceSet", "main") != "main":
+                    # Preserve the actual resolved variant (including archive-only
+                    # resources); the native session maps it to the consumer's copy.
+                    paths.append(raw)
+                    continue
                 if native and artifact["kind"] == "jar":
                     paths.extend(producer["main"]["classesDirectories"])
                 elif native and artifact["kind"] in {"classes", "extra"}:
@@ -198,24 +203,30 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
             }
             modules[-1]["test_compiler"]["module_path"] = classpath(modules[-1]["test_compiler"]["module_path"])
         if native:
-            scopes = [main] + ([item["test"]] if test else [])
+            variants = list(item.get("selectedVariants", {}).values())
+            scopes = [main, *variants] + ([item["test"]] if test else [])
+            archives = [s["archive"] for s in variants if "archive" in s]
             outputs = list(dict.fromkeys(p for s in scopes for p in
                            (*s["classesDirectories"], *s.get("preparedResourceDirectories", ()),
                             *s.get("extraOutputDirs", ())) if p))
             resource_inputs = dict.fromkeys(p for s in scopes for p in
                                             (*s["resourceDirectories"], *s.get("resourcePreparationInputs", ())))
+            tasks = [t for s in scopes for t in (s["classesTask"], *s.get("extraOutputTasks", ()))]
+            tasks.extend(s["archiveTask"] for s in variants if "archiveTask" in s)
             modules[-1]["native_compile"] = {
                 "build_root": model["rootDirectory"],
-                "tasks": list(dict.fromkeys(t for s in scopes for t in
-                                            (s["classesTask"], *s.get("extraOutputTasks", ())))),
-                "outputs": outputs,
+                "tasks": list(dict.fromkeys(tasks)),
+                "outputs": [*outputs, *archives],
+                "archives": archives,
                 "resource_inputs": [p for p in resource_inputs if p not in outputs],
             }
             for field in ("extraInputFiles", "extraInputTrees", "extraGeneratedPaths", "extraUnownedDirs"):
-                values = [v for part in (*scopes, compile, test or {}) for v in part.get(field, ())]
+                values = [v for part in (*scopes, compile, test or {},
+                                         *(s.get("compileTask", {}) for s in variants),
+                                         *(s.get("archiveInputs", {}) for s in variants)) for v in part.get(field, ())]
                 if values:
                     modules[-1]["native_compile"][field] = values
-            modules[-1]["source_roots"] = main["languageRoots"]
+            modules[-1]["source_roots"] = list(dict.fromkeys(p for s in (main, *variants) for p in s["languageRoots"]))
             modules[-1]["test_source_roots"] = item["test"]["languageRoots"] if test else []
     target = next(item for item in modules if item["module_root"] == selected)
     if candidates and not native:

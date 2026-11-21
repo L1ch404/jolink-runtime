@@ -43,7 +43,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules8.1";
+    private static final String VERSION = "0.1.0-modules9";
     private Map<String, String> invocationProperties;
     private final JavaCompileActions compileActions = new JavaCompileActions();
     private final Map<String, Map<String, String>> baselineEnvironments =
@@ -148,10 +148,8 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
             GradleModuleGraph graph = new GradleModuleGraph(target, exportScope.equals("test"));
             List<Task> resources = new ArrayList<>();
             for (Project module : graph.projects.values()) {
-                SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
-                resources.add(module.getTasks().getByName(sets.getByName("main").getProcessResourcesTaskName()));
-                if (module.equals(target) && exportScope.equals("test"))
-                    resources.add(module.getTasks().getByName(sets.getByName("test").getProcessResourcesTaskName()));
+                for (SourceSet s : graph.scopes.get(module))
+                    resources.add(module.getTasks().getByName(s.getProcessResourcesTaskName()));
             }
             return resources;
         });
@@ -224,14 +222,26 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
         for (Project module : graph.projects.values()) {
             SourceSetContainer sets = module.getExtensions().getByType(SourceSetContainer.class);
             SourceSet main = sets.getByName("main");
+            // An auxiliary-only project dependency must not resolve or compile
+            // an unrelated main SourceSet. The launch/test target always has main.
+            SourceSet primary = graph.scopes.get(module).contains(main) ? main : graph.scopes.get(module).iterator().next();
             Map<String, Object> facts = commonModel(module);
-            facts.put("main", module.equals(project) ? result.get("main") : sourceSet(module, main));
+            facts.put("main", module.equals(project) ? result.get("main") : sourceSet(module, primary));
             facts.put("compileJava", module.equals(project) ? result.get("compileJava")
-                    : compileTask((JavaCompile) module.getTasks().getByName(main.getCompileJavaTaskName())));
+                    : compileTask((JavaCompile) module.getTasks().getByName(primary.getCompileJavaTaskName())));
             if (module.equals(project) && exportScope.equals("test")) {
                 facts.put("test", result.get("test"));
                 facts.put("compileTestJava", result.get("compileTestJava"));
             }
+            Map<String, Object> variants = new LinkedHashMap<>();
+            for (SourceSet s : graph.scopes.get(module)) {
+                if (!graph.variants.contains(s)) continue;
+                Map<String, Object> variant = sourceSet(module, s);
+                variant.put("compileTask", compileTask((JavaCompile) module.getTasks().getByName(s.getCompileJavaTaskName())));
+                DeclaredOutputs.describeArchive(graph.selectedJars.get(s), variant);
+                variants.put(s.getName(), variant);
+            }
+            if (!variants.isEmpty()) facts.put("selectedVariants", variants);
             modules.add(facts);
         }
         result.put("modules", modules);
@@ -359,16 +369,10 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
 
     private static void validateTestBoundaries(
             Project project, SourceSetContainer sourceSets) {
-        Set<String> sourceSetNames = new LinkedHashSet<>();
-        for (SourceSet sourceSet : sourceSets) {
-            sourceSetNames.add(sourceSet.getName());
-        }
-        Set<String> expectedSourceSets = new LinkedHashSet<>(
-                Arrays.asList("main", "test"));
-        if (!sourceSetNames.equals(expectedSourceSets)) {
+        if (sourceSets.findByName("main") == null || sourceSets.findByName("test") == null) {
             throw boundary(
                     "GRADLE_SOURCE_SET_UNSUPPORTED",
-                    "G1.1 requires exactly main and test SourceSets.");
+                    "Fast Test requires main and test SourceSets.");
         }
         // This export models the default test task. Other Test tasks (retry,
         // integration tests, etc.) do not change that task's configuration.
