@@ -1,5 +1,15 @@
 # joLink 产品边界与兼容性跟进
 
+## MockServer：无改动时不应因上轮编译写入 class 而重新 Maven Bootstrap
+
+3 个 Reactor 模块用 Maven Replacer 的 `basedir=target`、`includes=dependency-reduced-pom.xml`。
+以前记录了整个 target，编译器写入别的 class 后，暖测试被误认为准备输入发生变化。
+现在按该插件原生 Ant 扫描器的 in-place include/exclude 选择记录文件（包括 CSV 配置及
+插件所用 Ant 的默认排除），真正命中的文件后续增删改仍可触发准备。字面路径直接
+stat，不枚举不相关的编译目录。不对任意插件猜测选择器，辅助文件/重定向等未建模
+模式仍沿用原来的跟踪。MockServer 固定提交冷/暖均 7/7，暖 0 编译、无 bootstrap；
+真实红绿和应用 HTTP restart 行为通过。测试见 test_maven_replacer_input_selection.py。
+
 ## Commons Codec：测试产物准备与 API 签名检查（2026-11-22）
 
 `commons-codec` 1.17.2（`1962613`，JDK 8）原生 Maven 的 234 项 HexTest 全过。

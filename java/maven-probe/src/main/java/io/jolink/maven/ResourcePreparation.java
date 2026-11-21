@@ -25,6 +25,7 @@ final class ResourcePreparation implements AutoCloseable {
     static final String INPUTS = "jolink.resources.inputs";
     private final Map<Path, Output> outputs = new LinkedHashMap<>();
     private final List<Resource> resourceSets = new ArrayList<>();
+    void addSelection(Resource selection) { resourceSets.add(selection); }
 
     static boolean handles(MojoExecution execution) {
         return "org.apache.maven.plugins".equals(execution.getGroupId())

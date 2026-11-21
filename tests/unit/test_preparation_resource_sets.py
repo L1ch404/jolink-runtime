@@ -7,6 +7,20 @@ import pytest
 from test_build_configuration import model
 
 from jolink_runtime.launch.configuration_inputs import preparation_stamps
+
+
+def test_literal_preparation_selection_does_not_walk_compiler_outputs(tmp_path, monkeypatch):
+    import os
+    def unexpected(*args):
+        pytest.fail("a literal input must not enumerate target/classes")
+    monkeypatch.setattr(os, "walk", unexpected)
+    resources = [{"directory": str(tmp_path), "includes": ["dependency-reduced-pom.xml"]}]
+    assert preparation_stamps([], resource_sets=resources) == {}
+    selected = tmp_path/"dependency-reduced-pom.xml"
+    selected.touch()
+    assert set(preparation_stamps([], resource_sets=resources)) == {str(selected)}
+    selected.unlink()
+    assert preparation_stamps([], resource_sets=resources) == {}
 from jolink_runtime.launch.jdt_modules import compilation_modules
 
 

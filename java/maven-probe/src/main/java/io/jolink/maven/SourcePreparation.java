@@ -78,13 +78,17 @@ final class SourcePreparation {
                 }
                 Set<String> paths = new LinkedHashSet<>();
                 Set<String> rootsBefore = sourceRoots(project);
-                collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths, resource);
+                PluginParameterExpressionEvaluator evaluator = new PluginParameterExpressionEvaluator(session, execution);
+                ReplacerInputs replacer = ReplacerInputs.describe(execution, evaluator);
+                Xpp3Dom fileConfiguration = replacer == null ? execution.getConfiguration() : replacer.otherConfiguration;
+                collectPaths(fileConfiguration, evaluator, project, paths, resource);
                 log.info("joLink source preparation: " + identity + " (" + phase + ")");
                 if (resource) resources.execute(session, project, execution, plugins);
                 else plugins.executeMojo(session, execution);
+                if (replacer != null) replacer.export(execution, resources);
                 // Include newly created output/source roots in the same small
                 // file-input snapshot, so deleting generated outputs refreshes it.
-                collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, paths, resource);
+                collectPaths(fileConfiguration, evaluator, project, paths, resource);
                 if (resource) {
                     // Native output may also contain javac classes. Track only
                     // resource inputs and the individual outputs we produced.

@@ -1,7 +1,6 @@
 """Shared warm reuse and private publication for a build tool's native compiler."""
 from __future__ import annotations
 
-from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -12,36 +11,11 @@ import uuid
 from .contracts import BuildOperationSpec
 from .build_log import redacted_build_log_tail
 from .gradle_module_world import LANGUAGE_SUFFIXES
-from .source_selection import SourceSelection
+from .source_selection import selected_files as _producer_files
 from .jdt_compile_session import JdtCompileError, JdtCompileResult
 from .process_supervisor import AttemptToken, ProcessSupervisor
 
 
-def _producer_files(root: Path, spec: dict, excluded: set[Path]) -> Iterator[Path]:
-    selection = SourceSelection(spec)
-    includes = spec.get("includes", ())
-    # Common root-scoped CopySpecs name individual files, e.g. from(projectDir)
-    # { include "LICENSE" }. Do not enumerate the entire repository for them.
-    if includes and spec.get("caseSensitive", True) and all(
-        not any(c in pattern for c in "*?\\") and not pattern.endswith("/")
-        and not Path(pattern).is_absolute() and ".." not in Path(pattern).parts for pattern in includes
-    ):
-        for pattern in includes:
-            path = root / pattern
-            if path.is_file() and selection.accepts(pattern) and not any(path.is_relative_to(out) for out in excluded):
-                yield path
-    elif root.is_file():
-        if selection.accepts("."):
-            yield root
-    else:
-        top_level_only = includes and all("/" not in p and "\\" not in p and p != "**" for p in includes)
-        for folder, dirs, files in os.walk(root):
-            folder = Path(folder)
-            dirs[:] = [] if top_level_only else [d for d in dirs if folder / d not in excluded]
-            for name in files:
-                path = folder / name
-                if path not in excluded and selection.accepts(path.relative_to(root).as_posix()) and path.is_file():
-                    yield path
 
 
 class NativeCompileSession:
