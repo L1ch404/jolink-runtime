@@ -49,7 +49,7 @@ from .gradle_module_world import GradleModuleError
 from .jdt_compile_session import JdtBuildWorldPlan
 from .compiler_profile import skipped_compiler_checks, compiler_check_warnings
 from .module_configuration import main_module_fields, descriptor_inputs
-from .maven_probe import ProductMavenProbe
+from .maven_probe import MavenProbeError, ProductMavenProbe
 from .probe_configuration import ProbeConfiguration, ProbeConfigurationChanged
 from .maven_module_world import load_module_worlds, skipped_preparation_steps, preparation_warnings
 from .maven_reactor import maven_build_root
@@ -410,6 +410,11 @@ class ProjectLaunchPipeline:
             modules = load_module_worlds(prepared.output_directory, module.directory, build_jdk, tests=False)
             target = next(m for m in modules if Path(m["module_root"]) == module.directory)
             snapshot = probe.load_snapshot(prepared, module_root=module.directory)
+        except MavenProbeError as error:
+            raise LaunchPipelineFailure(
+                error.error_code, str(error), retryable=False, context=error.context,
+                suggested_next_step="Inspect the Maven build configuration or use the project's Maven launch.",
+            ) from error
         finally:
             prepared.settings_file.unlink(missing_ok=True)
         roots = tuple(Path(p) for m in modules for p in m["source_roots"])

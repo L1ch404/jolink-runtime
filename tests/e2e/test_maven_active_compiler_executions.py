@@ -8,14 +8,15 @@ import shutil
 import socket
 import subprocess
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 
 import anyio
 import pytest
 
-from java_support import open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
-from test_application_java_home import call as application
+from java_support import call_workflow, open_mcp_session, require_real_mcp_java_e2e, reserve_local_port
 
 
 def _fixture(tmp_path, layout):
@@ -41,6 +42,7 @@ def _fixture(tmp_path, layout):
         return result
 
     configurations = {}
+    uses_default = layout in {"default", "lint-duplicate"}
     for scope, root_name, output_name, level, offset in (
         ("main", "MainInput", "MainValue", 8, 2),
         ("test", "ScopeTest", "TestValue", 11, 7),
@@ -93,7 +95,7 @@ public class Generator extends AbstractProcessor {
 <version>1</version></path></annotationProcessorPaths>
 <annotationProcessors><annotationProcessor>processor.{scope}.Generator</annotationProcessor></annotationProcessors>
 <compilerArgs><arg>-Ascope={scope}</arg><arg>-Aoffset={offset}</arg></compilerArgs>'''
-        if layout != "default":
+        if not uses_default:
             parameter = "generatedSourcesDirectory" if scope == "main" else "generatedTestSourcesDirectory"
             configurations[scope] += f"<{parameter}>${{project.basedir}}/custom-generated/{scope}</{parameter}>"
 
@@ -130,20 +132,24 @@ public class App {
 }''', encoding="utf-8")
     executions = []
     for scope, goal, phase in (("main", "compile", "compile"), ("test", "testCompile", "test-compile")):
-        if layout != "default":
+        if not uses_default:
             # Unresolvable processor paths and conflicting levels on a disabled
             # execution must never leak into the active scope or be resolved.
             executions.append(f'''<execution><id>default-{goal}</id><phase>none</phase>
 <configuration><release>{17 if scope == "main" else 8}</release><encoding>US-ASCII</encoding>
 <annotationProcessorPaths><path><groupId>invalid.disabled</groupId><artifactId>missing</artifactId>
 <version>1</version></path></annotationProcessorPaths></configuration></execution>''')
-        identity = "default-" + goal if layout == "default" else "user-selected-" + scope
+        identity = "default-" + goal if uses_default else "user-selected-" + scope
         executions.append(f'''<execution><id>{identity}</id><phase>{phase}</phase>
 <goals><goal>{goal}</goal></goals><configuration>{configurations[scope]}</configuration></execution>''')
+        if layout == "lint-duplicate":
+            lint_config = configurations[scope].replace("</compilerArgs>", "<arg>-Xlint:all</arg></compilerArgs>")
+            executions.append(f'''<execution><id>lint-{scope}</id><phase>{phase}</phase>
+<goals><goal>{goal}</goal></goals><configuration>{lint_config}</configuration></execution>''')
     if layout == "equivalent-duplicate":
         executions.append(f'''<execution><id>another-equivalent-main-pass</id><phase>compile</phase>
 <goals><goal>compile</goal></goals><configuration>{configurations["main"]}</configuration></execution>''')
-    if layout != "default":
+    if not uses_default:
         executions.append('''<execution><id>packaging-only-compile</id><phase>package</phase>
 <goals><goal>compile</goal></goals><configuration><release>17</release>
 <annotationProcessorPaths><path><groupId>invalid.packaging</groupId><artifactId>missing</artifactId>
@@ -160,14 +166,17 @@ public class App {
 <plugin><artifactId>maven-surefire-plugin</artifactId><version>3.0.0-M7</version></plugin></plugins></build></project>''', encoding="utf-8")
     native = tmp_path / "native"
     shutil.copytree(project, native)
-    command([maven, "--offline", "-B", "-ntp", "-Dtest=ScopeTest", "test"], "native-test", native)
+    oracle = command([maven, "--offline", "-B", "-ntp", "-Dtest=ScopeTest", "test"], "native-test", native)
+    if layout == "lint-duplicate":
+        for execution in ("default-compile", "lint-main", "default-testCompile", "lint-test"):
+            assert f"({execution})" in oracle.stdout, oracle.stdout
     for relative, major in (("classes/example/App.class", 52), ("test-classes/example/ScopeTest.class", 55)):
         assert int.from_bytes((native / "target" / relative).read_bytes()[6:8], "big") == major
     return project, main, test, pom, env, java
 
 
 @pytest.mark.mcp_java_e2e
-@pytest.mark.parametrize("layout", ["default", "replacement", "equivalent-duplicate"])
+@pytest.mark.parametrize("layout", ["default", "replacement", "equivalent-duplicate", "lint-duplicate"])
 def test_active_compiler_executions_generate_and_run_both_scopes(tmp_path, layout):
     project, main, test, pom, env, java = _fixture(tmp_path, layout)
     transcript = tmp_path / "mcp-calls.jsonl"
@@ -175,13 +184,7 @@ def test_active_compiler_executions_generate_and_run_both_scopes(tmp_path, layou
     async def run(session):
         arguments = dict(project_path=str(project), tests=["example.ScopeTest"], java_home=java,
                          build_java_home=java, timeout=30)
-        result = dict((await session.call_tool("java_fast_test", arguments)).structuredContent)
-        with anyio.fail_after(180):
-            while result.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
-                await anyio.sleep(.2)
-                result = dict((await session.call_tool("java_fast_test", {
-                    "action": "result", "test_run_id": result["test_run_id"],
-                })).structuredContent)
+        result = await call_workflow(session, "java_fast_test", arguments)
         details = dict((await session.call_tool("java_fast_test", {
             "action": "result", "test_run_id": result["test_run_id"],
         })).structuredContent)
@@ -201,7 +204,7 @@ def test_active_compiler_executions_generate_and_run_both_scopes(tmp_path, layou
         module = next(item for item in world["modules"] if item["module_root"] == str(project))
         for scope, compiler in (("main", module), ("test", module["test_compiler"])):
             expected = project / ("target/generated-sources/annotations" if scope == "main"
-                                  else "target/generated-test-sources/test-annotations") if layout == "default" \
+                                  else "target/generated-test-sources/test-annotations") if layout in {"default", "lint-duplicate"} \
                 else project / "custom-generated" / scope
             assert compiler["generated_source_directory"] == str(expected)
         for path in (tmp_path / "cache/jolink-runtime/project-launch").rglob("build-world.json"):
@@ -220,14 +223,23 @@ def test_active_compiler_executions_generate_and_run_both_scopes(tmp_path, layou
                 assert (await run(session))["compiled_source_count"] > 0
                 port = reserve_local_port()
                 try:
-                    launched = await application(session, "java_application", action="launch", project_path=str(project),
+                    launched = await call_workflow(session, "java_application", dict(action="launch", project_path=str(project),
                         main_class="example.App", java_home=java, build_java_home=java,
-                        app_args=[str(port)], ready_port=port, jdwp_port=reserve_local_port())
+                        app_args=[str(port)], ready_port=port, jdwp_port=reserve_local_port()), transcript)
                     assert launched.get("startup_state") == "ready", launched
                     with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
                         assert connection.recv(100).decode() == "22"
+                    if layout == "lint-duplicate":
+                        main.write_text(main.read_text().replace("VALUE=20", "VALUE=30"), encoding="utf-8")
+                        assert (await run(session))["compiled_source_count"] > 0
+                        with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                            assert connection.recv(100).decode() == "22", "Fast Test changed the live application"
+                        updated = await call_workflow(session, "java_application", {"action": "restart", "timeout": 0}, transcript)
+                        assert updated.get("ok"), updated
+                        with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                            assert connection.recv(100).decode() == "32"
                 finally:
-                    await application(session, "java_application", action="stop")
+                    await call_workflow(session, "java_application", {"action": "stop"})
         with (tmp_path / "reopen-stderr.log").open("w+", encoding="utf-8") as stderr:
             async with open_mcp_session(stderr, environment=env) as session:
                 assert (await run(session))["compiled_source_count"] == 0
@@ -238,34 +250,56 @@ def test_active_compiler_executions_generate_and_run_both_scopes(tmp_path, layou
 
 
 @pytest.mark.mcp_java_e2e
-def test_differing_active_compiler_executions_are_not_silently_last_wins(tmp_path):
+@pytest.mark.parametrize("difference", ["platform", "parameters", "outputDirectory", "Werror",
+                                        "Werror-with-lint", "failOnWarning-property-with-lint"])
+def test_differing_active_compiler_executions_are_not_silently_last_wins(tmp_path, difference):
     project, _, _, pom, env, java = _fixture(tmp_path, "replacement")
-    pom.write_text(pom.read_text().replace("</executions>", '''<execution>
-<id>different-main-platform</id><phase>compile</phase><goals><goal>compile</goal></goals>
-<configuration><release>17</release><proc>none</proc></configuration>
-</execution></executions>'''), encoding="utf-8")
+    tree = ET.parse(pom)
+    executions = tree.find(".//executions")
+    first = executions.find("execution[id='user-selected-main']")
+    if difference == "Werror-with-lint":
+        ET.SubElement(first.find("configuration/compilerArgs"), "arg").text = "-Werror"
+    elif difference == "failOnWarning-property-with-lint":
+        ET.SubElement(tree.find(".//properties"), "maven.compiler.failOnWarning").text = "true"
+    extra = deepcopy(first)
+    other_id = "other-main-pass"
+    extra.find("id").text = other_id
+    config = extra.find("configuration")
+    if difference == "platform":
+        config.find("release").text = "17"
+    elif difference == "parameters":
+        ET.SubElement(config, "parameters").text = "false"
+    elif difference == "outputDirectory":
+        ET.SubElement(config, "outputDirectory").text = "${project.build.directory}/other-classes"
+    else:
+        ET.SubElement(config.find("compilerArgs"), "arg").text = "-Werror" if difference == "Werror" else "-Xlint:all"
+    executions.append(extra)
+    tree.write(pom, encoding="utf-8")
 
     async def scenario():
         with (tmp_path / "mcp-stderr.log").open("w+", encoding="utf-8") as stderr:
             async with open_mcp_session(stderr, environment=env) as session:
-                result = dict((await session.call_tool("java_fast_test", dict(
+                result = await call_workflow(session, "java_fast_test", dict(
                     project_path=str(project), tests=["example.ScopeTest"], java_home=java,
                     build_java_home=java, timeout=30,
-                ))).structuredContent)
-                with anyio.fail_after(180):
-                    while result.get("status") in {"starting", "bootstrapping", "compiling", "running"}:
-                        await anyio.sleep(.2)
-                        result = dict((await session.call_tool("java_fast_test", {
-                            "action": "result", "test_run_id": result["test_run_id"],
-                        })).structuredContent)
+                ))
                 details = dict((await session.call_tool("java_fast_test", {
                     "action": "result", "test_run_id": result["test_run_id"],
                 })).structuredContent)
                 (tmp_path / "result.json").write_text(json.dumps(details, indent=2), encoding="utf-8")
-                assert details["ok"] is False and details["compiled_source_count"] == 0, details
+                assert details["ok"] is False and "runner_ms" not in details and "tests" not in details, details
                 assert details.get("error_code") == "MAVEN_COMPILER_EXECUTION_AMBIGUOUS", details
                 assert details.get("scope") == "main", details
                 assert set(details.get("execution_ids", ())) == {
-                    "user-selected-main", "different-main-platform",
+                    "user-selected-main", other_id,
                 }, details
+                port = reserve_local_port()
+                command = dict(action="launch", project_path=str(project), main_class="example.App",
+                               java_home=java, build_java_home=java, ready_port=port, jdwp_port=reserve_local_port(),
+                               app_args=[str(port)], timeout=0)
+                observed = await call_workflow(session, "java_application", command, tmp_path / "mcp-calls.jsonl")
+                assert not observed["ok"] and observed.get("launch_phase") == "failed" and not observed.get("pid"), observed
+                error = observed["launch_error"]
+                assert error["error_code"] == details["error_code"] and error["scope"] == details["scope"], observed
+                assert set(error["execution_ids"]) == set(details["execution_ids"]), observed
     anyio.run(scenario)

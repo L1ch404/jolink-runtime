@@ -33,7 +33,10 @@ For Maven, the native lifecycle plan selects the active main/test compiler
 executions. Custom IDs are supported; disabled executions do not contribute
 options or Processor paths. Runtime and Fast Test consume the same selected
 configuration instead of merging every execution by XML order. Conflicting
-active configurations report `MAVEN_COMPILER_EXECUTION_AMBIGUOUS`.
+active configurations report `MAVEN_COMPILER_EXECUTION_AMBIGUOUS`, including
+the scope and execution IDs. Differences limited to recognized optional javac
+warnings can share a scope; warnings-as-errors and forked compilers retain
+strict comparison.
 Development compilation keeps source/line/local-variable debug attributes even
 when Maven requests `debug=false` or `-g:none`, and uses the existing errors-only
 diagnostic policy. Method parameter reflection metadata still follows the

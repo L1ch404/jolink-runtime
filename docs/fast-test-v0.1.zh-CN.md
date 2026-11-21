@@ -9,6 +9,8 @@ Build World；纯Java由持久JDT workspace编译，Gradle混编使用项目的�
 - Maven main/test编译配置由Probe根据实际生命周期执行计划选择，而非固定读取
   `default-compile/default-testCompile`或按POM顺序合并全部execution。
   禁用项及不在当前编译阶段内的项不参与；自定义ID和配置等价的重复执行可用。
+  使用 Maven 自身 javac 时，重复执行仅差 `-Xlint:all` 等已识别的可选告警，不会被拒绝。
+  告警会导致失败、fork/toolchain 或无法解释的参数仍严格比较，不覆盖第一轮或最后一轮的配置。
   真正不同的有效编译配置返回`MAVEN_COMPILER_EXECUTION_AMBIGUOUS`，不静默覆盖。
 - 启动与Fast Test共用所选配置的语言级别、编码、参数、源码过滤和Processor信息。
   这里只查询Maven模型，不运行Maven业务编译。

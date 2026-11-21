@@ -1,5 +1,27 @@
 # joLink 产品边界与兼容性跟进
 
+## C2：同一 Maven 编译范围内，多次执行只差可选告警（2026-11-22）
+
+MockServer 5.15.0 / Maven 3.6.3 / JDK 11 的原生 `default-testCompile` 和
+`default` 均编译同一批 76 个文件，class 输出目录及注解生成目录相同。两次都传了
+`-XDignore.symbol.file`，只有前一次多传 `-Xlint:all`；两个执行都生效，并非禁用项。
+旧 Probe 比较配置 XML 后拒绝，原生同一选择器则 7/7。
+
+`fasttest40` 比较同范围的重复执行时，会区分输出告警的差异与改变编译结果的差异。
+识别出的可选 javac 告警开关及 `showWarnings/showDeprecation` 不单独构成歧义；
+保留原生选定配置及原参数顺序，不删除传给后续模型验证的参数。输出目录、语言级别、
+`-parameters`、处理器等差异仍不能合并。若告警决定成败、使用 fork/toolchain 或参数形式
+无法可靠分辨，就维持严格比较。应用与 Fast Test 对真正冲突都返回
+`MAVEN_COMPILER_EXECUTION_AMBIGUOUS`、范围和执行 ID，不启动 JVM/Runner。
+
+**真实项目边界**：MockServer 不再报 C2，但 Fast Test 仍未进入 JUnit：main/test 共用的
+`-XDignore.symbol.file` 触发 `FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED`。这是一个参数被计两次。
+JDK 8 对照已证实它能改变平台类型的可见性，不能当作普通告警直接忽略。
+同项目应用启动和真实 restart 的 HTTP 验收通过，不等于其 Fast Test 或全部编译参数已支持。
+回归见[执行选择、产物与实际应用行为](../tests/e2e/test_maven_active_compiler_executions.py)和
+[Maven 由 JDK 17 启动、实际 fork JDK 8 javac 的反例](../tests/e2e/test_maven_forked_execution_diagnostics.py)。
+后者中，`-Xlint:module` 在 JDK 8 是非法选项，不是可忽略的告警。
+
 ## C1：未改动的 Maven 根 POM 被误报变化（2026-11-21）
 
 JFlex 1.9.1 和 MockServer 5.15.0 在干净副本上重试仍返回
@@ -14,8 +36,8 @@ Fast Test 与 launch/restart 共用判断：只有调用前已观察到该文件
 不增加重复执行 Maven 的流程。已有配置和编译缓存的无变化复用不扫描额外文件。
 
 - MockServer：真实 MCP 启动和 restart 两次都在新 JVM 通过本机
-  `PUT /mockserver/status` 返回 200 和版本 5.15.0。Fast Test 仍受另一个已知的
-  `MAVEN_COMPILER_EXECUTION_AMBIGUOUS` 阻塞，不计作测试通过。
+  `PUT /mockserver/status` 返回 200 和版本 5.15.0。当时 Fast Test 受另一项
+  `MAVEN_COMPILER_EXECUTION_AMBIGUOUS` 阻塞；后续进展见上方 C2。
 - JFlex：真实 MCP 的 Fast Test、启动和 restart 均不再报 C1，但都出现了后续编译错误。
   **待跟进：** 原生 Maven 生成 `LexScan.java`，joLink 则按项目给
   `jflex-maven-plugin:generate` 配置的 m2e `<ignore/>` 跳过了它。该轮 53 条诊断
