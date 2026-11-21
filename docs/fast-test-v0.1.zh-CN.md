@@ -1,8 +1,8 @@
 # joLink Fast Test
 
 Fast Test不是`mvn test`或`gradle test`的包装。构建系统通过Probe导出测试
-Build World；纯Java由持久JDT workspace编译，Gradle混编使用项目的原生编译任务，
-测试均由独立Runner JVM执行。
+Build World。普通 Java 使用持久 JDT；需要原生编译语义时使用项目选定的 Maven
+编译执行或 Gradle 任务。无论哪条路径，测试均由独立 Runner JVM 执行。
 
 ## 开发编译配置策略
 
@@ -17,7 +17,8 @@ JUnit 4 项目在 Surefire/Failsafe provider properties 中配置的 `listener` 
   告警会导致失败、fork/toolchain 或无法解释的参数仍严格比较，不覆盖第一轮或最后一轮的配置。
   真正不同的有效编译配置返回`MAVEN_COMPILER_EXECUTION_AMBIGUOUS`，不静默覆盖。
 - 启动与Fast Test共用所选配置的语言级别、编码、参数、源码过滤和Processor信息。
-  这里只查询Maven模型，不运行Maven业务编译。
+  JDT 路径只查询模型和准备必要的输入；旧 Java 目标、需要 javac 平台符号或测试
+  依赖编译后生成物时，Maven 路径执行选定的 compiler 及必要的后置目标，不跑整个 test 生命周期。
 - JDT开发编译固定保留源文件、行号和局部变量调试属性；Maven的`debug/debuglevel`
   及`-g`系列参数不关闭它们。这是开发调试策略，不保证与正式Maven产物逐字节一致。
   反射用的`MethodParameters`仍按项目的`parameters/-parameters`设置处理。
