@@ -1,5 +1,16 @@
 # joLink 产品边界与兼容性跟进
 
+## C7：Gradle 项目的 javac 参数无法映射到 JDT（2026-11-22）
+
+WireMock 3.13.1 的 main 在同一项目中曾因 `-XDenableSunApiLintControl` 提前拒绝；
+两种写法的 `--add-exports` 不是本次拒绝原因。现在无法映射时由 Gradle 运行项目原有的
+编译任务，并复用原有的隔离、增量和重启路径。并未将任何未识别参数标记为“可忽略”。
+使用独立项目副本和真实 MCP：所选 4 项通过，`GET /__admin/version` 实返 3.13.1。
+Fast Test 先验证改动 B 时运行的服务仍返回 3.13.1；调用 restart 实际 HotSwap 后返回
+3.13.1-compat-b。仅修改 schema 的 YAML 后，旧期望按预期失败、更新期望又通过。
+文件型编译参数 Provider 的输入变化单独用 `-Werror` 和真实原生编译失败/恢复交叉验证；
+未声明的文件访问和远端输入仍不能保证触发重建。
+
 ## C4：测试资源需要已编译的测试类（Winstone）
 
 项目在 `process-test-classes` 打包用于测试的 WAR。只执行到

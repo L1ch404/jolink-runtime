@@ -1,8 +1,8 @@
 {
   "class_major": 52,
-  "probe_version": "0.1.0-modules9.1",
+  "probe_version": "0.1.0-modules10",
   "schema": "jolink.gradle-build-world-probe.product-lock.v1",
-  "sha256": "622db266332cd58da378da280c5d96bee4ce1a00de639ab837e636ea56ec8908",
+  "sha256": "66917280a68f989bdda81ff88e0a0be4466f2d95fdf5302a217fc1e7ebb84db7",
   "supported_gradle_versions": [
     "7.4.2",
     "8.10",

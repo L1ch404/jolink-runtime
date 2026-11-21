@@ -19,7 +19,8 @@ def _write(path, value):
 
 
 @pytest.mark.mcp_java_e2e
-@pytest.mark.parametrize("layout", ["project-main", "project-main-explicit", "upstream-plugin", "project-test"])
+@pytest.mark.parametrize("layout", ["project-main", "project-main-explicit", "upstream-plugin", "project-test",
+                                    "javac-main", "javac-test"])
 def test_gradle_java_compile_actions_are_applied_to_the_correct_scope(tmp_path, layout):
     require_real_mcp_java_e2e()
     gradle = os.environ.get("JOLINK_FAST_TEST_GRADLE")
@@ -27,7 +28,8 @@ def test_gradle_java_compile_actions_are_applied_to_the_correct_scope(tmp_path, 
     if not gradle or not home:
         pytest.skip("a local Gradle distribution and JDK 17 are required")
     root = tmp_path / "project"
-    multi, test_only = layout == "upstream-plugin", layout == "project-test"
+    multi, test_only = layout == "upstream-plugin", layout in {"project-test", "javac-test"}
+    native_args = layout.startswith("javac-")
     main_action = layout.startswith("project-main")
     app, owner = (root / "app", root / "producer") if multi else (root, root)
     wrapper = _write(root / ("gradlew.bat" if os.name == "nt" else "gradlew"),
@@ -91,6 +93,17 @@ def test_gradle_java_compile_actions_are_applied_to_the_correct_scope(tmp_path, 
         _write(owner / "build.gradle", plugin.replace("ACTION", transform) + java)
     else:
         task = "compileTestJava" if test_only else "compileJava"
+        if native_args:
+            _write(root / "warning-mode", "allow")
+            mode_task = """
+            class WarningArgs implements org.gradle.process.CommandLineArgumentProvider {
+                @InputFile @PathSensitive(PathSensitivity.RELATIVE) File mode
+                Iterable<String> asArguments() { mode.text.trim() == 'deny' ? ['-Xlint:rawtypes','-Werror'] : ['-Xlint:none'] }
+            }
+            """
+            transform = """task.options.compilerArgumentProviders.add(new WarningArgs(mode: project.file('warning-mode')))"""
+            if not test_only:
+                transform += "\ntask.options.compilerArgs.add('-XDenableSunApiLintControl')"
         _write(owner / "build.gradle", java + consumer + mode_task + f"tasks.named('{task}', JavaCompile) {{ task ->\n" + transform + "\n}\n")
 
     def payload(scope, name, value):
@@ -100,6 +113,9 @@ def test_gradle_java_compile_actions_are_applied_to_the_correct_scope(tmp_path, 
     payload("main", "Payload", "raw-marker-A")
     if test_only:
         payload("test", "TestPayload", "raw-marker-A")
+    if native_args:
+        _write(owner / f"src/{'test' if test_only else 'main'}/java/example/Warn.java",
+               'package example; class Warn { java.util.List raw; }')
     _write(app / "src/main/java/example/App.java", """package example;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -115,7 +131,7 @@ public class App {
     }
 }""")
     version_file = _write(tmp_path / "expected-version", "A")
-    prefix_file = _write(tmp_path / "expected-prefix", "raw" if test_only else "new")
+    prefix_file = _write(tmp_path / "expected-prefix", "raw" if test_only or native_args else "new")
     _write(app / "src/test/java/example/PayloadTest.java", """package example;
 public class PayloadTest {
     @org.junit.Test public void verifiesExecutableClass() throws Exception {
@@ -126,7 +142,8 @@ public class PayloadTest {
     }
 }""".replace("EXPECTED_PREFIX", json.dumps(prefix_file.as_posix()))
             .replace("EXPECTED", json.dumps(version_file.as_posix()))
-            .replace("TEST_ASSERTION", 'org.junit.Assert.assertEquals("new-marker-"+version, TestPayload.value());' if test_only else ""))
+            .replace("TEST_ASSERTION", ('org.junit.Assert.assertEquals("'+('raw' if native_args else 'new')
+                     +'-marker-"+version, TestPayload.value());') if test_only else ""))
 
     env = {**os.environ, "JAVA_HOME": home, "PATH": str(Path(home) / "bin") + os.pathsep + os.environ["PATH"],
            "GRADLE_ARGS": "--offline", "XDG_CACHE_HOME": str(tmp_path / "cache")}
@@ -138,6 +155,11 @@ public class PayloadTest {
                              "--tests", "example.PayloadTest"], cwd=oracle, env=env, capture_output=True, text=True, timeout=180)
     (tmp_path / "native.log").write_text(native.stdout + native.stderr, encoding="utf-8")
     assert native.returncode == 0, native.stdout + native.stderr
+    if native_args:
+        _write(oracle / "warning-mode", "deny")
+        strict = subprocess.run([str(oracle / wrapper.name), "--offline", "--no-daemon", ":testClasses"],
+                                cwd=oracle, env=env, capture_output=True, text=True, timeout=180)
+        assert strict.returncode != 0 and "-Werror" in strict.stdout + strict.stderr
     if main_action:
         for path, value in (("weave-mode.txt", "alt"), ("optional-mode/nested/switch.rule", "opt")):
             _write(oracle / path, value)
@@ -181,10 +203,23 @@ public class PayloadTest {
                     if test_only:
                         assert started["fast_update"]["strategy"] == "jdt_incremental", started
                     first = await check()
+                    if native_args:
+                        assert first.get("compile_backend") == "gradle_native", first
                     if reopened:
                         assert first.get("compiled_source_count") == 0, first
                         return
                     assert (await check()).get("compiled_source_count") == 0
+                    if native_args:
+                        # Only change the provider's declared input: no Java change masks a stale native session.
+                        _write(root / "warning-mode", "deny")
+                        failed = await call("java_fast_test", dict(common, tests=["example.PayloadTest"]))
+                        assert failed.get("error_code") == "GRADLE_NATIVE_COMPILE_FAILED", failed
+                        if not test_only:
+                            failed = await call("java_application", dict(action="restart", timeout=0))
+                            assert failed.get("error_code") == "GRADLE_NATIVE_COMPILE_FAILED", failed
+                        assert http() == expected()
+                        _write(root / "warning-mode", "allow")
+                        await check()
                     previous = expected()
                     payload("main", "Payload", "raw-marker-B")
                     if test_only:

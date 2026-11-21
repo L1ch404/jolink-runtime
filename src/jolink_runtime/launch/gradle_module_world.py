@@ -102,14 +102,18 @@ def _compiler_settings(task: dict, *, native=False) -> dict:
 def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]:
     facts = {item["projectDirectory"]: item for item in model["modules"]}
     selected = model["projectDirectory"]
+    def needs_gradle(source, compiler):
+        return (source.get("extraOutputDirs") or compiler.get("customCompileActions")
+                or compiler.get("fileBackedCompilerArguments") or compiler.get("compilerArgumentProvidersUnmodeled")
+                or classify_compiler_arguments(compiler["compilerArgsPrivate"]).unresolved_arguments)
+
+    scopes_and_tasks = [(m[scope], m[task]) for m in facts.values()
+                        for scope, task in (("main", "compileJava"), ("test", "compileTestJava")) if task in m]
     candidates = {}
-    for item in facts.values():
-        for scope, task in (("main", "compileJava"), ("test", "compileTestJava")):
-            if task in item:
-                candidates.update(_foreign_inputs(item[scope], item[task]))
-    native = any(m.get("selectedVariants") for m in facts.values()) or any(m[scope].get("extraOutputDirs") or m[task].get("customCompileActions")
-                 for m in facts.values() for scope, task in (("main", "compileJava"), ("test", "compileTestJava"))
-                 if task in m) or mixed_sources_present(candidates)
+    for source, compiler in scopes_and_tasks:
+        candidates.update(_foreign_inputs(source, compiler))
+    native = (any(m.get("selectedVariants") for m in facts.values()) or any(needs_gradle(s, t) for s, t in scopes_and_tasks)
+              or mixed_sources_present(candidates))
     output_sources = {}
     for item in facts.values():
         for source in (item["main"], item.get("test", {}), *item.get("selectedVariants", {}).values()):
