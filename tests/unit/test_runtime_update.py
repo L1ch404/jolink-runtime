@@ -28,6 +28,7 @@ def _configuration_plan(project, **fields):
     return SimpleNamespace(
         project_root=project, configuration_inputs=(),
         configuration_stamps=build_configuration_stamps(project, "maven", ()),
+        preparation_baseline={}, preparation_inputs=(), preparation_roots=(), preparation_resource_sets=(),
         **fields,
     )
 

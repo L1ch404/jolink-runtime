@@ -41,6 +41,7 @@ def running(tmp_path, monkeypatch):
     session = JavaProjectSession(root=tmp_path / "session", build_world_fingerprint="world")
     session.attach_compile_session(compiler)
     plan = SimpleNamespace(project_root=tmp_path, configuration_inputs=(),
+        preparation_baseline={}, preparation_inputs=(), preparation_roots=(), preparation_resource_sets=(),
         configuration_stamps=build_configuration_stamps(tmp_path, "maven", ()))
     prepared = ProjectUpdatePlan(attempt_directory=tmp_path, project_session=session,
                                  jdt_build_world_plan=plan)
