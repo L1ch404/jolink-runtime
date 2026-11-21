@@ -85,6 +85,9 @@ Winstone `0b9170f` 用原始 POM 生成了真实含测试字节码的 WAR。
 原样测试在本机仍受其硬编码回环地址影响，Runner 达到 300 秒内部上限；
 只改测试里的 `127.0.0.2` 为 `127.0.0.1`，冷/暖/重开均为 6/6。
 原生 Maven 的同一地址对照也为 6/6。独立启动和 restart 的真实 HTTP 访问通过。
+另外在未修改源码/POM 的副本，使用仅限测试进程的本地 HTTP 转发，将这 5 次对
+`127.0.0.2` 的请求送到同一真实 Jetty 的 `127.0.0.1` 及原端口；保留响应内容与压缩，
+原生与 Fast Test 冷/暖/重开亦均 6/6。这是网络可达的对照，不是无条件的 macOS 直连通过。
 回归：[已编译 class、资源打包、源/资源修改及生成文件删除](../tests/e2e/test_maven_post_test_classes.py)。
 
 ## C3：Gradle 消费其他 SourceSet 的 artifact（2026-11-22）
@@ -110,7 +113,7 @@ MockServer 5.15.0 / Maven 3.6.3 / JDK 11 的原生 `default-testCompile` 和
 无法可靠分辨，就维持严格比较。应用与 Fast Test 对真正冲突都返回
 `MAVEN_COMPILER_EXECUTION_AMBIGUOUS`、范围和执行 ID，不启动 JVM/Runner。
 
-**真实项目边界**：MockServer 不再报 C2，但 Fast Test 仍未进入 JUnit：main/test 共用的
+**当时的后继阻塞（现已修复）**：消除执行歧义后，MockServer 起初仍未进入 JUnit：main/test 共用的
 `-XDignore.symbol.file` 触发 `FAST_TEST_COMPILER_ARGUMENT_UNSUPPORTED`。这是一个参数被计两次。
 JDK 8 对照已证实它能改变平台类型的可见性，不能当作普通告警直接忽略。
 同项目应用启动和真实 restart 的 HTTP 验收通过，不等于其 Fast Test 或全部编译参数已支持。
@@ -134,8 +137,8 @@ Fast Test 与 launch/restart 共用判断：只有调用前已观察到该文件
 - MockServer：真实 MCP 启动和 restart 两次都在新 JVM 通过本机
   `PUT /mockserver/status` 返回 200 和版本 5.15.0。当时 Fast Test 受另一项
   `MAVEN_COMPILER_EXECUTION_AMBIGUOUS` 阻塞；后续进展见上方 C2。
-- JFlex：真实 MCP 的 Fast Test、启动和 restart 均不再报 C1，但都出现了后续编译错误。
-  **待跟进：** 原生 Maven 生成 `LexScan.java`，joLink 则按项目给
+- JFlex：当时真实 MCP 的 Fast Test、启动和 restart 均不再报 C1，但都出现了后续编译错误。
+  这一生成步骤后续已修复（见上方 JFlex 专节）：原生 Maven 生成 `LexScan.java`，旧版 joLink 则按项目给
   `jflex-maven-plugin:generate` 配置的 m2e `<ignore/>` 跳过了它。该轮 53 条诊断
   都涉及这个缺失的类型，不能据此认定 ECJ 无法编译它，也不能把整个项目列为已通过。
 - [竞态和稳定重试回归](../tests/e2e/test_probe_configuration_race.py)包括旧 Maven 的
