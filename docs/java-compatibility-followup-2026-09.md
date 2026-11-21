@@ -1,5 +1,26 @@
 # joLink 产品边界与兼容性跟进
 
+## JFlex：执行项上的 m2e 处理指令与生成器输入
+
+JFlex 1.9.1 的 POM 同时给 `jflex-maven-plugin:generate` 配置了通用 m2e
+`<ignore/>`，又在实际 execution 中写了 `<?m2e execute onConfiguration,onIncremental?>`。
+前者不是该 execution 的最终指示。现在按 Maven 保留的文件、行和列匹配有效
+plugin/execution 的直接子指令；本 POM 的指令优先于 XML 通用规则，execution
+优先于 plugin，不读取注释或嵌套 configuration 中的同名文本。
+依据：[m2e 声明定位](https://github.com/eclipse-m2e/m2e-core/blob/c4e43cff2cbcc/org.eclipse.m2e.core/src/org/eclipse/m2e/core/internal/lifecyclemapping/AnnotationMappingMetadataSource.java)
+和 [m2e 映射来源顺序](https://github.com/eclipse-m2e/m2e-core/blob/c4e43cff2cbcc/org.eclipse.m2e.core/src/org/eclipse/m2e/core/internal/lifecyclemapping/LifecycleMappingFactory.java)。
+只接入 ignore/execute；未实现 Eclipse configurator 或任意远端、隐藏输入。
+
+JFlex 未设置 lexDefinitions 时由插件自己查找 src/main/jflex。对显式请求
+onIncremental 的源生成动作还会检测相应 src/main 或 src/test 树；这可能使这些工程的
+Java 源码修改也重新运行一次准备，普通项目不增加整树扫描。
+
+固定版本实际 Fast Test 冷、暖、新会话所选 18/18；不改源时后两次都没有编译。
+在独立副本仅改 LexScan.flex 扩充词法规则，检查真实生成词法行为的 JUnit 先红、
+修改预期后绿；原来运行的服务仍返回旧识别结果，restart 后 HTTP 返回新识别结果。
+原项目 `jflex.Main --version` 的两次应用运行都输出正确版本并正常退出 0；
+它不是常驻服务，joLink 仍将快速退出报告为 JVM_START_FAILED，不能把它写成 ready。
+
 MockServer 后续：main/test 的 `-XDignore.symbol.file` 现在交给项目 Maven 的真实
 编译器处理，不会当成告警删除。JDK 8 的 forked javac 可以据此编译引用隐藏平台类型
 的源码；Fast Test 和启动/restart 共用原生产物会话。该项解决编译阶段，不代替

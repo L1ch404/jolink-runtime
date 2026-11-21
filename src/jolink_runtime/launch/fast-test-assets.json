@@ -4,11 +4,11 @@
   "maven_probe": {
     "artifact_id": "jolink-maven-probe",
     "group_id": "io.jolink",
-    "implementation_id": "6e5672fca007aba7eaa6e125f07fd5a259f3db678289f332b4db97b32d930547",
-    "pom_sha256": "6b74f8a4f4bf91d6dd3fce991b7ca7db7d0bc9e79c854beca20ed31db6ef6114",
+    "implementation_id": "0b5b47425e07ae9ba493fa5220a147333ef1ee3d9d6c56763125829af3686ae5",
+    "pom_sha256": "2ffc8cd308ff2139b3961ffb7a7662d6029395fdf92567219c5137e87c4667ef",
     "schema": "jolink.maven-build-world-probe.v2",
-    "sha256": "79a46a725352a4019822021fe4b7c6f4aba258b80cb409a63c3af4924b7d5145",
-    "version": "0.1.0-fasttest41"
+    "sha256": "68a056e3e16be0144befa00e2fe7b988e0e8e540b3599ab50f4b57baab307987",
+    "version": "0.1.0-fasttest42"
   },
   "schema_version": 1,
   "test_runner": {

@@ -62,6 +62,11 @@ final class SourcePreparation {
                     log.info("joLink skipped preparation: " + identity + " (" + skipReason + ")");
                     continue;
                 }
+                if (mapping.incremental && (phase.equals("generate-sources") || phase.equals("generate-test-sources"))) {
+                    // Some generators discover inputs by convention rather than Mojo
+                    // parameters. The project explicitly requests incremental execution.
+                    inputs.add(new File(project.getBasedir(), phase.equals("generate-sources") ? "src/main" : "src/test").getCanonicalPath());
+                }
                 // A fork may re-enter compile/test. Do not silently run or omit
                 // it while promising that business compilation stays in JDT.
                 if (!execution.getForkedExecutions().isEmpty())

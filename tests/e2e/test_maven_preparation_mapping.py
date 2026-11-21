@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import anyio
@@ -44,7 +45,8 @@ public class Step extends org.apache.maven.plugin.AbstractMojo {
    java.nio.file.Path root=new java.io.File(project.getBuild().getDirectory(),"generated-fixture").toPath();
    java.nio.file.Path output=root.resolve("generated/Value.java");
    java.nio.file.Files.createDirectories(output.getParent());
-   String value=new String(java.nio.file.Files.readAllBytes(valueFile.toPath()),"UTF-8").trim();
+   java.io.File conventional=new java.io.File(project.getBasedir(),"src/main/fixture-grammar/message");
+   String value=new String(java.nio.file.Files.readAllBytes((conventional.exists()?conventional:valueFile).toPath()),"UTF-8").trim();
    String quote=Character.toString((char)34);
    java.nio.file.Files.write(output,("package generated; public class Value {public static String get(){return "+quote+value+quote+";}}").getBytes("UTF-8"));
    project.addCompileSourceRoot(root.toString());
@@ -140,7 +142,7 @@ def mapping(group, goal="fork", action="ignore", version="[1,2)", parameters="")
 
 
 @pytest.mark.mcp_java_e2e
-@pytest.mark.parametrize("location", ["project", "profile", "parent"])
+@pytest.mark.parametrize("location", ["project", "profile", "parent", "instruction"])
 def test_maven_mapping_keeps_generators_and_skips_declared_checks(tmp_path, location):
     require_real_mcp_java_e2e()
     java = os.environ.get("JOLINK_TEST_JAVA17_HOME") or os.environ.get("JAVA_HOME")
@@ -157,6 +159,14 @@ def test_maven_mapping_keeps_generators_and_skips_declared_checks(tmp_path, loca
         env["LOCALAPPDATA"] = str(tmp_path / "cache")
     group = fixture_plugin(tmp_path, env)
     root, _app, config, source, port = project_fixture(tmp_path, "maven", False)
+    if os.environ.get("JOLINK_TEST_MAVEN_SETTINGS"):
+        # Install the test plugin and execute it from the same configured
+        # repository; this unrelated fixture's explicit IDEA path takes precedence.
+        idea = root / ".idea/workspace.xml"
+        workspace = ET.parse(idea)
+        general = workspace.find(".//MavenGeneralSettings")
+        general.remove(general.find("./option[@name='localRepository']"))
+        workspace.write(idea, encoding="utf-8")
     value = root / "spec/value.txt"
     value.parent.mkdir()
     value.write_text("A")
@@ -173,6 +183,16 @@ def test_maven_mapping_keeps_generators_and_skips_declared_checks(tmp_path, loca
 <execution><id>forked</id><phase>process-sources</phase><goals><goal>fork</goal></goals><configuration><mode>quality</mode></configuration></execution>
 </executions></plugin>"""
     declaration = mapping(group)
+    if location == "instruction":
+        hidden = root / "src/main/fixture-grammar/message"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text("A")
+        value = hidden
+        declaration += mapping(group, "work", "ignore")
+        # The same goal runs in two executions. Only the annotated one wins
+        # over the general ignore. A PI nested in configuration must not apply.
+        plugin = plugin.replace("<id>generated</id><phase>process-sources", "<?m2e execute onConfiguration,onIncremental?><id>generated</id><phase>generate-sources")
+        plugin = plugin.replace("<mode>quality", "<?m2e execute?><mode>quality")
     management = f"""<pluginManagement><plugins><plugin><groupId>org.eclipse.m2e</groupId><artifactId>lifecycle-mapping</artifactId><version>1.0.0</version>
 <configuration><lifecycleMappingMetadata><pluginExecutions>{declaration}</pluginExecutions></lifecycleMappingMetadata></configuration></plugin></plugins></pluginManagement>"""
     text = config.read_text().replace("</plugins>", plugin + "</plugins>")
@@ -254,7 +274,10 @@ def test_maven_mapping_keeps_generators_and_skips_declared_checks(tmp_path, loca
                     if not cycle:
                         source.write_text(source.read_text() + "\n// incremental\n")
                         assert (await run())["passed"]
-                        assert calls.read_bytes() == before
+                        if location == "instruction":
+                            assert calls.read_bytes() != before
+                        else:
+                            assert calls.read_bytes() == before
                         value.write_text("B")
                         assert (await run()).get("failed_count") == 1
                         value.write_text("A")
@@ -281,7 +304,7 @@ def test_maven_mapping_keeps_generators_and_skips_declared_checks(tmp_path, loca
                             parameters="<parameters><mode>quality</mode></parameters>",
                         )
                         config.write_text(
-                            text.replace(declaration, declaration + override)
+                            text.replace(declaration, override + declaration)
                         )
                         failed = await run()
                         assert "fixture-check-executed" in "\n".join(

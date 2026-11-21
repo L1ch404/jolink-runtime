@@ -19,6 +19,8 @@ import org.w3c.dom.Node;
 
 /** Consume m2e execution declarations without embedding Eclipse or guessing goal names. */
 final class PreparationMapping {
+    private final PomInstructions instructions = new PomInstructions();
+    boolean incremental;
     private static final String EMBEDDED = "META-INF/m2e/lifecycle-mapping-metadata.xml";
     private final Map<File, Xpp3Dom> embedded = new HashMap<>();
     private final Xpp3Dom defaults;
@@ -31,6 +33,12 @@ final class PreparationMapping {
 
     String skipReason(MavenSession session, MavenProject project, MojoExecution execution) throws Exception {
         PluginParameterExpressionEvaluator evaluator = new PluginParameterExpressionEvaluator(session, execution);
+        incremental = false;
+        PomInstructions.Directive directive = instructions.find(project, execution);
+        if (directive != null && directive.pom.equals(project.getFile().getCanonicalFile())) {
+            incremental = directive.incremental;
+            return directive.ignore ? "project_m2e_instruction" : null;
+        }
         // Maven has already merged active profiles, parent configuration and properties.
         if (project.getPluginManagement() != null) {
             for (Plugin plugin : project.getPluginManagement().getPlugins()) {
@@ -40,6 +48,10 @@ final class PreparationMapping {
                     if (action != null) return "ignore".equals(action) ? "project_m2e_mapping" : null;
                 }
             }
+        }
+        if (directive != null) {
+            incremental = directive.incremental;
+            return directive.ignore ? "inherited_m2e_instruction" : null;
         }
         Artifact artifact = execution.getMojoDescriptor().getPluginDescriptor().getPluginArtifact();
         File file = artifact == null ? null : artifact.getFile();
