@@ -75,8 +75,7 @@ public class MarkerTest {@org.junit.Test public void check() throws Exception {
                 port=reserve_local_port()
                 try:
                     for action in ("launch","restart"):
-                        if action == "launch":
-                            marker.write_text("TOKEN-launch")
+                        marker.write_text("TOKEN-"+action)
                         args=(dict(project_path=str(root),main_class="example.App",jdwp_port=reserve_local_port(),ready_port=port,
                             app_args=[str(port)],**opts) if action=="launch" else dict(hotswap=False))
                         result=await call("java_application",dict(action=action,timeout=30,**args))
@@ -87,6 +86,6 @@ public class MarkerTest {@org.junit.Test public void check() throws Exception {
                                 result=state.get("last_reload") or state if action=="restart" else state
                         assert result.get("startup_state")=="ready",result
                         with urlopen(f"http://127.0.0.1:{port}/",timeout=5) as resp:
-                            assert resp.read().decode()=="READY-launch"
+                            assert resp.read().decode()=="READY-"+action
                 finally: await call("java_application",dict(action="stop"))
     anyio.run(scenario)

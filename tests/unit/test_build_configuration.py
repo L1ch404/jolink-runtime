@@ -692,3 +692,19 @@ def test_launch_tracks_only_selected_settings_through_probe_and_cache(
         JdtLaunchService.configuration_rejection(prepared).data["error_code"]
         == "BUILD_CONFIGURATION_CHANGED"
     )
+
+
+def test_reopened_live_plan_keeps_its_own_preparation_baseline(model):
+    selected = model.root / "target/metadata.txt"
+    resource = {"directory": str(selected.parent), "includes": [selected.name]}
+    model.plan = replace(model.plan, preparation_resource_sets=(resource,))
+    model.save("launch")
+    old = SimpleNamespace(jdt_build_world_plan=model.load("launch").jdt_plan, build_system="maven")
+    (selected.parent/"unrelated.class").touch()
+    assert JdtLaunchService.configuration_rejection(old) is None
+    selected.write_text("new match")
+    assert model.load("launch") is None
+    # Refreshing another disk-cache user cannot refresh this running JVM.
+    model.save("launch")
+    assert model.load("launch") is not None
+    assert JdtLaunchService.configuration_rejection(old).data["error_code"] == "BUILD_CONFIGURATION_CHANGED"

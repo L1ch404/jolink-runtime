@@ -10,6 +10,11 @@ stat，不枚举不相关的编译目录。不对任意插件猜测选择器，�
 模式仍沿用原来的跟踪。MockServer 固定提交冷/暖均 7/7，暖 0 编译、无 bootstrap；
 真实红绿和应用 HTTP restart 行为通过。测试见 test_maven_replacer_input_selection.py。
 
+同次实测还发现，应用已经运行后单独修改准备输入再 restart，以前只查 POM 等配置，
+会绕过准备步骤，HTTP 读到未处理的原文。现在运行中的计划携带与磁盘启动缓存相同的
+准备输入基线；匹配项变化时复用现有重新 Probe/启动路径，无需先 stop，也不用新建
+工具参数。测试分别在 launch 和 restart 前单独修改文件，两次 HTTP 均需读到转换后内容。
+
 ## Commons Codec：测试产物准备与 API 签名检查（2026-11-22）
 
 `commons-codec` 1.17.2（`1962613`，JDK 8）原生 Maven 的 234 项 HexTest 全过。

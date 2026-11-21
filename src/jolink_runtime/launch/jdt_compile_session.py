@@ -748,6 +748,7 @@ class JdtBuildWorldPlan:
     preparation_roots: tuple[Path, ...] = ()
     preparation_resource_sets: tuple[dict[str, Any], ...] = ()
     configuration_stamps: dict[str, str] | None = None
+    preparation_baseline: dict[str, Any] | None = None
     compilation_configuration: dict[str, Any] = field(default_factory=dict)
     generated_source_directory: Path | None = None
     processor_source_roots: tuple[Path, ...] | None = None

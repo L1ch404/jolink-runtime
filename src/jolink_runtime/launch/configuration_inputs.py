@@ -106,3 +106,9 @@ def preparation_stamps(paths, roots=(), resource_sets=()):
             stat = path.stat()
             result[str(path)] = [stat.st_mtime_ns, stat.st_size]
     return result
+
+
+def plan_preparation_stamps(plan):
+    return preparation_stamps(
+        plan.preparation_inputs, plan.preparation_roots, plan.preparation_resource_sets
+    )

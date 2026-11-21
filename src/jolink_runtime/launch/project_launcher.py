@@ -478,7 +478,7 @@ class ProjectLaunchPipeline:
 
     @staticmethod
     def _stabilize(prepared: PreparedProjectLaunch) -> PreparedProjectLaunch:
-        from .configuration_inputs import maven_configuration_files, build_configuration_stamps
+        from .configuration_inputs import maven_configuration_files, build_configuration_stamps, plan_preparation_stamps
 
         plan = prepared.jdt_build_world_plan
         if plan is None:
@@ -500,6 +500,8 @@ class ProjectLaunchPipeline:
             stable = replace(stable, configuration_stamps=build_configuration_stamps(
                 stable.project_root, prepared.build_system, stable.configuration_inputs
             ))
+        if stable.preparation_baseline is None:
+            stable = replace(stable, preparation_baseline=plan_preparation_stamps(stable))
         return replace(
             prepared,
             jdt_build_world_plan=stable,

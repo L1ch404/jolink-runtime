@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..core.models import RuntimeResult
-from .configuration_inputs import build_configuration_stamps
+from .configuration_inputs import build_configuration_stamps, plan_preparation_stamps
 from .controller import LaunchCancelled, LaunchPipelineFailure
 from .jdt_compile_session import JdtCompileError
 from .jdt_compilation import open_compile_session, initialize_compile_session, accept_compile_session
@@ -49,13 +49,14 @@ class JdtLaunchService:
                 plan.project_root, prepared.build_system, plan.configuration_inputs
             )
             if (preferences_match and plan.configuration_stamps is not None and current == plan.configuration_stamps
+                    and (plan.preparation_baseline or {}) == plan_preparation_stamps(plan)
                     and not mixed_sources_present(dormant_language_roots(getattr(plan, "modules", ())))):
                 return None
         except OSError:
             pass
         return RuntimeResult(
             ok=False,
-            error="Build configuration changed or its saved baseline is unavailable.",
+            error="Build configuration or preparation inputs changed, or their saved baseline is unavailable.",
             data={
                 "error_code": "BUILD_CONFIGURATION_CHANGED",
                 "build_world_changes_pending": True,

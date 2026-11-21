@@ -186,6 +186,7 @@ class ProjectLaunchCache:
             resource_roots = _paths(plan_raw.get("resource_roots"))
             jdt_plan = JdtBuildWorldPlan(
                 configuration_stamps=dict(configuration),
+                preparation_baseline=raw.get("preparation_stamps", {}),
                 project_root=_path(plan_raw["project_root"]).resolve(strict=False),
                 module_root=_path(plan_raw["module_root"]).resolve(strict=False),
                 source_roots=_paths(plan_raw["source_roots"]),
@@ -290,10 +291,11 @@ class ProjectLaunchCache:
         build_preferences: Mapping[str, Any] | None = None,
     ) -> None:
         target = self._file(project_root, intent.launch_name)
-        from .configuration_inputs import preparation_stamps
+        from .configuration_inputs import plan_preparation_stamps
         value = {
             "schema": _SCHEMA,
-            "preparation_stamps": preparation_stamps(jdt_plan.preparation_inputs, jdt_plan.preparation_roots, jdt_plan.preparation_resource_sets),
+            "preparation_stamps": (plan_preparation_stamps(jdt_plan) if jdt_plan.preparation_baseline is None
+                                   else jdt_plan.preparation_baseline),
             "configuration_stamps": jdt_plan.configuration_stamps if jdt_plan.configuration_stamps is not None
                 else build_configuration_stamps(project_root, build_system, jdt_plan.configuration_inputs),
             "gradle_environment": _environment_inputs(jdt_plan.configuration_environment_names)
