@@ -46,6 +46,17 @@ def test_inclusions_are_unioned_and_exclusions_win():
     assert SourceSelection({}).accepts("anything/App.java")
 
 
+def test_gradle_task_filters_narrow_the_source_set_instead_of_widening_it():
+    from jolink_runtime.launch.gradle_module_world import _source_patterns
+
+    rules = SourceSelection(_source_patterns(
+        {"javaIncludes": ["api/**", "impl/**"], "javaExcludes": ["impl/test/**"]},
+        {"sourceIncludes": ["**/App*.java"], "sourceExcludes": ["**/AppOld.java"]}))
+    assert rules.accepts("api/App.java") and rules.accepts("impl/AppNew.java")
+    assert not any(rules.accepts(p) for p in (
+        "other/App.java", "impl/Other.java", "impl/test/App.java", "api/AppOld.java"))
+
+
 @pytest.mark.parametrize("namespaced", [False, True])
 def test_effective_main_and_test_patterns_do_not_leak_between_scopes(namespaced):
     ns = ' xmlns="http://maven.apache.org/POM/4.0.0"' if namespaced else ""

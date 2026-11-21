@@ -27,6 +27,15 @@ def _foreign_inputs(source, task):
             for p in source["languageRoots"]}
 
 
+def _source_patterns(source_set, task):
+    # A file must pass both Gradle filters; unioning their includes widens the build.
+    groups = [p for p in (source_set.get("javaIncludes"), task.get("sourceIncludes")) if p]
+    excludes = list(dict.fromkeys((*source_set.get("javaExcludes", ()), *task.get("sourceExcludes", ()))))
+    return {**({"includes": groups[0]} if groups else {}),
+            **({"also_includes": groups[1]} if len(groups) == 2 else {}),
+            **({"excludes": excludes} if excludes else {})}
+
+
 def mixed_sources_present(candidates):
     return any(path.suffix in suffixes for root, suffixes in candidates.items()
                for path in Path(root).rglob("*") if path.is_file())
@@ -147,12 +156,6 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         compile = item["compileJava"]
         test = item.get("compileTestJava")
         settings = _compiler_settings(compile, native=native)
-        for sources in (main, item.get("test", {})):
-            if not native and any(sources.get(field) for field in ("javaIncludes", "javaExcludes")):
-                raise GradleModuleError(
-                    "GRADLE_SOURCE_PATTERN_UNMODELED",
-                    "Gradle Java source include/exclude patterns are not mapped to the JDT source index.",
-                )
         output = compile["destinationDirectory"]
         test_output = (
             test["destinationDirectory"]
@@ -202,6 +205,10 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                 ],
             }
             modules[-1]["test_compiler"]["module_path"] = classpath(modules[-1]["test_compiler"]["module_path"])
+        if not native:
+            for scope, key, task in (("main", "source_patterns", compile), ("test", "test_source_patterns", test)):
+                if task and (patterns := _source_patterns(item[scope], task)):
+                    modules[-1][key] = patterns
         if native:
             variants = list(item.get("selectedVariants", {}).values())
             scopes = [main, *variants] + ([item["test"]] if test else [])

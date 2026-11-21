@@ -4,6 +4,12 @@ Gradle 6.9.4 使用 `org.gradle.jvmargs` 启动一次性 daemon 时，初始化�
 `StartParameter` 读取本轮 Probe 的参数。无需用户删除 JVM 参数或手工指定 JAR。
 此场景在 JDK 11 的多模块 Fast Test、应用启动、restart 及重开缓存上有真实 MCP 回归。
 
+JDT 镜像同时遵循已声明的 SourceSet 和 JavaCompile 字符串过滤：两层 includes 必须
+各自命中，任一层 exclude 命中就排除。RoaringBitmap 1.0.0 用 Gradle 6.9.4
+将 module-info.java 排除在普通 Java 8 编译之外。对 `org.roaringbitmap.TestUtil`
+实测冷、暖均为 18/18，暖跑无编译；改源码后一个断言变红、更新预期后全绿，
+重开也复用。这是所选测试结果，不代表其多版本 JAR 的发布流程已经验收。
+
 Gradle 项目通过同一个 Probe 和同一套 MCP 工具使用两条编译路径。普通 Java 使用
 持久 JDT；选定范围需要混编、通过 `SourceSet.output.dir(...)` 声明额外输出，或定制了 Java 编译动作时，
 Gradle 执行自己的任务。无需指定后端。

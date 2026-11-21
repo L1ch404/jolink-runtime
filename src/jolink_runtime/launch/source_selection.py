@@ -24,9 +24,10 @@ class SourceSelection:
     def __init__(self, patterns):
         flags = 0 if patterns.get("caseSensitive", True) else re.IGNORECASE
         self.includes = tuple(ant_pattern(p, flags) for p in patterns.get("includes", ()))
+        self.also_includes = tuple(ant_pattern(p, flags) for p in patterns.get("also_includes", ()))
         self.excludes = tuple(ant_pattern(p, flags) for p in patterns.get("excludes", ()))
 
     def accepts(self, relative):
-        return (not self.includes or any(p.fullmatch(relative) for p in self.includes)) and not any(
-            p.fullmatch(relative) for p in self.excludes
-        )
+        return (not self.includes or any(p.fullmatch(relative) for p in self.includes)) and (
+            not self.also_includes or any(p.fullmatch(relative) for p in self.also_includes)
+        ) and not any(p.fullmatch(relative) for p in self.excludes)

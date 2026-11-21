@@ -139,6 +139,19 @@ public static void main(String[] args) throws Exception {
             if kotlin
             else "test { systemProperty 'fixture.property', 'from-gradle'; environment 'FIXTURE_VALUE', 'persisted' }\n"
         )
+        if headless and not kotlin:
+            # The SourceSet and JavaCompile are independent filters. Invalid
+            # files visible under a root but not in the task must not enter JDT.
+            stream.write("""
+sourceSets.main.java.include 'example/**', 'module-info.java'
+compileJava { include '**/*.java'; exclude 'module-info.java' }
+compileTestJava { exclude '**/IgnoredTest.java' }
+""")
+            for rel in ("main/java/module-info.java", "main/java/other/NotSelected.java",
+                        "test/java/example/IgnoredTest.java"):
+                invalid = project / "app/src" / rel
+                invalid.parent.mkdir(parents=True, exist_ok=True)
+                invalid.write_text("this is not a compilable Java source")
     port, debug = reserve_local_port(), reserve_local_port()
     (project / ".run").mkdir()
     (project / ".run/App.xml").write_text(
