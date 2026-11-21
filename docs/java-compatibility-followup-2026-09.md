@@ -1,5 +1,19 @@
 # joLink 产品边界与兼容性跟进
 
+## Commons Codec：测试产物准备与 API 签名检查（2026-11-22）
+
+`commons-codec` 1.17.2（`1962613`，JDK 8）原生 Maven 的 234 项 HexTest 全过。
+引入后置测试产物准备后，`animal-sniffer:check` 也因绑定在 `process-test-classes`
+而被 joLink 当作生产步骤。main/test 实际已编译成功，但随后的签名验证缺少原生
+`build-helper:parse-version` 生成的属性，不能解析原生成功使用的 `java18:1.0`。
+
+默认开发映射只把 [Animal Sniffer 的 check 目标](https://www.mojohaus.org/animal-sniffer/animal-sniffer-maven-plugin/check-mojo.html)
+留给正式构建，在 Fast Test 结果中列出已跳过的执行。不是按生命周期阶段或目标名
+`check` 一刀切；生成签名的 `animal-sniffer:build`、其他插件及项目显式 m2e execute
+不受此默认值覆盖。同一阶段真正使用编译好的测试 class 打包的任务仍执行。
+原项目冷/暖 234 通过，修改 Hex 实现后按预期出现 2 个断言失败，修正期望后
+234 通过，重开 MCP 仍 234 通过且 0 编译，恢复原源码亦通过。
+
 MockServer 5.15.0 整体验收：C2 之后的两个阻塞（javac 平台符号、JUnit 4
 provider listener）均已接通。所选 MainTest 冷、暖 7/7，与原生 Maven 一致。
 在隔离副本增加 HTTP 响应头断言，改业务代码后测试变红，更新预期后又是 7/7；

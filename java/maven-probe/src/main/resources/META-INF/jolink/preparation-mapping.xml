@@ -4,6 +4,19 @@
      https://docs.openrewrite.org/reference/rewrite-maven-plugin -->
 <lifecycleMappingMetadata>
   <pluginExecutions>
+    <!-- Checks already-compiled classes against an API signature. It is not a
+         test artifact producer, even at its default phase process-test-classes.
+         The distinct build goal produces a signature and is not ignored.
+         https://www.mojohaus.org/animal-sniffer/animal-sniffer-maven-plugin/check-mojo.html -->
+    <pluginExecution>
+      <pluginExecutionFilter>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>animal-sniffer-maven-plugin</artifactId>
+        <versionRange>[0,)</versionRange>
+        <goals><goal>check</goal></goals>
+      </pluginExecutionFilter>
+      <action><ignore/></action>
+    </pluginExecution>
     <pluginExecution>
       <pluginExecutionFilter>
         <groupId>org.openrewrite.maven</groupId>
