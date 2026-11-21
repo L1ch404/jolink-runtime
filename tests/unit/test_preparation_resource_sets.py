@@ -41,8 +41,13 @@ def test_named_output_uses_content_without_hashing_unchanged_files(model, kind, 
     os.utime(named, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10_000_000_000))
     assert model.load(kind) is not None and opened == [named, named]
     assert model.load(kind) is not None and opened == [named, named]
-    named.write_bytes(b"two")
-    # Match the saved mtime and size, but this new write has different ctime.
+    if os.name == "nt":  # Windows st_ctime is creation time; replace to change file identity.
+        replacement = named.with_suffix(".new")
+        replacement.write_bytes(b"two")
+        replacement.replace(named)
+    else:
+        named.write_bytes(b"two")
+    # Match the saved mtime and size, but with new ctime or file identity.
     os.utime(named, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     assert model.load(kind) is None and opened == [named, named, named]
     named.unlink()

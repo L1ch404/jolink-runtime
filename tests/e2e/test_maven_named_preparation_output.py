@@ -40,7 +40,9 @@ def test_rewrite_and_real_change_of_named_output_take_different_restart_paths(tm
                     hot = await call("java_application", action="restart", timeout=0)
                     assert hot.get("apply_method") == "hotswap" and http() == "BA", hot
                     assert (await call("java_status", action="status"))["pid"] == launch["pid"]
-                    product.write_bytes(b"broken")  # same size as the saved baseline
+                    replacement = product.with_suffix(".new")
+                    replacement.write_bytes(b"broken")  # same size as the saved baseline
+                    replacement.replace(product)
                     os.utime(product, ns=(initial.st_atime_ns, initial.st_mtime_ns))
                     java.write_text(old)
                     refreshed = await call("java_application", action="restart", timeout=0)
