@@ -50,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest51";
+    private static final String PROBE_VERSION = "0.1.0-fasttest53";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -418,7 +418,8 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         );
         out.append(",\"executions\":");
         TestRuntimeConfiguration.appendExecutions(out, project, session, buildPluginManager, executionPlans,
-                compilerExecutions.main.moduleName != null || compilerExecutions.test.moduleName != null);
+                compilerExecutions.main.moduleName != null || compilerExecutions.test.moduleName != null,
+                artifactResolver, processorRepositorySession == null ? session.getRepositorySession() : processorRepositorySession);
         field(
             out,
             "runnerSupportSelectedVersion",

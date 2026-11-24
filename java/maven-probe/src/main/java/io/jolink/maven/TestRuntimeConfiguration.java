@@ -31,7 +31,8 @@ final class TestRuntimeConfiguration {
     final Map<String, String> environment = new LinkedHashMap<>();
 
     static void appendExecutions(StringBuilder out, MavenProject project, MavenSession session,
-            BuildPluginManager plugins, LifecycleExecutionPlanCalculator plans, boolean modular)
+            BuildPluginManager plugins, LifecycleExecutionPlanCalculator plans, boolean modular,
+            org.eclipse.aether.RepositorySystem resolver, org.eclipse.aether.RepositorySystemSession repositorySession)
             throws MojoExecutionException {
         MavenProject previous = session.getCurrentProject();
         try {
@@ -60,6 +61,14 @@ final class TestRuntimeConfiguration {
                     ExportBuildWorldMojo.field(out, "kind", kind, true);
                     try {
                         append(out, project, session, plugin, id, goal, kind, plugins, plans, modular);
+                        if (!plugin.getDependencies().isEmpty() && !"runtime".equals(System.getProperty("jolink.probe.scope"))
+                                && Boolean.parseBoolean(project.getProperties().getProperty("jolink.probe.testSourcesRequired", "true"))) {
+                            TestProviderDependencies provider = TestProviderDependencies.resolve(plugin, project, resolver, repositorySession);
+                            if (provider != null) {
+                                ExportBuildWorldMojo.stringList(out, "providerRuntimeClasspath", new ArrayList<>(provider.extra), true);
+                                if (provider.framework != null) ExportBuildWorldMojo.field(out, "providerFramework", provider.framework, true);
+                            }
+                        }
                     } catch (Exception error) {
                         // An unrelated execution's invalid runtime setup must not block other tests or launch.
                         ExportBuildWorldMojo.field(out, "configurationError", error.getClass().getSimpleName(), true);

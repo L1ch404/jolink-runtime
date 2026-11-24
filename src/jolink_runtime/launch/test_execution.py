@@ -213,7 +213,8 @@ def runtime_options(execution, project):
     config = ET.fromstring(execution["configurationPrivate"])
     configured = {node.tag for node in config if (node.text or "").strip() or len(node)}
     unsupported = configured - _MODELED - _SCHEDULING - _REPORTING
-    if execution.get("pluginDependencies"):
+    provider_entries = tuple(Path(p) for p in execution.get("providerRuntimeClasspath", ()))
+    if execution.get("pluginDependencies") and "providerRuntimeClasspath" not in execution:
         unsupported.add("pluginDependencies")
     if _text(config, "childDelegation", "false").lower() == "true":
         unsupported.add("childDelegation")
@@ -292,8 +293,9 @@ def runtime_options(execution, project):
         },
         "jvm_arguments": tuple(args),
         "run_order": order if order in {"alphabetical", "reversealphabetical"} else "",
+        **({"framework": execution["providerFramework"]} if execution.get("providerFramework") else {}),
         "framework_options": framework,
-        "additional_classpath": additional,
+        "additional_classpath": (*additional, *provider_entries),
     }, adjustments
 
 

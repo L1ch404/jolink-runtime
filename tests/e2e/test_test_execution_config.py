@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -256,6 +257,9 @@ public class CLASS {
 def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
     env = environment(tmp_path)
     root, _, pom, _, _ = project_fixture(tmp_path, "maven", False)
+    # The runner/provider test has no IDEA launch settings. In particular allow
+    # an explicit private Maven repository, including for the test's cold Probe.
+    (root / ".idea/workspace.xml").unlink(missing_ok=True)
     pom.write_text(
         pom.read_text().replace(
             "<version>3.13.0</version>", "<version>3.11.0</version>"
@@ -266,7 +270,7 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
         dependency = ET.SubElement(xml.getroot().find("{*}dependencies"), "dependency")
         for k, v in zip(
             ("groupId", "artifactId", "version", "scope"),
-            ("org.junit.jupiter", "junit-jupiter", "5.8.2", "test")
+            ("org.junit.jupiter", "junit-jupiter-api", "5.8.2", "test")
             if framework == "junit5"
             else ("org.testng", "testng", "7.5", "test"),
         ):
@@ -284,6 +288,12 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
         "example.FilterTest$Blocked" if framework == "junit4" else "blocked"
     )
     if framework == "junit5":
+        # Only the selected Surefire execution, not the project's own compile or
+        # launch classpath, supplies the Platform engine.
+        engine = ET.SubElement(ET.SubElement(plugin, "dependencies"), "dependency")
+        for k, v in (("groupId", "org.junit.jupiter"), ("artifactId", "junit-jupiter-engine"),
+                     ("version", "5.8.2")):
+            ET.SubElement(engine, k).text = v
         ET.SubElement(
             ET.SubElement(config, "includeJUnit5Engines"), "engine"
         ).text = "junit-jupiter"
@@ -357,6 +367,13 @@ def test_framework_filters_are_executed_not_only_exported(tmp_path, framework):
                     assert "selected-framework-output" in result["output"], result
 
     anyio.run(scenario)
+    if framework == "junit5":
+        world = json.loads(next((tmp_path / "cache").rglob("build-world.json")).read_text())["world"]
+        group = next(e for e in world["test_executions"] if e["kind"] == "surefire")
+        assert group["providerFramework"] == "junit5"
+        runner = {Path(p).name for p in group["providerRuntimeClasspath"]}
+        assert {"junit-jupiter-engine-5.8.2.jar", "junit-platform-launcher-1.8.2.jar"} <= runner
+        assert "junit-jupiter-engine-5.8.2.jar" not in {Path(p).name for p in world["test_runtime_classpath"]}
 
 
 @pytest.mark.mcp_java_e2e
