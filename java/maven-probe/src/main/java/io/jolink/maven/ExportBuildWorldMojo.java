@@ -50,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest46";
+    private static final String PROBE_VERSION = "0.1.0-fasttest47";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -1091,11 +1091,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         }
         String argument = childValue(configuration, "compilerArgument");
         if (!argument.isEmpty()) {
-            try {
-                options.addAll(java.util.Arrays.asList(org.codehaus.plexus.util.cli.CommandLineUtils.translateCommandline(argument)));
-            } catch (Exception error) {
-                throw new IllegalArgumentException("Invalid compilerArgument quoting.", error);
-            }
+            options.addAll(java.util.Arrays.asList(MavenPlexus.split(argument)));
         }
         Xpp3Dom legacy = child(configuration, "compilerArguments");
         if (legacy != null) {

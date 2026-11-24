@@ -108,9 +108,9 @@ final class ModuleConfiguration {
         Xpp3Dom included = configuration.getChild(includes), excluded = configuration.getChild(excludes);
         boolean selected = included == null || included.getChildCount() == 0;
         if (included != null) for (Xpp3Dom pattern : included.getChildren())
-            selected |= org.codehaus.plexus.util.SelectorUtils.matchPath(pattern.getValue(), "module-info.java");
+            selected |= MavenPlexus.matches(pattern.getValue(), "module-info.java");
         if (excluded != null) for (Xpp3Dom pattern : excluded.getChildren())
-            if (org.codehaus.plexus.util.SelectorUtils.matchPath(pattern.getValue(), "module-info.java")) selected = false;
+            if (MavenPlexus.matches(pattern.getValue(), "module-info.java")) selected = false;
         return selected ? descriptor(roots) : null;
     }
 

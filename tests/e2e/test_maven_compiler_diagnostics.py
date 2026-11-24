@@ -133,6 +133,23 @@ def debug_outputs(tmp_path, java):
 
 
 @pytest.mark.mcp_java_e2e
+def test_probe_uses_maven_runtime_and_legacy_resource_scanner(tmp_path):
+    """These utilities are not all exported to plugins through Maven 3.9's API realm."""
+    env, java = environment(tmp_path)
+    project, _, _ = make_project(tmp_path, "<compilerArgument>-Xlint:deprecation</compilerArgument>"
+        "<includes><include>**/*.java</include></includes>")
+    pom = project / "pom.xml"
+    pom.write_text(pom.read_text().replace("maven-resources-plugin</artifactId><version>3.3.0",
+                                           "maven-resources-plugin</artifactId><version>2.2"))
+    async def scenario():
+        with (tmp_path / "mcp.log").open("w", encoding="utf-8") as log:
+            async with open_mcp_session(log, environment=env) as session:
+                await run(session, project, java, tmp_path / "calls.jsonl")
+                assert (await run(session, project, java, tmp_path / "calls.jsonl"))["compiled_source_count"] == 0
+    anyio.run(scenario)
+
+
+@pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("configuration,test_configuration,inherited", [
     pytest.param("", "", False, id="omitted"),
     pytest.param(DISABLED, "", False, id="debug-false-diagnostics-true"),

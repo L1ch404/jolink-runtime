@@ -101,7 +101,7 @@ final class ResourcePreparation implements AutoCloseable {
         // Read the resource plugin's scanner defaults, not a different Plexus
         // version from the Probe's compile-time dependencies/Maven API realm.
         String[] defaultExcludes = defaults ? (String[]) execution.getMojoDescriptor().getPluginDescriptor()
-            .getClassRealm().loadClass("org.codehaus.plexus.util.AbstractScanner")
+            .getClassRealm().loadClass("org.codehaus.plexus.util.DirectoryScanner")
             .getField("DEFAULTEXCLUDES").get(null) : new String[0];
         for (Resource resource : resources) {
             Resource input = new Resource();
