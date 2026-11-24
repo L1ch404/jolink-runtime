@@ -25,7 +25,11 @@ final class ResourcePreparation implements AutoCloseable {
     static final String INPUTS = "jolink.resources.inputs";
     private final Map<Path, Output> outputs = new LinkedHashMap<>();
     private final List<Resource> resourceSets = new ArrayList<>();
+    private String consumer = "";
     void addSelection(Resource selection) { resourceSets.add(selection); }
+    void separateConsumerOutputs() {
+        consumer = "\n" + System.getProperty("jolink.probe.scope", "test");
+    }
 
     static boolean handles(MojoExecution execution) {
         return "org.apache.maven.plugins".equals(execution.getGroupId())
@@ -35,6 +39,11 @@ final class ResourcePreparation implements AutoCloseable {
 
     void execute(MavenSession session, MavenProject project, MojoExecution execution,
             BuildPluginManager plugins) throws Exception {
+        execute(session, project, execution, plugins, true);
+    }
+
+    void execute(MavenSession session, MavenProject project, MojoExecution execution,
+            BuildPluginManager plugins, boolean observeInputs) throws Exception {
         Xpp3Dom original = execution.getConfiguration();
         Xpp3Dom configured = new Xpp3Dom(original);
         Xpp3Dom output = configured.getChild("outputDirectory");
@@ -44,22 +53,27 @@ final class ResourcePreparation implements AutoCloseable {
         Object resolved = evaluator.evaluate(expression);
         Path destination = evaluator.alignToBaseDirectory(resolved instanceof File ? (File) resolved
             : new File(String.valueOf(resolved))).getCanonicalFile().toPath();
-        Output prepared = outputs.get(destination);
+        Path owner = destination;
+        for (String outputRoot : Arrays.asList(project.getBuild().getOutputDirectory(), project.getBuild().getTestOutputDirectory())) {
+            Path path = new File(outputRoot).getCanonicalFile().toPath();
+            if (destination.startsWith(path)) { owner=path; break; }
+        }
+        Output prepared = outputs.get(owner);
         if (prepared == null) {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(
-                (project.getBasedir().getCanonicalPath() + "\n" + destination).getBytes(StandardCharsets.UTF_8));
+                (project.getBasedir().getCanonicalPath() + "\n" + owner + consumer).getBytes(StandardCharsets.UTF_8));
             StringBuilder key = new StringBuilder();
             for (byte b : hash) key.append(String.format("%02x", b & 255));
             Path root = Paths.get(System.getProperty("jolink.probe.resourceCache",
                 System.getProperty("user.home") + "/.cache/jolink-runtime/maven-resources"));
-            prepared = new Output(destination, root.resolve(key.toString()));
-            outputs.put(destination, prepared);
+            prepared = new Output(owner, root.resolve(key.toString()));
+            outputs.put(owner, prepared);
         }
-        output.setValue(prepared.staging.toString());
+        output.setValue(prepared.staging.resolve(owner.relativize(destination)).toString());
         try {
             execution.setConfiguration(configured);
             plugins.executeMojo(session, execution);
-            collectInputs(original, evaluator, execution);
+            if (observeInputs) collectInputs(original, evaluator, execution);
             // A later preparation goal may read the normal Maven output path.
             prepared.publish(false);
         } finally {

@@ -53,6 +53,10 @@ def selected_files(root: Path, spec: dict, excluded=()) -> Iterator[Path]:
         if selection.accepts("."):
             yield root
     else:
+        excluded = set(excluded)
+        if spec.get("caseSensitive", True):
+            excluded.update(root / pattern[:-3] for pattern in spec.get("excludes", ())
+                            if pattern.endswith("/**") and not any(c in pattern[:-3] for c in "*?\\"))
         top_level_only = includes and all("/" not in p and "\\" not in p and p != "**" for p in includes)
         for folder, dirs, files in os.walk(root):
             folder = Path(folder)

@@ -49,16 +49,20 @@ final class SourcePreparation {
         List<String> skipped = new ArrayList<>();
         List<String> post = new ArrayList<>();
         Set<String> postInputs = new LinkedHashSet<>();
-        try (ResourcePreparation resources = new ResourcePreparation()) {
+        session.setCurrentProject(project);
+        try (ResourcePreparation resources = new ResourcePreparation();
+             FrontendResources front = FrontendResources.discover(project, session, resources)) {
             Path build = new File(project.getBuild().getDirectory()).getCanonicalFile().toPath();
             PreparationMapping mapping = new PreparationMapping();
-            session.setCurrentProject(project);
-            List<Object> tasks = Collections.singletonList(new LifecycleTask(tests ? "process-test-classes" : "process-resources"));
+            List<Object> tasks = Collections.singletonList(new LifecycleTask(front != null ? "prepare-package" :
+                    tests ? "process-test-classes" : "process-resources"));
             for (MojoExecution execution : plans.calculateExecutionPlan(session, project, tasks, false).getMojoExecutions()) {
                 String phase = execution.getLifecyclePhase();
                 boolean resource = ResourcePreparation.handles(execution);
                 boolean afterCompile = tests && "process-test-classes".equals(phase);
-                if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase)) && !afterCompile) || !(resource || isDeclared(project, execution))) continue;
+                boolean lateFrontend = front != null && (front.builds(execution) || front.copies(execution));
+                if ((!MAIN.contains(phase) && !(tests && TEST.contains(phase)) && !afterCompile && !lateFrontend) ||
+                        !(resource || isDeclared(project, execution))) continue;
                 plans.setupMojoExecution(session, project, execution);
                 String identity = execution.getGroupId() + ":" + execution.getArtifactId() + ":" + execution.getGoal() + "@" + execution.getExecutionId();
                 String skipReason = mapping.skipReason(session, project, execution);
@@ -76,6 +80,12 @@ final class SourcePreparation {
                 // it while promising that business compilation stays in JDT.
                 if (!execution.getForkedExecutions().isEmpty())
                     throw new MojoExecutionException("Source preparation requires a forked lifecycle: " + execution.getGoal());
+                if (front != null && (front.frontend(execution) || front.copies(execution))) {
+                    log.info("joLink frontend preparation: " + identity + " (" + phase + ")");
+                    front.execute(session,project,execution,plugins,resources);
+                    executions.add(identity);
+                    continue;
+                }
                 if (afterCompile) {
                     post.add(identity);
                     collectPaths(execution.getConfiguration(), new PluginParameterExpressionEvaluator(session, execution), project, postInputs, false, true);
