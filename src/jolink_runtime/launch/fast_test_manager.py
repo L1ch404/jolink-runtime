@@ -39,7 +39,7 @@ from .maven_reactor import maven_build_root
 from .maven_module_world import load_module_worlds, combine_effective_poms, skipped_preparation_steps
 from .test_execution import run_test_executions
 from .test_output import TestOutputLog, read_test_output
-from .maven_compile_scope import compiler_scope, compiler_parameters
+from .maven_compile_scope import probe_compiler_scope, compiler_parameters
 from .module_configuration import main_module_fields, descriptor_inputs
 from .processor_path import processor_path, jdt_processor_paths, processor_settings
 from .idea_environment import IdeaEnvironmentImporter
@@ -1127,7 +1127,7 @@ class FastTestManager:
         effective_project = self._maven._select_effective_project(
             effective_root, module
         )
-        main_scope = compiler_scope(effective_project, configuration=snapshot["compilerConfiguration"])
+        main_scope = probe_compiler_scope(effective_project, snapshot)
         compiler_model = self._maven._compiler_model(
             main_scope,
             build_jdk=build_jdk,
@@ -1146,7 +1146,7 @@ class FastTestManager:
                     "target_level": compiler_model["target_level"],
                 },
             )
-        test_scope = compiler_scope(effective_project, test=True, configuration=snapshot["testCompilerConfiguration"])
+        test_scope = probe_compiler_scope(effective_project, snapshot, test=True)
         test_model = self._maven._compiler_model(test_scope, build_jdk=build_jdk, runtime_jdk=build_jdk)
         if not test_model["native_legacy"] and (
             test_model["source_level"] != test_model["target_level"] or test_model["target_level"] not in SUPPORTED_JAVA_LEVELS
@@ -1206,6 +1206,9 @@ class FastTestManager:
             test_project=test_scope,
             native_maven=any(m.get("native_compile", {}).get("maven") for m in snapshot.get("moduleWorlds", ())),
         )
+        if any(m.get("native_compile", {}).get("maven") for m in snapshot.get("moduleWorlds", ())):
+            unsupported_test_compiler = [name for name in unsupported_test_compiler
+                                         if name != "testCompile.compilerVersion"]
         if unsupported_test_compiler:
             raise FastTestManagerError(
                 "FAST_TEST_COMPILER_CONFIGURATION_UNSUPPORTED",

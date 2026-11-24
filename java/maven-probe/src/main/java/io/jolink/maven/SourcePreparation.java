@@ -44,6 +44,7 @@ final class SourcePreparation {
         MavenProject previous = session.getCurrentProject();
         Set<String> inputs = new LinkedHashSet<>();
         Set<String> namedOutputs = new LinkedHashSet<>();
+        Map<String,String> sourceOverrides = new LinkedHashMap<>();
         Set<String> registrations = new LinkedHashSet<>();
         List<String> executions = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
@@ -100,7 +101,7 @@ final class SourcePreparation {
                 Map<String, FileTime> before = resource ? Collections.emptyMap() : namedBuildFiles(paths, build);
                 log.info("joLink source preparation: " + identity + " (" + phase + ")");
                 if (resource) resources.execute(session, project, execution, plugins);
-                else plugins.executeMojo(session, execution);
+                else PreparedSourceFile.execute(session, project, execution, plugins, sourceOverrides);
                 if (replacer != null) replacer.export(execution, resources);
                 // Include newly created output/source roots in the same small
                 // file-input snapshot, so deleting generated outputs refreshes it.
@@ -126,11 +127,13 @@ final class SourcePreparation {
                 executions.add(identity);
             }
             resources.finish(project, inputs);
+            inputs.addAll(sourceOverrides.values()); // rebuild a removed private output on the next Probe
             List<String> inputPaths = new ArrayList<>(inputs);
             List<String> rootPaths = new ArrayList<>(registrations);
             Collections.sort(inputPaths);
             Collections.sort(rootPaths);
             project.setContextValue(INPUTS, inputPaths);
+            project.setContextValue(PreparedSourceFile.KEY, sourceOverrides);
             project.setContextValue(NAMED_OUTPUTS, new ArrayList<>(namedOutputs));
             project.setContextValue(EXECUTIONS, executions);
             project.setContextValue(SKIPPED, skipped);

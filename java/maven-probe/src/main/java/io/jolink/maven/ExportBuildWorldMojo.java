@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.jar.JarEntry;
@@ -50,7 +51,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest54";
+    private static final String PROBE_VERSION = "0.1.0-fasttest56";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -248,6 +249,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         out.append('{');
         field(out, "schema", SCHEMA, false);
         field(out, "probeVersion", PROBE_VERSION, true);
+        field(out, "defaultSourceEncoding", java.nio.charset.Charset.defaultCharset().name(), true);
         field(out, "probeImplementationId", implementationId(), true);
         configurationSnapshot.appendTo(out);
         out.append(",\"project\":{");
@@ -363,6 +365,16 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         );
         stringList(out, "testClasspathElements", testClasspath, true);
         stringList(out, "preparationInputs", contextPaths(SourcePreparation.INPUTS), true);
+        out.append(",\"preparedSourceFiles\":{");
+        Object sourceFiles = project.getContextValue(PreparedSourceFile.KEY);
+        if (sourceFiles instanceof Map) {
+            boolean comma = false;
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) sourceFiles).entrySet()) {
+                field(out, (String) entry.getKey(), (String) entry.getValue(), comma);
+                comma = true;
+            }
+        }
+        out.append('}');
         stringList(out, "preparationNamedOutputs", contextPaths(SourcePreparation.NAMED_OUTPUTS), true);
         stringList(out, "postTestExecutions", contextPaths(SourcePreparation.POST_TEST), true);
         stringList(out, "postTestInputs", contextPaths(SourcePreparation.POST_INPUTS), true);

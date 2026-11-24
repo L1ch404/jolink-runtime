@@ -11,6 +11,7 @@ from jolink_runtime.launch.maven import MavenBuildSystemAdapter
 from jolink_runtime.launch.maven_compile_scope import (
     compiler_parameters,
     compiler_scope,
+    probe_compiler_scope,
 )
 
 
@@ -103,3 +104,17 @@ def test_java_level_beyond_compiler_range_is_not_a_missing_jdk(tmp_path):
     with pytest.raises(JdtCompileError) as error:
         select_target_system_home((tmp_path,), 27)
     assert error.value.error_code == "JDT_TARGET_PLATFORM_UNSUPPORTED"
+
+
+@pytest.mark.parametrize(("properties", "expected_main", "expected_test"), [
+    ("", "GBK", "UTF-16"),
+    ("<project.build.sourceEncoding>ISO-8859-1</project.build.sourceEncoding>",
+     "ISO-8859-1", "UTF-16"),
+])
+def test_probe_platform_encoding_is_a_default_not_an_override(properties, expected_main, expected_test):
+    pom = ET.fromstring(f"<project><properties>{properties}</properties></project>")
+    snapshot = {"defaultSourceEncoding": "GBK", "compilerConfiguration": "<configuration/>",
+                "testCompilerConfiguration": "<configuration><testEncoding>UTF-16</testEncoding></configuration>"}
+    adapter = MavenBuildSystemAdapter()
+    for test, expected in ((False, expected_main), (True, expected_test)):
+        assert adapter._source_encoding(probe_compiler_scope(pom, snapshot, test=test)) == expected

@@ -33,6 +33,12 @@ final class NativeCompilation {
                 NodeList entries = module.getElementsByTagName("*");
                 for (int j=0; j<entries.getLength(); j++) {
                     Element item = (Element) entries.item(j);
+                    if (item.hasAttribute("replaces")) {
+                        List<String> roots = "main".equals(item.getTagName()) ? project.getCompileSourceRoots() : project.getTestCompileSourceRoots();
+                        File old = new File(item.getAttribute("replaces")).getCanonicalFile();
+                        for (Iterator<String> it = roots.iterator(); it.hasNext();)
+                            if (new File(it.next()).getCanonicalFile().equals(old)) it.remove();
+                    }
                     if ("main".equals(item.getTagName())) project.addCompileSourceRoot(item.getTextContent());
                     else if ("test".equals(item.getTagName())) project.addTestCompileSourceRoot(item.getTextContent());
                     else if ("post".equals(item.getTagName())) post.add(item.getTextContent());

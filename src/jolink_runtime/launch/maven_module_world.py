@@ -11,7 +11,7 @@ from .maven import MavenBuildSystemAdapter
 from .maven_probe import MavenProbeError
 from .maven_compile_scope import (
     compiler_parameters,
-    compiler_scope,
+    probe_compiler_scope,
     compiler_source_patterns,
 )
 from .processor_path import jdt_processor_paths, processor_path, processor_settings
@@ -84,7 +84,7 @@ def load_module_worlds(
                     context={"scope": label, "module": str(directory),
                              "execution_ids": snapshot.get(prefix + "ExecutionIds", [])},
                 )
-        main_scope = compiler_scope(root, configuration=snapshot["compilerConfiguration"])
+        main_scope = probe_compiler_scope(root, snapshot)
         compiler = maven._compiler_model(
             main_scope, build_jdk=build_jdk, runtime_jdk=build_jdk
         )
@@ -106,6 +106,9 @@ def load_module_worlds(
                 classpath.append(path)
         processing = snapshot["annotationProcessing"]
         factories, lombok = jdt_processor_paths(processing, processor_path(processing))
+        replacements = tuple(Path(p) for p in snapshot.get("preparedSourceFiles", {}))
+        def source_root(path):
+            return Path(path).is_dir() or any(p.is_relative_to(path) for p in replacements)
         modules.append(
             {
                 "module_root": str(directory),
@@ -113,12 +116,12 @@ def load_module_worlds(
                 "source_roots": [
                     path
                     for path in snapshot["compileSourceRoots"]
-                    if Path(path).is_dir()
+                    if source_root(path)
                 ],
                 "test_source_roots": [
                     path
                     for path in snapshot["testCompileSourceRoots"]
-                    if Path(path).is_dir()
+                    if source_root(path)
                 ]
                 if include_tests
                 else [],
@@ -158,6 +161,7 @@ def load_module_worlds(
                 "processor_entries": [str(path) for path in factories],
                 "lombok_entries": [str(path) for path in lombok],
                 "preparation_inputs": snapshot.get("preparationInputs", []),
+                "prepared_source_files": snapshot.get("preparedSourceFiles", {}),
                 "preparation_named_outputs": snapshot.get("preparationNamedOutputs", []),
                 "preparation_roots": snapshot.get("preparationRoots", []),
                 "preparation_resource_sets": snapshot.get("preparationResourceSets", []),
@@ -170,22 +174,27 @@ def load_module_worlds(
                 **processor_settings(processing),
             }
         )
-        if snapshot.get("compilerNativeSourcePasses") or _requires_native_compiler(compiler, profile):
+        if (snapshot.get("compilerNativeSourcePasses") or _requires_native_compiler(compiler, profile)
+                or any(c.find("{*}compilerVersion") is not None for c in configurations)
+                or any(p.is_relative_to(r) for p in replacements for r in snapshot["compileSourceRoots"])):
             modules[-1]["native_main_compile"] = True
             modules[-1]["target_level"] = mixed_target or compiler["target_level"]
         main_patterns = compiler_source_patterns(main_scope)
         if main_patterns:
             modules[-1]["source_patterns"] = main_patterns
         if include_tests:
-            scoped = compiler_scope(root, test=True, configuration=snapshot["testCompilerConfiguration"])
+            scoped = probe_compiler_scope(root, snapshot, test=True)
             test_patterns = compiler_source_patterns(scoped, test=True)
             if test_patterns:
                 modules[-1]["test_source_patterns"] = test_patterns
             test_model = maven._compiler_model(
                 scoped, build_jdk=build_jdk, runtime_jdk=build_jdk
             )
-            test_profile = maven._compiler_argument_profile(maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin")))
-            if snapshot.get("testCompilerNativeSourcePasses") or _requires_native_compiler(test_model, test_profile):
+            test_configs = maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin"))
+            test_profile = maven._compiler_argument_profile(test_configs)
+            if (snapshot.get("testCompilerNativeSourcePasses") or _requires_native_compiler(test_model, test_profile)
+                    or any(c.find("{*}compilerVersion") is not None for c in test_configs)
+                    or any(p.is_relative_to(r) for p in replacements for r in snapshot["testCompileSourceRoots"])):
                 modules[-1]["native_test_compile"] = True
             if unrepresented_patches(test_profile, allowed_patches, directory):
                 raise MavenProbeError("MAVEN_COMPILER_ARGUMENT_UNSUPPORTED", "External test --patch-module inputs are not mapped to the JDT project.")

@@ -53,6 +53,19 @@ def compiler_scope(
     return result
 
 
+def probe_compiler_scope(project, snapshot, *, test=False):
+    scoped = compiler_scope(project, test=test, configuration=snapshot["testCompilerConfiguration" if test else "compilerConfiguration"])
+    # Without an explicit encoding Maven uses its JVM's platform charset,
+    # which need not match the MCP process, particularly on Windows.
+    if snapshot.get("defaultSourceEncoding"):
+        props = scoped.find("{*}properties")
+        if props is None:
+            props = ET.SubElement(scoped, "properties")
+        if props.find("{*}project.build.sourceEncoding") is None:
+            ET.SubElement(props, "project.build.sourceEncoding").text = snapshot["defaultSourceEncoding"]
+    return scoped
+
+
 def compiler_parameters(project: ET.Element) -> bool:
     maven = MavenBuildSystemAdapter()
     plugin = maven._find_build_plugin(project, "maven-compiler-plugin")
