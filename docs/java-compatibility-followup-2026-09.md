@@ -1,5 +1,44 @@
 # joLink 产品边界与兼容性跟进
 
+长期目标是让 **4,000+ 个不同的开源 Java 项目**能用 joLink 运行适用的开发流程。
+按上游仓库去重；多个 JDK、多个模块或几百个测试都是覆盖深度，不是更多项目。
+Fast Test、应用启动／restart 分开记：测试实际执行，服务以请求和响应验收，CLI 以实际输出和退出码验收；
+不把结构化拒绝、跳过、依赖没下载或仅创建进程计为通过。目标数字不是当前支持数。
+
+兼容性按**根因**跟进，不按报错仓库分别补丁。修复时保留原项目、一个会暴露同一机制的不同配置
+（最好是另一仓库），以及此前已通过且会走到该改动的用例。扩大抽样时单看两个数：
+多少新仓库走通了、多少失败又落回已修的问题；后者是回归或上次修复范围不够。
+
+## 十个固定开源项目的复测：按实际测试和 HTTP 行为验收
+
+本轮对照是 11 月 22 日在 `b700fc9` 测过的同一批提交和测试选择器。下面的数字是
+**实际执行的所选用例**，不是整仓测试数；库项目不凭测试通过宣称有可启动服务。
+
+| 原来的问题 | 实现和验收 |
+| --- | --- |
+| XStream 的旧资源插件、三个分组选源的编译 execution、JUnit 3 | 用资源插件自己的类加载器读取默认排除项；不同选源分组交给 Maven 按其真实顺序编译；独立 Runner 直接运行项目已有的 JUnit 3 TestSuite/TestResult，不注入 JUnit 4。原项目 4/4。 |
+| Commons CSV 和 Tika 的 Probe 在 Maven 内缺类 | 从实际拥有相应工具类的 Maven 类加载器取用，而不往业务 classpath 添加 Plexus。CSV 31/31；Tika core 19/19、server 1/1，独立 launch/restart 后分别请求 `/version` 得到 200。 |
+| JUnit 4 自身编译被拒，准备步骤还可能改写开发者的 Version.java | 对指定编译器版本的项目使用 Maven 编译。原路径上的 Java 输出重定向到私有目录，把生成结果交给编译器，不靠写回或 Git 恢复用户文件。JUnit 4 原项目 98/98；运行生成的 Version.class 输出 4.13.2，而原文件仍是开发快照。覆盖 Replacer 的命名、批量选择、outputDir 和未提交源码。 |
+| RxJava 的原生 Gradle 编译与模块布局不能共用 | 沿用项目的 Gradle 编译，按真实输出区分普通 classpath、模块路径和多版本布局，不强行把库按命名模块启动。所选 7 通过、1 跳过，与原生相同。 |
+| Zipkin core 的 Surefire 依赖与 server 缺少 Lens | 所选 Runner 使用项目声明的测试引擎及其运行依赖；不把测试引擎混入应用。对声明了 npm build 并把生成目录复制进 classes 的 Maven 流程，在私有工作区执行生产资源构建。core 56/56、server 2/2；独立应用启动和换进程重启后，健康接口与实际 Lens HTML 均为 200。 |
+| Caffeine 最初卡在双方共同的依赖下载 | 补齐依赖后原生 6/6，也暴露出两个 joLink 缺口：Probe 提前创建所有 Test 任务，以及把 included build 的 Gradle 输出当成配置变化。修复后同一选择器冷、暖、重开均 6/6，改错实现会红，恢复后绿。 |
+
+这些结果不等于任意自定义 Surefire provider、任意 npm 命令、所有 Maven 插件写盘行为都已经等价实现。
+这里的验收是原项目的测试确实执行、运行的程序确实返回预期内容，而不只是旧错误码消失。
+
+## Maven 3 的 Probe 和资源插件类加载隔离（2026-11-22）
+
+Maven 3.9.11 的插件 API 不保证向 Probe 导出整个 Plexus Utils 包。旧实现直接引用
+`SelectorUtils` 和 `CommandLineUtils`，在 Commons CSV 的模块描述符筛选和 Tika
+的自由格式编译参数上分别缺类。现在从 Maven 运行时加载它自带的这两个工具，不在项目
+POM 安装依赖，也不增加新下载。XStream 的旧 Resources Plugin 2.2 是另一个 realm：
+现在从资源插件自己的 DirectoryScanner 读取 public DEFAULTEXCLUDES，兼容旧版本直接声明
+该字段及新版由父类提供字段的形式。参见真实回归 test_maven_compiler_diagnostics.py。
+
+Tika 3.2.3 的 core 所选 19 项和 server-core 版本接口 1 项冷暖均通过；真实
+TikaServerCli 启动与 restart 后本机 HTTP `/version` 均为 200。XStream 与 Commons CSV
+的后续编译和 Runner 验收结果见上表。
+
 ## Petclinic：另一次准备重写相同字节，不应让应用放弃 HotSwap（2026-11-22）
 
 固定项目 `818c413`。应用启动后只跑一次 Fast Test，不改任何业务文件，152 个准备快照键中
