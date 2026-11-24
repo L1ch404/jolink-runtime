@@ -213,13 +213,21 @@ def detect_test_framework(classpath: Sequence[Path]) -> str:
             "org/testng/xml/XmlSuite.class",
         )
     )
-    available = sum((has_junit5, has_junit4, has_testng))
+    # JUnit 4 also bundles junit.framework. Its compatibility runner already
+    # executes those classes; only add a separate backend for a real 3.x runtime.
+    has_junit3 = not has_junit4 and all(
+        any(_contains_class(entry, name) for entry in classpath)
+        for name in ("junit/framework/TestSuite.class", "junit/framework/TestResult.class")
+    )
+    available = sum((has_junit5, has_junit4, has_junit3, has_testng))
     if available > 1:
         return "auto"
     if has_junit5:
         return "junit5"
     if has_junit4:
         return "junit4"
+    if has_junit3:
+        return "junit3"
     if has_testng:
         return "testng"
     raise FastTestError(
@@ -357,7 +365,9 @@ class FastTestRunner:
             framework = "junit5"
         if framework is None:
             framework = detected_framework
-        elif framework not in {"junit4", "junit5", "testng"}:
+        elif framework == "junit4" and detected_framework == "junit3":
+            framework = "junit3"  # Gradle's useJUnit selects its legacy JUnit family.
+        elif framework not in {"junit3", "junit4", "junit5", "testng"}:
             raise FastTestError(
                 "TEST_FRAMEWORK_UNAVAILABLE",
                 "The build authority selected an unsupported test framework.",

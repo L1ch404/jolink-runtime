@@ -191,6 +191,12 @@ def test_framework_detection_uses_project_runtime_classes(
     (junit4 / "org/junit/runner").mkdir(parents=True)
     (junit4 / "org/junit/runner/JUnitCore.class").write_bytes(b"class")
     assert detect_test_framework((junit4,)) == "junit4"
+    legacy = tmp_path / "junit3"
+    (legacy / "junit/framework").mkdir(parents=True)
+    for cls in ("TestSuite", "TestResult"):
+        (legacy / "junit/framework" / (cls + ".class")).touch()
+    assert detect_test_framework((legacy,)) == "junit3"
+    assert detect_test_framework((legacy, junit4)) == "junit4"
 
     junit5 = tmp_path / "junit5"
     for relative in (

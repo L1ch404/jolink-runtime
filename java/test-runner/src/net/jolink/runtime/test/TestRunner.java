@@ -137,11 +137,65 @@ public final class TestRunner {
             }
             return total;
         }
+        if ("junit3".equals(framework)) return runJUnit3(selectors, loader);
         if ("junit4".equals(framework)) return runJUnit4(selectors, loader);
         if ("junit5".equals(framework)) return runJUnit5(selectors, loader);
         if ("testng".equals(framework)) return runTestNG(selectors, loader);
         if ("auto".equals(framework)) return runAuto(selectors, loader);
         throw new IllegalArgumentException("Unsupported test framework.");
+    }
+
+    private static Result runJUnit3(List<String> selectors, ClassLoader loader) throws Exception {
+        requireNoJUnit4Listeners();
+        if (optionValues("groups").length != 0 || optionValues("excluded_groups").length != 0)
+            throw new IllegalArgumentException("JUnit 3 does not support JUnit category filters.");
+        Class<?> test = Class.forName("junit.framework.Test", true, loader);
+        Class<?> suite = Class.forName("junit.framework.TestSuite", true, loader);
+        Class<?> results = Class.forName("junit.framework.TestResult", true, loader);
+        Class<?> problems = Class.forName("junit.framework.TestFailure", true, loader);
+        Object out = results.getConstructor().newInstance();
+        long start = System.nanoTime();
+        for (String selector : selectors) {
+            Selector parsed = Selector.parse(selector);
+            Class<?> cls = Class.forName(parsed.className, false, loader);
+            Object instance;
+            if (parsed.methodName != null) {
+                Method method = cls.getMethod(parsed.methodName);
+                if (!Class.forName("junit.framework.TestCase", false, loader).isAssignableFrom(cls)
+                        || !parsed.methodName.startsWith("test") || method.getReturnType() != Void.TYPE)
+                    throw new IllegalArgumentException("Not a selectable JUnit 3 test method: " + selector);
+                instance = suite.getMethod("createTest", Class.class, String.class).invoke(null, cls, parsed.methodName);
+            } else {
+                Method factory = legacySuite(cls);
+                if (factory != null && !java.lang.reflect.Modifier.isStatic(factory.getModifiers()))
+                    throw new IllegalArgumentException("JUnit 3 suite() must be static: " + selector);
+                instance = factory == null ? suite.getConstructor(Class.class).newInstance(cls) : factory.invoke(null);
+            }
+            test.getMethod("run", results).invoke(test.cast(instance), out);
+        }
+        Result total = new Result();
+        total.framework = "junit3";
+        total.tests = number(out, "runCount");
+        total.failed = total.failedTests = number(out, "failureCount") + number(out, "errorCount");
+        total.passed = Math.max(0, total.tests - total.failed);
+        total.durationMs = (System.nanoTime() - start) / 1_000_000;
+        for (String group : new String[]{"failures", "errors"}) {
+            java.util.Enumeration<?> entries = (java.util.Enumeration<?>) results.getMethod(group).invoke(out);
+            while (entries.hasMoreElements() && total.failures.size() < MAX_FAILURES) {
+                Object item = entries.nextElement();
+                total.addFailure(failure(String.valueOf(problems.getMethod("failedTest").invoke(item)),
+                        (Throwable) problems.getMethod("thrownException").invoke(item)));
+            }
+        }
+        return total;
+    }
+
+    private static Method legacySuite(Class<?> cls) {
+        try {
+            return cls.getMethod("suite");
+        } catch (NoSuchMethodException absent) {
+            return null;
+        }
     }
 
     private static Result runJUnit4(
@@ -347,12 +401,15 @@ public final class TestRunner {
 
     private static Result runAuto(
             List<String> selectors, ClassLoader loader) throws Exception {
+        List<String> junit3 = new ArrayList<String>();
         List<String> junit4 = new ArrayList<String>();
         List<String> junit5 = new ArrayList<String>();
         List<String> testng = new ArrayList<String>();
         for (String selector : selectors) {
             String framework = selectorFramework(selector, loader);
-            if ("junit4".equals(framework)) {
+            if ("junit3".equals(framework)) {
+                junit3.add(selector);
+            } else if ("junit4".equals(framework)) {
                 junit4.add(selector);
             } else if ("junit5".equals(framework)) {
                 junit5.add(selector);
@@ -364,6 +421,7 @@ public final class TestRunner {
             }
         }
         Result total = new Result();
+        if (!junit3.isEmpty()) total.merge(runJUnit3(junit3, loader));
         if (!junit4.isEmpty()) {
             total.merge(runJUnit4(junit4, loader));
         }
@@ -373,13 +431,13 @@ public final class TestRunner {
         if (!testng.isEmpty()) {
             total.merge(runTestNG(testng, loader));
         }
-        int frameworkCount = (!junit4.isEmpty() ? 1 : 0)
+        int frameworkCount = (!junit3.isEmpty() ? 1 : 0) + (!junit4.isEmpty() ? 1 : 0)
                 + (!junit5.isEmpty() ? 1 : 0)
                 + (!testng.isEmpty() ? 1 : 0);
         total.framework = frameworkCount > 1
                 ? "mixed"
                 : !junit5.isEmpty() ? "junit5"
-                : !testng.isEmpty() ? "testng" : "junit4";
+                : !testng.isEmpty() ? "testng" : !junit3.isEmpty() ? "junit3" : "junit4";
         return total;
     }
 
@@ -541,6 +599,17 @@ public final class TestRunner {
                     }
                 }
             }
+        }
+        if (frameworks.isEmpty()) {
+            try {
+                Class<?> legacy = Class.forName("junit.framework.Test", false, loader);
+                Method factory = legacySuite(type);
+                if (legacy.isAssignableFrom(type) || (factory != null && java.lang.reflect.Modifier.isStatic(factory.getModifiers())
+                        && legacy.isAssignableFrom(factory.getReturnType()))) {
+                    try { Class.forName("org.junit.runner.JUnitCore", false, loader); return "junit4"; }
+                    catch (ClassNotFoundException absent) { return "junit3"; }
+                }
+            } catch (ClassNotFoundException absent) { /* Not a JUnit 3/4 classpath. */ }
         }
         if (frameworks.size() != 1) {
             return "unknown";

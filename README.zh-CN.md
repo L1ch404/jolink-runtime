@@ -96,7 +96,7 @@ MCP 负责执行，Skill 说明方法，可选的[全局验证准则](rules/joli
 `action` 默认 `run`，也可省略。构建系统通过 Probe 导出模型；普通 Java 工程由 JDT 增量编译。
 如果选中的 Gradle 源码集需要混编、声明了额外输出，或定制了 Java 编译任务的动作，则由 Gradle 构建，
 测试与运行中的应用各用一份产物。
-两种路径都由独立 Test Runner 执行所选 JUnit 4/5 或 TestNG 测试。它不是 `mvn test` 或
+两种路径都由独立 Test Runner 执行所选 JUnit 3/4/5 或 TestNG 测试。它不是 `mvn test` 或
 `gradle test` 的简单包装。
 
 冷准备可能需要较长时间；之后复用模型和编译缓存，只处理变化。main/test 的语言级别、

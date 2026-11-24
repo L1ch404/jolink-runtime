@@ -136,7 +136,7 @@ is absent or changed. Ordinary Java uses a persistent JDT workspace. If a Gradle
 source set mixes JVM languages, declares extra output directories, or customizes
 its Java compile actions, Gradle builds it; tests and the live application use separate outputs.
 In both cases an isolated runner executes the selected
-JUnit 4/5 or TestNG tests:
+JUnit 3/4/5 or TestNG tests:
 
 ```text
 java_fast_test(action=run,

@@ -6,6 +6,10 @@ Build World。普通 Java 使用持久 JDT；需要原生编译语义时使用�
 
 ## 开发编译配置策略
 
+只提供 JUnit 3.x 的项目可直接用自己的 TestSuite / TestResult 运行 TestCase 类、
+公开静态 suite() 或单个 test 方法，保留实际执行数、断言失败和异常。不会下载或
+替换成 JUnit 4；已有 JUnitCore 时仍由 JUnit 4 的兼容路径执行。
+
 JUnit 4 项目在 Surefire/Failsafe provider properties 中配置的 `listener` 会从项目
 测试 classpath 加载，并注册到实际的 JUnitCore。监听器观察的是真实测试事件，
 不是 joLink 在结果中补写的输出。该配置不代表其他 Provider 的自定义监听器也受支持。
