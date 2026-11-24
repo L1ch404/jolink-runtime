@@ -165,7 +165,12 @@ class NativeCompileSession:
 
     def _result(self, kind, elapsed):
         def paths(deleted, classes):
-            return tuple(sorted(p for p, d in self.pending.items() if d == deleted and p.endswith(".class") == classes))
+            # RedefineClasses accepts loadable classes, not module descriptors
+            # or versioned archive entries. The native delta already compares
+            # bytes, so real metadata edits require a restart.
+            return tuple(sorted(p for p, d in self.pending.items() if d == deleted and
+                                (p.endswith(".class") and not p.endswith("/module-info.class")
+                                 and not p.partition("/")[2].startswith("META-INF/")) == classes))
         # Gradle does not report an exact count of compiled source units.
         return JdtCompileResult(compile_ok=True, actual_build_kind=kind, compiled_source_count=None if kind else 0,
             compiled_source_units=(), changed_classes=(), deleted_classes=(), changed_resources=(), deleted_resources=(),

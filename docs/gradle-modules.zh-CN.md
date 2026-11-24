@@ -36,8 +36,10 @@ Gradle 执行自己的任务。无需指定后端。
   没有精确计数就不返回 `compiled_source_count`，确认跳过编译时返回 0。
   可在运行结果详情中查看 `native_compile_log`，编译失败时查看诊断及 `compile_log`。
 - 应用仍使用原有 HotSwap / restart 判断；测试仍通过独立 Runner 只运行请求的选择器。
-  `gradle_native` 不是完整 CI 的替代。当前针对普通 JVM main/test 和 classpath 应用；
-  混编 JPMS、Android、自定义变体和所有隐式生成输入并未验证。文件变更检测沿用本地
+  `gradle_native` 不是完整 CI 的替代。对命名模块，原生编译保留 Gradle 的参数（如
+  `--module-version`），应用和测试仍分别遵循 module path / classpath 策略。
+  已验证普通单/双模块、显式测试 patch 和上游多版本 JAR，不代表任意 JPMS / 混编、
+  Android、自定义变体和隐式生成输入均适用。文件变更检测沿用本地
   mtime/size 约定，不承诺跨进程同时编辑/构建的原子快照。
 
 回归入口：[联合编译与测试隔离](../tests/e2e/test_gradle_joint_compile.py)。

@@ -41,6 +41,14 @@ def mixed_sources_present(candidates):
                for path in Path(root).rglob("*") if path.is_file())
 
 
+def _runtime_output(source, destination):
+    roots = source["classesDirectories"]
+    # Prefer the closest enclosing root. The primary output can be only a
+    # nested versioned compilation rather than a classpath entry itself.
+    return max((p for p in roots if Path(destination).is_relative_to(p)), key=len,
+               default=next(iter(roots), destination))
+
+
 def dormant_language_roots(modules):
     return next((m["dormant_language_roots"] for m in modules if m.get("dormant_language_roots")), {})
 
@@ -53,9 +61,6 @@ def _compiler_settings(task: dict, *, native=False) -> dict:
     if native:
         # Gradle evaluates the actual toolchains, compiler plugins and APT; do
         # not translate them into ECJ options or claim checks were skipped.
-        jpms = task.get("jpms", {})
-        if jpms.get("moduleName") or jpms.get("patchModule"):
-            raise GradleModuleError("GRADLE_MIXED_JPMS_UNSUPPORTED", "JPMS execution with native Gradle compilation is not yet modeled.")
         # Prefer the project's target for an implicit application JVM, but do
         # not require a separate platform installation to run native Gradle.
         home = Path(task["compilerJavaHome"])
@@ -64,7 +69,9 @@ def _compiler_settings(task: dict, *, native=False) -> dict:
         except JdtCompileError as error:
             if error.error_code not in {"JDT_TARGET_PLATFORM_UNAVAILABLE", "JDT_TARGET_PLATFORM_UNSUPPORTED"}:
                 raise
-        return dict(module_path=[], source_encoding=task["encoding"], source_level=level,
+        return dict(**module_configuration(task.get("jpms", {}), classify_compiler_arguments(args),
+                                           basedir=task.get("projectDirectory", ".")),
+                    source_encoding=task["encoding"], source_level=level,
                     method_parameters="-parameters" in args,
                     target_java_home=str(home),
                     processor_entries=[], lombok_entries=[])
@@ -103,7 +110,8 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
     facts = {item["projectDirectory"]: item for item in model["modules"]}
     selected = model["projectDirectory"]
     def needs_gradle(source, compiler):
-        return (source.get("extraOutputDirs") or compiler.get("customCompileActions")
+        return ((source.get("classesDirectories") and compiler["destinationDirectory"] not in source["classesDirectories"])
+                or source.get("archive") or source.get("extraOutputDirs") or compiler.get("customCompileActions")
                 or compiler.get("fileBackedCompilerArguments") or compiler.get("compilerArgumentProvidersUnmodeled")
                 or classify_compiler_arguments(compiler["compilerArgsPrivate"]).unresolved_arguments)
 
@@ -128,7 +136,7 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
             artifact = model.get("projectArtifacts", {}).get(raw)
             if artifact:
                 producer = facts[artifact["projectDirectory"]]
-                if artifact.get("sourceSet", "main") != "main":
+                if artifact.get("sourceSet", "main") != "main" or producer["main"].get("archive") == raw:
                     # Preserve the actual resolved variant (including archive-only
                     # resources); the native session maps it to the consumer's copy.
                     paths.append(raw)
@@ -166,6 +174,13 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
             if test
             else str(Path(item["projectDirectory"]) / "build/classes/java/test")
         )
+        if native:
+            # A multi-release build may write a versioned compilation under
+            # META-INF/versions/N. The JVM classpath uses the *SourceSet* root,
+            # not that inner JavaCompile directory.
+            output = _runtime_output(main, output)
+            if test:
+                test_output = _runtime_output(item["test"], test_output)
         dependencies = classpath(compile["classpath"])
         allowed_patches = [*main["javaSourceDirectories"], *item.get("test", {}).get("javaSourceDirectories", ()), output, test_output]
         for task in (compile, test):
@@ -216,14 +231,14 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
         if native:
             variants = list(item.get("selectedVariants", {}).values())
             scopes = [main, *variants] + ([item["test"]] if test else [])
-            archives = [s["archive"] for s in variants if "archive" in s]
+            archives = [s["archive"] for s in scopes if "archive" in s]
             outputs = list(dict.fromkeys(p for s in scopes for p in
                            (*s["classesDirectories"], *s.get("preparedResourceDirectories", ()),
                             *s.get("extraOutputDirs", ())) if p))
             resource_inputs = dict.fromkeys(p for s in scopes for p in
                                             (*s["resourceDirectories"], *s.get("resourcePreparationInputs", ())))
             tasks = [t for s in scopes for t in (s["classesTask"], *s.get("extraOutputTasks", ()))]
-            tasks.extend(s["archiveTask"] for s in variants if "archiveTask" in s)
+            tasks.extend(s["archiveTask"] for s in scopes if "archiveTask" in s)
             modules[-1]["native_compile"] = {
                 "build_root": model["rootDirectory"],
                 "tasks": list(dict.fromkeys(tasks)),
@@ -231,10 +246,15 @@ def module_world(model: dict) -> tuple[tuple[dict, ...], dict, tuple[Path, ...]]
                 "archives": archives,
                 "resource_inputs": [p for p in resource_inputs if p not in outputs],
             }
+            for source, primary, key in ((main, output, "main_patches"),
+                                         (item.get("test", {}), test_output, "test_patches")):
+                modules[-1]["native_compile"][key] = [p for p in
+                    (*source.get("classesDirectories", ()), *source.get("preparedResourceDirectories", ()),
+                     *source.get("extraOutputDirs", ())) if p != primary]
             for field in ("extraInputFiles", "extraInputTrees", "extraGeneratedPaths", "extraUnownedDirs"):
                 values = [v for part in (*scopes, compile, test or {},
                                          *(s.get("compileTask", {}) for s in variants),
-                                         *(s.get("archiveInputs", {}) for s in variants)) for v in part.get(field, ())]
+                                         *(s.get("archiveInputs", {}) for s in scopes)) for v in part.get(field, ())]
                 if values:
                     modules[-1]["native_compile"][field] = values
             modules[-1]["source_roots"] = list(dict.fromkeys(p for s in (main, *variants) for p in s["languageRoots"]))

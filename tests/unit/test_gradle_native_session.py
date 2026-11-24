@@ -7,6 +7,32 @@ from jolink_runtime.launch.gradle_native_session import GradleNativeSession
 from jolink_runtime.launch.jdt_compile_session import JdtCompileError
 
 
+def test_versioned_descriptor_is_not_a_classpath_root_or_redefinable_class(tmp_path):
+    from jolink_runtime.launch.gradle_module_world import _runtime_output
+    from jolink_runtime.launch.jpms_runtime import module_runtime
+
+    classes = tmp_path / "classes"
+    versioned = classes / "META-INF/versions/9"
+    versioned.mkdir(parents=True)
+    (versioned / "module-info.class").write_bytes(b"versioned descriptor")
+    (classes / "Main.class").write_bytes(b"base class")
+    primary = _runtime_output({"classesDirectories": [str(classes)]}, str(versioned))
+    model = {"module_root": str(tmp_path), "source_roots": [], "test_source_roots": [],
+             "module_name": "demo", "output_directory": primary, "test_output_directory": str(tmp_path / "test"),
+             "native_compile": {"build_root": str(tmp_path), "tasks": [":classes"], "outputs": [str(classes)],
+                                "resource_inputs": []}}
+    compiler = GradleNativeSession(tmp_path / "private", (model,), tmp_path, tmp_path / "jdk")
+    try:
+        result = compiler.start(run_operation=lambda spec: SimpleNamespace(succeeded=True))
+        private, = compiler.runtime_classpath([classes])
+        assert private == compiler.output_directory and (private / "Main.class").exists()
+        assert module_runtime(compiler, (private,)).name is None
+        assert result.runtime_changed_classes == (private.name + "/Main.class",)
+        assert result.runtime_changed_resources == (private.name + "/META-INF/versions/9/module-info.class",)
+    finally:
+        compiler.close()
+
+
 def test_native_snapshots_follow_successful_builds_and_keep_gradle_output_order(tmp_path):
     project = tmp_path / "project"
     project.mkdir()

@@ -60,8 +60,9 @@ def module_runtime(compiler, classpath, *, resources=(), tests=False, enabled=Tr
                 continue
             arguments.extend(("--add-reads", owner + "=ALL-UNNAMED"))
             source_root = scope["output"].parent / "src"
-            packages = {p.parent.relative_to(source_root).as_posix().replace("/", ".")
-                        for p in compiler._source_map.values() if p.is_relative_to(source_root)}
+            packages = (compiler.output_packages(scope["output"]) if hasattr(compiler, "output_packages") else
+                        {p.parent.relative_to(source_root).as_posix().replace("/", ".")
+                         for p in compiler._source_map.values() if p.is_relative_to(source_root)})
             for package in sorted(packages - {"."}):
                 arguments.extend(("--add-opens", owner + "/" + package + "=ALL-UNNAMED"))
     return ModuleRuntime(name, cp, module_path, tuple(arguments))
@@ -69,7 +70,9 @@ def module_runtime(compiler, classpath, *, resources=(), tests=False, enabled=Tr
 
 def module_vm_arguments(arguments, layout, compiler, *, directory, outputs=None):
     """Map native output paths and merge generated resource/test patches once."""
-    mapping = {str(Path(k).resolve()): Path(v) for k, v in getattr(compiler, "_outputs", {}).items()}
+    archives = getattr(compiler, "archives", ())
+    mapping = {str(Path(k).resolve()): Path(v) / Path(k).name if Path(k) in archives else Path(v)
+               for k, v in getattr(compiler, "_outputs", {}).items()}
     mapping.update({str(Path(k).resolve()): Path(v) for k, v in (outputs or {}).items()})
     module_paths = list(layout.module_path)
     patches = {}

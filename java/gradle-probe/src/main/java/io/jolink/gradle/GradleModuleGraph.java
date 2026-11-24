@@ -12,6 +12,7 @@ import org.gradle.api.artifacts.result.ResolvedArtifactResult;
 import org.gradle.api.tasks.SourceSet;
 import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.api.tasks.bundling.Jar;
+import org.gradle.api.tasks.compile.JavaCompile;
 
 /** Follow Gradle's resolved project artifacts; never run their producing tasks. */
 final class GradleModuleGraph {
@@ -74,7 +75,12 @@ final class GradleModuleGraph {
         if (file.equals(s.getOutput().getResourcesDir())) return "resources";
         Task jar = p.getTasks().findByName(s.getJarTaskName());
         if (jar instanceof Jar && file.equals(((Jar) jar).getArchiveFile().get().getAsFile())) {
-            if (!s.getName().equals("main")) selectedJars.put(s, (Jar) jar);
+            // If javac writes a versioned descriptor, the ordinary classes
+            // root cannot substitute for the resolved multi-release JAR.
+            Task compiler = p.getTasks().getByName(s.getCompileJavaTaskName());
+            if (!s.getName().equals("main") || (compiler instanceof JavaCompile &&
+                    !s.getOutput().getClassesDirs().contains(((JavaCompile)compiler).getDestinationDirectory().get().getAsFile())))
+                selectedJars.put(s, (Jar) jar);
             return "jar";
         }
         return null;
