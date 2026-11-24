@@ -50,7 +50,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 )
 public final class ExportBuildWorldMojo extends AbstractMojo {
     private static final String SCHEMA = "jolink.maven-build-world-probe.v2";
-    private static final String PROBE_VERSION = "0.1.0-fasttest47";
+    private static final String PROBE_VERSION = "0.1.0-fasttest51";
     private static final String IMPLEMENTATION_ID_RESOURCE =
         "/META-INF/jolink/probe-implementation-id.txt";
     private static final String PROCESSOR_SERVICE =
@@ -273,6 +273,10 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         stringList(out, "testCompilerExecutionIds", compilerExecutions.test.ids, true);
         booleanField(out, "compilerConfigurationAmbiguous", compilerExecutions.main.ambiguous, true);
         booleanField(out, "testCompilerConfigurationAmbiguous", compilerExecutions.test.ambiguous, true);
+        booleanField(out, "compilerNativeSourcePasses", compilerExecutions.main.nativeSourcePasses(), true);
+        booleanField(out, "testCompilerNativeSourcePasses", compilerExecutions.test.nativeSourcePasses(), true);
+        if (compilerExecutions.main.nativeSourcePasses()) numberField(out, "compilerHighestTarget", compilerExecutions.main.highestTarget, true);
+        if (compilerExecutions.test.nativeSourcePasses()) numberField(out, "testCompilerHighestTarget", compilerExecutions.test.highestTarget, true);
         try {
             stringList(out, "runtimeClasspathElements", project.getRuntimeClasspathElements(), true);
         } catch (DependencyResolutionRequiredException error) {
@@ -706,6 +710,9 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             ? compilerExecutions.main : compilerExecutions.test;
         Xpp3Dom configuration = selected.configuration;
         String proc = childValue(configuration, "proc");
+        List<String> arguments = compilerArguments(configuration);
+        boolean disabledArgument = arguments.contains("-proc:none") && (proc.isEmpty() || "none".equalsIgnoreCase(proc));
+        if (disabledArgument) proc = "none";
         String processingMode = processingMode(proc);
         List<String> options = compilerOptions(configuration);
         List<String> explicitNames = childValues(
@@ -713,7 +720,6 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             "annotationProcessor"
         );
         Xpp3Dom explicitPaths = child(configuration, "annotationProcessorPaths");
-        List<String> arguments = compilerArguments(configuration);
         for (int i = 0; i + 1 < arguments.size(); i++) {
             if ("-processor".equals(arguments.get(i))) {
                 explicitNames = new ArrayList<>(java.util.Arrays.asList(arguments.get(++i).split(",")));
@@ -724,7 +730,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
         int legacyOptionCount = legacyProcessorOptionCount(configuration);
         int procPropertyCount = procPropertySourceCount();
         int unmodeledCompilerArgCount =
-            unmodeledProcessorCompilerArgCount(configuration);
+            unmodeledProcessorCompilerArgCount(configuration, disabledArgument);
         boolean executionConfiguration = hasProcessorConfiguration(configuration);
         if (procPropertyCount > 0) {
             return new ProcessorFacts(
@@ -897,7 +903,7 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
             || child(configuration, "annotationProcessors") != null
             || !childValue(configuration, "proc").isEmpty()
             || !compilerOptions(configuration).isEmpty()
-            || unmodeledProcessorCompilerArgCount(configuration) > 0
+            || unmodeledProcessorCompilerArgCount(configuration, false) > 0
         ) {
             return true;
         }
@@ -937,20 +943,12 @@ public final class ExportBuildWorldMojo extends AbstractMojo {
     }
 
     private static int unmodeledProcessorCompilerArgCount(
-        Xpp3Dom configuration
+        Xpp3Dom configuration, boolean disabledArgument
     ) {
         int count = 0;
-        Xpp3Dom arguments = child(configuration, "compilerArgs");
-        if (arguments != null) {
-            for (Xpp3Dom item : arguments.getChildren("arg")) {
-                if (isUnmodeledProcessorCompilerArg(value(item))) {
-                    count++;
-                }
-            }
-        }
-        String argument = childValue(configuration, "compilerArgument");
-        if (isUnmodeledProcessorCompilerArg(argument)) {
-            count++;
+        for (String arg : compilerArguments(configuration)) {
+            if (disabledArgument && "-proc:none".equals(arg)) continue;
+            if (isUnmodeledProcessorCompilerArg(arg)) count++;
         }
         Xpp3Dom legacy = child(configuration, "compilerArguments");
         if (legacy != null) {

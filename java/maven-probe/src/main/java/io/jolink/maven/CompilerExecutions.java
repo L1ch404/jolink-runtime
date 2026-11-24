@@ -23,6 +23,13 @@ final class CompilerExecutions {
         MojoExecution execution;
         String moduleName;
         boolean strictComparison;
+        private final Set<Set<String>> selections = new HashSet<>();
+        boolean standardOutputs = true;
+        int highestTarget;
+
+        boolean nativeSourcePasses() {
+            return ambiguous && standardOutputs && selections.size() == ids.size();
+        }
 
         void add(String id, Xpp3Dom selected, File generatedDirectory, boolean strict) {
             if (ids.isEmpty()) {
@@ -75,6 +82,28 @@ final class CompilerExecutions {
                     }
                 }
                 Scope scope = "compile".equals(goal) ? result.main : result.test;
+                String expected = "compile".equals(goal) ? project.getBuild().getOutputDirectory() : project.getBuild().getTestOutputDirectory();
+                String actual = setting(execution, evaluator, "outputDirectory", "");
+                scope.standardOutputs &= !actual.isEmpty() && new File(expected).getCanonicalFile()
+                        .equals(evaluator.alignToBaseDirectory(new File(actual)).getCanonicalFile());
+                String target = setting(execution, evaluator, "target", "");
+                if (scope == result.test) target = setting(execution, evaluator, "testTarget", target);
+                target = setting(execution, evaluator, "release", target);
+                if (scope == result.test) target = setting(execution, evaluator, "testRelease", target);
+                try {
+                    scope.highestTarget = Math.max(scope.highestTarget,
+                        Integer.parseInt(target.startsWith("1.") ? target.substring(2) : target));
+                } catch (NumberFormatException unknownPlatform) {
+                    scope.standardOutputs = false; // Don't guess the runtime required by a merged output.
+                }
+                Set<String> selection = new HashSet<>();
+                String[] filters = scope == result.main ? new String[]{"includes", "excludes"} : new String[]{"testIncludes", "testExcludes"};
+                for (String filter : filters) {
+                    Xpp3Dom patterns = selected.getChild(filter);
+                    if (patterns != null) for (Xpp3Dom pattern : patterns.getChildren())
+                        selection.add(filter + ":" + pattern.getValue());
+                }
+                scope.selections.add(selection);
                 // Option arity/validity below comes from the Maven JVM's javac.
                 // A fork/toolchain can use a different JDK (even with compilerId=javac).
                 scope.add(execution.getExecutionId(), selected, generated,

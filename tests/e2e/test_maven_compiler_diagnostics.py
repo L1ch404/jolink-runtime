@@ -151,6 +151,9 @@ def test_probe_uses_maven_runtime_and_legacy_resource_scanner(tmp_path):
 
 @pytest.mark.mcp_java_e2e
 @pytest.mark.parametrize("configuration,test_configuration,inherited", [
+    pytest.param('<compilerArgs><arg>-proc:none</arg></compilerArgs>'
+                 '<annotationProcessors><annotationProcessor>missing.MustNotRun</annotationProcessor></annotationProcessors>',
+                 "", False, id="disable-processing-via-javac-argument"),
     pytest.param("", "", False, id="omitted"),
     pytest.param(DISABLED, "", False, id="debug-false-diagnostics-true"),
     pytest.param(ENABLED, "", False, id="debug-lines-diagnostics-false"),

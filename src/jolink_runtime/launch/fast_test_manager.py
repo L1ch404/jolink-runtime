@@ -1163,6 +1163,9 @@ class FastTestManager:
                 "IMPLICIT_COMPILE_CLASSPATH",
                 "EXPLICIT_PROCESSOR_PATH",
             }:
+                if (processing.get("discoveryMode") == "EXECUTION_CONFIG_UNRESOLVED" and
+                        snapshot.get(("compiler" if label == "main" else "testCompiler") + "NativeSourcePasses")):
+                    continue  # Maven will execute the distinct source selections with their own processor settings.
                 raise FastTestManagerError(
                     "FAST_TEST_PROCESSOR_MODEL_UNSUPPORTED",
                     f"Fast Test cannot reproduce the {label} Processor discovery mode.",
@@ -1217,8 +1220,10 @@ class FastTestManager:
         attempt.require_not_cancelled()
         processor_entries, lombok = jdt_processor_paths(main_processing, main_processor_paths)
         method_parameters = compiler_parameters(main_scope)
-        target_level = int(compiler_model["target_level"])
-        target_java_home = build_jdk.home if compiler_model["native_legacy"] else self._select_target_java(
+        target_level = snapshot.get("compilerHighestTarget") or int(compiler_model["target_level"])
+        use_build_platform = (target_level <= (build_jdk.major_version or 0) if snapshot.get("compilerNativeSourcePasses")
+                              else compiler_model["native_legacy"])
+        target_java_home = build_jdk.home if use_build_platform else self._select_target_java(
             preferences,
             build_jdk,
             target_level=target_level,

@@ -29,9 +29,13 @@ def preparation_warnings(steps) -> tuple[str, ...]:
             + ". Run the native build for these steps.",)
 
 
-def _platform_home(build_jdk, compiler):
+def _platform_home(build_jdk, compiler, mixed_target=None):
     # Maven owns the legacy platform; no Java 6 installation is needed to
     # compile or run Java 6 bytecode with the project's selected JDK 8.
+    if mixed_target:
+        if (build_jdk.major_version or 0) >= mixed_target:
+            return build_jdk.home
+        return select_target_system_home((build_jdk.home,), mixed_target)
     if compiler["native_legacy"]:
         return build_jdk.home
     return select_target_system_home((build_jdk.home,), compiler["target_level"])
@@ -73,7 +77,7 @@ def load_module_worlds(
         for label, prefix in (("main", "compiler"), ("test", "testCompiler")):
             if label == "test" and not include_tests:
                 continue
-            if snapshot.get(prefix + "ConfigurationAmbiguous", False):
+            if snapshot.get(prefix + "ConfigurationAmbiguous", False) and not snapshot.get(prefix + "NativeSourcePasses"):
                 raise MavenProbeError(
                     "MAVEN_COMPILER_EXECUTION_AMBIGUOUS",
                     "Multiple active Maven compiler executions have different configurations.",
@@ -91,7 +95,8 @@ def load_module_worlds(
         if unrepresented_patches(profile, allowed_patches, directory):
             raise MavenProbeError("MAVEN_COMPILER_ARGUMENT_UNSUPPORTED", "External --patch-module inputs are not mapped to the JDT project.")
         minimum_heap, maximum_heap = maven._structured_compiler_heap(configurations)
-        target_home = _platform_home(build_jdk, compiler)
+        mixed_target = snapshot.get("compilerHighestTarget")
+        target_home = _platform_home(build_jdk, compiler, mixed_target)
         classpath = []
         for raw in snapshot["compileClasspathElements"]:
             path = str(Path(raw))
@@ -165,9 +170,9 @@ def load_module_worlds(
                 **processor_settings(processing),
             }
         )
-        if _requires_native_compiler(compiler, profile):
+        if snapshot.get("compilerNativeSourcePasses") or _requires_native_compiler(compiler, profile):
             modules[-1]["native_main_compile"] = True
-            modules[-1]["target_level"] = compiler["target_level"]
+            modules[-1]["target_level"] = mixed_target or compiler["target_level"]
         main_patterns = compiler_source_patterns(main_scope)
         if main_patterns:
             modules[-1]["source_patterns"] = main_patterns
@@ -180,7 +185,7 @@ def load_module_worlds(
                 scoped, build_jdk=build_jdk, runtime_jdk=build_jdk
             )
             test_profile = maven._compiler_argument_profile(maven._compiler_configurations(maven._find_build_plugin(scoped, "maven-compiler-plugin")))
-            if _requires_native_compiler(test_model, test_profile):
+            if snapshot.get("testCompilerNativeSourcePasses") or _requires_native_compiler(test_model, test_profile):
                 modules[-1]["native_test_compile"] = True
             if unrepresented_patches(test_profile, allowed_patches, directory):
                 raise MavenProbeError("MAVEN_COMPILER_ARGUMENT_UNSUPPORTED", "External test --patch-module inputs are not mapped to the JDT project.")
@@ -198,7 +203,7 @@ def load_module_worlds(
                 "processor_source_roots": list(snapshot["testCompileSourceRoots"]),
                 "generated_source_directory": snapshot.get("generatedTestSourceOutputDirectory"),
                 "source_encoding": maven._source_encoding(scoped),
-                "target_java_home": str(_platform_home(build_jdk, test_model)),
+                "target_java_home": str(_platform_home(build_jdk, test_model, snapshot.get("testCompilerHighestTarget"))),
                 "method_parameters": compiler_parameters(scoped),
                 "processor_entries": [str(path) for path in factories],
                 "lombok_entries": [str(path) for path in lombok],
