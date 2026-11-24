@@ -17,7 +17,9 @@ def build_world_fingerprint(
     """Hash configuration content and dependency identity, never source output."""
     digest = hashlib.sha256()
     for path in sorted(
-        (Path(item).resolve(strict=False) for item in expand_configuration_inputs(configuration_inputs)),
+        # Maven configuration inputs are individual files. For Gradle's
+        # conventional gradle/ directory, use the same scope as the Probe.
+        (Path(item).resolve(strict=False) for item in expand_configuration_inputs(configuration_inputs, gradle=True)),
         key=lambda item: os.path.normcase(str(item)),
     ):
         digest.update(b"config\0")

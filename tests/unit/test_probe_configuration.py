@@ -25,6 +25,31 @@ def configuration(tmp_path, request):
     return root, request.param, path
 
 
+def test_gradle_build_under_configuration_directory_tracks_inputs_not_its_outputs(tmp_path):
+    directory = tmp_path / "gradle"
+    included = directory / "plugins"
+    settings = included / "settings.gradle.kts"
+    source = included / "src/Convention.kt"
+    lock = included / ".gradle/history.lock"
+    output = included / "build/plugin.jar"
+    explicit = included / "build/generated.gradle"
+    for file in (settings, source, lock, output, explicit):
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("original")
+    # An applied script is still tracked as an explicit input wherever it is.
+    inputs = (directory, explicit)
+    capture = ProbeConfiguration.capture(tmp_path, "gradle", inputs)
+    lock.write_text("new lock")
+    output.write_text("new output")
+    assert str(lock) not in capture.finish(inputs)
+    for path in (source, explicit, settings):
+        path.write_text("changed")
+        with pytest.raises(ProbeConfigurationChanged) as error:
+            capture.finish(inputs)
+        assert str(path) in error.value.context["changed_configuration_files"]
+        path.write_text("original")
+
+
 @pytest.mark.parametrize("change", ["modify", "delete", "same_metadata"])
 def test_changed_known_configuration_is_retryable(configuration, change):
     root, system, path = configuration

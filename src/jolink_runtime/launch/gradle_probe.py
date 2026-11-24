@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .configuration_inputs import gradle_directory_files
+
 
 class GradleProbeError(RuntimeError):
     def __init__(self, error_code: str, message: str) -> None:
@@ -243,10 +245,12 @@ def gradle_configuration_inputs(project: Path) -> tuple[Path, ...]:
     ]
     candidates.extend(path for path in root.glob("*.gradle") if path.is_file())
     candidates.extend(path for path in root.glob("*.gradle.kts") if path.is_file())
-    for directory in (root / "gradle", gradle_home / "init.d"):
-        if directory.is_dir():
-            candidates.extend(path for path in directory.rglob("*.gradle") if path.is_file())
-            candidates.extend(path for path in directory.rglob("*.gradle.kts") if path.is_file())
+    candidates.extend(path for path in gradle_directory_files(root / "gradle")
+                      if path.name.endswith((".gradle", ".gradle.kts")))
+    init_dir = gradle_home / "init.d"
+    if init_dir.is_dir():
+        candidates.extend(path for path in init_dir.rglob("*")
+                          if path.is_file() and path.name.endswith((".gradle", ".gradle.kts")))
     return tuple(dict.fromkeys(path.resolve(strict=False) for path in candidates))
 
 

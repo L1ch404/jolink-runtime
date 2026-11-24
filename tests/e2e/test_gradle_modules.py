@@ -134,6 +134,17 @@ public static void main(String[] args) throws Exception {
  org.junit.Assert.assertEquals("persisted", System.getenv("FIXTURE_VALUE"));
 }}""")
     with app_build.open("a") as stream:
+        if headless and not kotlin:
+            # As in Kotlin's top-level task providers, evaluated after
+            # registration. Observing Test.environment must not realize test early.
+            stream.write("""
+def lateProducer
+tasks.named('test') {
+ if (lateProducer == null) throw new GradleException('test realized during build script evaluation')
+ dependsOn(lateProducer)
+}
+lateProducer = tasks.register('lateProducer')
+""")
         stream.write(
             'tasks.withType<Test> { systemProperty("fixture.property", "from-gradle"); environment("FIXTURE_VALUE", "persisted") }\n'
             if kotlin
@@ -162,6 +173,8 @@ compileTestJava { exclude '**/IgnoredTest.java' }
         (project / ".run").rmdir()
     env = {
         **os.environ,
+        "FIXTURE_VALUE": "inherited before project override",
+        "FIXTURE_INHERITED": "do not freeze ordinary host environment",
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
         "GRADLE_ARGS": "--offline",
     }
@@ -223,6 +236,11 @@ compileTestJava { exclude '**/IgnoredTest.java' }
 
                     baseline = await run_test()
                     assert baseline.get("passed") is True, json.dumps(baseline)
+                    if headless:
+                        cache = next((tmp_path / "cache").rglob("build-world.json"))
+                        overrides = json.loads(cache.read_text())["world"]["runner_environment"]
+                        assert overrides["FIXTURE_VALUE"] == "persisted"
+                        assert "FIXTURE_INHERITED" not in overrides
                     warm = await run_test()
                     assert warm.get("passed") is True, warm
                     assert warm["compiled_source_count"] == 0, warm

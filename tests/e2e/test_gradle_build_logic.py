@@ -38,12 +38,12 @@ def test_build_logic_and_custom_roots_survive_mcp_reopen(tmp_path, kind):
     properties.write_text(
         f"distributionUrl=https\\://services.gradle.org/distributions/gradle-{version}-bin.zip\n"
     )
-    logic = project / ("convention-tools" if included else "buildSrc")
+    logic = project / ("gradle/convention-tools" if included else "buildSrc")
     source = logic / "implementation/fixture/Convention.java"
     source.parent.mkdir(parents=True)
     (project / "settings.gradle").write_text(
         (
-            "pluginManagement { includeBuild 'convention-tools' }\n"
+            "pluginManagement { includeBuild 'gradle/convention-tools' }\n"
             if included
             else ""
         )
@@ -62,7 +62,7 @@ def test_build_logic_and_custom_roots_survive_mcp_reopen(tmp_path, kind):
             'package fixture; public class Layout { public static String main(){return "business-java";} }'
         )
         (logic / "settings.gradle").write_text(
-            "rootProject.name='conventions'; includeBuild '../shared-tools'\n"
+            "rootProject.name='conventions'; includeBuild '../../shared-tools'\n"
         )
     else:
         helper = source
@@ -108,7 +108,8 @@ public class Convention implements Plugin<Project> {
     (project / "build.gradle").write_text(f"""plugins {{ id 'fixture.layout' }}
 dependencies {{ testImplementation files('{junit.as_posix()}', '{hamcrest.as_posix()}') }}
 new File(rootDir, 'configuration-count.txt').append('loaded\\n')
-tasks.withType(JavaCompile).configureEach {{ doFirst {{ throw new GradleException('business compile task must not run') }} }}
+// Absence of Gradle class outputs is checked after the run. A custom
+// JavaCompile action would itself request the native compiler backend.
 tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Gradle test task must not run') }} }}
 """)
     main = project / "business-java/example/Value.java"
@@ -203,6 +204,8 @@ tasks.withType(Test).configureEach {{ doFirst {{ throw new GradleException('Grad
                     first = await run_test()
                     assert first.get("passed"), json.dumps(first)
                     count = loads()
+                    if included:
+                        (logic / ".gradle/cache-noise").write_text(str(cycle))
                     assert (await run_test())["passed"]
                     assert loads() == count
                     if cycle == 0:

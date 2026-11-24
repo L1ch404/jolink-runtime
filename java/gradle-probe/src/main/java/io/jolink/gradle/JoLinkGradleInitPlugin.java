@@ -43,7 +43,7 @@ import org.gradle.jvm.toolchain.JavaLauncher;
 /** Private init-plugin spike that exports facts from evaluated Gradle tasks. */
 public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
     private static final String SCHEMA = "jolink.gradle-build-world-probe.v1";
-    private static final String VERSION = "0.1.0-modules11";
+    private static final String VERSION = "0.1.0-modules12";
     private Map<String, String> invocationProperties;
     private final JavaCompileActions compileActions = new JavaCompileActions();
     private final Map<String, Map<String, String>> baselineEnvironments =
@@ -95,7 +95,9 @@ public final class JoLinkGradleInitPlugin implements Plugin<Gradle> {
 
     private void configureProject(final Project project) {
         if (exportScope.equals("test")) {
-            project.getTasks().withType(Test.class).all(task ->
+            // Observe a task when Gradle realizes it. Eagerly realizing every
+            // Test task changes when the project's own configuration closures run.
+            project.getTasks().withType(Test.class).configureEach(task ->
                     baselineEnvironments.put(
                             task.getPath(), stringify(task.getEnvironment())));
         }

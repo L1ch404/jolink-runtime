@@ -3,6 +3,7 @@ package io.jolink.gradle;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
@@ -36,10 +37,24 @@ final class GradleConfigurationInputs {
                 Path path = file.getCanonicalFile().toPath();
                 if (Files.isDirectory(path)) {
                     observe(path.toString(), "directory");
-                    try (java.util.stream.Stream<Path> children = Files.walk(path)) {
-                        for (Path child : (Iterable<Path>) children.filter(Files::isRegularFile).sorted()::iterator)
-                            record(child.toFile());
-                    }
+                    // A build under gradle/ has inputs AND generated state. Keep
+                    // its configs and sources, not Gradle's cache and outputs.
+                    boolean gradleDirectory = path.endsWith("gradle");
+                    Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
+                        @Override public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                            if (gradleDirectory && (dir.endsWith(".gradle") || dir.endsWith("build"))) {
+                                for (String script : Arrays.asList("settings.gradle", "settings.gradle.kts",
+                                        "build.gradle", "build.gradle.kts")) {
+                                    if (Files.isRegularFile(dir.resolveSibling(script))) return FileVisitResult.SKIP_SUBTREE;
+                                }
+                            }
+                            return FileVisitResult.CONTINUE;
+                        }
+                        @Override public FileVisitResult visitFile(Path child, BasicFileAttributes attrs) {
+                            if (Files.isRegularFile(child)) record(child.toFile());
+                            return FileVisitResult.CONTINUE;
+                        }
+                    });
                 } else {
                     observe(path.toString(), Files.isRegularFile(path) ? sha256(Files.readAllBytes(path)) : "missing");
                 }

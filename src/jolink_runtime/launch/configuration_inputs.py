@@ -2,6 +2,7 @@
 
 import hashlib
 from functools import lru_cache
+import os
 import re
 from stat import S_ISREG
 import xml.etree.ElementTree as ET
@@ -68,25 +69,39 @@ def build_configuration_stamps(project, build_system, inputs):
         if build_system == "maven"
         else inputs
     )
-    return configuration_file_stamps(files)
+    return configuration_file_stamps(files, gradle=build_system == "gradle")
 
 
-def expand_configuration_inputs(paths):
+def gradle_directory_files(directory):
+    """Read gradle/ configuration, not a nested Gradle project's own runtime outputs."""
+    for root, dirs, files in os.walk(directory):
+        if not {"settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"}.isdisjoint(files):
+            dirs[:] = (d for d in dirs if d not in {".gradle", "build"})
+        for name in files:
+            file = Path(root) / name
+            if file.is_file():
+                yield file
+
+
+def expand_configuration_inputs(paths, *, gradle=False):
     for value in paths:
         path = Path(value)
         yield path
         if path.is_dir():
-            yield from sorted(item for item in path.rglob("*") if item.is_file())
+            if gradle and path.name == "gradle":
+                yield from sorted(gradle_directory_files(path))
+            else:
+                yield from sorted(item for item in path.rglob("*") if item.is_file())
 
 
-def configuration_file_stamps(paths):
+def configuration_file_stamps(paths, *, gradle=False):
     return {
         str(path): hashlib.sha256(path.read_bytes()).hexdigest()
         if path.is_file()
         else "directory"
         if path.is_dir()
         else "missing"
-        for path in expand_configuration_inputs(paths)
+        for path in expand_configuration_inputs(paths, gradle=gradle)
     }
 
 

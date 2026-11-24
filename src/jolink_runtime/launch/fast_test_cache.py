@@ -43,7 +43,7 @@ def _inputs(project: Path, build_system: str, additional=()) -> dict[str, str]:
     if build_system == "maven":
         return configuration_file_stamps(maven_configuration_files(project, additional))
     return configuration_file_stamps(dict.fromkeys(
-        (*_input_files(project, build_system), *(Path(p) for p in additional))))
+        (*_input_files(project, build_system), *(Path(p) for p in additional))), gradle=True)
 
 
 def _world_configuration_files(world):
